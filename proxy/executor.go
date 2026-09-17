@@ -547,6 +547,11 @@ func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []by
 	requestBody = ApplyCodexFingerprintToBody(requestBody, account, headers)
 	// 账号绑定时区：改写 environment_context 的时区/日期，与指纹收敛一样在分叉前统一处理。
 	requestBody = ApplyCodexTimezoneToBody(requestBody, account, time.Now())
+	var stateErr error
+	requestBody, headers, stateErr = applyVerifiedState(ctx, account, requestBody, headers, proxyOverride)
+	if stateErr != nil {
+		return nil, stateErr
+	}
 	// lite 信号收敛：签名在 payload 规则改写后采集（规则可注入/删除 WS 标记，改写
 	// 前采集会让注入失效、删除被回填），模型也已被入口映射/规则定稿——已知不支持
 	// lite 的模型带信号上游必 400，发出前剥离。
@@ -687,7 +692,11 @@ func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []by
 	// 出口链路统一由 ResolveCodexEgress 决定(Resin > 代理 > 直连,见 egress.go)。
 	egress := ResolveCodexEgress(account, endpoint, proxyURL)
 	endpoint = egress.URL
-	client := egress.Client()
+	client, finishProbe, probeErr := stateProbeClient(ctx, egress)
+	if probeErr != nil {
+		return nil, probeErr
+	}
+	defer func() { finishProbe(upstreamResponse) }()
 
 	send := func() (*http.Response, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(outboundBody))

@@ -1,4 +1,5 @@
 import { qualityTestFilterQuery, type QualityTestJob, type QualityTestJobsFilter, type QualityTestJobsResponse, type QualityTestPrompt } from './lib/qualityTest.ts'
+import type { StateImportPreview, StatePackage, StatePoolData } from './lib/statePool.ts'
 import type {
   AccountEventTrendPoint,
   AccountPortalAuthURLResponse,
@@ -535,6 +536,16 @@ export function buildUsageLogSearchParams(params: UsageLogQueryParams) {
 }
 
 export const api = {
+  getStatePool: (signal?: AbortSignal) => request<StatePoolData>('/state-pool', { signal }),
+  setStatePoolLimits: (body: StatePoolData['limits']) => request('/state-pool/limits', { method: 'PUT', body: JSON.stringify(body) }),
+  captureStates: (body: { account_ids: number[]; models: string[]; enable: boolean; strict: boolean; proxy_ids: number[]; candidates: number; strategy: string; distinct_ips: boolean; new_session: boolean; forward_proxy_id: number }) => request<{ job_ids: string[] }>('/state-pool/capture', { method: 'POST', body: JSON.stringify(body) }),
+  previewStateImport: (body: StatePackage, signal?: AbortSignal) => request<{ items: StateImportPreview[] }>('/state-pool/import/preview', { method: 'POST', body: JSON.stringify(body), signal }),
+  importStates: (body: { package?: StatePackage; account_id?: number; model?: string; value?: string; captured_at?: number; enable: boolean; strict: boolean; allow_partial?: boolean }) => request<{ job_ids: string[]; items?: StateImportPreview[] }>('/state-pool/import', { method: 'POST', body: JSON.stringify(body) }),
+  exportStates: (ids: string[]) => request<StatePackage>('/state-pool/export', { method: 'POST', body: JSON.stringify({ ids }) }),
+  configureState: (id: string, body: { enabled: boolean; strict: boolean }) => request(`/state-pool/entries/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  deleteState: (id: string) => request(`/state-pool/entries/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  cancelStateJob: (id: string) => request(`/state-pool/jobs/${encodeURIComponent(id)}/cancel`, { method: 'POST' }),
+  cancelStateGroup: (id: string) => request(`/state-pool/groups/${encodeURIComponent(id)}/cancel`, { method: 'POST' }),
   getBranding: () => requestPublic<SiteBranding>('/api/branding'),
   // 公开账号自助门户:生成 OpenAI 授权链接(无鉴权)。
   generateAccountPortalAuthURL: (data: { contact_email: string }) =>

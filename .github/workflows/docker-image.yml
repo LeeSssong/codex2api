@@ -52,6 +52,69 @@ jobs:
             type=semver,pattern={{version}},value=${{ inputs.build_version || github.ref_name }},enable=${{ inputs.build_version != '' || startsWith(github.ref, 'refs/tags/v') }}
             type=semver,pattern={{major}}.{{minor}},value=${{ inputs.build_version || github.ref_name }},enable=${{ inputs.build_version != '' || startsWith(github.ref, 'refs/tags/v') }}
             type=raw,value=latest
+            type=sha,format=long
+
+      - name: Build an image for the deployment smoke test
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          load: true
+          tags: codex2api:smoke
+          build-args: |
+            BUILD_VERSION=${{ inputs.build_version || github.ref_name }}
+          cache-from: type=gha
+
+      - name: Verify single-container startup, state API, and persistence
+        shell: bash
+        run: |
+          set -euo pipefail
+          admin_secret="$(openssl rand -hex 24)"
+          echo "::add-mask::$admin_secret"
+          export SMOKE_ADMIN_SECRET="$admin_secret"
+          ADMIN_SECRET="$admin_secret" docker compose -f compose.state.yml config -q
+          docker run -d --name codex2api-smoke \
+            -p 127.0.0.1:18080:8080 \
+            -e ADMIN_SECRET="$admin_secret" \
+            -e DATABASE_DRIVER=sqlite -e DATABASE_PATH=/data/codex2api.db \
+            -e CACHE_DRIVER=memory \
+            -v codex2api-smoke-data:/data codex2api:smoke
+          trap 'docker rm -f codex2api-smoke >/dev/null; docker volume rm codex2api-smoke-data >/dev/null' EXIT
+          wait_ready() {
+            for attempt in $(seq 1 60); do
+              if curl --fail --silent http://127.0.0.1:18080/health >/dev/null; then return; fi
+              sleep 2
+            done
+            docker logs codex2api-smoke
+            return 1
+          }
+          wait_ready
+          curl --fail --silent http://127.0.0.1:18080/admin/state-pool | grep -iq '<!doctype html>'
+          node --input-type=commonjs <<'NODE'
+          const assert = require('node:assert/strict');
+          (async () => {
+            const base = 'http://127.0.0.1:18080/api/admin/state-pool';
+            const headers = { 'X-Admin-Key': process.env.SMOKE_ADMIN_SECRET, 'Content-Type': 'application/json' };
+            const response = await fetch(base, { headers });
+            assert.equal(response.status, 200);
+            const data = await response.json();
+            assert.deepEqual(data.models, ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-6-astra']);
+            assert.deepEqual(data.entries, []);
+            const changed = await fetch(base + '/limits', { method: 'PUT', headers, body: JSON.stringify({ concurrency: 2, per_account: 1, per_proxy: 1 }) });
+            assert.equal(changed.status, 200);
+          })().catch(error => { console.error(error); process.exitCode = 1; });
+          NODE
+          docker restart codex2api-smoke >/dev/null
+          wait_ready
+          node --input-type=commonjs <<'NODE'
+          const assert = require('node:assert/strict');
+          (async () => {
+            const response = await fetch('http://127.0.0.1:18080/api/admin/state-pool', { headers: { 'X-Admin-Key': process.env.SMOKE_ADMIN_SECRET } });
+            assert.equal(response.status, 200);
+            assert.deepEqual((await response.json()).limits, { concurrency: 2, per_account: 1, per_proxy: 1 });
+          })().catch(error => { console.error(error); process.exitCode = 1; });
+          NODE
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v6
@@ -67,3 +130,11 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
           provenance: false
+
+      - name: Deployment summary
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+        run: |
+          echo "Published image: \`$IMAGE:latest\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "Pinned image: \`$IMAGE:sha-$GITHUB_SHA\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "Platforms: linux/amd64, linux/arm64. SQLite startup and persistent state settings verified." >> "$GITHUB_STEP_SUMMARY"

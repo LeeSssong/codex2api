@@ -32,6 +32,10 @@ Run it as a full **PostgreSQL + Redis** production stack or as a single-containe
 
 ---
 
+## State Pool Build
+
+This fork includes per-account state capture and verified cross-host import for Sol, Terra, Luna, and Astra. Use `ghcr.io/hloolx/codex2api:latest` with [`compose.state.yml`](compose.state.yml). See the [deployment and three-step state transfer guide](docs/DOCKER_STATE_QUICKSTART_CN.md) and [state pool reference](docs/STATE_POOL_CN.md).
+
 ## Live Demo
 
 - Demo URL: [https://codex2api-latest-vu8j.onrender.com](https://codex2api-latest-vu8j.onrender.com)

@@ -25,6 +25,7 @@ const AccountPortal = lazy(() => import('./pages/AccountPortal'))
 const Usage = lazy(() => import('./pages/Usage'))
 const ImageStudio = lazy(() => import('./pages/ImageStudio'))
 const QualityTest = lazy(() => import('./pages/QualityTest'))
+const StatePool = lazy(() => import('./pages/StatePool'))
 const PromptFilter = lazy(() => import('./pages/PromptFilter'))
 const ThemeSettings = lazy(() => import('./pages/ThemeSettings'))
 const ModelPricing = lazy(() => import('./pages/ModelPricing'))
@@ -71,6 +72,7 @@ function AdminApp() {
           <Route path="/images" element={<Navigate to="/images/studio" replace />} />
           <Route path="/images/:view" element={<ImageStudio />} />
           <Route path="/quality-test" element={<QualityTest />} />
+          <Route path="/state-pool" element={<StatePool />} />
           <Route path="/prompt-filter" element={<Navigate to="/prompt-filter/overview" replace />} />
           <Route path="/prompt-filter/:view" element={<PromptFilter />} />
           <Route path="/ops" element={<Navigate to="/ops/overview" replace />} />

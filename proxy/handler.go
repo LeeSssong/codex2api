@@ -8149,9 +8149,6 @@ func transientAccountRateLimitDecision(body []byte, resp *http.Response, now tim
 	if retryAfter := transient429RetryAfter(body, resp, now); retryAfter > cooldown {
 		cooldown = retryAfter
 	}
-	if cooldown > auth.TransientRateLimitBackoffMax {
-		cooldown = auth.TransientRateLimitBackoffMax
-	}
 	return codex429Decision{
 		Scope:    rateLimitScopeAccount,
 		Reason:   "rate_limited",

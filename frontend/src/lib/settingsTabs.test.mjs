@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
-const settings = readFileSync(new URL('../pages/Settings.tsx', import.meta.url), 'utf8')
+const settings = readFileSync(new URL('../pages/Settings.tsx', import.meta.url), 'utf8').replace(/\r\n/g, '\n')
 const zh = JSON.parse(readFileSync(new URL('../locales/zh.json', import.meta.url), 'utf8'))
 const en = JSON.parse(readFileSync(new URL('../locales/en.json', import.meta.url), 'utf8'))
 
@@ -16,7 +16,7 @@ test('settings page is split into one panel per tab driven by ?tab=', () => {
     assert.match(settings, new RegExp(`\\{ id: '${tab}', label: t\\('settings\\.nav\\.${tab}'\\)`), `tab pill ${tab}`)
     assert.match(settings, new RegExp(`\\{activeTab === '${tab}' \\? \\(`), `panel ${tab}`)
   }
-  // 旧滚动定位导航已移除，避免回退成单页长滚动。
+  // Legacy scroll navigation must not replace the tabbed layout.
   assert.doesNotMatch(settings, /scrollToSection/)
   assert.doesNotMatch(settings, /settingsSections/)
   assert.match(settings, /role="tablist"/)
@@ -89,7 +89,7 @@ test('shared settings cards declare which upstream channels they apply to', () =
   assert.match(badges, /export const ALL_UPSTREAM_CHANNELS/)
   assert.match(badges, /data-channel-scope/)
   assert.match(settings, /channels\?: readonly UpstreamChannel\[\]/)
-  // 通用 Tab 里每张跨渠道卡片都必须带 channels，避免再出现"看不出给谁用"的设置。
+  // Every shared card declares its applicable upstream channels.
   for (const title of ['settings.trafficProtection', 'settings.schedulingStrategy', 'settings.runtimeOptimization', 'settings.autoCleanup']) {
     assert.match(settings, new RegExp(`title=\\{t\\('${title.replace('.', '\\.')}'\\)\\}[^\\n]*channels=\\{ALL_UPSTREAM_CHANNELS\\}`), title)
   }
@@ -120,7 +120,7 @@ test('multi-section tabs render a section index that mirrors the rendered sectio
   for (const tab of TABS) {
     assert.match(index, new RegExp(`\\b${tab}: \\[`), `section index for ${tab}`)
   }
-  // Tab 栏跟随页面流粘顶，不再 fixed 悬浮盖住内容。
+  // Sticky tabs remain in the document flow instead of covering content.
   assert.doesNotMatch(settings, /fixed left-1\/2 top-\[max\(0\.625rem/)
   assert.match(settings, /sticky top-2[\s\S]{0,400}role="tablist"/)
 })
@@ -149,7 +149,7 @@ test('single-toggle compatibility settings are one row-list card, not three narr
   for (const key of ['overflowAutoCompact', 'compactViaResponses', 'codexPreflightSSEPassthrough']) {
     assert.match(card, new RegExp(`label=\\{t\\('settings\\.${key}'\\)\\}\\n\\s+description=\\{t\\('settings\\.${key}Desc'\\)\\}\\n\\s+help=\\{t\\('settings\\.${key}EnabledDesc'\\)\\}\\n\\s+layout="row"`), key)
   }
-  // 双列开关栅格里只放一个开关会挤成半宽折行：逐个栅格数到同缩进的 </div> 为止。
+  // Count each grid through its same-indent closing tag to reject half-width single toggles.
   const lines = settings.split('\n')
   lines.forEach((line, i) => {
     if (!line.includes('className={SETTINGS_SWITCH_GRID}')) return

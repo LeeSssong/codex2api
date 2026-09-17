@@ -1,0 +1,68 @@
+.state-pool { width: 100%; min-width: 0; letter-spacing: 0; }
+.state-pool h2 { letter-spacing: 0; }
+.state-pool-setup { display: grid; grid-template-columns: minmax(240px, 0.8fr) minmax(360px, 1.2fr); gap: 32px; padding: 8px 0 26px; border-bottom: 1px solid var(--border); }
+.state-pool-section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.state-pool h3 { font-size: 14px; font-weight: 600; }
+.state-pool-meta, .state-pool small { color: var(--muted-foreground); font-size: 12px; }
+.state-pool small { display: block; line-height: 1.6; overflow-wrap: anywhere; }
+.state-pool-account-list { max-height: 208px; overflow-y: auto; margin-top: 10px; }
+.state-pool-account { display: flex; align-items: center; gap: 10px; min-height: 50px; padding: 7px 4px; cursor: pointer; }
+.state-pool-account > span:nth-child(2) { flex: 1; min-width: 0; }
+.state-pool-account strong { display: block; font-size: 13px; font-weight: 500; overflow-wrap: anywhere; }
+.state-pool-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted-foreground); }
+.state-pool-dot.is-ready { background: #059669; }
+.state-pool-models { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 20px; }
+.state-pool-models > label { display: flex; align-items: center; gap: 10px; min-height: 48px; cursor: pointer; font-size: 14px; font-weight: 500; }
+.state-pool-models small { font-size: 11px; font-weight: 400; }
+.state-pool-limits { display: flex; align-items: end; gap: 12px; padding-top: 18px; }
+.state-pool-limits label { display: grid; gap: 6px; font-size: 12px; color: var(--muted-foreground); flex: 1; max-width: 160px; }
+.state-pool-limits input { height: 36px; }
+.state-pool-proxy-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin: 20px 0 12px; }
+.state-pool-proxy-heading a { color: var(--primary); font-size: 12px; }
+.state-pool-proxy-list { max-height: 160px; overflow: auto; margin: 10px 0; }
+.state-pool-forward { display: grid; min-width: 0; gap: 6px; margin-top: 14px; font-size: 12px; color: var(--muted-foreground); }
+.state-pool-strategy { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 16px; align-items: end; margin-top: 24px; }
+.state-pool-strategy > label { display: grid; gap: 6px; font-size: 12px; color: var(--muted-foreground); width: 128px; }
+.state-pool-group { border-bottom: 1px solid var(--border); padding-bottom: 12px; }
+.state-pool-group .state-pool-job { border-bottom: 0; padding-bottom: 8px; }
+.state-pool-candidate-details summary { cursor: pointer; width: fit-content; font-size: 12px; color: var(--muted-foreground); padding: 4px 0; }
+.state-pool-candidate { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 10px 0; font-size: 12px; }
+.state-pool-candidate .state-pool-status, .state-pool-import-preview .state-pool-status { display: block; white-space: normal; overflow-wrap: anywhere; }
+.state-pool-import-preview { max-height: 240px; overflow: auto; }
+.state-pool-import-preview > div { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--border); font-size: 12px; }
+.state-pool-switches { display: flex; flex-wrap: wrap; gap: 14px 24px; margin: 18px 0; }
+.state-pool-switches label { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer; }
+.state-pool-start { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 12px; font-size: 12px; color: var(--muted-foreground); }
+.state-pool-toolbar { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; padding: 22px 0 16px; }
+.state-pool-toolbar > div:last-child { display: flex; gap: 6px; align-items: center; }
+.state-pool-table-wrap { width: 100%; overflow-x: auto; }
+.state-pool-table { width: 100%; min-width: 780px; border-collapse: collapse; text-align: left; font-size: 13px; }
+.state-pool-table th { font-weight: 500; color: var(--muted-foreground); font-size: 12px; padding: 12px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+.state-pool-table td { padding: 15px 10px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.state-pool-table td:nth-child(2) { min-width: 180px; }
+.state-pool-table strong { font-weight: 600; }
+.state-pool-table code { display: block; font-size: 11px; color: var(--muted-foreground); margin-top: 5px; }
+.state-pool-row-actions { display: flex; align-items: center; gap: 2px; }
+.state-pool-countdown { font-size: 16px; font-variant-numeric: tabular-nums; }
+.state-pool-status { display: inline-flex; gap: 5px; align-items: center; font-size: 12px; white-space: nowrap; }
+.state-pool-status.is-ready, .state-pool-status.is-completed { color: #047857; }
+.state-pool-status.is-running, .state-pool-status.is-queued { color: #0369a1; }
+.state-pool-status.is-failed, .state-pool-status.is-identity_changed, .state-pool-error-text { color: var(--destructive); }
+.state-pool-status.is-expired, .state-pool-status.is-disabled, .state-pool-status.is-cancelled, .state-pool-status.is-interrupted { color: var(--muted-foreground); }
+.dark .state-pool-status.is-ready, .dark .state-pool-status.is-completed { color: #6ee7b7; }
+.dark .state-pool-status.is-running, .dark .state-pool-status.is-queued { color: #7dd3fc; }
+.state-pool-empty { padding: 48px 20px; text-align: center; font-size: 14px; color: var(--muted-foreground); }
+.state-pool-error { padding: 12px 0; color: var(--destructive); font-size: 13px; overflow-wrap: anywhere; }
+.state-pool-job { display: grid; grid-template-columns: minmax(150px, 1fr) minmax(125px, .8fr) minmax(140px, 1.3fr) auto; align-items: center; gap: 16px; padding: 16px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
+.state-pool-job-result { min-width: 0; overflow-wrap: anywhere; }
+.state-pool-dialog { width: min(720px, calc(100vw - 24px)); max-width: 720px; max-height: calc(100dvh - 32px); overflow-y: auto; }
+.state-pool-import-fields { display: grid; gap: 12px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.state-pool-import-fields label { min-width: 0; display: grid; gap: 6px; font-size: 12px; }
+.state-pool-import-fields label > div, .state-pool-import-fields button { min-width: 0; max-width: 100%; }
+.state-pool-import-fields button > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.state-pool-import-fields label:last-child { grid-column: 1 / -1; }
+.state-pool-secret { min-height: 190px; max-height: 45dvh; font-family: ui-monospace, monospace; font-size: 12px; overflow-wrap: anywhere; }
+.state-pool-evidence section + section { border-top: 1px solid var(--border); padding-top: 20px; margin-top: 20px; }
+.state-pool-evidence pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; line-height: 1.7; margin-top: 12px; max-height: 40dvh; overflow-y: auto; }
+@media (max-width: 900px) { .state-pool-setup { grid-template-columns: 1fr; gap: 22px; } .state-pool-account-list { max-height: 155px; } }
+@media (max-width: 600px) { .state-pool-job { grid-template-columns: minmax(0, 1fr) auto; gap: 10px; } .state-pool-job-result { grid-column: 1; } .state-pool-switches { gap: 14px; } .state-pool-models { gap: 8px; } .state-pool-models label { font-size: 13px; } .state-pool-import-fields { grid-template-columns: minmax(0, 1fr); } }

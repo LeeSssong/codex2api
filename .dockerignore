@@ -19,6 +19,24 @@ Thumbs.db
 # Env
 .env
 .env.local
+.env.*
+!.env.example
+
+# Local runtime data, credentials, captures, and development toolchains.
+.dev/
+data/
+logs/
+server.log
+AGENTS.md
+.air.toml
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+codex2api-state-*.json
+codex2api-codex-*.json
+sub2api-account-*.json
 
 # Local credentials and account-test fixtures must never enter a build context.
 .private-account-fixtures/

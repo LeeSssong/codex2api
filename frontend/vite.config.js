@@ -4,6 +4,8 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 
+const apiTarget = process.env.VITE_API_TARGET || 'http://127.0.0.1:8080'
+
 function getVersion() {
   if (process.env.VITE_APP_VERSION) return process.env.VITE_APP_VERSION
   try {
@@ -53,8 +55,9 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      '/api': 'http://localhost:8080',
-      '/health': 'http://localhost:8080'
+      '/api': { target: apiTarget, ws: true },
+      '/health': apiTarget,
+      '/v1': { target: apiTarget, ws: true },
     }
   }
 })
