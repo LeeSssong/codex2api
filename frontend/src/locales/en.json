@@ -993,6 +993,14 @@
     "heroChannelTitle": "{{channel}}: {{available}}/{{total}} accounts available · {{requests}} requests today"
   },
   "accounts": {
+    "testDiagTurnState": "State length",
+    "testDiagTurnStateHint": "x-codex-turn-state · Matching length does not verify capability",
+    "testDiagTurnStateHandshake": "From the WS handshake, possibly a reused connection. Updates when this response supplies metadata.",
+    "testDiagTurnState_matched": "292 · Length matched",
+    "testDiagTurnState_different": "{{count}} · Not 292",
+    "testDiagTurnState_missing": "No state returned",
+    "testDiagTurnState_pending": "Waiting for state…",
+    "testDiagTurnState_unknown": "Length unavailable",
     "refreshAllUsage": "Refresh All Usage",
     "refreshAllUsageHint": "Query all WHAM-capable Codex accounts in the runtime pool and update their 5-hour and weekly usage bars.",
     "batchUsageRefreshing": "Refreshing usage",

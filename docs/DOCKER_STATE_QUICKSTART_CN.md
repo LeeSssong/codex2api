@@ -6,6 +6,8 @@
 
 `2.9.8-state.3` 简化界面：默认进入「自动管理」，每个账号一行、四模型并列；参数集中在「采集设置」。可复制全部有效 State 或某个账号的多个模型，在目标主机一次粘贴导入；部分失败可单独重试。
 
+`2.9.8-state.4` 在账号「测试连接」结果中增加 State 长度，直接区分 292、其他长度、未返回和无法检测；WebSocket 握手来源单独标明，诊断中的原始 state 脱敏。
+
 ## 最简单的部署方式
 
 在安装了 Docker 的目标主机执行，先将 `CHANGE_ME_TO_A_LONG_PASSWORD` 改成自己的管理员密码：
@@ -53,7 +55,7 @@ docker compose -f compose.state.yml pull
 docker compose -f compose.state.yml up -d
 ```
 
-现有 Compose 部署也可以直接将原配置中该服务的 `image` 改为 `ghcr.io/hloolx/codex2api:2.9.8-state.3`，然后在原部署目录执行 `docker compose pull` 和 `docker compose up -d`。保留原来的数据库、数据卷、端口和环境变量；不要为已有账号改用一个新的空数据卷。
+现有 Compose 部署也可以直接将原配置中该服务的 `image` 改为 `ghcr.io/hloolx/codex2api:2.9.8-state.4`，然后在原部署目录执行 `docker compose pull` 和 `docker compose up -d`。保留原来的数据库、数据卷、端口和环境变量；不要为已有账号改用一个新的空数据卷。
 
 也可以将变量设置在部署面板或 `.env`。Compose 默认只绑定 `127.0.0.1`，上面的 `BIND_HOST=0.0.0.0` 用于直接通过服务器 IP 访问。不要把两种部署方式同时用于同一端口。
 

@@ -993,6 +993,14 @@
     "heroChannelTitle": "{{channel}}：可用账号 {{available}}/{{total}} · 今日请求 {{requests}}"
   },
   "accounts": {
+    "testDiagTurnState": "State 长度",
+    "testDiagTurnStateHint": "x-codex-turn-state · 长度匹配不代表能力验证通过",
+    "testDiagTurnStateHandshake": "来自 WS 握手，可能属于复用连接；本次响应元数据返回后会更新。",
+    "testDiagTurnState_matched": "292 · 长度匹配",
+    "testDiagTurnState_different": "{{count}} · 非 292",
+    "testDiagTurnState_missing": "未返回 State",
+    "testDiagTurnState_pending": "等待 State…",
+    "testDiagTurnState_unknown": "未检测到长度",
     "refreshAllUsage": "一键刷新用量",
     "refreshAllUsageHint": "查询运行池中所有支持 WHAM 的 Codex 账号，更新 5 小时和周用量进度条。",
     "batchUsageRefreshing": "正在刷新用量",

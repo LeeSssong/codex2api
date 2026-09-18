@@ -515,6 +515,14 @@
     }
   },
   "accounts": {
+    "testDiagTurnState": "State 長度",
+    "testDiagTurnStateHint": "x-codex-turn-state · 長度匹配不代表能力驗證通過",
+    "testDiagTurnStateHandshake": "來自 WS 握手，可能屬於複用連線；本次回應中繼資料返回後會更新。",
+    "testDiagTurnState_matched": "292 · 長度符合",
+    "testDiagTurnState_different": "{{count}} · 非 292",
+    "testDiagTurnState_missing": "未返回 State",
+    "testDiagTurnState_pending": "等待 State…",
+    "testDiagTurnState_unknown": "未偵測到長度",
     "refreshAllUsage": "一鍵重新整理用量",
     "refreshAllUsageHint": "查詢執行池中所有支援 WHAM 的 Codex 帳號，更新 5 小時和週用量進度條。",
     "batchUsageRefreshing": "正在重新整理用量",
