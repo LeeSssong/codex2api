@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next'
 import { Check, Copy, Download, Eye, Package, Play, RefreshCw, Square, Trash2, Upload } from 'lucide-react'
 import { api } from '../api'
 import PageHeader from '../components/PageHeader'
+import IPv6StatePlugin from '../components/IPv6StatePlugin'
 import { Button } from '../components/ui/button'
 import { Checkbox } from '../components/ui/checkbox'
 import { Input } from '../components/ui/input'
@@ -193,6 +194,7 @@ export default function StatePool() {
   return <div className="state-pool">
     <PageHeader title={t('statePool.title')} actionMeta={t('statePool.summary', { ready: readyEntries, active: activeJobs })} onRefresh={() => void refresh()} actions={<Button variant="outline" size="sm" onClick={() => setImportOpen(true)}><Upload />{t('statePool.import')}</Button>} />
     {error ? <div role="alert" className="state-pool-error">{error}</div> : null}
+    <IPv6StatePlugin accounts={data?.accounts ?? []} proxies={data?.proxies ?? []} />
     {data?.resin_enabled ? <div role="alert" className="state-pool-error">{t('statePool.resinConflict')}</div> : null}
     <div className="state-pool-setup">
       <section className="state-pool-accounts" aria-label={t('statePool.accounts')}>

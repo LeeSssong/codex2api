@@ -552,6 +552,9 @@ func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []by
 	if stateErr != nil {
 		return nil, stateErr
 	}
+	if ipv6StateDirect(ctx, account, requestBody) {
+		proxyOverride = ipv6StateDirectRoute
+	}
 	// lite 信号收敛：签名在 payload 规则改写后采集（规则可注入/删除 WS 标记，改写
 	// 前采集会让注入失效、删除被回填），模型也已被入口映射/规则定稿——已知不支持
 	// lite 的模型带信号上游必 400，发出前剥离。
@@ -965,6 +968,14 @@ func ExecuteCompactRequest(ctx context.Context, account *auth.Account, requestBo
 	}
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	var stateErr error
+	requestBody, headers, _, stateErr = applyIPv6State(ctx, account, requestBody, headers)
+	if stateErr != nil {
+		return nil, stateErr
+	}
+	if ipv6StateDirect(ctx, account, requestBody) {
+		proxyOverride = ipv6StateDirectRoute
 	}
 	resetUpstreamUserAgentAudit(ctx)
 	resetWsAcquireAudit(ctx)

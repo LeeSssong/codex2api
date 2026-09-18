@@ -55,6 +55,9 @@ type CodexEgress struct {
 // proxyURL 是第 2 层已经解析好的代理(可为空);Resin 启用时被整层覆盖。
 // account 为 nil 时不可能走 Resin(Resin 按账号粘性,无身份无从粘),退回代理/直连。
 func ResolveCodexEgress(account *auth.Account, targetURL, proxyURL string) CodexEgress {
+	if proxyURL == ipv6StateDirectRoute {
+		return CodexEgress{Kind: CodexEgressDirect, URL: targetURL, account: account}
+	}
 	proxyURL = strings.TrimSpace(proxyURL)
 	if resinCarriesEgress(account) {
 		return CodexEgress{
@@ -116,6 +119,9 @@ func (e CodexEgress) ApplyHeaders(h http.Header) {
 // 拨号用代理。Resin 模式下 WS 地址改写为 Resin 的 ws:// 反代路径、拨号不走代理;
 // 账号身份头由调用方用 ApplyHeaders 注入。
 func ResolveCodexWebsocketEgress(account *auth.Account, wsURL, proxyURL string) CodexEgress {
+	if proxyURL == ipv6StateDirectRoute {
+		return CodexEgress{Kind: CodexEgressDirect, URL: wsURL, account: account}
+	}
 	proxyURL = strings.TrimSpace(proxyURL)
 	if resinCarriesEgress(account) {
 		return CodexEgress{
@@ -142,6 +148,9 @@ func ResolveCodexWebsocketEgress(account *auth.Account, wsURL, proxyURL string) 
 // 路径,再套代理只会把 Resin 本身推到代理后面)。供只需要"拨号走不走代理"、
 // 手里 URL 已经改写过的调用方(WS 连接建立)使用,避免对改写后的地址二次改写。
 func CodexDialProxyURL(account *auth.Account, proxyURL string) string {
+	if proxyURL == ipv6StateDirectRoute {
+		return ""
+	}
 	if resinCarriesEgress(account) {
 		return ""
 	}

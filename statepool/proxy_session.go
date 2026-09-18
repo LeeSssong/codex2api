@@ -23,6 +23,20 @@ func SupportsSessionRotation(raw string) bool {
 	return (host == "ipdeep.com" || strings.HasSuffix(host, ".ipdeep.com")) && ipdeepSession.MatchString(u.User.Username())
 }
 
+// RotateCaptureSession gives each IPDeep probe its own vendor session. Other
+// gateways rotate on fresh connections and their credentials are left intact.
+func RotateCaptureSession(raw string) (string, string, error) {
+	if !SupportsSessionRotation(raw) {
+		return raw, "", nil
+	}
+	session, err := newProxySession()
+	if err != nil {
+		return "", "", err
+	}
+	rotated, err := proxyWithSession(raw, session)
+	return rotated, session, err
+}
+
 func newProxySession() (string, error) {
 	n, err := rand.Int(rand.Reader, big.NewInt(9000000000))
 	if err != nil {

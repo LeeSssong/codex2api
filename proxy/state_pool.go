@@ -30,6 +30,9 @@ func WithoutStatePool(ctx context.Context) context.Context {
 }
 
 func applyVerifiedState(ctx context.Context, account *auth.Account, body []byte, headers http.Header, proxyURL string) ([]byte, http.Header, error) {
+	if updated, outgoing, active, err := applyIPv6State(ctx, account, body, headers); active || err != nil {
+		return updated, outgoing, err
+	}
 	provider := verifiedStateProvider.Load()
 	if provider == nil || ctx.Value(statePoolBypassKey{}) == true || account == nil || account.IsRelayStyle() ||
 		responsesBodyRequestsImageGeneration(body) || gjson.GetBytes(body, "compact").Bool() {

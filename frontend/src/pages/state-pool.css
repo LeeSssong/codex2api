@@ -66,3 +66,23 @@
 .state-pool-evidence pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; line-height: 1.7; margin-top: 12px; max-height: 40dvh; overflow-y: auto; }
 @media (max-width: 900px) { .state-pool-setup { grid-template-columns: 1fr; gap: 22px; } .state-pool-account-list { max-height: 155px; } }
 @media (max-width: 600px) { .state-pool-job { grid-template-columns: minmax(0, 1fr) auto; gap: 10px; } .state-pool-job-result { grid-column: 1; } .state-pool-switches { gap: 14px; } .state-pool-models { gap: 8px; } .state-pool-models label { font-size: 13px; } .state-pool-import-fields { grid-template-columns: minmax(0, 1fr); } }
+.ipv6-state-plugin { padding: 18px 0; border-block: 1px solid var(--border); }
+.ipv6-state-plugin h3 { font-size: 16px; font-weight: 600; }
+.ipv6-state-fields { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 24px; margin: 16px 0; }
+.ipv6-state-enable, .ipv6-state-choices label { display: flex; align-items: center; gap: 8px; }
+.ipv6-state-choices { display: flex; flex-wrap: wrap; gap: 12px 18px; margin: 14px 0; max-height: 180px; overflow: auto; }
+.ipv6-state-choices label { min-width: 0; }
+.ipv6-state-choices label span { overflow-wrap: anywhere; }
+.ipv6-state-interval { display: flex; gap: 12px; align-items: center; }
+.ipv6-state-interval input { width: 96px; }
+.ipv6-state-fields textarea { margin-top: 8px; min-height: 82px; }
+.ipv6-state-addresses { display: flex; flex-direction: column; gap: 3px; font-size: 12px; overflow-wrap: anywhere; }
+.ipv6-state-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 14px 0; }
+.ipv6-state-table { overflow: auto; max-height: 400px; }
+.ipv6-state-table table { width: 100%; min-width: 760px; border-collapse: collapse; font-size: 13px; }
+.ipv6-state-table th { text-align: left; font-weight: 500; color: var(--muted-foreground); }
+.ipv6-state-table th, .ipv6-state-table td { padding: 9px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.ipv6-state-table td:first-child { min-width: 190px; max-width: 280px; overflow-wrap: anywhere; }
+.ipv6-state-table small { display: block; color: var(--muted-foreground); font-size: 11px; margin-top: 3px; }
+.ipv6-state-row-actions { display: flex; min-width: 72px; }
+@media (max-width: 700px) { .ipv6-state-fields { grid-template-columns: minmax(0, 1fr); gap: 16px; } }

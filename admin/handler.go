@@ -36,6 +36,7 @@ import (
 	"github.com/codex2api/database"
 	"github.com/codex2api/internal/imagestore"
 	"github.com/codex2api/internal/openaiidentity"
+	"github.com/codex2api/ipv6state"
 	"github.com/codex2api/proxy"
 	"github.com/codex2api/security"
 	"github.com/codex2api/security/promptfilter"
@@ -46,6 +47,7 @@ import (
 
 // Handler 管理后台 API 处理器
 type Handler struct {
+	ipv6State          *ipv6state.Manager
 	statePool          *statepool.Manager
 	qualityTestContext context.Context
 	qualityTestWG      sync.WaitGroup

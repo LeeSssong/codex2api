@@ -103,6 +103,21 @@ jobs:
             assert.deepEqual(data.entries, []);
             const changed = await fetch(base + '/limits', { method: 'PUT', headers, body: JSON.stringify({ concurrency: 2, per_account: 1, per_proxy: 1 }) });
             assert.equal(changed.status, 200);
+            const unauthorized = await fetch(base + '/ipv6');
+            assert.equal(unauthorized.status, 401);
+            const pluginResponse = await fetch(base + '/ipv6', { headers });
+            assert.equal(pluginResponse.status, 200);
+            const plugin = await pluginResponse.json();
+            assert.equal(plugin.config.enabled, false);
+            assert.equal(plugin.config.capture_mode, 'proxy');
+            assert.deepEqual(plugin.config.models, data.models);
+            assert.deepEqual(plugin.entries, []);
+            const savedPlugin = await fetch(base + '/ipv6', {
+              method: 'PUT', headers,
+              body: JSON.stringify({ ...plugin.config, interval_seconds: 7 }),
+            });
+            assert.equal(savedPlugin.status, 200);
+            assert.equal((await savedPlugin.json()).config.enabled, false);
           })().catch(error => { console.error(error); process.exitCode = 1; });
           NODE
           docker restart codex2api-smoke >/dev/null
@@ -113,6 +128,13 @@ jobs:
             const response = await fetch('http://127.0.0.1:18080/api/admin/state-pool', { headers: { 'X-Admin-Key': process.env.SMOKE_ADMIN_SECRET } });
             assert.equal(response.status, 200);
             assert.deepEqual((await response.json()).limits, { concurrency: 2, per_account: 1, per_proxy: 1 });
+            const pluginResponse = await fetch('http://127.0.0.1:18080/api/admin/state-pool/ipv6', { headers: { 'X-Admin-Key': process.env.SMOKE_ADMIN_SECRET } });
+            assert.equal(pluginResponse.status, 200);
+            const plugin = await pluginResponse.json();
+            assert.equal(plugin.config.enabled, false);
+            assert.equal(plugin.config.interval_seconds, 7);
+            assert.equal(plugin.running, false);
+            assert.deepEqual(plugin.entries, []);
           })().catch(error => { console.error(error); process.exitCode = 1; });
           NODE
 
@@ -137,4 +159,4 @@ jobs:
         run: |
           echo "Published image: \`$IMAGE:latest\`" >> "$GITHUB_STEP_SUMMARY"
           echo "Pinned image: \`$IMAGE:sha-$GITHUB_SHA\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "Platforms: linux/amd64, linux/arm64. SQLite startup and persistent state settings verified." >> "$GITHUB_STEP_SUMMARY"
+          echo "Platforms: linux/amd64, linux/arm64. SQLite startup, authenticated State APIs, and persistent state settings verified; 292 capture stays disabled by default." >> "$GITHUB_STEP_SUMMARY"

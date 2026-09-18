@@ -1,5 +1,6 @@
 import { qualityTestFilterQuery, type QualityTestJob, type QualityTestJobsFilter, type QualityTestJobsResponse, type QualityTestPrompt } from './lib/qualityTest.ts'
 import type { StateImportPreview, StatePackage, StatePoolData } from './lib/statePool.ts'
+import type { IPv6StateConfig, IPv6StateStatus, IPv6StatePackage } from './lib/ipv6State.ts'
 import type {
   AccountEventTrendPoint,
   AccountPortalAuthURLResponse,
@@ -536,6 +537,10 @@ export function buildUsageLogSearchParams(params: UsageLogQueryParams) {
 }
 
 export const api = {
+  getIPv6State: (signal?: AbortSignal) => request<IPv6StateStatus>('/state-pool/ipv6', { signal }),
+  configureIPv6State: (body: IPv6StateConfig) => request<IPv6StateStatus>('/state-pool/ipv6', { method: 'PUT', body: JSON.stringify(body) }),
+  exportIPv6State: (account_id: number, model: string) => request<IPv6StatePackage>('/state-pool/ipv6/export', { method: 'POST', body: JSON.stringify({ account_id, model }) }),
+  importIPv6State: (body: IPv6StatePackage) => request<IPv6StateStatus>('/state-pool/ipv6/import', { method: 'POST', body: JSON.stringify(body) }),
   getStatePool: (signal?: AbortSignal) => request<StatePoolData>('/state-pool', { signal }),
   setStatePoolLimits: (body: StatePoolData['limits']) => request('/state-pool/limits', { method: 'PUT', body: JSON.stringify(body) }),
   captureStates: (body: { account_ids: number[]; models: string[]; enable: boolean; strict: boolean; proxy_ids: number[]; candidates: number; strategy: string; distinct_ips: boolean; new_session: boolean; forward_proxy_id: number }) => request<{ job_ids: string[] }>('/state-pool/capture', { method: 'POST', body: JSON.stringify(body) }),

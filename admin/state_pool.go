@@ -39,11 +39,19 @@ func (h *Handler) StartStatePool(ctx context.Context) error {
 	if err := h.statePool.Start(ctx); err != nil {
 		return err
 	}
+	if err := h.startIPv6State(ctx); err != nil {
+		h.statePool.Stop()
+		return err
+	}
 	proxy.SetStatePoolResolver(h.statePool.Resolve)
 	return nil
 }
 
 func (h *Handler) StopStatePool() {
+	proxy.SetIPv6StateProvider(nil)
+	if h.ipv6State != nil {
+		h.ipv6State.Stop()
+	}
 	proxy.SetStatePoolResolver(nil)
 	if h.statePool != nil {
 		h.statePool.Stop()
@@ -60,6 +68,7 @@ func (h *Handler) registerStatePoolRoutes(api *gin.RouterGroup) {
 		}
 	})
 	group.GET("", h.statePoolList)
+	h.registerIPv6StateRoutes(group)
 	group.PUT("/limits", h.statePoolLimits)
 	group.POST("/capture", h.statePoolCapture)
 	group.POST("/import", h.statePoolImport)

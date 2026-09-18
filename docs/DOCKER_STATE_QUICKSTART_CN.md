@@ -2,6 +2,8 @@
 
 本仓库的镜像名称是 **`ghcr.io/hloolx/codex2api:latest`**，支持 `linux/amd64` 和 `linux/arm64`。包含「State 管理」、多账号多模型采集、复制迁移包、粘贴导入和目标主机复验。
 
+`2.9.8-state.2` 增加默认关闭的「292 State 插件（实验）」：动态代理或本机已绑定 IPv6 采集、响应头到达后取消、按账号与精确模型固定注入、签发时间加一小时的本地失效策略，以及独立迁移包。它与原有答题验证 State 池使用不同规则和导入入口，见 [292 插件教程与已知限制](STATE_292_PLUGIN_CN.md)。
+
 ## 最简单的部署方式
 
 在安装了 Docker 的目标主机执行，先将 `CHANGE_ME_TO_A_LONG_PASSWORD` 改成自己的管理员密码：
@@ -49,6 +51,8 @@ docker compose -f compose.state.yml pull
 docker compose -f compose.state.yml up -d
 ```
 
+现有 Compose 部署也可以直接将原配置中该服务的 `image` 改为 `ghcr.io/hloolx/codex2api:2.9.8-state.2`，然后在原部署目录执行 `docker compose pull` 和 `docker compose up -d`。保留原来的数据库、数据卷、端口和环境变量；不要为已有账号改用一个新的空数据卷。
+
 也可以将变量设置在部署面板或 `.env`。Compose 默认只绑定 `127.0.0.1`，上面的 `BIND_HOST=0.0.0.0` 用于直接通过服务器 IP 访问。不要把两种部署方式同时用于同一端口。
 
 需要锁定版本时使用发布记录中的 `ghcr.io/hloolx/codex2api:sha-完整提交哈希`，或设置 Compose 的 `CODEX_IMAGE` 为该值。`latest` 随本仓库下一次 Docker 发布更新。
@@ -82,5 +86,7 @@ docker compose -f compose.state.yml up -d
 ## 发布流程
 
 维护者在本仓库 **Actions → Build Docker Image → Run workflow** 选择目标分支，可填写版本如 `2.9.8-state.1`。工作流先启动 SQLite 单容器，验证 State API、四个模型及重启后配置持久化，再发布双架构镜像和提交哈希标签。构建成功后才能拉取新版本。
+
+`2.9.8-state.2` 的发布工作流还验证 292 插件接口鉴权、默认关闭与重启后配置保留。发布状态以 GitHub Actions 的 Build Docker Image 成功记录和 GHCR 镜像为准。
 
 完整机制和限制见 [State 管理说明](STATE_POOL_CN.md)。
