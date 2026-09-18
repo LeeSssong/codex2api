@@ -209,6 +209,7 @@ func (h *Handler) buildAccountResponse(
 		allowedAPIKeyIDs = row.GetCredentialInt64Slice("allowed_api_key_ids")
 	}
 	resp := accountResponse{
+		StateModels:                  h.accountStateModels(runtimeAccount),
 		DetailLoaded:                 includeDetails,
 		ID:                           row.ID,
 		Name:                         row.Name,

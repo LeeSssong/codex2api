@@ -201,6 +201,8 @@ func (e *accountPageQueryError) Error() string {
 // accountOperationSelector lets large-pool operations resolve their target set
 // on the server instead of transferring tens of thousands of IDs.
 type accountOperationSelector struct {
+	State                string  `json:"state,omitempty"`
+	StateModel           string  `json:"state_model,omitempty"`
 	Channel              string  `json:"channel"`
 	Search               string  `json:"search,omitempty"`
 	Status               string  `json:"status,omitempty"`
@@ -244,8 +246,12 @@ func (h *Handler) resolveAccountOperationSelector(ctx context.Context, selector 
 		return nil, err
 	}
 	ids := make([]int64, 0)
+	stateMatches, err := h.accountStatePredicate(selector.State, selector.StateModel)
+	if err != nil {
+		return nil, err
+	}
 	for _, item := range snapshot.Items {
-		if !accountListItemMatches(item, query, channel) {
+		if !accountListItemMatches(item, query, channel) || !stateMatches(item.ID) {
 			continue
 		}
 		if selector.RefreshableOnly {
@@ -404,9 +410,13 @@ func (h *Handler) getAccountPageSelection(ctx context.Context, c *gin.Context, c
 	if err != nil {
 		return nil, err
 	}
+	stateMatches, err := h.accountStatePredicate(c.Query("state"), c.Query("state_model"))
+	if err != nil {
+		return nil, &accountPageQueryError{err: err}
+	}
 	filtered := make([]*accountListSnapshotItem, 0, len(snapshot.Items))
 	for _, item := range snapshot.Items {
-		if accountListItemMatches(item, query, channel) {
+		if accountListItemMatches(item, query, channel) && stateMatches(item.ID) {
 			filtered = append(filtered, item)
 		}
 	}

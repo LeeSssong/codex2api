@@ -16,19 +16,23 @@ import (
 
 const Header = statepool.Header
 const Lifetime = time.Hour
+const RefreshBefore = 10 * time.Minute
+
+var ErrStateRequired = errors.New("valid_state_required")
 
 type Config struct {
-	Enabled         bool     `json:"enabled"`
-	CaptureMode     string   `json:"capture_mode"`
-	ProxyIDs        []int64  `json:"proxy_ids"`
-	ForwardProxyID  int64    `json:"forward_proxy_id"`
-	NewSession      bool     `json:"new_session"`
-	AccountIDs      []int64  `json:"account_ids"`
-	Models          []string `json:"models"`
-	SourceIPs       []string `json:"source_ips"`
-	IntervalSeconds int      `json:"interval_seconds"`
-	AcceptedLengths []int    `json:"accepted_lengths"`
-	Concurrency     int      `json:"concurrency"`
+	Enabled           bool     `json:"enabled"`
+	CaptureMode       string   `json:"capture_mode"`
+	ProxyIDs          []int64  `json:"proxy_ids"`
+	ForwardProxyID    int64    `json:"forward_proxy_id"`
+	NewSession        bool     `json:"new_session"`
+	AccountIDs        []int64  `json:"account_ids"`
+	Models            []string `json:"models"`
+	SourceIPs         []string `json:"source_ips"`
+	IntervalSeconds   int      `json:"interval_seconds"`
+	AcceptedLengths   []int    `json:"accepted_lengths"`
+	Concurrency       int      `json:"concurrency"`
+	RequireValidState bool     `json:"require_valid_state"`
 }
 
 func DefaultConfig() Config {
@@ -137,25 +141,29 @@ func TokenTimes(token string, now time.Time) (int64, int64, error) {
 }
 
 type Entry struct {
-	AccountID   int64              `json:"account_id"`
-	AccountName string             `json:"account_name"`
-	Model       string             `json:"model"`
-	Identity    statepool.Identity `json:"identity"`
-	Value       string             `json:"-"`
-	Fingerprint string             `json:"fingerprint,omitempty"`
-	IssuedAt    int64              `json:"issued_at"`
-	ExpiresAt   int64              `json:"expires_at"`
-	CapturedAt  int64              `json:"captured_at"`
-	SourceIP    string             `json:"source_ip,omitempty"`
-	ProxyID     int64              `json:"proxy_id,omitempty"`
-	ProxyName   string             `json:"proxy_name,omitempty"`
-	SessionID   string             `json:"session_id,omitempty"`
-	Attempts    int64              `json:"attempts"`
-	LastLength  int                `json:"last_length"`
-	HTTPStatus  int                `json:"http_status"`
-	Status      string             `json:"status"`
-	Error       string             `json:"error,omitempty"`
-	RetryAt     int64              `json:"retry_at"`
+	Refreshing     bool               `json:"refreshing"`
+	CooldownReason string             `json:"cooldown_reason,omitempty"`
+	CooldownUntil  int64              `json:"cooldown_until,omitempty"`
+	RetrySource    string             `json:"retry_source,omitempty"`
+	AccountID      int64              `json:"account_id"`
+	AccountName    string             `json:"account_name"`
+	Model          string             `json:"model"`
+	Identity       statepool.Identity `json:"identity"`
+	Value          string             `json:"-"`
+	Fingerprint    string             `json:"fingerprint,omitempty"`
+	IssuedAt       int64              `json:"issued_at"`
+	ExpiresAt      int64              `json:"expires_at"`
+	CapturedAt     int64              `json:"captured_at"`
+	SourceIP       string             `json:"source_ip,omitempty"`
+	ProxyID        int64              `json:"proxy_id,omitempty"`
+	ProxyName      string             `json:"proxy_name,omitempty"`
+	SessionID      string             `json:"session_id,omitempty"`
+	Attempts       int64              `json:"attempts"`
+	LastLength     int                `json:"last_length"`
+	HTTPStatus     int                `json:"http_status"`
+	Status         string             `json:"status"`
+	Error          string             `json:"error,omitempty"`
+	RetryAt        int64              `json:"retry_at"`
 }
 
 // Proxy credentials only travel to the executor, never to status or migration.

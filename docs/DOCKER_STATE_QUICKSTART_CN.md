@@ -10,6 +10,8 @@
 
 `2.9.8-state.5` 在采集设置中增加自定义保留长度（例如 `292, 332`）和最高 20 路全局并发；同账号同模型可并发候选，首个命中后取消同组其他请求。采集仍共享系统每账号并发限制，升级旧配置不会自动把并发从 1 提升到 20，需要在采集设置中保存。跨主机接收端也需允许对应长度。
 
+`2.9.8-state.6` 增加系统设置中的「仅允许有有效 State 的账号调用」，剩余十分钟自动提前补采，以及账号列表的绿色/灰色模型 State 与筛选。补采期间继续使用旧值，取得更晚到期的新值才替换；冷却详情优先显示账号当前原因。
+
 ## 最简单的部署方式
 
 在安装了 Docker 的目标主机执行，先将 `CHANGE_ME_TO_A_LONG_PASSWORD` 改成自己的管理员密码：
@@ -57,7 +59,7 @@ docker compose -f compose.state.yml pull
 docker compose -f compose.state.yml up -d
 ```
 
-现有 Compose 部署也可以直接将原配置中该服务的 `image` 改为 `ghcr.io/hloolx/codex2api:2.9.8-state.5`，然后在原部署目录执行 `docker compose pull` 和 `docker compose up -d`。保留原来的数据库、数据卷、端口和环境变量；不要为已有账号改用一个新的空数据卷。
+现有 Compose 部署也可以直接将原配置中该服务的 `image` 改为 `ghcr.io/hloolx/codex2api:2.9.8-state.6`，然后在原部署目录执行 `docker compose pull` 和 `docker compose up -d`。保留原来的数据库、数据卷、端口和环境变量；不要为已有账号改用一个新的空数据卷。
 
 也可以将变量设置在部署面板或 `.env`。Compose 默认只绑定 `127.0.0.1`，上面的 `BIND_HOST=0.0.0.0` 用于直接通过服务器 IP 访问。不要把两种部署方式同时用于同一端口。
 

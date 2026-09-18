@@ -1629,20 +1629,21 @@ func isDashboardRateLimitedAccount(status string, cooldownReason string) bool {
 // ==================== Accounts ====================
 
 type accountResponse struct {
-	CodexLastRefreshAt      string `json:"codex_last_refresh_at,omitempty"`
-	CodexRefreshError       string `json:"codex_refresh_error,omitempty"`
-	UpstreamRequestIDHeader string `json:"upstream_request_id_header"`
-	DetailLoaded            bool   `json:"detail_loaded,omitempty"`
-	ID                      int64  `json:"id"`
-	Name                    string `json:"name"`
-	Email                   string `json:"email"`
-	EmailDomain             string `json:"email_domain,omitempty"`
-	ChatGPTAccountID        string `json:"chatgpt_account_id,omitempty"`
-	TokenWorkspaceID        string `json:"token_workspace_id,omitempty"`
-	WorkspaceIDOverride     string `json:"workspace_id_override,omitempty"`
-	EffectiveWorkspaceID    string `json:"effective_workspace_id,omitempty"`
-	PlanType                string `json:"plan_type"`
-	SubscriptionExpiresAt   string `json:"subscription_expires_at,omitempty"`
+	StateModels             []accountStateModel `json:"state_models,omitempty"`
+	CodexLastRefreshAt      string              `json:"codex_last_refresh_at,omitempty"`
+	CodexRefreshError       string              `json:"codex_refresh_error,omitempty"`
+	UpstreamRequestIDHeader string              `json:"upstream_request_id_header"`
+	DetailLoaded            bool                `json:"detail_loaded,omitempty"`
+	ID                      int64               `json:"id"`
+	Name                    string              `json:"name"`
+	Email                   string              `json:"email"`
+	EmailDomain             string              `json:"email_domain,omitempty"`
+	ChatGPTAccountID        string              `json:"chatgpt_account_id,omitempty"`
+	TokenWorkspaceID        string              `json:"token_workspace_id,omitempty"`
+	WorkspaceIDOverride     string              `json:"workspace_id_override,omitempty"`
+	EffectiveWorkspaceID    string              `json:"effective_workspace_id,omitempty"`
+	PlanType                string              `json:"plan_type"`
+	SubscriptionExpiresAt   string              `json:"subscription_expires_at,omitempty"`
 	// Subscription 服务端计算的订阅状态对象（业务状态 + 同步状态）；不跟踪订阅的
 	// 套餐（api/无到期时间的 free）为空。
 	Subscription          *auth.SubscriptionStatusView `json:"subscription,omitempty"`

@@ -6,6 +6,8 @@ import { api, getAdminKey, resetAdminAuthState } from "../api";
 import type { ProxyRow } from "../api";
 import { ProxyField } from "../components/ProxyField";
 import AccountProxyBadge from "../components/AccountProxyBadge";
+import AccountStateModels from "../components/AccountStateModels";
+import { STATE_MODEL_LABELS } from "../lib/statePool";
 import AccountProxyQuickEditor from "../components/AccountProxyQuickEditor";
 import SubscriptionBadge from "../components/SubscriptionBadge";
 import {
@@ -364,6 +366,7 @@ const ACCOUNT_TABLE_COLUMNS = [
   "priority",
   "plan",
   "subscription",
+  "state",
   "status",
   "today",
   "requests",
@@ -1432,6 +1435,7 @@ const AccountTableRow = memo(function AccountTableRow({
                                 />
                               </TableCell>
                             )}
+                            {visibleColumns.state && <TableCell><AccountStateModels states={account.state_models} /></TableCell>}
                             {visibleColumns.status && (
                               <TableCell data-account-state-cell="status">
                                 {tableOverlay ?? (
@@ -1769,6 +1773,8 @@ export default function Accounts() {
     20,
     pageSizeOptions,
   );
+  const [stateFilter, setStateFilter] = useState<'all' | 'valid' | 'missing'>('all');
+  const [stateModelFilter, setStateModelFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState<
     | "all"
     | "normal"
@@ -2632,6 +2638,8 @@ export default function Accounts() {
       pageSize,
       search: debouncedSearchQuery,
       status: statusFilter,
+      state: stateFilter,
+      stateModel: stateModelFilter,
       plan: planFilter,
       subscription: subscriptionFilter,
       authKind: authFilter,
@@ -2657,7 +2665,7 @@ export default function Accounts() {
       statsState: accountsResponse.stats_state,
       disabledSorts: accountsResponse.disabled_sorts ?? [],
     };
-  }, [authFilter, debouncedSearchQuery, domainFilter, groupFilter.exclude, groupFilter.include, groupFilter.ungrouped, page, pageSize, planFilter, sortDir, sortKey, statusFilter, subscriptionFilter, tagFilter]);
+  }, [authFilter, debouncedSearchQuery, domainFilter, groupFilter.exclude, groupFilter.include, groupFilter.ungrouped, page, pageSize, planFilter, sortDir, sortKey, statusFilter, subscriptionFilter, tagFilter, stateFilter, stateModelFilter]);
 
   const loadAccountAnalysis = useCallback(async (opts?: { silent?: boolean }) => {
     accountAnalysisAbortRef.current?.abort();
@@ -3163,6 +3171,8 @@ export default function Accounts() {
     channel: "codex",
     search: debouncedSearchQuery || undefined,
     status: statusFilter === "all" ? undefined : statusFilter,
+    state: stateFilter === 'all' ? undefined : stateFilter,
+    state_model: stateModelFilter || undefined,
     plan: planFilter === "all" ? undefined : planFilter,
     subscription: subscriptionFilter === "all" ? undefined : subscriptionFilter,
     auth_kind: authFilter === "all" ? undefined : authFilter,
@@ -3171,7 +3181,7 @@ export default function Accounts() {
     group_include: groupFilter.include.length > 0 ? groupFilter.include : undefined,
     group_exclude: groupFilter.exclude.length > 0 ? groupFilter.exclude : undefined,
     ungrouped: groupFilter.ungrouped || undefined,
-  }), [authFilter, debouncedSearchQuery, domainFilter, groupFilter.exclude, groupFilter.include, groupFilter.ungrouped, planFilter, statusFilter, subscriptionFilter, tagFilter]);
+  }), [authFilter, debouncedSearchQuery, domainFilter, groupFilter.exclude, groupFilter.include, groupFilter.ungrouped, planFilter, statusFilter, subscriptionFilter, tagFilter, stateFilter, stateModelFilter]);
 
   // 服务端已完成全池筛选、排序和分页。
   const filteredAccounts = accounts;
@@ -6731,6 +6741,8 @@ export default function Accounts() {
               </div>
 
               <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center sm:gap-2">
+                <Select className="w-full min-w-0 sm:w-40" compact aria-label={t('ipv6State.stateFilter')} value={stateFilter} onValueChange={value => { setStateFilter(value as 'all' | 'valid' | 'missing'); setPage(1); }} options={['all', 'valid', 'missing'].map(value => ({ value, label: t(`ipv6State.stateFilter_${value}`) }))} />
+                <Select className="w-full min-w-0 sm:w-40" compact aria-label={t('ipv6State.modelFilter')} value={stateModelFilter || 'all'} onValueChange={value => { setStateModelFilter(value === 'all' ? '' : value); if (value !== 'all' && stateFilter === 'all') setStateFilter('valid'); setPage(1); }} options={[{ value: 'all', label: t('ipv6State.anyModel') }, ...Object.entries(STATE_MODEL_LABELS).map(([value, label]) => ({ value, label }))]} />
                 <Select
                   className="w-full min-w-0 sm:w-32"
                   compact
@@ -6992,6 +7004,7 @@ export default function Accounts() {
                         proxy: t("accounts.proxyColumn"),
                         priority: t("accounts.schedulerPriorityColumn"),
                         status: t("accounts.status"),
+                        state: t("ipv6State.accountColumn"),
                         today: t("accounts.todayStats"),
                         requests: t("accounts.requests"),
                         usage: t("accounts.usage"),
@@ -7008,7 +7021,7 @@ export default function Accounts() {
 
             </div>
 
-            {(statusFilter !== "all" ||
+            {(stateFilter !== 'all' || stateModelFilter !== '' || statusFilter !== "all" ||
               planFilter !== "all" ||
               subscriptionFilter !== "all" ||
               Boolean(tagFilter) ||
@@ -7117,6 +7130,8 @@ export default function Accounts() {
                   type="button"
                   onClick={() => {
                     setStatusFilter("all");
+                    setStateFilter('all');
+                    setStateModelFilter('');
                     setPlanFilter("all");
                     setSubscriptionFilter("all");
                     setTagFilter("");
@@ -7419,6 +7434,7 @@ export default function Accounts() {
                             {t("accounts.subscriptionColumn")}
                           </TableHead>
                         )}
+                        {visibleColumns.state && <TableHead>{t('ipv6State.accountColumn')}</TableHead>}
                         {visibleColumns.status && (
                           <TableHead className="text-[13px] font-semibold">
                             {t("accounts.status")}
@@ -13663,6 +13679,7 @@ function AccountMobileCard({
         </div>
       </header>
 
+      {showColumn('state') ? <div className="px-4 py-2"><AccountStateModels states={account.state_models} /></div> : null}
       <div className="codex-account-card__notices">
         {overlayKind === "overload" && (
           <div className="codex-account-card__notice">

@@ -93,7 +93,7 @@ export default function IPv6StatePlugin({ accounts, proxies }: { accounts: State
       accept(await api.configureIPv6State(next))
       setSettingsOpen(false)
       showToast(t('ipv6State.saved'), 'success')
-    } catch (err) { setError(getErrorMessage(err)) }
+    } catch (err) { setError(describe(getErrorMessage(err))) }
     finally { revision.current++; setBusy(false) }
   }
 
@@ -137,7 +137,7 @@ export default function IPv6StatePlugin({ accounts, proxies }: { accounts: State
     try {
       for (const pack of packs) {
         try { accept(await api.importIPv6State(pack)) }
-        catch (err) { failed.push(pack); errors.push(`${STATE_MODEL_LABELS[pack.model] || pack.model}: ${getErrorMessage(err)}`) }
+        catch (err) { failed.push(pack); errors.push(`${STATE_MODEL_LABELS[pack.model] || pack.model}: ${describe(getErrorMessage(err))}`) }
       }
       const result = t('ipv6State.importSummary', { count: packs.length - failed.length, failed: failed.length })
       setImportResult(result)
@@ -175,7 +175,7 @@ export default function IPv6StatePlugin({ accounts, proxies }: { accounts: State
           })}
         </tr>)}</tbody></table>{!visibleRows.length ? <div className="state-pool-empty">{t('ipv6State.noMatches')}</div> : null}
     </div>}
-    <p className="ipv6-state-footnote">{t('ipv6State.scopeHint')}</p>
+    <p className="ipv6-state-footnote">{t('ipv6State.scopeHint')} {t('ipv6State.renewalHelp')}</p>
 
     <Dialog open={settingsOpen} onOpenChange={open => { if (!busy) { setSettingsOpen(open); setError('') } }}><DialogContent className="state-pool-dialog ipv6-state-dialog"><DialogHeader><DialogTitle>{t('ipv6State.settings')}</DialogTitle><DialogDescription>{t('ipv6State.settingsHint')}</DialogDescription></DialogHeader>
       {config ? <>
@@ -195,10 +195,13 @@ export default function IPv6StatePlugin({ accounts, proxies }: { accounts: State
     <Dialog open={Boolean(detailKey)} onOpenChange={open => { if (!open) { setDetailKey(''); setError('') } }}><DialogContent className="ipv6-state-dialog"><DialogHeader><DialogTitle>{detail ? STATE_MODEL_LABELS[detail.model] || detail.model : t('statePool.details')}</DialogTitle><DialogDescription>{detail ? name(detail) : t('ipv6State.entryMissing')}</DialogDescription></DialogHeader>{detail ? <>
       <div className="ipv6-state-detail-status"><strong>{describe(ipv6StateDisplayStatus(detail, now, data?.config.enabled ?? false))}</strong><span>{isIPv6StateReady(detail, now) ? t('ipv6State.validFor', { time: stateRemaining(detail.expires_at, now) }) : detail.retry_at > now && data?.config.enabled ? t('ipv6State.retry', { time: stateRemaining(detail.retry_at, now) }) : ''}</span></div>
       {detail.error ? <p className="state-pool-error">{describe(detail.error)}</p> : null}
+      {detail.refreshing ? <p role="status" className="state-pool-meta">{t('ipv6State.refreshing')}</p> : null}
       {detail.status === 'account_unavailable' ? <Button asChild variant="link"><a href="/admin/accounts">{t('statePool.manageAccounts')}</a></Button> : null}
       <dl className="ipv6-state-details">{[
         ['model', detail.model], ['attempts', String(detail.attempts)], ['length', String(detail.last_length || '—')],
         ['httpStatus', detail.http_status ? String(detail.http_status) : '—'], ['captureRoute', detail.proxy_name || detail.source_ip || '—'],
+        ['cooldownReason', detail.cooldown_reason ? describe(`cooldown_${detail.cooldown_reason}`) : '—'],
+        ['retrySource', detail.retry_source ? t(`ipv6State.${detail.retry_source}`) : '—'],
         ['issued', detail.issued_at ? new Date(detail.issued_at * 1000).toLocaleString() : '—'], ['expires', detail.expires_at ? new Date(detail.expires_at * 1000).toLocaleString() : '—'],
       ].map(([label, value]) => <div key={label}><dt>{t(`ipv6State.${label}`)}</dt><dd>{value}</dd></div>)}</dl>
       <p className="state-pool-meta">{t('ipv6State.scopeHint')}</p>{error ? <p role="alert" className="state-pool-error">{error}</p> : null}<DialogFooter><Button variant="outline" disabled={busy || !isIPv6StateReady(detail, now)} onClick={() => void copy([detail], true)}><Copy />{t('ipv6State.copyRaw')}</Button><Button disabled={busy || !isIPv6StateReady(detail, now)} onClick={() => void copy([detail])}><Copy />{t('ipv6State.copyPackage')}</Button></DialogFooter>

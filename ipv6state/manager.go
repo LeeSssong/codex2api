@@ -126,6 +126,9 @@ func (m *Manager) Configure(ctx context.Context, config Config) error {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	// The system policy has a dedicated patch endpoint. Capture settings from a
+	// stale browser tab must not silently disable strict dispatch.
+	config.RequireValidState = m.config.RequireValidState
 	if err := m.db.SaveIPv6StateConfig(ctx, encode(config)); err != nil {
 		return err
 	}
@@ -148,7 +151,7 @@ func (m *Manager) Configure(ctx context.Context, config Config) error {
 }
 
 func (m *Manager) selected(account *auth.Account, model string) bool {
-	return account != nil && !account.IsRelayStyle() && !account.IsCodexAgentIdentity() &&
+	return NativeAccount(account) &&
 		(len(m.config.AccountIDs) == 0 || slices.Contains(m.config.AccountIDs, account.ID())) && slices.Contains(m.config.Models, model)
 }
 
@@ -186,6 +189,9 @@ func (m *Manager) Resolve(account *auth.Account, model string) (string, bool, er
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	if !m.config.Enabled || !m.selected(account, model) {
+		if m.config.RequireValidState && NativeAccount(account) {
+			return "", true, ErrStateRequired
+		}
 		return "", false, nil
 	}
 	identity, err := statepool.Snapshot(account, "")
@@ -195,6 +201,9 @@ func (m *Manager) Resolve(account *auth.Account, model string) (string, bool, er
 	entry := m.entries[key(account.ID(), model)]
 	if valid(entry, identity, m.now(), m.config) {
 		return entry.Value, true, nil
+	}
+	if m.config.RequireValidState {
+		return "", true, ErrStateRequired
 	}
 	return "", true, nil
 }
@@ -217,10 +226,19 @@ func (m *Manager) combinations() []Entry {
 			account.Mu().RLock()
 			entry.AccountName = account.Email
 			account.Mu().RUnlock()
+			entry.CooldownReason, entry.CooldownUntil = "", 0
+			if reason, until := account.GetCooldownSnapshot(); until.After(m.now()) {
+				entry.CooldownReason, entry.CooldownUntil = reason, until.Unix()
+			}
+			entry.Refreshing = valid(entry, identity, m.now(), m.config) && m.collecting(entry.AccountID, model)
 			if valid(entry, identity, m.now(), m.config) {
 				entry.Status = "ready"
 			} else if !account.IsAvailable() || account.ModelCooldownRemaining(model) > 0 {
 				entry.Status = "account_unavailable"
+				if entry.CooldownReason != "" {
+					entry.Error = "cooldown_" + entry.CooldownReason
+				}
+				entry.RetryAt = max(entry.RetryAt, entry.CooldownUntil)
 			} else if m.collecting(entry.AccountID, model) {
 				entry.Status = "collecting"
 			} else if entry.Status == "" || entry.Status == "ready" || entry.Status == "collecting" || entry.Status == "account_unavailable" && entry.RetryAt <= m.now().Unix() {
@@ -291,7 +309,7 @@ func (m *Manager) step() {
 		for i := range entries {
 			index := (m.cursor + i) % len(entries)
 			entry := entries[index]
-			if entry.Status == "ready" || entry.Status == "account_unavailable" || entry.RetryAt > m.now().Unix() {
+			if entry.Status == "ready" && entry.ExpiresAt > m.now().Add(RefreshBefore).Unix() || entry.Status == "account_unavailable" || entry.RetryAt > m.now().Unix() {
 				continue
 			}
 			account := m.store.TakePreferredAccountWithFilter(entry.AccountID, 0, nil, m.store.WithModelCooldownFilter(entry.Model, nil))
@@ -354,14 +372,24 @@ func (m *Manager) run(task *captureTask) {
 		return
 	}
 	current := m.entries[key(entry.AccountID, entry.Model)]
-	if valid(current, identity, m.now(), m.config) {
+	currentValid := valid(current, identity, m.now(), m.config)
+	if currentValid && (current.Fingerprint != task.entry.Fingerprint || current.ExpiresAt > m.now().Add(RefreshBefore).Unix()) {
 		return
+	}
+	if currentValid && entry.Status == "ready" && (entry.ExpiresAt <= current.ExpiresAt || entry.ExpiresAt <= m.now().Add(RefreshBefore).Unix()) {
+		entry.Value, entry.Fingerprint = current.Value, current.Fingerprint
+		entry.IssuedAt, entry.ExpiresAt, entry.CapturedAt = current.IssuedAt, current.ExpiresAt, current.CapturedAt
+		entry.Status, entry.Error, entry.RetryAt = "retrying", "state_not_newer", m.now().Unix()+int64(task.config.IntervalSeconds)
 	}
 	entry.Attempts = current.Attempts
 	persistenceFailed := false
 	if entry.Status == "account_unavailable" {
 		if m.failure != nil {
 			m.failure(task.account, entry.Model, response)
+		}
+		if reason, until := task.account.GetCooldownSnapshot(); until.After(m.now()) {
+			entry.CooldownReason, entry.CooldownUntil = reason, until.Unix()
+			entry.RetryAt = max(entry.RetryAt, until.Unix())
 		}
 		// A header-level rejection pauses all models for this account, including
 		// peers whose successful headers have arrived but are not yet committed.
@@ -437,6 +465,7 @@ func (m *Manager) probe(ctx context.Context, cancel context.CancelFunc, account 
 		return entry, nil
 	}
 	entry.HTTPStatus, entry.LastLength = 0, 0
+	entry.CooldownReason, entry.CooldownUntil, entry.RetrySource = "", 0, ""
 	response, err := m.execute(ctx, account, entry.Model, route)
 	// Cancel before Close so a transport cannot drain a streaming response body.
 	cancel()
@@ -455,6 +484,10 @@ func (m *Manager) probe(ctx context.Context, cancel context.CancelFunc, account 
 	if response.StatusCode != http.StatusOK {
 		entry.Status, entry.Error = "retrying", fmt.Sprintf("upstream_%d", response.StatusCode)
 		entry.RetryAt = retryAt(response.Header.Get("Retry-After"), m.now())
+		entry.RetrySource = "local_backoff"
+		if response.Header.Get("Retry-After") != "" {
+			entry.RetrySource = "retry_after"
+		}
 		if response.StatusCode == 401 || response.StatusCode == 403 || response.StatusCode == 429 {
 			entry.Status = "account_unavailable"
 		}

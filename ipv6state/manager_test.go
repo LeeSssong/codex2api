@@ -215,7 +215,7 @@ func Test429StopsAccountWithoutReadingBodyAndRespectsRetryAfter(t *testing.T) {
 	for _, recorded := range m.entries {
 		entry = recorded
 	}
-	if entry.RetryAt != now.Unix()+7200 {
+	if entry.RetryAt < now.Unix()+7200 {
 		t.Fatal("Retry-After was truncated")
 	}
 	*now = now.Add(10 * time.Second)

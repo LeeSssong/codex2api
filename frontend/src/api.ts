@@ -539,6 +539,7 @@ export function buildUsageLogSearchParams(params: UsageLogQueryParams) {
 export const api = {
   getIPv6State: (signal?: AbortSignal) => request<IPv6StateStatus>('/state-pool/ipv6', { signal }),
   configureIPv6State: (body: IPv6StateConfig) => request<IPv6StateStatus>('/state-pool/ipv6', { method: 'PUT', body: JSON.stringify(body) }),
+  configureStatePolicy: (require_valid_state: boolean) => request<IPv6StateStatus>('/state-pool/ipv6/policy', { method: 'PATCH', body: JSON.stringify({ require_valid_state }) }),
   exportIPv6State: (account_id: number, model: string) => request<IPv6StatePackage>('/state-pool/ipv6/export', { method: 'POST', body: JSON.stringify({ account_id, model }) }),
   importIPv6State: (body: IPv6StatePackage) => request<IPv6StateStatus>('/state-pool/ipv6/import', { method: 'POST', body: JSON.stringify(body) }),
   getStatePool: (signal?: AbortSignal) => request<StatePoolData>('/state-pool', { signal }),
@@ -636,6 +637,8 @@ export const api = {
     if (params.proxyUrl) searchParams.set('proxy_url', params.proxyUrl)
     if (params.proxyFilter && params.proxyFilter !== 'all') searchParams.set('proxy_filter', params.proxyFilter)
     if (params.subscription && params.subscription !== 'all') searchParams.set('subscription', params.subscription)
+    if (params.state && params.state !== 'all') searchParams.set('state', params.state)
+    if (params.stateModel) searchParams.set('state_model', params.stateModel)
     if (params.sort) searchParams.set('sort', params.sort)
     if (params.order) searchParams.set('order', params.order)
     return request<AccountsPageResponse>(`/accounts?${searchParams.toString()}`, { signal })

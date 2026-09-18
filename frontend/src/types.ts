@@ -266,7 +266,11 @@ export interface SubscriptionRefreshResponse {
   subscription_expires_at?: ISODateString
 }
 
+export type { AccountStateModel } from './lib/accountStateModels'
+import type { AccountStateModel } from './lib/accountStateModels'
+
 export interface AccountRow {
+  state_models?: AccountStateModel[]
   codex_last_refresh_at?: string
   codex_refresh_error?: string
   upstream_request_id_header?: string | null
@@ -519,7 +523,7 @@ export interface AccountPageStatsResponse {
 }
 
 export interface AccountLiveStateResponse {
-  accounts: Record<string, { active_requests: number; occupied_requests: number }>
+  accounts: Record<string, { active_requests: number; occupied_requests: number; state_models?: AccountStateModel[] }>
   session_slot_buffer_enabled: boolean
 }
 
@@ -549,6 +553,8 @@ export const SUBSCRIPTION_FILTER_OPTIONS: SubscriptionFilter[] = [
 ]
 
 export interface AccountsPageParams {
+  state?: 'all' | 'valid' | 'missing'
+  stateModel?: string
   channel?: UpstreamChannel
   page: number
   pageSize: number
@@ -639,6 +645,8 @@ export interface AccountAnalysisResponse {
 }
 
 export interface AccountOperationSelector {
+  state?: 'valid' | 'missing'
+  state_model?: string
   channel: UpstreamChannel
   search?: string
   status?: string

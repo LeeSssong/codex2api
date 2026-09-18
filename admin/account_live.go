@@ -7,8 +7,9 @@ import (
 )
 
 type accountLiveItem struct {
-	ActiveRequests   int64 `json:"active_requests"`
-	OccupiedRequests int64 `json:"occupied_requests"`
+	StateModels      []accountStateModel `json:"state_models,omitempty"`
+	ActiveRequests   int64               `json:"active_requests"`
+	OccupiedRequests int64               `json:"occupied_requests"`
 }
 
 // GetAccountLiveState returns request-local runtime counters for the visible
@@ -32,6 +33,7 @@ func (h *Handler) GetAccountLiveState(c *gin.Context) {
 			continue
 		}
 		live[id] = accountLiveItem{
+			StateModels:      h.accountStateModels(account),
 			ActiveRequests:   account.GetActiveRequests(),
 			OccupiedRequests: account.GetOccupiedRequests(),
 		}

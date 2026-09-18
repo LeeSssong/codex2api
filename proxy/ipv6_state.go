@@ -20,14 +20,29 @@ import (
 const ipv6StateDirectRoute = "direct://ipv6-state"
 
 type IPv6StateProvider struct {
-	Resolve func(*auth.Account, string) (string, bool, error)
-	Applies func(*auth.Account, string) bool
-	Guard   func(*auth.Account, string, string) error
+	EligibleAccounts func(string) (bool, map[int64]bool)
+	Resolve          func(*auth.Account, string) (string, bool, error)
+	Applies          func(*auth.Account, string) bool
+	Guard            func(*auth.Account, string, string) error
 }
 
 var ipv6StateProvider atomic.Pointer[IPv6StateProvider]
 
 func SetIPv6StateProvider(provider *IPv6StateProvider) { ipv6StateProvider.Store(provider) }
+
+func withRequiredStateFilter(model string, filter auth.AccountFilter) auth.AccountFilter {
+	provider := ipv6StateProvider.Load()
+	if provider == nil || provider.EligibleAccounts == nil {
+		return filter
+	}
+	strict, allowed := provider.EligibleAccounts(model)
+	if !strict {
+		return filter
+	}
+	return func(account *auth.Account) bool {
+		return (!ipv6state.NativeAccount(account) || allowed[account.ID()]) && (filter == nil || filter(account))
+	}
+}
 
 func ExecuteStateHeaderProbe(ctx context.Context, account *auth.Account, model string, route ipv6state.Route) (*http.Response, error) {
 	if route.SourceIP != "" {
@@ -106,6 +121,9 @@ func applyIPv6State(ctx context.Context, account *auth.Account, body []byte, hea
 		return body, headers, false, nil
 	}
 	if err != nil {
+		if errors.Is(err, ipv6state.ErrStateRequired) {
+			return body, headers, true, &Error{Code: "valid_state_required", Message: "A valid saved State is required for this account and exact model. Enable automatic state reuse and capture or import a matching State.", Type: ErrorTypeServerError, HTTPStatus: 503, Retryable: false}
+		}
 		return body, headers, true, &Error{Code: "ipv6_state_identity_unavailable", Message: "IPv6 state identity is unavailable", Type: ErrorTypeServerError, HTTPStatus: 503}
 	}
 	cloned := headers.Clone()

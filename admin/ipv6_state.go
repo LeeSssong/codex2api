@@ -28,7 +28,7 @@ func (h *Handler) startIPv6State(ctx context.Context) error {
 	if err := h.ipv6State.Start(ctx); err != nil {
 		return err
 	}
-	proxy.SetIPv6StateProvider(&proxy.IPv6StateProvider{Resolve: h.ipv6State.Resolve, Applies: h.ipv6State.Applies, Guard: h.ipv6State.Guard})
+	proxy.SetIPv6StateProvider(&proxy.IPv6StateProvider{Resolve: h.ipv6State.Resolve, Applies: h.ipv6State.Applies, Guard: h.ipv6State.Guard, EligibleAccounts: h.ipv6State.EligibleAccounts})
 	return nil
 }
 
@@ -77,6 +77,21 @@ func (h *Handler) registerIPv6StateRoutes(group *gin.RouterGroup) {
 		}
 	})
 	v6.GET("", func(c *gin.Context) { c.JSON(200, h.ipv6State.Status()) })
+	v6.PATCH("/policy", func(c *gin.Context) {
+		var req struct {
+			RequireValidState *bool `json:"require_valid_state"`
+		}
+		if statePoolError(c, c.ShouldBindJSON(&req)) {
+			return
+		}
+		if req.RequireValidState == nil {
+			statePoolError(c, errors.New("require_valid_state is required"))
+			return
+		}
+		if !statePoolError(c, h.ipv6State.SetRequireValidState(c.Request.Context(), *req.RequireValidState)) {
+			c.JSON(200, h.ipv6State.Status())
+		}
+	})
 	v6.PUT("", func(c *gin.Context) {
 		config := h.ipv6State.Status().Config
 		if statePoolError(c, c.ShouldBindJSON(&config)) || statePoolError(c, h.ipv6State.Configure(c.Request.Context(), config)) {

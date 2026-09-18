@@ -1,11 +1,11 @@
 import { useEffect, useMemo } from 'react'
 import { api } from '../api'
-import type { AccountLiveStateResponse } from '../types'
+import type { AccountLiveStateResponse, AccountStateModel } from '../types'
 
 // Merge a live poll response into an account list. Rows whose live concurrency
 // counters did not change keep their object identity, and a no-op poll returns the
 // original array, so the 1s polling cadence cannot defeat row-level memoization.
-export function mergeAccountLiveState<T extends { id: number; active_requests?: number; occupied_requests?: number; session_slot_buffer_enabled?: boolean }>(
+export function mergeAccountLiveState<T extends { id: number; active_requests?: number; occupied_requests?: number; session_slot_buffer_enabled?: boolean; state_models?: AccountStateModel[] }>(
   current: T[],
   response: AccountLiveStateResponse,
 ): T[] {
@@ -14,10 +14,12 @@ export function mergeAccountLiveState<T extends { id: number; active_requests?: 
     const activeRequests = response.accounts[String(account.id)]?.active_requests ?? 0
     const occupiedRequests = response.accounts[String(account.id)]?.occupied_requests ?? activeRequests
     const slotBufferEnabled = response.session_slot_buffer_enabled === true
+    const stateModels = response.accounts[String(account.id)]?.state_models
     if (
       (account.active_requests ?? 0) === activeRequests &&
       (account.occupied_requests ?? account.active_requests ?? 0) === occupiedRequests &&
-      (account.session_slot_buffer_enabled ?? false) === slotBufferEnabled
+      (account.session_slot_buffer_enabled ?? false) === slotBufferEnabled &&
+      JSON.stringify(account.state_models) === JSON.stringify(stateModels)
     ) return account
     changed = true
     return {
@@ -25,6 +27,7 @@ export function mergeAccountLiveState<T extends { id: number; active_requests?: 
       active_requests: activeRequests,
       occupied_requests: occupiedRequests,
       session_slot_buffer_enabled: slotBufferEnabled,
+      state_models: stateModels,
     }
   })
   return changed ? next : current
