@@ -21,6 +21,16 @@ type ExecuteFunc func(context.Context, *auth.Account, string, Route) (*http.Resp
 type RouteFunc func(context.Context, Config, int64) (Route, error)
 type FailureFunc func(*auth.Account, string, *http.Response)
 
+type captureTask struct {
+	id       uint64
+	ctx      context.Context
+	cancel   context.CancelFunc
+	entry    Entry
+	account  *auth.Account
+	config   Config
+	revision uint64
+}
+
 type Manager struct {
 	db       *database.DB
 	store    *auth.Store
@@ -34,19 +44,19 @@ type Manager struct {
 	entries  map[string]Entry
 	revision uint64
 	cursor   int
-	nextAt   int64
-	running  bool
+	nextTask uint64
+	active   map[uint64]*captureTask
 	lastErr  string
 	ctx      context.Context
 	stop     context.CancelFunc
-	inflight context.CancelFunc
 	wake     chan struct{}
 	wg       sync.WaitGroup
+	workers  sync.WaitGroup
 }
 
 func New(db *database.DB, store *auth.Store, execute ExecuteFunc, route RouteFunc, failure FailureFunc) *Manager {
 	return &Manager{db: db, store: store, execute: execute, route: route, failure: failure, now: time.Now, localIPs: LocalIPv6,
-		config: DefaultConfig(), entries: map[string]Entry{}, wake: make(chan struct{}, 1)}
+		config: DefaultConfig(), entries: map[string]Entry{}, active: map[uint64]*captureTask{}, wake: make(chan struct{}, 1)}
 }
 
 func key(id int64, model string) string { return fmt.Sprintf("%d/%s", id, model) }
@@ -62,6 +72,8 @@ func (m *Manager) Start(ctx context.Context) error {
 		return err
 	}
 	if raw != "" {
+		// Existing installations retain their serial limit until explicitly changed.
+		m.config.Concurrency = 1
 		if err := json.Unmarshal([]byte(raw), &m.config); err != nil {
 			return errors.New("invalid saved IPv6 state configuration")
 		}
@@ -105,6 +117,7 @@ func (m *Manager) Stop() {
 		m.stop()
 	}
 	m.wg.Wait()
+	m.workers.Wait()
 }
 
 func (m *Manager) Configure(ctx context.Context, config Config) error {
@@ -116,16 +129,16 @@ func (m *Manager) Configure(ctx context.Context, config Config) error {
 	if err := m.db.SaveIPv6StateConfig(ctx, encode(config)); err != nil {
 		return err
 	}
-	if m.inflight != nil {
-		m.inflight()
+	for _, task := range m.active {
+		task.cancel()
 	}
 	config.AccountIDs = slices.Clone(config.AccountIDs)
 	config.ProxyIDs = slices.Clone(config.ProxyIDs)
 	config.Models = slices.Clone(config.Models)
 	config.SourceIPs = slices.Clone(config.SourceIPs)
+	config.AcceptedLengths = slices.Clone(config.AcceptedLengths)
 	m.config = config
 	m.revision++
-	m.nextAt = 0
 	m.lastErr = ""
 	select {
 	case m.wake <- struct{}{}:
@@ -163,9 +176,9 @@ func (m *Manager) Guard(account *auth.Account, model, incoming string) error {
 	return nil
 }
 
-func valid(entry Entry, identity statepool.Identity, now time.Time) bool {
+func valid(entry Entry, identity statepool.Identity, now time.Time, config Config) bool {
 	issued, expires, err := TokenTimes(entry.Value, now)
-	return err == nil && entry.Identity == identity && entry.IssuedAt == issued && entry.ExpiresAt == expires && entry.Fingerprint == statepool.Hash(entry.Value)
+	return config.accepts(entry.Value) && err == nil && entry.Identity == identity && entry.IssuedAt == issued && entry.ExpiresAt == expires && entry.Fingerprint == statepool.Hash(entry.Value)
 }
 
 // Empty state with active=true clears client state until a matching token exists.
@@ -180,7 +193,7 @@ func (m *Manager) Resolve(account *auth.Account, model string) (string, bool, er
 		return "", true, errors.New("ipv6_state_identity_unavailable")
 	}
 	entry := m.entries[key(account.ID(), model)]
-	if valid(entry, identity, m.now()) {
+	if valid(entry, identity, m.now(), m.config) {
 		return entry.Value, true, nil
 	}
 	return "", true, nil
@@ -204,11 +217,13 @@ func (m *Manager) combinations() []Entry {
 			account.Mu().RLock()
 			entry.AccountName = account.Email
 			account.Mu().RUnlock()
-			if valid(entry, identity, m.now()) {
+			if valid(entry, identity, m.now(), m.config) {
 				entry.Status = "ready"
 			} else if !account.IsAvailable() || account.ModelCooldownRemaining(model) > 0 {
 				entry.Status = "account_unavailable"
-			} else if entry.Status == "" || entry.Status == "ready" || entry.Status == "account_unavailable" {
+			} else if m.collecting(entry.AccountID, model) {
+				entry.Status = "collecting"
+			} else if entry.Status == "" || entry.Status == "ready" || entry.Status == "collecting" || entry.Status == "account_unavailable" && entry.RetryAt <= m.now().Unix() {
 				entry.Status = "waiting"
 			}
 			result = append(result, entry)
@@ -228,13 +243,14 @@ func (m *Manager) Status() Status {
 	defer m.mu.RUnlock()
 	ips, _ := m.localIPs()
 	config := m.config
+	config.AcceptedLengths = slices.Clone(config.AcceptedLengths)
 	config.ProxyIDs = slices.Clone(config.ProxyIDs)
 	config.AccountIDs, config.Models, config.SourceIPs = slices.Clone(config.AccountIDs), slices.Clone(config.Models), slices.Clone(config.SourceIPs)
 	entries := m.combinations()
 	for i := range entries {
 		entries[i].Value = ""
 	}
-	return Status{Config: config, Entries: entries, LocalIPs: ips, Running: m.running, Error: m.lastErr, ServerTime: m.now().Unix()}
+	return Status{Config: config, Entries: entries, LocalIPs: ips, Running: len(m.active) > 0, ActiveRequests: len(m.active), AccountConcurrency: m.store.GetMaxConcurrency(), Error: m.lastErr, ServerTime: m.now().Unix()}
 }
 
 func retryAt(header string, now time.Time) int64 {
@@ -251,67 +267,143 @@ func (m *Manager) save(ctx context.Context, entry Entry) error {
 	return m.db.SaveIPv6State(ctx, database.StatePoolRow{AccountID: entry.AccountID, Model: entry.Model, Data: encode(entry), Secret: entry.Value})
 }
 
-// The single worker rotates combinations fairly; each combination rotates its
-// own source addresses. No body is read, including on non-200 responses.
-func (m *Manager) step() {
-	m.mu.Lock()
-	if !m.config.Enabled || m.running || m.now().Unix() < m.nextAt || m.ctx.Err() != nil {
-		m.mu.Unlock()
-		return
-	}
-	entries := m.combinations()
-	var entry Entry
-	found := false
-	for i := range entries {
-		index := (m.cursor + i) % len(entries)
-		candidate := entries[index]
-		if candidate.Status != "ready" && candidate.Status != "account_unavailable" && candidate.RetryAt <= m.now().Unix() {
-			entry, found, m.cursor = candidate, true, index+1
-			break
+// Caller holds m.mu. Cancelled workers remain in active until they release their slot.
+func (m *Manager) collecting(id int64, model string) bool {
+	for _, task := range m.active {
+		if task.entry.AccountID == id && task.entry.Model == model && task.ctx.Err() == nil {
+			return true
 		}
 	}
-	if !found {
-		m.mu.Unlock()
+	return false
+}
+
+// Fill the global worker budget fairly across account/model pairs. Each pair may
+// use several connections, while the account scheduler still enforces its limit.
+func (m *Manager) step() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.config.Enabled || m.ctx.Err() != nil {
 		return
 	}
-	ctx, cancel := context.WithCancel(m.ctx)
-	m.inflight, m.running = cancel, true
-	revision := m.revision
-	config := m.config
-	entry.Status, entry.Error = "collecting", ""
-	m.entries[key(entry.AccountID, entry.Model)] = entry
-	m.mu.Unlock()
+	for len(m.active) < m.config.Concurrency {
+		entries := m.combinations()
+		var selected *captureTask
+		for i := range entries {
+			index := (m.cursor + i) % len(entries)
+			entry := entries[index]
+			if entry.Status == "ready" || entry.Status == "account_unavailable" || entry.RetryAt > m.now().Unix() {
+				continue
+			}
+			account := m.store.TakePreferredAccountWithFilter(entry.AccountID, 0, nil, m.store.WithModelCooldownFilter(entry.Model, nil))
+			if account == nil {
+				continue
+			}
+			ctx, cancel := context.WithCancel(m.ctx)
+			m.nextTask++
+			entry.Attempts++
+			entry.Status, entry.Error = "collecting", ""
+			m.entries[key(entry.AccountID, entry.Model)] = entry
+			selected = &captureTask{id: m.nextTask, ctx: ctx, cancel: cancel, entry: entry, account: account, config: m.config, revision: m.revision}
+			m.active[selected.id] = selected
+			m.cursor = index + 1
+			break
+		}
+		if selected == nil {
+			return
+		}
+		m.workers.Add(1)
+		go m.run(selected)
+	}
+}
 
-	route, routeErr := m.captureRoute(ctx, config, entry.Attempts)
+func (m *Manager) run(task *captureTask) {
+	defer m.workers.Done()
+	defer func() {
+		task.cancel()
+		m.store.Release(task.account)
+		m.mu.Lock()
+		delete(m.active, task.id)
+		m.mu.Unlock()
+		select {
+		case m.wake <- struct{}{}:
+		default:
+		}
+	}()
+	entry := task.entry
+	ctx, cancel := context.WithCancel(task.ctx)
+	defer cancel()
+	if ctx.Err() != nil {
+		return
+	}
+	route, routeErr := m.captureRoute(ctx, task.config, entry.Attempts-1)
+	var response *http.Response
 	if routeErr != nil {
 		entry.Status, entry.Error, entry.RetryAt = "retrying", routeErr.Error(), m.now().Add(time.Minute).Unix()
 	} else {
-		account := m.store.TakePreferredAccountWithFilter(entry.AccountID, 0, nil, m.store.WithModelCooldownFilter(entry.Model, nil))
-		if account == nil {
-			entry.Status, entry.RetryAt = "waiting", m.now().Add(3*time.Second).Unix()
-		} else {
-			entry.SourceIP, entry.ProxyID, entry.ProxyName, entry.SessionID = route.SourceIP, route.ProxyID, route.ProxyName, route.SessionID
-			entry = m.probe(ctx, cancel, account, entry, route)
-			m.store.Release(account)
-		}
+		entry.SourceIP, entry.ProxyID, entry.ProxyName, entry.SessionID = route.SourceIP, route.ProxyID, route.ProxyName, route.SessionID
+		entry, response = m.probe(ctx, cancel, task.account, entry, route, task.config)
 	}
 	cancel()
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.running, m.inflight = false, nil
-	m.nextAt = m.now().Unix() + int64(m.config.IntervalSeconds)
-	if m.revision != revision || m.ctx.Err() != nil {
-		old := m.entries[key(entry.AccountID, entry.Model)]
-		old.Status = "waiting"
-		m.entries[key(entry.AccountID, entry.Model)] = old
+	if task.ctx.Err() != nil || task.revision != m.revision {
 		return
+	}
+	identity, identityErr := statepool.Snapshot(m.store.FindByID(entry.AccountID), "")
+	if identityErr != nil || identity != entry.Identity {
+		return
+	}
+	current := m.entries[key(entry.AccountID, entry.Model)]
+	if valid(current, identity, m.now(), m.config) {
+		return
+	}
+	entry.Attempts = current.Attempts
+	persistenceFailed := false
+	if entry.Status == "account_unavailable" {
+		if m.failure != nil {
+			m.failure(task.account, entry.Model, response)
+		}
+		// A header-level rejection pauses all models for this account, including
+		// peers whose successful headers have arrived but are not yet committed.
+		for _, peer := range m.active {
+			if peer.entry.AccountID == entry.AccountID {
+				peer.cancel()
+			}
+		}
+		for _, other := range m.combinations() {
+			if other.AccountID != entry.AccountID || other.Model == entry.Model {
+				continue
+			}
+			other.RetryAt = max(other.RetryAt, entry.RetryAt)
+			if other.Status != "ready" {
+				other.Status, other.Error = "account_unavailable", entry.Error
+			}
+			m.entries[key(other.AccountID, other.Model)] = other
+			if err := m.save(m.ctx, other); err != nil {
+				m.lastErr = "state_persistence_failed"
+				persistenceFailed = true
+			}
+		}
+	} else if entry.Status != "ready" {
+		entry.RetryAt = max(entry.RetryAt, current.RetryAt)
 	}
 	if err := m.save(m.ctx, entry); err != nil {
 		m.lastErr = "state_persistence_failed"
+		current.Status, current.Error, current.RetryAt = "retrying", m.lastErr, m.now().Add(time.Minute).Unix()
+		m.entries[key(entry.AccountID, entry.Model)] = current
 		return
 	}
 	m.entries[key(entry.AccountID, entry.Model)] = entry
-	m.lastErr = ""
+	if !persistenceFailed {
+		m.lastErr = ""
+	}
+	if entry.Status == "ready" {
+		for _, peer := range m.active {
+			if peer.entry.AccountID == entry.AccountID && peer.entry.Model == entry.Model {
+				peer.cancel()
+			}
+		}
+	}
 }
 
 func (m *Manager) captureRoute(ctx context.Context, config Config, attempt int64) (Route, error) {
@@ -334,13 +426,16 @@ func (m *Manager) captureRoute(ctx context.Context, config Config, attempt int64
 	return Route{SourceIP: ips[attempt%int64(len(ips))]}, nil
 }
 
-func (m *Manager) probe(ctx context.Context, cancel context.CancelFunc, account *auth.Account, entry Entry, route Route) Entry {
+func (m *Manager) probe(ctx context.Context, cancel context.CancelFunc, account *auth.Account, entry Entry, route Route, config Config) (Entry, *http.Response) {
 	identity, err := statepool.Snapshot(account, "")
 	if err != nil || identity != entry.Identity || !account.IsAvailable() || account.ModelCooldownRemaining(entry.Model) > 0 {
 		entry.Status, entry.Error = "waiting", "account_changed_or_unavailable"
-		return entry
+		entry.RetryAt = m.now().Unix() + int64(config.IntervalSeconds)
+		return entry, nil
 	}
-	entry.Attempts++
+	if ctx.Err() != nil {
+		return entry, nil
+	}
 	entry.HTTPStatus, entry.LastLength = 0, 0
 	response, err := m.execute(ctx, account, entry.Model, route)
 	// Cancel before Close so a transport cannot drain a streaming response body.
@@ -348,14 +443,11 @@ func (m *Manager) probe(ctx context.Context, cancel context.CancelFunc, account 
 	if response != nil && response.Body != nil {
 		defer func() { _ = response.Body.Close() }()
 	}
-	m.mu.RLock()
-	interval := m.config.IntervalSeconds
-	m.mu.RUnlock()
-	entry.RetryAt = m.now().Unix() + int64(interval)
+	entry.RetryAt = m.now().Unix() + int64(config.IntervalSeconds)
 	if err != nil || response == nil {
 		entry.Status, entry.Error = "retrying", "capture_transport_error"
 		entry.RetryAt = m.now().Add(time.Minute).Unix()
-		return entry
+		return entry, response
 	}
 	entry.HTTPStatus = response.StatusCode
 	value := response.Header.Get(Header)
@@ -364,27 +456,28 @@ func (m *Manager) probe(ctx context.Context, cancel context.CancelFunc, account 
 		entry.Status, entry.Error = "retrying", fmt.Sprintf("upstream_%d", response.StatusCode)
 		entry.RetryAt = retryAt(response.Header.Get("Retry-After"), m.now())
 		if response.StatusCode == 401 || response.StatusCode == 403 || response.StatusCode == 429 {
-			if m.failure != nil {
-				m.failure(account, entry.Model, response)
-			}
 			entry.Status = "account_unavailable"
 		}
-		return entry
+		return entry, response
+	}
+	if !config.accepts(value) {
+		entry.Status, entry.Error = "retrying", "length_not_allowed"
+		return entry, response
 	}
 	issued, expires, err := TokenTimes(value, m.now())
 	if err != nil {
 		entry.Status, entry.Error = "retrying", err.Error()
-		return entry
+		return entry, response
 	}
 	identity, err = statepool.Snapshot(account, "")
 	if err != nil || identity != entry.Identity {
 		entry.Status, entry.Error = "waiting", "account_identity_changed"
-		return entry
+		return entry, response
 	}
 	entry.Value, entry.Fingerprint = value, statepool.Hash(value)
 	entry.IssuedAt, entry.ExpiresAt, entry.CapturedAt = issued, expires, m.now().Unix()
 	entry.Status, entry.Error, entry.RetryAt = "ready", "", 0
-	return entry
+	return entry, response
 }
 
 func (m *Manager) Export(id int64, model string) (Portable, error) {
@@ -392,7 +485,7 @@ func (m *Manager) Export(id int64, model string) (Portable, error) {
 	defer m.mu.RUnlock()
 	entry := m.entries[key(id, model)]
 	identity, err := statepool.Snapshot(m.store.FindByID(id), "")
-	if err != nil || !valid(entry, identity, m.now()) {
+	if err != nil || !valid(entry, identity, m.now(), m.config) {
 		return Portable{}, errors.New("no valid matching state")
 	}
 	return Portable{Format: "codex2api-ipv6-292-v1", MemberHash: identity.MemberHash, WorkspaceHash: identity.WorkspaceHash, Model: model, Value: entry.Value}, nil
@@ -426,15 +519,19 @@ func (m *Manager) Import(ctx context.Context, pack Portable) error {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if !m.config.accepts(pack.Value) {
+		return errors.New("length_not_allowed")
+	}
 	entry := Entry{AccountID: match.ID(), Model: model, Identity: identity, Value: pack.Value,
-		Fingerprint: statepool.Hash(pack.Value), IssuedAt: issued, ExpiresAt: expires, CapturedAt: m.now().Unix(), Status: "ready"}
+		Fingerprint: statepool.Hash(pack.Value), IssuedAt: issued, ExpiresAt: expires, CapturedAt: m.now().Unix(), LastLength: len(pack.Value), Status: "ready"}
 	if err := m.save(ctx, entry); err != nil {
 		return err
 	}
-	if m.inflight != nil {
-		m.inflight()
+	for _, task := range m.active {
+		if task.entry.AccountID == entry.AccountID && task.entry.Model == entry.Model {
+			task.cancel()
+		}
 	}
-	m.revision++
 	m.entries[key(entry.AccountID, entry.Model)] = entry
 	return nil
 }

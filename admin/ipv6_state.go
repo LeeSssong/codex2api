@@ -78,7 +78,7 @@ func (h *Handler) registerIPv6StateRoutes(group *gin.RouterGroup) {
 	})
 	v6.GET("", func(c *gin.Context) { c.JSON(200, h.ipv6State.Status()) })
 	v6.PUT("", func(c *gin.Context) {
-		var config ipv6state.Config
+		config := h.ipv6State.Status().Config
 		if statePoolError(c, c.ShouldBindJSON(&config)) || statePoolError(c, h.ipv6State.Configure(c.Request.Context(), config)) {
 			return
 		}

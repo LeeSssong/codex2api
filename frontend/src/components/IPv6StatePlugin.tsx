@@ -12,7 +12,7 @@ import { Textarea } from './ui/textarea'
 import { SegmentedPillGroup } from './ui/segmented-pill-group'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from './ui/dialog'
 import { STATE_MODEL_LABELS, stateRemaining, type StatePoolData } from '../lib/statePool'
-import { ipv6StateDisplayStatus, isIPv6StateReady, parseIPv6States, serializeIPv6States, type IPv6StateConfig, type IPv6StateEntry, type IPv6StatePackage, type IPv6StateStatus } from '../lib/ipv6State'
+import { ipv6StateDisplayStatus, isIPv6StateReady, parseIPv6States, parseStateLengths, serializeIPv6States, type IPv6StateConfig, type IPv6StateEntry, type IPv6StatePackage, type IPv6StateStatus } from '../lib/ipv6State'
 import { getErrorMessage } from '../utils/error'
 import { useToast } from '../hooks/useToast'
 
@@ -23,6 +23,7 @@ export default function IPv6StatePlugin({ accounts, proxies }: { accounts: State
   const [config, setConfig] = useState<IPv6StateConfig>()
   const [allAccounts, setAllAccounts] = useState(true)
   const [sources, setSources] = useState('')
+  const [lengths, setLengths] = useState('')
   const [loadError, setLoadError] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
@@ -81,6 +82,7 @@ export default function IPv6StatePlugin({ accounts, proxies }: { accounts: State
     setConfig({ ...data.config })
     setAllAccounts(data.config.account_ids.length === 0)
     setSources(data.config.source_ips.join('\n'))
+    setLengths(data.config.accepted_lengths.join(', '))
     setError('')
     setSettingsOpen(true)
   }
@@ -107,7 +109,10 @@ export default function IPv6StatePlugin({ accounts, proxies }: { accounts: State
     if (!config || !data) return
     if (!allAccounts && !config.account_ids.length) { setError(t('ipv6State.selectAccount')); return }
     if (!config.models.length) { setError(t('ipv6State.selectModel')); return }
-    void persist({ ...config, enabled: data.config.enabled, account_ids: allAccounts ? [] : config.account_ids, source_ips: sources.split(/[\s,]+/).filter(Boolean) })
+    let acceptedLengths: number[]
+    try { acceptedLengths = parseStateLengths(lengths) }
+    catch { setError(t('ipv6State.invalidLengths')); return }
+    void persist({ ...config, accepted_lengths: acceptedLengths, enabled: data.config.enabled, account_ids: allAccounts ? [] : config.account_ids, source_ips: sources.split(/[\s,]+/).filter(Boolean) })
   }
 
   const copy = async (entries: IPv6StateEntry[], raw = false) => {
@@ -148,7 +153,7 @@ export default function IPv6StatePlugin({ accounts, proxies }: { accounts: State
       <label className="ipv6-state-enable"><span>{t(data?.config.enabled ? 'ipv6State.enabled' : 'ipv6State.disabled')}</span><Switch aria-label={t('ipv6State.automation')} checked={data?.config.enabled ?? false} disabled={busy || !data} onCheckedChange={toggle} /></label>
     </div>
     <div className="ipv6-state-toolbar">
-      <div className="ipv6-state-summary" aria-live="polite"><strong>{t('ipv6State.readySummary', { ready: ready.length, total: data?.entries.length ?? 0 })}</strong><span className="state-pool-meta">{t(!data?.config.enabled ? 'ipv6State.offHint' : data?.running ? 'ipv6State.running' : 'ipv6State.idle')}</span></div>
+      <div className="ipv6-state-summary" aria-live="polite"><strong>{t('ipv6State.readySummary', { ready: ready.length, total: data?.entries.length ?? 0 })}</strong><span className="state-pool-meta">{t(!data?.config.enabled ? 'ipv6State.offHint' : data?.running ? 'ipv6State.running' : 'ipv6State.idle', { active: data?.active_requests ?? 0, limit: data?.config.concurrency ?? 20 })}</span></div>
       <div className="ipv6-state-actions">
         <Button disabled={busy || !ready.length} onClick={() => void copy(ready)}><Copy />{t('ipv6State.copyAll')}</Button>
         <Button variant="outline" disabled={busy} onClick={() => { setImportOpen(true); setImportError(''); setImportResult('') }}><Upload />{t('ipv6State.paste')}</Button>
@@ -174,6 +179,10 @@ export default function IPv6StatePlugin({ accounts, proxies }: { accounts: State
 
     <Dialog open={settingsOpen} onOpenChange={open => { if (!busy) { setSettingsOpen(open); setError('') } }}><DialogContent className="state-pool-dialog ipv6-state-dialog"><DialogHeader><DialogTitle>{t('ipv6State.settings')}</DialogTitle><DialogDescription>{t('ipv6State.settingsHint')}</DialogDescription></DialogHeader>
       {config ? <>
+        <section className="ipv6-state-setting-section ipv6-state-rule-fields">
+          <div><label htmlFor="ipv6-state-lengths">{t('ipv6State.acceptedLengths')}</label><Input disabled={busy} id="ipv6-state-lengths" aria-describedby="ipv6-state-lengths-help" value={lengths} onChange={event => setLengths(event.target.value)} placeholder="292, 332" autoComplete="off" spellCheck={false} /><p id="ipv6-state-lengths-help" className="state-pool-meta">{t('ipv6State.lengthsHelp')}</p></div>
+          <div><label htmlFor="ipv6-state-concurrency">{t('ipv6State.concurrency')}</label><DraftNumberInput disabled={busy} id="ipv6-state-concurrency" aria-describedby="ipv6-state-concurrency-help" min={1} max={20} value={config.concurrency} onValueChange={value => setConfig({ ...config, concurrency: value })} /><p id="ipv6-state-concurrency-help" className="state-pool-meta">{t('ipv6State.concurrencyHelp')}{data && data.account_concurrency > 0 ? ` ${t('ipv6State.accountLimit', { count: data.account_concurrency })}` : ''}</p></div>
+        </section>
         <section className="ipv6-state-setting-section"><h3>{t('statePool.models')}</h3><div className="ipv6-state-choices">{Object.entries(STATE_MODEL_LABELS).map(([model, label]) => <label key={model}><Checkbox disabled={busy} checked={config.models.includes(model)} onCheckedChange={checked => setConfig({ ...config, models: checked ? [...config.models, model] : config.models.filter(value => value !== model) })} />{label}</label>)}</div></section>
         <section className="ipv6-state-setting-section"><h3>{t('statePool.accounts')}</h3><label className="ipv6-state-enable"><Checkbox disabled={busy} checked={allAccounts} onCheckedChange={value => setAllAccounts(value === true)} />{t('ipv6State.allAccounts')}</label>{!allAccounts ? <div className="ipv6-state-choices ipv6-state-account-choices">{accounts.map(account => <label key={account.id}><Checkbox disabled={busy} checked={config.account_ids.includes(account.id)} onCheckedChange={checked => setConfig({ ...config, account_ids: checked ? [...config.account_ids, account.id] : config.account_ids.filter(id => id !== account.id) })} /><span>{account.name || `#${account.id}`}</span></label>)}</div> : null}</section>
         <section className="ipv6-state-setting-section"><h3>{t('ipv6State.captureMode')}</h3><SegmentedPillGroup disabled={busy} value={config.capture_mode} onChange={value => setConfig({ ...config, capture_mode: value })} label={t('ipv6State.captureMode')} options={[{ value: 'proxy', label: t('ipv6State.proxyShort') }, { value: 'local_ipv6', label: t('ipv6State.localMode') }]} />

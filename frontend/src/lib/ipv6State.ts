@@ -1,6 +1,7 @@
 export type IPv6StateConfig = {
   enabled: boolean; account_ids: number[]; models: string[]; source_ips: string[]; interval_seconds: number
   capture_mode: 'proxy' | 'local_ipv6'; proxy_ids: number[]; forward_proxy_id: number; new_session: boolean
+  accepted_lengths: number[]; concurrency: number
 }
 export type IPv6StateEntry = {
   account_id: number; account_name: string; model: string; status: string; error?: string
@@ -10,9 +11,18 @@ export type IPv6StateEntry = {
 }
 export type IPv6StateStatus = {
   config: IPv6StateConfig; entries: IPv6StateEntry[]; local_ips: string[]; running: boolean; error?: string; server_time: number
+  active_requests: number; account_concurrency: number
 }
 export type IPv6StatePackage = {
   format: string; member_hash: string; workspace_hash: string; model: string; value: string
+}
+
+export function parseStateLengths(text: string): number[] {
+  const parts = text.trim().split(/[\s,，、;；]+/)
+  if (!parts.length || parts.some(part => !/^\d+$/.test(part))) throw new Error('invalid_lengths')
+  const lengths = [...new Set(parts.map(Number))]
+  if (lengths.length > 32 || lengths.some(length => !Number.isSafeInteger(length) || length < 1 || length > 8192)) throw new Error('invalid_lengths')
+  return lengths
 }
 
 export function isIPv6StateReady(entry: IPv6StateEntry, now: number): boolean {

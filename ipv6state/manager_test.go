@@ -83,12 +83,19 @@ func fixture(t *testing.T, member string, offset bool) (*Manager, *auth.Account,
 	store.AddAccount(account)
 	now := time.Unix(20000, 0)
 	m := New(db, store, nil, nil, nil)
-	m.ctx = context.Background()
+	m.ctx, m.stop = context.WithCancel(context.Background())
+	t.Cleanup(m.Stop)
 	m.now = func() time.Time { return now }
 	m.config.Enabled, m.config.CaptureMode = true, "local_ipv6"
+	m.config.Concurrency = 1
 	m.config.Models = []string{statepool.Models[0]}
 	m.localIPs = func() ([]string, error) { return []string{"2001:db8::1", "2001:db8::2"}, nil }
 	return m, account, &now
+}
+
+func stepAndWait(m *Manager) {
+	m.step()
+	m.workers.Wait()
 }
 
 func TestSequentialHeaderCaptureStopsAtFirst292AndRestartsAtExpiry(t *testing.T) {
@@ -108,9 +115,9 @@ func TestSequentialHeaderCaptureStopsAtFirst292AndRestartsAtExpiry(t *testing.T)
 		bodies = append(bodies, body)
 		return &http.Response{StatusCode: 200, Header: http.Header{Header: {value}}, Body: body}, nil
 	}
-	m.step()
+	stepAndWait(m)
 	*now = now.Add(4 * time.Second)
-	m.step()
+	stepAndWait(m)
 	if len(routes) != 2 || routes[0] == routes[1] || !bodies[0].closed || !bodies[1].closed {
 		t.Fatalf("wrong route rotation or close behavior: %v", routes)
 	}
@@ -119,7 +126,7 @@ func TestSequentialHeaderCaptureStopsAtFirst292AndRestartsAtExpiry(t *testing.T)
 		t.Fatal("captured state was not published")
 	}
 	*now = now.Add(4 * time.Second)
-	m.step()
+	stepAndWait(m)
 	if len(routes) != 2 {
 		t.Fatal("kept collecting after success")
 	}
@@ -128,7 +135,7 @@ func TestSequentialHeaderCaptureStopsAtFirst292AndRestartsAtExpiry(t *testing.T)
 	if state != "" {
 		t.Fatal("expired state reused")
 	}
-	m.step()
+	stepAndWait(m)
 	if len(routes) != 3 {
 		t.Fatal("expired state did not trigger recapture")
 	}
@@ -202,7 +209,7 @@ func Test429StopsAccountWithoutReadingBodyAndRespectsRetryAfter(t *testing.T) {
 		}
 		m.store.MarkCooldownWithError(a, 2*time.Hour, "rate_limited", "test cooldown")
 	}
-	m.step()
+	stepAndWait(m)
 	entry := m.entries[key(account.ID(), statepool.Models[0])]
 	// The scheduler sorts models lexically, so use the recorded entry.
 	for _, recorded := range m.entries {
@@ -212,7 +219,7 @@ func Test429StopsAccountWithoutReadingBodyAndRespectsRetryAfter(t *testing.T) {
 		t.Fatal("Retry-After was truncated")
 	}
 	*now = now.Add(10 * time.Second)
-	m.step()
+	stepAndWait(m)
 	if calls != 1 {
 		t.Fatal("another model bypassed account cooldown")
 	}
@@ -230,9 +237,9 @@ func TestProxyModeDoesNotRequireLocalIPv6(t *testing.T) {
 		ids = append(ids, route.ProxyID)
 		return &http.Response{StatusCode: 200, Header: http.Header{Header: {"other-length"}}, Body: &unreadBody{t: t, ctx: ctx}}, nil
 	}
-	m.step()
+	stepAndWait(m)
 	*now = now.Add(4 * time.Second)
-	m.step()
+	stepAndWait(m)
 	if len(ids) != 2 || ids[0] != 7 || ids[1] != 8 {
 		t.Fatalf("proxy pool did not rotate: %v", ids)
 	}
@@ -247,7 +254,7 @@ func TestDisableCancelsInflightAndDiscardsLateHeaders(t *testing.T) {
 		<-ctx.Done()
 		return &http.Response{StatusCode: 200, Header: http.Header{Header: {tokenAt(now.Unix() - 30)}}, Body: &unreadBody{t: t, ctx: ctx}}, nil
 	}
-	go func() { m.step(); close(finished) }()
+	go func() { stepAndWait(m); close(finished) }()
 	<-started
 	config := m.config
 	config.Enabled = false

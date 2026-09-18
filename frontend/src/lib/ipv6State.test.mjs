@@ -1,6 +1,26 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { ipv6StateDisplayStatus, isIPv6StateReady, parseIPv6States, serializeIPv6States } from './ipv6State.ts'
+import { readFileSync } from 'node:fs'
+import { ipv6StateDisplayStatus, isIPv6StateReady, parseIPv6States, parseStateLengths, serializeIPv6States } from './ipv6State.ts'
+
+test('capture lengths support multiple values, localized separators and deduplication', () => {
+  assert.deepEqual(parseStateLengths('292, 332'), [292, 332])
+  assert.deepEqual(parseStateLengths(' 332，292、332；312\n356 '), [332, 292, 312, 356])
+  for (const value of ['', '292,', '0', '-292', '292.5', '3e2', 'abc', '8193', Array.from({ length: 33 }, (_, i) => i + 1).join(',')]) {
+    assert.throws(() => parseStateLengths(value))
+  }
+})
+
+test('capture settings use shared controls and translated labels', () => {
+  const source = readFileSync(new URL('../components/IPv6StatePlugin.tsx', import.meta.url), 'utf8')
+  assert.match(source, /<Input[^>]*id="ipv6-state-lengths"/)
+  assert.match(source, /<DraftNumberInput[^>]*id="ipv6-state-concurrency"[^>]*max=\{20\}/)
+  assert.match(source, /api\.configureIPv6State\(next\)/)
+  for (const locale of ['zh', 'zh-TW', 'en']) {
+    const { ipv6State } = JSON.parse(readFileSync(new URL(`../locales/${locale}.json`, import.meta.url), 'utf8'))
+    for (const key of ['acceptedLengths', 'lengthsHelp', 'invalidLengths', 'concurrency', 'concurrencyHelp', 'accountLimit']) assert.equal(typeof ipv6State[key], 'string')
+  }
+})
 
 const pack = { format: 'codex2api-ipv6-292-v1', member_hash: 'test-member', workspace_hash: 'test-workspace', model: 'gpt-5.6-sol', value: 'test-only-value' }
 

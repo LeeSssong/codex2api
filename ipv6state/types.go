@@ -27,13 +27,28 @@ type Config struct {
 	Models          []string `json:"models"`
 	SourceIPs       []string `json:"source_ips"`
 	IntervalSeconds int      `json:"interval_seconds"`
+	AcceptedLengths []int    `json:"accepted_lengths"`
+	Concurrency     int      `json:"concurrency"`
 }
 
 func DefaultConfig() Config {
-	return Config{CaptureMode: "proxy", ProxyIDs: []int64{}, NewSession: true, AccountIDs: []int64{}, Models: slices.Clone(statepool.Models), SourceIPs: []string{}, IntervalSeconds: 3}
+	return Config{CaptureMode: "proxy", ProxyIDs: []int64{}, NewSession: true, AccountIDs: []int64{}, Models: slices.Clone(statepool.Models), SourceIPs: []string{}, IntervalSeconds: 3, AcceptedLengths: []int{292}, Concurrency: 20}
 }
 
 func (c Config) Validate() error {
+	if c.Concurrency < 1 || c.Concurrency > 20 {
+		return errors.New("capture concurrency must be between 1 and 20")
+	}
+	if len(c.AcceptedLengths) == 0 || len(c.AcceptedLengths) > 32 {
+		return errors.New("select between 1 and 32 accepted state lengths")
+	}
+	lengths := map[int]bool{}
+	for _, length := range c.AcceptedLengths {
+		if length < 1 || length > 8192 || lengths[length] {
+			return errors.New("state lengths must be distinct integers between 1 and 8192")
+		}
+		lengths[length] = true
+	}
 	if c.CaptureMode != "proxy" && c.CaptureMode != "local_ipv6" || len(c.ProxyIDs) > 128 || c.ForwardProxyID < 0 {
 		return errors.New("invalid capture mode or proxy selection")
 	}
@@ -73,6 +88,10 @@ func (c Config) Validate() error {
 	return nil
 }
 
+func (c Config) accepts(value string) bool {
+	return slices.Contains(c.AcceptedLengths, len(value))
+}
+
 func publicIPv6(ip netip.Addr) bool {
 	return ip.Is6() && !ip.Is4In6() && ip.Zone() == "" && ip.IsGlobalUnicast() && !ip.IsPrivate()
 }
@@ -96,8 +115,8 @@ func LocalIPv6() ([]string, error) {
 // The Fernet timestamp is an issue time, not an expiry or an authenticated claim.
 // Only the upstream can verify the MAC; one hour is our local retention policy.
 func TokenTimes(token string, now time.Time) (int64, int64, error) {
-	if len(token) != 292 || strings.TrimSpace(token) != token {
-		return 0, 0, errors.New("length_not_292")
+	if len(token) > 8192 || strings.TrimSpace(token) != token || strings.ContainsAny(token, "\r\n") {
+		return 0, 0, errors.New("invalid_token_format")
 	}
 	raw, err := base64.URLEncoding.Strict().DecodeString(token)
 	if err != nil {
@@ -158,10 +177,12 @@ type Portable struct {
 }
 
 type Status struct {
-	Config     Config   `json:"config"`
-	Entries    []Entry  `json:"entries"`
-	LocalIPs   []string `json:"local_ips"`
-	Running    bool     `json:"running"`
-	Error      string   `json:"error,omitempty"`
-	ServerTime int64    `json:"server_time"`
+	Config             Config   `json:"config"`
+	Entries            []Entry  `json:"entries"`
+	LocalIPs           []string `json:"local_ips"`
+	Running            bool     `json:"running"`
+	ActiveRequests     int      `json:"active_requests"`
+	AccountConcurrency int      `json:"account_concurrency"`
+	Error              string   `json:"error,omitempty"`
+	ServerTime         int64    `json:"server_time"`
 }

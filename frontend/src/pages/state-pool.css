@@ -104,6 +104,10 @@
 .ipv6-state-dialog { font-size: 13px; }
 .ipv6-state-setting-section { padding: 4px 0 16px; border-bottom: 1px solid var(--color-border); }
 .ipv6-state-setting-section h3 { font-size: 13px; font-weight: 600; margin-bottom: 14px; }
+.ipv6-state-rule-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
+.ipv6-state-rule-fields > div { display: grid; align-content: start; gap: 8px; min-width: 0; }
+.ipv6-state-rule-fields label { font-weight: 500; }
+.ipv6-state-rule-fields p { line-height: 1.7; }
 .ipv6-state-choices { display: flex; flex-wrap: wrap; gap: 10px 24px; margin-top: 14px; }
 .ipv6-state-choices label { min-width: 0; min-height: 32px; }
 .ipv6-state-choices label span { overflow-wrap: anywhere; }
@@ -122,6 +126,7 @@
 .ipv6-state-import-error { white-space: pre-wrap; max-height: 200px; overflow: auto; }
 @media (max-width: 1100px) { .ipv6-state-matrix th:first-child { width: 28%; } .ipv6-state-matrix th, .ipv6-state-matrix td { padding-inline: 2px; } .ipv6-state-cell { padding-inline: 6px; } }
 @media (max-width: 700px) {
+  .ipv6-state-rule-fields { grid-template-columns: minmax(0, 1fr); gap: 16px; }
   .ipv6-state-control { align-items: flex-start; padding: 16px; gap: 12px; }
   .ipv6-state-control > label > span { display: none; }
   .ipv6-state-control .state-pool-meta { line-height: 1.7; }
