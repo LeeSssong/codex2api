@@ -1,16 +1,18 @@
 import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Copy, Package, RefreshCw, Save, Upload } from 'lucide-react'
+import { Check, ChevronRight, Copy, RefreshCw, Settings2, Upload } from 'lucide-react'
 import { api } from '../api'
 import { Button } from './ui/button'
 import { Checkbox } from './ui/checkbox'
+import { Input } from './ui/input'
 import { Switch } from './ui/switch'
 import { DraftNumberInput } from './ui/draft-number-input'
 import { Select } from './ui/select'
 import { Textarea } from './ui/textarea'
+import { SegmentedPillGroup } from './ui/segmented-pill-group'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from './ui/dialog'
 import { STATE_MODEL_LABELS, stateRemaining, type StatePoolData } from '../lib/statePool'
-import type { IPv6StateConfig, IPv6StateEntry, IPv6StateStatus } from '../lib/ipv6State'
+import { ipv6StateDisplayStatus, isIPv6StateReady, parseIPv6States, serializeIPv6States, type IPv6StateConfig, type IPv6StateEntry, type IPv6StatePackage, type IPv6StateStatus } from '../lib/ipv6State'
 import { getErrorMessage } from '../utils/error'
 import { useToast } from '../hooks/useToast'
 
@@ -21,131 +23,179 @@ export default function IPv6StatePlugin({ accounts, proxies }: { accounts: State
   const [config, setConfig] = useState<IPv6StateConfig>()
   const [allAccounts, setAllAccounts] = useState(true)
   const [sources, setSources] = useState('')
+  const [loadError, setLoadError] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const [importOpen, setImportOpen] = useState(false)
   const [importText, setImportText] = useState('')
+  const [importError, setImportError] = useState('')
+  const [importResult, setImportResult] = useState('')
   const [copyText, setCopyText] = useState('')
-  const initialized = useRef(false)
+  const [detailKey, setDetailKey] = useState('')
+  const [search, setSearch] = useState('')
+  const [filter, setFilter] = useState('all')
+  const [now, setNow] = useState(Date.now() / 1000)
+  const offset = useRef(0)
+  const revision = useRef(0)
+
+  const accept = (next: IPv6StateStatus) => {
+    offset.current = next.server_time - Date.now() / 1000
+    setNow(next.server_time)
+    setData(next)
+  }
 
   useEffect(() => {
     const controller = new AbortController()
+    let timer: ReturnType<typeof setTimeout>
     const refresh = async () => {
+      const version = revision.current
       try {
         const next = await api.getIPv6State(controller.signal)
-        if (controller.signal.aborted) return
-        setData(next)
-        if (!initialized.current) {
-          initialized.current = true
-          setConfig(next.config)
-          setAllAccounts(next.config.account_ids.length === 0)
-          setSources(next.config.source_ips.join('\n'))
-        }
+        if (!controller.signal.aborted && version === revision.current && version % 2 === 0) { accept(next); setLoadError('') }
       } catch (err) {
-        if (!controller.signal.aborted) setError(getErrorMessage(err))
+        if (!controller.signal.aborted) setLoadError(getErrorMessage(err))
       }
+      if (!controller.signal.aborted) timer = setTimeout(refresh, 3000)
     }
     void refresh()
-    const timer = setInterval(() => void refresh(), 3000)
-    return () => { clearInterval(timer); controller.abort() }
+    const clock = setInterval(() => setNow(Date.now() / 1000 + offset.current), 1000)
+    return () => { clearTimeout(timer); clearInterval(clock); controller.abort() }
   }, [])
 
-  const save = async (enabled?: boolean) => {
-    if (!config || !data) return
-    setBusy(true)
+  const describe = (code: string) => t(`ipv6State.codes.${code}`, { defaultValue: code })
+  const name = (entry: IPv6StateEntry) => entry.account_name || `#${entry.account_id}`
+  const key = (entry: IPv6StateEntry) => `${entry.account_id}/${entry.model}`
+  const ready = data?.entries.filter(entry => isIPv6StateReady(entry, now)) ?? []
+  const detail = data?.entries.find(entry => key(entry) === detailKey)
+  const models = Object.keys(STATE_MODEL_LABELS).filter(model => data?.config.models.includes(model))
+  const rows = Array.from(new Set(data?.entries.map(entry => entry.account_id) ?? [])).map(id => {
+    const entries = data!.entries.filter(entry => entry.account_id === id)
+    return { id, name: name(entries[0]), entries }
+  })
+  const visibleRows = rows.filter(row => `${row.name} ${row.id}`.toLowerCase().includes(search.toLowerCase()) &&
+    (filter === 'all' || (filter === 'ready' ? row.entries.some(entry => isIPv6StateReady(entry, now)) : row.entries.some(entry => Boolean(entry.error) || entry.status === 'account_unavailable'))))
+
+  const openSettings = () => {
+    if (!data) return
+    setConfig({ ...data.config })
+    setAllAccounts(data.config.account_ids.length === 0)
+    setSources(data.config.source_ips.join('\n'))
     setError('')
-    try {
-      const next = enabled === false ? { ...data.config, enabled: false } : {
-        ...config, enabled: enabled ?? data.config.enabled,
-        account_ids: allAccounts ? [] : config.account_ids,
-        source_ips: sources.split(/[\s,]+/).filter(Boolean),
-      }
-      if (!allAccounts && next.account_ids.length === 0 && enabled !== false) throw new Error(t('ipv6State.selectAccount'))
-      const result = await api.configureIPv6State(next)
-      setData(result)
-      setConfig(result.config)
-      setAllAccounts(result.config.account_ids.length === 0)
-      setSources(result.config.source_ips.join('\n'))
-      showToast(t('ipv6State.saved'), 'success')
-    } catch (err) { setError(getErrorMessage(err)) }
-    finally { setBusy(false) }
+    setSettingsOpen(true)
   }
 
-  const copy = async (entry: IPv6StateEntry, raw: boolean) => {
-    setBusy(true)
-    setError('')
+  const persist = async (next: IPv6StateConfig) => {
+    setBusy(true); setError(''); revision.current++
     try {
-      const pack = await api.exportIPv6State(entry.account_id, entry.model)
-      const text = raw ? pack.value : JSON.stringify(pack)
-      try { await navigator.clipboard.writeText(text); showToast(t('ipv6State.copied'), 'success') }
-      catch { setCopyText(text) }
+      accept(await api.configureIPv6State(next))
+      setSettingsOpen(false)
+      showToast(t('ipv6State.saved'), 'success')
+    } catch (err) { setError(getErrorMessage(err)) }
+    finally { revision.current++; setBusy(false) }
+  }
+
+  const toggle = (enabled: boolean) => {
+    if (!data) return
+    if (enabled && data.config.capture_mode === 'proxy' && !data.config.proxy_ids.length && !ready.length) {
+      openSettings(); setError(t('ipv6State.setupFirst')); return
+    }
+    void persist({ ...data.config, enabled })
+  }
+
+  const saveSettings = () => {
+    if (!config || !data) return
+    if (!allAccounts && !config.account_ids.length) { setError(t('ipv6State.selectAccount')); return }
+    if (!config.models.length) { setError(t('ipv6State.selectModel')); return }
+    void persist({ ...config, enabled: data.config.enabled, account_ids: allAccounts ? [] : config.account_ids, source_ips: sources.split(/[\s,]+/).filter(Boolean) })
+  }
+
+  const copy = async (entries: IPv6StateEntry[], raw = false) => {
+    setBusy(true); setError('')
+    try {
+      const packs: IPv6StatePackage[] = []
+      for (const entry of entries) packs.push(await api.exportIPv6State(entry.account_id, entry.model))
+      const text = raw ? packs[0].value : packs.length === 1 ? JSON.stringify(packs[0]) : serializeIPv6States(packs)
+      try { await navigator.clipboard.writeText(text); showToast(t('ipv6State.copiedCount', { count: packs.length }), 'success') }
+      catch { setDetailKey(''); setCopyText(text) }
     } catch (err) { setError(getErrorMessage(err)) }
     finally { setBusy(false) }
   }
 
   const importState = async () => {
-    setBusy(true)
-    setError('')
+    let packs: IPv6StatePackage[]
+    try { packs = parseIPv6States(importText) }
+    catch { setImportError(t('ipv6State.invalidPackage')); return }
+    setBusy(true); setImportError(''); setImportResult(''); revision.current++
+    const failed: IPv6StatePackage[] = []
+    const errors: string[] = []
     try {
-      setData(await api.importIPv6State(JSON.parse(importText)))
-      setImportOpen(false)
-      setImportText('')
-      showToast(t('ipv6State.imported'), 'success')
-    } catch (err) { setError(getErrorMessage(err)) }
-    finally { setBusy(false) }
+      for (const pack of packs) {
+        try { accept(await api.importIPv6State(pack)) }
+        catch (err) { failed.push(pack); errors.push(`${STATE_MODEL_LABELS[pack.model] || pack.model}: ${getErrorMessage(err)}`) }
+      }
+      const result = t('ipv6State.importSummary', { count: packs.length - failed.length, failed: failed.length })
+      setImportResult(result)
+      setImportText(failed.length ? serializeIPv6States(failed) : '')
+      if (failed.length) setImportError(`${t('ipv6State.retryFailed')}\n${errors.join('\n')}`)
+      else showToast(result, 'success')
+    } finally { revision.current++; setBusy(false) }
   }
 
-  const describe = (code: string) => t(`ipv6State.codes.${code}`, { defaultValue: code })
-  return <section className="ipv6-state-plugin" aria-labelledby="ipv6-state-title">
-    <div className="state-pool-section-head">
-      <h3 id="ipv6-state-title">{t('ipv6State.title')}</h3>
-      <label className="ipv6-state-enable"><span>{t(data?.config.enabled ? 'ipv6State.enabled' : 'ipv6State.disabled')}</span><Switch aria-label={t('ipv6State.title')} checked={data?.config.enabled ?? false} disabled={busy || !config} onCheckedChange={value => void save(value)} /></label>
+  return <section className="ipv6-state-plugin" aria-label={t('ipv6State.overview')}>
+    <div className="ipv6-state-control">
+      <div><h3>{t('ipv6State.automation')}</h3><p className="state-pool-meta">{t('ipv6State.automationHint')}</p></div>
+      <label className="ipv6-state-enable"><span>{t(data?.config.enabled ? 'ipv6State.enabled' : 'ipv6State.disabled')}</span><Switch aria-label={t('ipv6State.automation')} checked={data?.config.enabled ?? false} disabled={busy || !data} onCheckedChange={toggle} /></label>
     </div>
-    <p className="state-pool-meta">{t('ipv6State.policy')}</p>
-    {error || data?.error ? <p role="alert" className="state-pool-error">{error || describe(data?.error ?? '')}</p> : null}
-    {!config ? <RefreshCw className="size-4 animate-spin" aria-label={t('statePool.loading')} /> : <>
-      <div className="ipv6-state-fields">
-        <div>
-          <label className="ipv6-state-enable"><Checkbox checked={allAccounts} onCheckedChange={value => setAllAccounts(value === true)} />{t('ipv6State.allAccounts')}</label>
-          {!allAccounts ? <div className="ipv6-state-choices">{accounts.map(account => <label key={account.id}><Checkbox checked={config.account_ids.includes(account.id)} onCheckedChange={checked => setConfig({ ...config, account_ids: checked ? [...config.account_ids, account.id] : config.account_ids.filter(id => id !== account.id) })} /><span>{account.name || `#${account.id}`}</span></label>)}</div> : null}
-          <div className="ipv6-state-choices">{Object.entries(STATE_MODEL_LABELS).map(([model, label]) => <label key={model}><Checkbox checked={config.models.includes(model)} onCheckedChange={checked => setConfig({ ...config, models: checked ? [...config.models, model] : config.models.filter(value => value !== model) })} />{label}</label>)}</div>
-          <label className="ipv6-state-interval" htmlFor="ipv6-state-interval">{t('ipv6State.interval')}<DraftNumberInput id="ipv6-state-interval" min={1} max={300} value={config.interval_seconds} onValueChange={value => setConfig({ ...config, interval_seconds: value })} /></label>
-        </div>
-        <div>
-          <label htmlFor="state292-mode">{t('ipv6State.captureMode')}</label>
-          <Select id="state292-mode" value={config.capture_mode} onValueChange={value => setConfig({ ...config, capture_mode: value as 'proxy' | 'local_ipv6' })} options={[{ value: 'proxy', label: t('ipv6State.proxyMode') }, { value: 'local_ipv6', label: t('ipv6State.localMode') }]} />
-          {config.capture_mode === 'proxy' ? <>
-            <div className="ipv6-state-choices">{proxies.map(proxy => <label key={proxy.id}><Checkbox checked={config.proxy_ids.includes(proxy.id)} disabled={!proxy.enabled || proxy.id === config.forward_proxy_id} onCheckedChange={checked => setConfig({ ...config, proxy_ids: checked ? [...config.proxy_ids, proxy.id] : config.proxy_ids.filter(id => id !== proxy.id) })} />{proxy.name || `#${proxy.id}`}</label>)}</div>
-            <label htmlFor="state292-forward">{t('statePool.forwardProxy')}</label>
-            <Select id="state292-forward" value={String(config.forward_proxy_id)} onValueChange={value => setConfig({ ...config, forward_proxy_id: Number(value), proxy_ids: config.proxy_ids.filter(id => id !== Number(value)) })} options={[{ value: '0', label: t('ipv6State.noForward') }, ...proxies.filter(proxy => proxy.enabled).map(proxy => ({ value: String(proxy.id), label: proxy.name || `#${proxy.id}` }))]} />
-            <label className="ipv6-state-enable"><Checkbox checked={config.new_session} onCheckedChange={value => setConfig({ ...config, new_session: value === true })} />{t('ipv6State.newSession')}</label>
-            <a href="/admin/proxies">{t('statePool.manageProxies')}</a>
-          </> : <>
-          <label htmlFor="ipv6-state-sources">{t('ipv6State.sources')}</label>
-          <Textarea id="ipv6-state-sources" autoComplete="off" spellCheck={false} value={sources} onChange={event => setSources(event.target.value)} placeholder={t('ipv6State.autoSources')} />
-          <p className="state-pool-meta">{t('ipv6State.detected', { count: data?.local_ips.length ?? 0 })}</p>
-          <div className="ipv6-state-addresses">{data?.local_ips.map(ip => <code key={ip}>{ip}</code>)}</div>
-          </>}
-        </div>
-      </div>
+    <div className="ipv6-state-toolbar">
+      <div className="ipv6-state-summary" aria-live="polite"><strong>{t('ipv6State.readySummary', { ready: ready.length, total: data?.entries.length ?? 0 })}</strong><span className="state-pool-meta">{t(!data?.config.enabled ? 'ipv6State.offHint' : data?.running ? 'ipv6State.running' : 'ipv6State.idle')}</span></div>
       <div className="ipv6-state-actions">
-        <Button variant="outline" disabled={busy} onClick={() => void save()}>{busy ? <RefreshCw className="animate-spin" /> : <Save />}{t('ipv6State.save')}</Button>
-        <Button variant="outline" disabled={busy} onClick={() => setImportOpen(true)}><Upload />{t('ipv6State.import')}</Button>
-        <span className="state-pool-meta" aria-live="polite">{t(data?.running ? 'ipv6State.running' : 'ipv6State.idle')}</span>
+        <Button disabled={busy || !ready.length} onClick={() => void copy(ready)}><Copy />{t('ipv6State.copyAll')}</Button>
+        <Button variant="outline" disabled={busy} onClick={() => { setImportOpen(true); setImportError(''); setImportResult('') }}><Upload />{t('ipv6State.paste')}</Button>
+        <Button variant="outline" disabled={busy || !data} onClick={openSettings}><Settings2 />{t('ipv6State.settings')}</Button>
       </div>
-      <div className="ipv6-state-table" tabIndex={0} role="region" aria-label={t('ipv6State.entries')}>
-        <table><thead><tr>{['account', 'model', 'result', 'attempts', 'length', 'remaining', 'actions'].map(key => <th key={key}>{t(`ipv6State.${key}`)}</th>)}</tr></thead>
-          <tbody>{!data?.entries.length ? <tr><td colSpan={7}>{t('ipv6State.empty')}</td></tr> : data.entries.map(entry => <tr key={`${entry.account_id}/${entry.model}`}>
-            <td><span>{entry.account_name || `#${entry.account_id}`}</span><small>{entry.proxy_name || entry.source_ip}</small>{entry.session_id ? <small>Session {entry.session_id}</small> : null}</td>
-            <td>{STATE_MODEL_LABELS[entry.model] || entry.model}</td>
-            <td><span className={`state-pool-status is-${entry.status === 'ready' ? 'ready' : 'queued'}`}>{describe(entry.status)}</span>{entry.error ? <small>{describe(entry.error)}</small> : null}{entry.http_status > 0 ? <small>HTTP {entry.http_status}</small> : null}</td>
-            <td>{entry.attempts}</td><td>{entry.last_length || '-'}</td>
-            <td title={entry.issued_at ? `${t('ipv6State.issued')}: ${new Date(entry.issued_at * 1000).toLocaleString()}` : undefined}>{entry.expires_at > (data?.server_time ?? 0) ? stateRemaining(entry.expires_at, data?.server_time ?? 0) : '-'}{entry.retry_at > (data?.server_time ?? 0) ? <small>{t('ipv6State.retry', { time: stateRemaining(entry.retry_at, data?.server_time ?? 0) })}</small> : null}</td>
-            <td><div className="ipv6-state-row-actions"><Button variant="ghost" size="icon" disabled={busy || entry.status !== 'ready'} title={t('ipv6State.copyRaw')} aria-label={t('ipv6State.copyRaw')} onClick={() => void copy(entry, true)}><Copy /></Button><Button variant="ghost" size="icon" disabled={busy || entry.status !== 'ready'} title={t('ipv6State.copyPackage')} aria-label={t('ipv6State.copyPackage')} onClick={() => void copy(entry, false)}><Package /></Button></div></td>
-          </tr>)}</tbody></table>
-      </div>
-    </>}
-    <Dialog open={importOpen} onOpenChange={open => { setImportOpen(open); if (!open) setImportText('') }}><DialogContent><DialogHeader><DialogTitle>{t('ipv6State.import')}</DialogTitle><DialogDescription>{t('ipv6State.importHint')}</DialogDescription></DialogHeader><Textarea aria-label={t('ipv6State.import')} autoComplete="off" spellCheck={false} value={importText} onChange={event => setImportText(event.target.value)} />{error ? <p className="state-pool-error" role="alert">{error}</p> : null}<DialogFooter><Button disabled={busy || !importText.trim()} onClick={() => void importState()}><Upload />{t('ipv6State.import')}</Button></DialogFooter></DialogContent></Dialog>
-    <Dialog open={Boolean(copyText)} onOpenChange={open => { if (!open) setCopyText('') }}><DialogContent><DialogHeader><DialogTitle>{t('statePool.copyFallback')}</DialogTitle><DialogDescription>{t('statePool.privateValue')}</DialogDescription></DialogHeader><Textarea aria-label={t('ipv6State.copyRaw')} readOnly value={copyText} onFocus={event => event.target.select()} /></DialogContent></Dialog>
+    </div>
+    {loadError || (!settingsOpen && error) || data?.error ? <p role="alert" className="state-pool-error">{loadError || error || describe(data?.error ?? '')}</p> : null}
+    <div className="ipv6-state-filters"><Input aria-label={t('statePool.search')} placeholder={t('statePool.search')} value={search} onChange={event => setSearch(event.target.value)} /><Select aria-label={t('ipv6State.filter')} value={filter} onValueChange={setFilter} options={['all', 'ready', 'attention'].map(value => ({ value, label: t(`ipv6State.filter${value}`) }))} /></div>
+    {!data ? <div className="state-pool-empty" role="status"><RefreshCw className="size-4 animate-spin inline-block" /> {t('statePool.loading')}</div> : !rows.length ? <div className="state-pool-empty"><p>{t('ipv6State.empty')}</p><Button variant="link" asChild><a href="/admin/accounts">{t('statePool.manageAccounts')}</a></Button></div> : <div className="ipv6-state-matrix">
+      <table><caption className="sr-only">{t('ipv6State.overview')}</caption><thead><tr><th scope="col">{t('statePool.accounts')}</th>{models.map(model => <th scope="col" key={model}>{STATE_MODEL_LABELS[model]}</th>)}</tr></thead>
+        <tbody>{visibleRows.map(row => <tr key={row.id}>
+          <th scope="row"><div className="ipv6-state-account"><div><strong>{row.name}</strong><small>#{row.id}</small></div><Button variant="ghost" size="icon-sm" title={t('ipv6State.copyAccount')} aria-label={t('ipv6State.copyNamedAccount', { name: row.name })} disabled={busy || !row.entries.some(entry => isIPv6StateReady(entry, now))} onClick={() => void copy(row.entries.filter(entry => isIPv6StateReady(entry, now)))}><Copy /></Button></div></th>
+          {models.map(model => {
+            const entry = row.entries.find(item => item.model === model)
+            const status = entry ? ipv6StateDisplayStatus(entry, now, data.config.enabled) : 'waiting'
+            return <td key={model}><span className="ipv6-state-mobile-model">{STATE_MODEL_LABELS[model]}</span>{entry ? <Button variant="ghost" className={`ipv6-state-cell is-${status}`} aria-label={`${row.name} · ${STATE_MODEL_LABELS[model]} · ${describe(status)}`} onClick={() => { setDetailKey(key(entry)); setError('') }}>
+              <span><span className="ipv6-state-cell-status">{status === 'ready' ? <Check className="size-3" /> : status === 'collecting' ? <RefreshCw className="size-3 animate-spin" /> : <span className="ipv6-state-dot" />}{describe(status)}</span>{status === 'ready' || entry.retry_at > now && data.config.enabled ? <small>{status === 'ready' ? stateRemaining(entry.expires_at, now) : t('ipv6State.retry', { time: stateRemaining(entry.retry_at, now) })}</small> : null}</span><ChevronRight className="size-3" />
+            </Button> : <span className="state-pool-meta">—</span>}</td>
+          })}
+        </tr>)}</tbody></table>{!visibleRows.length ? <div className="state-pool-empty">{t('ipv6State.noMatches')}</div> : null}
+    </div>}
+    <p className="ipv6-state-footnote">{t('ipv6State.scopeHint')}</p>
+
+    <Dialog open={settingsOpen} onOpenChange={open => { if (!busy) { setSettingsOpen(open); setError('') } }}><DialogContent className="state-pool-dialog ipv6-state-dialog"><DialogHeader><DialogTitle>{t('ipv6State.settings')}</DialogTitle><DialogDescription>{t('ipv6State.settingsHint')}</DialogDescription></DialogHeader>
+      {config ? <>
+        <section className="ipv6-state-setting-section"><h3>{t('statePool.models')}</h3><div className="ipv6-state-choices">{Object.entries(STATE_MODEL_LABELS).map(([model, label]) => <label key={model}><Checkbox disabled={busy} checked={config.models.includes(model)} onCheckedChange={checked => setConfig({ ...config, models: checked ? [...config.models, model] : config.models.filter(value => value !== model) })} />{label}</label>)}</div></section>
+        <section className="ipv6-state-setting-section"><h3>{t('statePool.accounts')}</h3><label className="ipv6-state-enable"><Checkbox disabled={busy} checked={allAccounts} onCheckedChange={value => setAllAccounts(value === true)} />{t('ipv6State.allAccounts')}</label>{!allAccounts ? <div className="ipv6-state-choices ipv6-state-account-choices">{accounts.map(account => <label key={account.id}><Checkbox disabled={busy} checked={config.account_ids.includes(account.id)} onCheckedChange={checked => setConfig({ ...config, account_ids: checked ? [...config.account_ids, account.id] : config.account_ids.filter(id => id !== account.id) })} /><span>{account.name || `#${account.id}`}</span></label>)}</div> : null}</section>
+        <section className="ipv6-state-setting-section"><h3>{t('ipv6State.captureMode')}</h3><SegmentedPillGroup disabled={busy} value={config.capture_mode} onChange={value => setConfig({ ...config, capture_mode: value })} label={t('ipv6State.captureMode')} options={[{ value: 'proxy', label: t('ipv6State.proxyShort') }, { value: 'local_ipv6', label: t('ipv6State.localMode') }]} />
+          {config.capture_mode === 'proxy' ? <><div className="ipv6-state-choices">{proxies.map(proxy => <label key={proxy.id}><Checkbox checked={config.proxy_ids.includes(proxy.id)} disabled={busy || !proxy.enabled || proxy.id === config.forward_proxy_id} onCheckedChange={checked => setConfig({ ...config, proxy_ids: checked ? [...config.proxy_ids, proxy.id] : config.proxy_ids.filter(id => id !== proxy.id) })} /><span>{proxy.name || `#${proxy.id}`}</span></label>)}{!proxies.length ? <p className="state-pool-meta">{t('statePool.noProxies')}</p> : null}</div><Button asChild variant="link" className="ipv6-state-manage"><a href="/admin/proxies">{t('statePool.manageProxies')}</a></Button></> : <div className="ipv6-state-source-field"><label htmlFor="ipv6-state-sources">{t('ipv6State.sources')}</label><Textarea disabled={busy} id="ipv6-state-sources" autoComplete="off" spellCheck={false} value={sources} onChange={event => setSources(event.target.value)} placeholder={t('ipv6State.autoSources')} /><p className="state-pool-meta">{t('ipv6State.detected', { count: data?.local_ips.length ?? 0 })}</p><div className="ipv6-state-addresses">{data?.local_ips.map(ip => <code key={ip}>{ip}</code>)}</div></div>}
+        </section>
+        <details className="ipv6-state-advanced"><summary>{t('ipv6State.advanced')}</summary><div className="ipv6-state-advanced-fields"><label className="ipv6-state-interval" htmlFor="ipv6-state-interval">{t('ipv6State.interval')}<DraftNumberInput disabled={busy} id="ipv6-state-interval" min={1} max={300} value={config.interval_seconds} onValueChange={value => setConfig({ ...config, interval_seconds: value })} /></label>{config.capture_mode === 'proxy' ? <><label htmlFor="state292-forward">{t('statePool.forwardProxy')}</label><Select disabled={busy} id="state292-forward" value={String(config.forward_proxy_id)} onValueChange={value => setConfig({ ...config, forward_proxy_id: Number(value), proxy_ids: config.proxy_ids.filter(id => id !== Number(value)) })} options={[{ value: '0', label: t('ipv6State.noForward') }, ...proxies.filter(proxy => proxy.enabled).map(proxy => ({ value: String(proxy.id), label: proxy.name || `#${proxy.id}` }))]} /><label className="ipv6-state-enable"><Checkbox disabled={busy} checked={config.new_session} onCheckedChange={value => setConfig({ ...config, new_session: value === true })} />{t('ipv6State.newSession')}</label></> : null}<p className="state-pool-meta">{t('ipv6State.policy')}</p></div></details>
+      </> : null}{error ? <p role="alert" className="state-pool-error">{error}</p> : null}<DialogFooter><Button variant="outline" disabled={busy} onClick={() => { setSettingsOpen(false); setError('') }}>{t('common.cancel')}</Button><Button disabled={busy} onClick={saveSettings}>{busy ? <RefreshCw className="animate-spin" /> : null}{t('ipv6State.save')}</Button></DialogFooter>
+    </DialogContent></Dialog>
+
+    <Dialog open={Boolean(detailKey)} onOpenChange={open => { if (!open) { setDetailKey(''); setError('') } }}><DialogContent className="ipv6-state-dialog"><DialogHeader><DialogTitle>{detail ? STATE_MODEL_LABELS[detail.model] || detail.model : t('statePool.details')}</DialogTitle><DialogDescription>{detail ? name(detail) : t('ipv6State.entryMissing')}</DialogDescription></DialogHeader>{detail ? <>
+      <div className="ipv6-state-detail-status"><strong>{describe(ipv6StateDisplayStatus(detail, now, data?.config.enabled ?? false))}</strong><span>{isIPv6StateReady(detail, now) ? t('ipv6State.validFor', { time: stateRemaining(detail.expires_at, now) }) : detail.retry_at > now && data?.config.enabled ? t('ipv6State.retry', { time: stateRemaining(detail.retry_at, now) }) : ''}</span></div>
+      {detail.error ? <p className="state-pool-error">{describe(detail.error)}</p> : null}
+      {detail.status === 'account_unavailable' ? <Button asChild variant="link"><a href="/admin/accounts">{t('statePool.manageAccounts')}</a></Button> : null}
+      <dl className="ipv6-state-details">{[
+        ['model', detail.model], ['attempts', String(detail.attempts)], ['length', String(detail.last_length || '—')],
+        ['httpStatus', detail.http_status ? String(detail.http_status) : '—'], ['captureRoute', detail.proxy_name || detail.source_ip || '—'],
+        ['issued', detail.issued_at ? new Date(detail.issued_at * 1000).toLocaleString() : '—'], ['expires', detail.expires_at ? new Date(detail.expires_at * 1000).toLocaleString() : '—'],
+      ].map(([label, value]) => <div key={label}><dt>{t(`ipv6State.${label}`)}</dt><dd>{value}</dd></div>)}</dl>
+      <p className="state-pool-meta">{t('ipv6State.scopeHint')}</p>{error ? <p role="alert" className="state-pool-error">{error}</p> : null}<DialogFooter><Button variant="outline" disabled={busy || !isIPv6StateReady(detail, now)} onClick={() => void copy([detail], true)}><Copy />{t('ipv6State.copyRaw')}</Button><Button disabled={busy || !isIPv6StateReady(detail, now)} onClick={() => void copy([detail])}><Copy />{t('ipv6State.copyPackage')}</Button></DialogFooter>
+    </> : null}</DialogContent></Dialog>
+
+    <Dialog open={importOpen} onOpenChange={open => { if (!busy) { setImportOpen(open); if (!open) setImportText('') } }}><DialogContent className="state-pool-dialog ipv6-state-dialog"><DialogHeader><DialogTitle>{t('ipv6State.paste')}</DialogTitle><DialogDescription>{t('ipv6State.pasteHint')}</DialogDescription></DialogHeader><Textarea className="state-pool-secret" aria-label={t('ipv6State.import')} autoComplete="off" spellCheck={false} disabled={busy} value={importText} onChange={event => { setImportText(event.target.value); setImportError(''); setImportResult('') }} placeholder={t('ipv6State.pastePlaceholder')} /><p className="state-pool-meta">{t('ipv6State.importHint')}</p>{importResult ? <p role="status">{importResult} {t(data?.config.enabled ? 'ipv6State.importActiveHint' : 'ipv6State.importOffHint')}</p> : null}{importError ? <p className="state-pool-error ipv6-state-import-error" role="alert">{importError}</p> : null}<DialogFooter><Button variant="outline" disabled={busy} onClick={() => { setImportOpen(false); setImportText('') }}>{t('common.close')}</Button><Button disabled={busy || !importText.trim()} onClick={() => void importState()}>{busy ? <RefreshCw className="animate-spin" /> : <Upload />}{t('ipv6State.import')}</Button></DialogFooter></DialogContent></Dialog>
+    <Dialog open={Boolean(copyText)} onOpenChange={open => { if (!open) setCopyText('') }}><DialogContent><DialogHeader><DialogTitle>{t('statePool.copyFallback')}</DialogTitle><DialogDescription>{t('statePool.privateValue')}</DialogDescription></DialogHeader><Textarea className="state-pool-secret" aria-label={t('ipv6State.copyRaw')} readOnly value={copyText} onFocus={event => event.target.select()} /></DialogContent></Dialog>
   </section>
 }

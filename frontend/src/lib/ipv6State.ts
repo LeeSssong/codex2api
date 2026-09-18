@@ -14,3 +14,40 @@ export type IPv6StateStatus = {
 export type IPv6StatePackage = {
   format: string; member_hash: string; workspace_hash: string; model: string; value: string
 }
+
+export function isIPv6StateReady(entry: IPv6StateEntry, now: number): boolean {
+  return entry.status === 'ready' && entry.expires_at > now
+}
+
+export function ipv6StateDisplayStatus(entry: IPv6StateEntry, now: number, enabled: boolean): string {
+  if (isIPv6StateReady(entry, now)) return 'ready'
+  if (entry.status === 'account_unavailable') return entry.status
+  if (entry.status === 'collecting' && enabled) return entry.status
+  if (entry.expires_at > 0 && entry.expires_at <= now) return 'expired'
+  if (!enabled) return 'paused'
+  return entry.status
+}
+
+export function serializeIPv6States(states: IPv6StatePackage[]): string {
+  return JSON.stringify({ format: 'codex2api-ipv6-292-bundle-v1', states })
+}
+
+// Accept existing single-state packages as well as the multi-account clipboard format.
+export function parseIPv6States(text: string): IPv6StatePackage[] {
+  const input: unknown = JSON.parse(text)
+  if (!input || typeof input !== 'object') throw new Error('invalid_package')
+  const pack = input as Record<string, unknown>
+  const items = pack.format === 'codex2api-ipv6-292-bundle-v1' ? pack.states : [pack]
+  if (!Array.isArray(items) || !items.length || items.length > 512) throw new Error('invalid_package')
+  const seen = new Set<string>()
+  for (const item of items) {
+    if (!item || typeof item !== 'object' || item.format !== 'codex2api-ipv6-292-v1' ||
+      !['member_hash', 'workspace_hash', 'model', 'value'].every(key => typeof item[key] === 'string' && item[key].trim())) {
+      throw new Error('invalid_package')
+    }
+    const key = JSON.stringify([item.member_hash, item.workspace_hash, item.model])
+    if (seen.has(key)) throw new Error('duplicate_package')
+    seen.add(key)
+  }
+  return items as IPv6StatePackage[]
+}

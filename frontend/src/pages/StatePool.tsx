@@ -23,6 +23,7 @@ const preferencesKey = 'codex2api_state_capture_v1'
 
 export default function StatePool() {
   const { t } = useTranslation()
+  const [mode, setMode] = useState<'automatic' | 'validation'>('automatic')
   const { showToast } = useToast()
   const { confirm, confirmDialog } = useConfirmDialog()
   const [preferences] = useState(() => {
@@ -192,9 +193,11 @@ export default function StatePool() {
   }
 
   return <div className="state-pool">
-    <PageHeader title={t('statePool.title')} actionMeta={t('statePool.summary', { ready: readyEntries, active: activeJobs })} onRefresh={() => void refresh()} actions={<Button variant="outline" size="sm" onClick={() => setImportOpen(true)}><Upload />{t('statePool.import')}</Button>} />
+    <PageHeader title={t('statePool.title')} description={t('ipv6State.pageHint')} />
+    <div className="state-pool-mode"><SegmentedPillGroup value={mode} onChange={setMode} label={t('ipv6State.managementMode')} options={[{ value: 'automatic', label: t('ipv6State.automaticTab') }, { value: 'validation', label: t('ipv6State.validationTab') }]} /></div>
     {error ? <div role="alert" className="state-pool-error">{error}</div> : null}
-    <IPv6StatePlugin accounts={data?.accounts ?? []} proxies={data?.proxies ?? []} />
+    {mode === 'automatic' ? <IPv6StatePlugin accounts={data?.accounts ?? []} proxies={data?.proxies ?? []} /> : <>
+    <div className="state-pool-toolbar"><div><h3>{t('ipv6State.validationTab')}</h3><p className="state-pool-meta">{t('ipv6State.validationHint')}</p><span className="state-pool-meta">{t('statePool.summary', { ready: readyEntries, active: activeJobs })}</span></div><div><Button variant="outline" size="sm" onClick={() => setImportOpen(true)}><Upload />{t('statePool.import')}</Button><Button variant="ghost" size="icon" aria-label={t('common.refresh')} onClick={() => void refresh()}><RefreshCw /></Button></div></div>
     {data?.resin_enabled ? <div role="alert" className="state-pool-error">{t('statePool.resinConflict')}</div> : null}
     <div className="state-pool-setup">
       <section className="state-pool-accounts" aria-label={t('statePool.accounts')}>
@@ -289,5 +292,6 @@ export default function StatePool() {
     <Dialog open={Boolean(details)} onOpenChange={open => { if (!open) setDetails(undefined) }}><DialogContent className="state-pool-dialog"><DialogHeader><DialogTitle>{t('statePool.details')}</DialogTitle><DialogDescription>{details?.name}</DialogDescription></DialogHeader><div className="state-pool-evidence">{details?.checks.map((check, index) => <section key={index}><div className="state-pool-section-head"><strong>{t(`statePool.phase.${check.phase}`)}</strong><span className={`state-pool-status is-${check.passed ? 'ready' : 'failed'}`}>{t(check.passed ? 'statePool.passed' : 'statePool.failed')}</span></div><p className="state-pool-meta">{check.proxy_name || t('statePool.businessEgress')}{check.last_test_ip ? ` · ${t('statePool.lastTestIP', { ip: check.last_test_ip })}` : ''}</p><p className="state-pool-meta">HTTP {check.http_status} · {check.terminal || check.error} · {(check.duration_ms / 1000).toFixed(1)} s · {check.input_tokens + check.output_tokens} tokens</p><pre>{check.answer || check.error}</pre></section>)}</div></DialogContent></Dialog>
     <Dialog open={Boolean(copyFallback)} onOpenChange={open => { if (!open) setCopyFallback('') }}><DialogContent className="state-pool-dialog"><DialogHeader><DialogTitle>{t('statePool.copyFallback')}</DialogTitle><DialogDescription>{t('statePool.privateValue')}</DialogDescription></DialogHeader><Textarea readOnly aria-label={t('statePool.raw')} className="state-pool-secret" value={copyFallback} onFocus={event => event.target.select()} /></DialogContent></Dialog>
     {confirmDialog}
+    </>}
   </div>
 }
