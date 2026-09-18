@@ -1,10 +1,13 @@
 export type IPv6StateConfig = {
+  refresh_before_minutes: number; staged_concurrency: boolean; urgent_before_minutes: number
+  early_concurrency: number; urgent_concurrency: number; expired_concurrency: number; urgent_business_concurrency: number
   enabled: boolean; account_ids: number[]; models: string[]; source_ips: string[]; interval_seconds: number
-  capture_mode: 'proxy' | 'local_ipv6'; proxy_ids: number[]; forward_proxy_id: number; new_session: boolean
+  capture_mode: 'proxy' | 'local_ipv6' | 'mixed'; proxy_ids: number[]; forward_proxy_id: number; new_session: boolean
   accepted_lengths: number[]; concurrency: number
   require_valid_state: boolean
 }
 export type IPv6StateEntry = {
+  valid?: boolean; available?: boolean; capture_phase?: string; updated_at?: number; capture_stage?: string
   account_id: number; account_name: string; model: string; status: string; error?: string
   issued_at: number; expires_at: number; captured_at: number; source_ip?: string
   attempts: number; last_length: number; http_status: number; retry_at: number; fingerprint?: string
@@ -12,6 +15,7 @@ export type IPv6StateEntry = {
   refreshing?: boolean; cooldown_reason?: string; cooldown_until?: number; retry_source?: string
 }
 export type IPv6StateStatus = {
+  summary: StateSummary
   config: IPv6StateConfig; entries: IPv6StateEntry[]; local_ips: string[]; running: boolean; error?: string; server_time: number
   active_requests: number; account_concurrency: number
 }
@@ -28,7 +32,15 @@ export function parseStateLengths(text: string): number[] {
 }
 
 export function isIPv6StateReady(entry: IPv6StateEntry, now: number): boolean {
-  return entry.status === 'ready' && entry.expires_at > now
+  return (entry.valid ?? entry.status === 'ready') && entry.expires_at > now
+}
+
+export function stateTaskLabel(valid: boolean, phase?: string, updatedAt = 0, now = 0): string {
+  if (phase === 'collecting') return valid ? 'renewing' : 'collecting'
+  if (phase === 'retrying') return valid ? 'renewalRetry' : 'retrying'
+  if (phase === 'account_unavailable') return 'account_unavailable'
+  if (valid && updatedAt > 0 && now >= updatedAt && now - updatedAt < 8) return 'updated'
+  return valid ? '' : phase || 'waiting'
 }
 
 export function ipv6StateDisplayStatus(entry: IPv6StateEntry, now: number, enabled: boolean): string {
@@ -63,3 +75,4 @@ export function parseIPv6States(text: string): IPv6StatePackage[] {
   }
   return items as IPv6StatePackage[]
 }
+import type { StateSummary } from './accountStateModels'

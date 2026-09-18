@@ -126,6 +126,9 @@ func NormalizeTestContent(content string) string {
 
 // Account 运行时账号状态
 type Account struct {
+	stateAdmissionMu          sync.Mutex
+	stateBusinessLimit        int64
+	stateCaptureRequests      int64
 	codexLiteSupport          map[string]bool
 	codexCapabilityGeneration int64
 	codexCapabilityObservedAt int64
@@ -6354,14 +6357,14 @@ const (
 	accountAcquireFailureUnavailable
 )
 
-func (s *Store) tryAcquireAccountWithFailure(acc *Account, limit int64, updateSchedulerOnLimit bool) (bool, accountAcquireFailure) {
+func (s *Store) tryAcquireAccountWithFailure(acc *Account, limit int64, updateSchedulerOnLimit bool, capture ...bool) (bool, accountAcquireFailure) {
 	if acc == nil || limit <= 0 {
 		return false, accountAcquireFailureDispatchLimit
 	}
 	if accountDispatchBlocked(acc) {
 		return false, accountAcquireFailureUnavailable
 	}
-	if !reserveOccupiedAccountSlot(acc, limit) {
+	if !reserveOccupiedAccountSlot(acc, limit, capture...) {
 		if accountDispatchBlocked(acc) {
 			return false, accountAcquireFailureUnavailable
 		}
@@ -6370,7 +6373,11 @@ func (s *Store) tryAcquireAccountWithFailure(acc *Account, limit int64, updateSc
 	now := time.Now()
 	reservation := acc.reserveDispatchCount(now)
 	if !reservation.Allowed {
-		releaseOccupiedAccountSlot(acc)
+		if len(capture) > 0 && capture[0] {
+			releaseStateCaptureSlot(acc)
+		} else {
+			releaseOccupiedAccountSlot(acc)
+		}
 		s.markDispatchCountLimitCooldown(acc, reservation.ResetAt, updateSchedulerOnLimit)
 		return false, accountAcquireFailureDispatchLimit
 	}
@@ -6408,8 +6415,14 @@ func accountDispatchBlocked(acc *Account) bool {
 	return acc == nil || atomic.LoadInt32(&acc.Disabled) != 0 || atomic.LoadInt32(&acc.DispatchPaused) != 0
 }
 
-func reserveOccupiedAccountSlot(acc *Account, limit int64) bool {
+func reserveOccupiedAccountSlot(acc *Account, limit int64, capture ...bool) bool {
 	if limit <= 0 || accountDispatchBlocked(acc) {
+		return false
+	}
+	acc.stateAdmissionMu.Lock()
+	defer acc.stateAdmissionMu.Unlock()
+	isCapture := len(capture) > 0 && capture[0]
+	if !isCapture && acc.stateBusinessLimit > 0 && atomic.LoadInt64(&acc.ActiveRequests)-acc.stateCaptureRequests >= acc.stateBusinessLimit {
 		return false
 	}
 	for {
@@ -6422,6 +6435,9 @@ func reserveOccupiedAccountSlot(acc *Account, limit int64) bool {
 			if accountDispatchBlocked(acc) {
 				releaseOccupiedAccountSlot(acc)
 				return false
+			}
+			if isCapture {
+				acc.stateCaptureRequests++
 			}
 			return true
 		}
@@ -7363,7 +7379,7 @@ func (s *Store) takeByIDMode(id int64, apiKeyID int64, exclude map[int64]bool, f
 // takeByIDModeWithCapacity distinguishes a pure concurrency miss from every
 // other reason a bound account cannot be selected. Only the former is safe to
 // treat as a one-request spillover without migrating the durable binding.
-func (s *Store) takeByIDModeWithCapacity(id int64, apiKeyID int64, exclude map[int64]bool, filter AccountFilter, continuation bool, sessionKey string, policy DispatchPolicy) (*Account, bool) {
+func (s *Store) takeByIDModeWithCapacity(id int64, apiKeyID int64, exclude map[int64]bool, filter AccountFilter, continuation bool, sessionKey string, policy DispatchPolicy, capture ...bool) (*Account, bool) {
 	if s == nil || id == 0 {
 		return nil, false
 	}
@@ -7414,7 +7430,7 @@ func (s *Store) takeByIDModeWithCapacity(id int64, apiKeyID int64, exclude map[i
 		if limit <= 0 {
 			return nil, false
 		}
-		acquired, failure := s.tryAcquireAccountWithFailure(target, limit, true)
+		acquired, failure := s.tryAcquireAccountWithFailure(target, limit, true, capture...)
 		if !acquired {
 			return nil, failure == accountAcquireFailureCapacity
 		}
@@ -7434,7 +7450,7 @@ func (s *Store) takeByIDModeWithCapacity(id int64, apiKeyID int64, exclude map[i
 	if s.tryReclaimSessionSlot(target, sessionKey, true) {
 		return target, false
 	}
-	acquired, failure := s.tryAcquireAccountWithFailure(target, limit, true)
+	acquired, failure := s.tryAcquireAccountWithFailure(target, limit, true, capture...)
 	if !acquired {
 		return nil, failure == accountAcquireFailureCapacity
 	}
@@ -7966,6 +7982,11 @@ func (s *Store) tryReclaimSessionSlot(acc *Account, sessionKey string, updateSch
 		return false
 	}
 	sessionKey = strings.TrimSpace(sessionKey)
+	acc.stateAdmissionMu.Lock()
+	if acc.stateBusinessLimit > 0 && atomic.LoadInt64(&acc.ActiveRequests)-acc.stateCaptureRequests >= acc.stateBusinessLimit {
+		acc.stateAdmissionMu.Unlock()
+		return false
+	}
 
 	reclaimed := false
 	s.sessionMu.Lock()
@@ -7986,6 +8007,7 @@ func (s *Store) tryReclaimSessionSlot(acc *Account, sessionKey string, updateSch
 		}
 	}
 	s.sessionMu.Unlock()
+	acc.stateAdmissionMu.Unlock()
 	if !reclaimed {
 		return false
 	}

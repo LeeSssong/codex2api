@@ -75,7 +75,7 @@
 .ipv6-state-toolbar { display: flex; justify-content: space-between; gap: 16px; align-items: center; flex-wrap: wrap; padding: 26px 0 18px; }
 .ipv6-state-summary { display: flex; flex-direction: column; gap: 5px; font-size: 14px; }
 .ipv6-state-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.ipv6-state-filters { display: flex; gap: 12px; margin-bottom: 18px; }
+.ipv6-state-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-bottom: 18px; }
 .ipv6-state-filters > input { width: 280px; max-width: 65%; }
 .ipv6-state-filters > div { width: 170px; }
 .ipv6-state-matrix table { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 13px; text-align: left; }
@@ -86,8 +86,9 @@
 .ipv6-state-account > div { min-width: 0; }
 .ipv6-state-account strong { font-weight: 500; overflow-wrap: anywhere; }
 .ipv6-state-account small { font-weight: 400; margin-top: 4px; }
-.ipv6-state-cell { width: 100%; height: auto; min-height: 54px; padding: 8px 10px; justify-content: space-between; text-align: left; font-weight: 400; font-size: 12px; white-space: normal; }
-.ipv6-state-cell-status { display: flex; align-items: center; gap: 6px; }
+.ipv6-state-cell { width: 100%; height: auto; min-height: 86px; padding: 8px 10px; justify-content: space-between; text-align: left; font-weight: 400; font-size: 12px; white-space: normal; overflow-wrap: anywhere; }
+.ipv6-state-cell-status { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.state-pool .ipv6-state-task { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; min-height: 32px; line-height: 1.5; }
 .ipv6-state-cell small { font-variant-numeric: tabular-nums; margin-top: 4px; }
 .ipv6-state-cell > svg { opacity: 0; }
 .ipv6-state-cell:hover > svg, .ipv6-state-cell:focus-visible > svg { opacity: 1; }
@@ -102,6 +103,14 @@
 .ipv6-state-mobile-model { display: none; }
 .ipv6-state-footnote { color: var(--color-muted-foreground); font-size: 12px; line-height: 1.7; padding: 18px 0; }
 .ipv6-state-dialog { font-size: 13px; }
+.ipv6-state-settings { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; gap: 0; padding: 0; overflow: hidden; }
+.ipv6-state-settings > [data-slot="dialog-header"] { padding: 20px 48px 16px 24px; text-align: left; border-bottom: 1px solid var(--color-border); }
+.ipv6-state-settings-body { min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding: 20px 24px; }
+.ipv6-state-settings-footer { padding: 14px 24px; border-top: 1px solid var(--color-border); background: var(--color-background); }
+.ipv6-state-settings-footer .state-pool-error { padding: 0 0 10px; }
+.ipv6-state-settings-body > section + section { margin-top: 20px; }
+.ipv6-state-choices.ipv6-state-model-choices { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.ipv6-state-model-choices label { min-height: 44px; align-items: center; }
 .ipv6-state-setting-section { padding: 4px 0 16px; border-bottom: 1px solid var(--color-border); }
 .ipv6-state-setting-section h3 { font-size: 13px; font-weight: 600; margin-bottom: 14px; }
 .ipv6-state-rule-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
@@ -126,6 +135,9 @@
 .ipv6-state-import-error { white-space: pre-wrap; max-height: 200px; overflow: auto; }
 @media (max-width: 1100px) { .ipv6-state-matrix th:first-child { width: 28%; } .ipv6-state-matrix th, .ipv6-state-matrix td { padding-inline: 2px; } .ipv6-state-cell { padding-inline: 6px; } }
 @media (max-width: 700px) {
+  .ipv6-state-settings > [data-slot="dialog-header"] { padding: 18px 44px 16px 18px; }
+  .ipv6-state-settings-body { padding: 16px 18px; }
+  .ipv6-state-settings-footer { padding: 12px 18px; }
   .ipv6-state-rule-fields { grid-template-columns: minmax(0, 1fr); gap: 16px; }
   .ipv6-state-control { align-items: flex-start; padding: 16px; gap: 12px; }
   .ipv6-state-control > label > span { display: none; }
@@ -142,5 +154,6 @@
   .ipv6-state-matrix th:first-child { grid-column: 1 / -1; width: auto; padding: 0 0 6px; }
   .ipv6-state-mobile-model { display: block; font-size: 12px; padding-left: 6px; font-weight: 500; }
   .ipv6-state-cell > svg { opacity: 1; }
-  .ipv6-state-cell { min-height: 56px; }
+  .ipv6-state-cell { min-height: 86px; }
 }
+@media (prefers-reduced-motion: reduce) { .ipv6-state-plugin .animate-spin { animation: none; } }

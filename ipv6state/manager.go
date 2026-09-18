@@ -118,6 +118,9 @@ func (m *Manager) Stop() {
 	}
 	m.wg.Wait()
 	m.workers.Wait()
+	for _, account := range m.store.Accounts() {
+		account.SetStateBusinessLimit(0)
+	}
 }
 
 func (m *Manager) Configure(ctx context.Context, config Config) error {
@@ -141,6 +144,7 @@ func (m *Manager) Configure(ctx context.Context, config Config) error {
 	config.SourceIPs = slices.Clone(config.SourceIPs)
 	config.AcceptedLengths = slices.Clone(config.AcceptedLengths)
 	m.config = config
+	m.updateBusinessBudgets()
 	m.revision++
 	m.lastErr = ""
 	select {
@@ -216,34 +220,7 @@ func (m *Manager) combinations() []Entry {
 				continue
 			}
 			identity, err := statepool.Snapshot(account, "")
-			if err != nil {
-				continue
-			}
-			entry := m.entries[key(account.ID(), model)]
-			if entry.Identity != identity {
-				entry = Entry{AccountID: account.ID(), Model: model, Identity: identity}
-			}
-			account.Mu().RLock()
-			entry.AccountName = account.Email
-			account.Mu().RUnlock()
-			entry.CooldownReason, entry.CooldownUntil = "", 0
-			if reason, until := account.GetCooldownSnapshot(); until.After(m.now()) {
-				entry.CooldownReason, entry.CooldownUntil = reason, until.Unix()
-			}
-			entry.Refreshing = valid(entry, identity, m.now(), m.config) && m.collecting(entry.AccountID, model)
-			if valid(entry, identity, m.now(), m.config) {
-				entry.Status = "ready"
-			} else if !account.IsAvailable() || account.ModelCooldownRemaining(model) > 0 {
-				entry.Status = "account_unavailable"
-				if entry.CooldownReason != "" {
-					entry.Error = "cooldown_" + entry.CooldownReason
-				}
-				entry.RetryAt = max(entry.RetryAt, entry.CooldownUntil)
-			} else if m.collecting(entry.AccountID, model) {
-				entry.Status = "collecting"
-			} else if entry.Status == "" || entry.Status == "ready" || entry.Status == "collecting" || entry.Status == "account_unavailable" && entry.RetryAt <= m.now().Unix() {
-				entry.Status = "waiting"
-			}
+			entry := m.observe(account, model, identity, err, m.now())
 			result = append(result, entry)
 		}
 	}
@@ -268,17 +245,24 @@ func (m *Manager) Status() Status {
 	for i := range entries {
 		entries[i].Value = ""
 	}
-	return Status{Config: config, Entries: entries, LocalIPs: ips, Running: len(m.active) > 0, ActiveRequests: len(m.active), AccountConcurrency: m.store.GetMaxConcurrency(), Error: m.lastErr, ServerTime: m.now().Unix()}
+	return Status{Summary: m.snapshot(m.now()).Summary, Config: config, Entries: entries, LocalIPs: ips, Running: len(m.active) > 0, ActiveRequests: len(m.active), AccountConcurrency: m.store.GetMaxConcurrency(), Error: m.lastErr, ServerTime: m.now().Unix()}
 }
 
 func retryAt(header string, now time.Time) int64 {
-	if seconds, err := strconv.ParseInt(header, 10, 64); err == nil && seconds > 0 && seconds < 1<<40 {
-		return now.Unix() + seconds
-	}
-	if date, err := http.ParseTime(header); err == nil && date.After(now) {
-		return date.Unix()
+	if retry, ok := parsedRetryAfter(header, now); ok {
+		return retry
 	}
 	return now.Add(time.Minute).Unix()
+}
+
+func parsedRetryAfter(header string, now time.Time) (int64, bool) {
+	if seconds, err := strconv.ParseInt(header, 10, 64); err == nil && seconds > 0 && seconds < 1<<40 {
+		return now.Unix() + seconds, true
+	}
+	if date, err := http.ParseTime(header); err == nil && date.After(now) {
+		return date.Unix(), true
+	}
+	return 0, false
 }
 
 func (m *Manager) save(ctx context.Context, entry Entry) error {
@@ -300,6 +284,15 @@ func (m *Manager) collecting(id int64, model string) bool {
 func (m *Manager) step() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.updateBusinessBudgets()
+	for _, task := range m.active {
+		account := m.store.FindByID(task.entry.AccountID)
+		identity, err := statepool.Snapshot(account, "")
+		available, _, _ := account.StateAvailability(task.entry.Model, m.now())
+		if !m.config.Enabled || err != nil || identity != task.entry.Identity || !available || !m.selected(account, task.entry.Model) {
+			task.cancel()
+		}
+	}
 	if !m.config.Enabled || m.ctx.Err() != nil {
 		return
 	}
@@ -309,17 +302,25 @@ func (m *Manager) step() {
 		for i := range entries {
 			index := (m.cursor + i) % len(entries)
 			entry := entries[index]
-			if entry.Status == "ready" && entry.ExpiresAt > m.now().Add(RefreshBefore).Unix() || entry.Status == "account_unavailable" || entry.RetryAt > m.now().Unix() {
+			if entry.Valid && entry.ExpiresAt > m.now().Add(m.config.refreshBefore()).Unix() || entry.CapturePhase == "account_unavailable" || entry.RetryAt > m.now().Unix() {
 				continue
 			}
-			account := m.store.TakePreferredAccountWithFilter(entry.AccountID, 0, nil, m.store.WithModelCooldownFilter(entry.Model, nil))
+			account := m.store.FindByID(entry.AccountID)
+			if account == nil {
+				continue
+			}
+			limit, active := m.captureBudget(account)
+			if active >= limit {
+				continue
+			}
+			account = m.store.TakeStateCaptureAccount(entry.AccountID, m.store.WithModelCooldownFilter(entry.Model, nil))
 			if account == nil {
 				continue
 			}
 			ctx, cancel := context.WithCancel(m.ctx)
 			m.nextTask++
 			entry.Attempts++
-			entry.Status, entry.Error = "collecting", ""
+			entry.Status = "collecting"
 			m.entries[key(entry.AccountID, entry.Model)] = entry
 			selected = &captureTask{id: m.nextTask, ctx: ctx, cancel: cancel, entry: entry, account: account, config: m.config, revision: m.revision}
 			m.active[selected.id] = selected
@@ -338,7 +339,7 @@ func (m *Manager) run(task *captureTask) {
 	defer m.workers.Done()
 	defer func() {
 		task.cancel()
-		m.store.Release(task.account)
+		m.store.ReleaseStateCapture(task.account)
 		m.mu.Lock()
 		delete(m.active, task.id)
 		m.mu.Unlock()
@@ -357,6 +358,7 @@ func (m *Manager) run(task *captureTask) {
 	var response *http.Response
 	if routeErr != nil {
 		entry.Status, entry.Error, entry.RetryAt = "retrying", routeErr.Error(), m.now().Add(time.Minute).Unix()
+		entry.RetrySource = "local_backoff"
 	} else {
 		entry.SourceIP, entry.ProxyID, entry.ProxyName, entry.SessionID = route.SourceIP, route.ProxyID, route.ProxyName, route.SessionID
 		entry, response = m.probe(ctx, cancel, task.account, entry, route, task.config)
@@ -371,15 +373,25 @@ func (m *Manager) run(task *captureTask) {
 	if identityErr != nil || identity != entry.Identity {
 		return
 	}
+	if entry.Status == "ready" {
+		if available, _, _ := task.account.StateAvailability(entry.Model, m.now()); !available {
+			return
+		}
+	}
 	current := m.entries[key(entry.AccountID, entry.Model)]
 	currentValid := valid(current, identity, m.now(), m.config)
-	if currentValid && (current.Fingerprint != task.entry.Fingerprint || current.ExpiresAt > m.now().Add(RefreshBefore).Unix()) {
+	if currentValid && (current.Fingerprint != task.entry.Fingerprint || current.ExpiresAt > m.now().Add(m.config.refreshBefore()).Unix()) {
 		return
 	}
-	if currentValid && entry.Status == "ready" && (entry.ExpiresAt <= current.ExpiresAt || entry.ExpiresAt <= m.now().Add(RefreshBefore).Unix()) {
+	if currentValid && entry.Status == "ready" && (entry.ExpiresAt <= current.ExpiresAt || entry.ExpiresAt <= m.now().Add(m.config.refreshBefore()).Unix()) {
 		entry.Value, entry.Fingerprint = current.Value, current.Fingerprint
 		entry.IssuedAt, entry.ExpiresAt, entry.CapturedAt = current.IssuedAt, current.ExpiresAt, current.CapturedAt
+		entry.UpdatedAt = current.UpdatedAt
 		entry.Status, entry.Error, entry.RetryAt = "retrying", "state_not_newer", m.now().Unix()+int64(task.config.IntervalSeconds)
+		entry.RetrySource = "local_backoff"
+	}
+	if entry.Status == "ready" && current.Value != "" && entry.Fingerprint != current.Fingerprint {
+		entry.UpdatedAt = m.now().Unix()
 	}
 	entry.Attempts = current.Attempts
 	persistenceFailed := false
@@ -390,6 +402,9 @@ func (m *Manager) run(task *captureTask) {
 		if reason, until := task.account.GetCooldownSnapshot(); until.After(m.now()) {
 			entry.CooldownReason, entry.CooldownUntil = reason, until.Unix()
 			entry.RetryAt = max(entry.RetryAt, until.Unix())
+			if (reason == "rate_limited_5h" || reason == "rate_limited_7d" || reason == "usage_limited" || reason == "usage_exhausted") && until.Unix() > retryAt(response.Header.Get("Retry-After"), m.now()) {
+				entry.RetrySource = "usage_window"
+			}
 		}
 		// A header-level rejection pauses all models for this account, including
 		// peers whose successful headers have arrived but are not yet committed.
@@ -418,10 +433,12 @@ func (m *Manager) run(task *captureTask) {
 	if err := m.save(m.ctx, entry); err != nil {
 		m.lastErr = "state_persistence_failed"
 		current.Status, current.Error, current.RetryAt = "retrying", m.lastErr, m.now().Add(time.Minute).Unix()
+		current.RetrySource = "local_backoff"
 		m.entries[key(entry.AccountID, entry.Model)] = current
 		return
 	}
 	m.entries[key(entry.AccountID, entry.Model)] = entry
+	m.updateBusinessBudgets()
 	if !persistenceFailed {
 		m.lastErr = ""
 	}
@@ -435,6 +452,19 @@ func (m *Manager) run(task *captureTask) {
 }
 
 func (m *Manager) captureRoute(ctx context.Context, config Config, attempt int64) (Route, error) {
+	if config.CaptureMode == "mixed" {
+		modes := []string{"proxy", "local_ipv6"}
+		if attempt%2 != 0 {
+			modes[0], modes[1] = modes[1], modes[0]
+		}
+		for _, mode := range modes {
+			config.CaptureMode = mode
+			if route, err := m.captureRoute(ctx, config, attempt/2); err == nil {
+				return route, nil
+			}
+		}
+		return Route{}, errors.New("no_capture_route")
+	}
 	if config.CaptureMode == "proxy" {
 		if len(config.ProxyIDs) == 0 || m.route == nil {
 			return Route{}, errors.New("no_capture_proxy")
@@ -456,7 +486,8 @@ func (m *Manager) captureRoute(ctx context.Context, config Config, attempt int64
 
 func (m *Manager) probe(ctx context.Context, cancel context.CancelFunc, account *auth.Account, entry Entry, route Route, config Config) (Entry, *http.Response) {
 	identity, err := statepool.Snapshot(account, "")
-	if err != nil || identity != entry.Identity || !account.IsAvailable() || account.ModelCooldownRemaining(entry.Model) > 0 {
+	available, _, _ := account.StateAvailability(entry.Model, m.now())
+	if err != nil || identity != entry.Identity || !available {
 		entry.Status, entry.Error = "waiting", "account_changed_or_unavailable"
 		entry.RetryAt = m.now().Unix() + int64(config.IntervalSeconds)
 		return entry, nil
@@ -473,6 +504,7 @@ func (m *Manager) probe(ctx context.Context, cancel context.CancelFunc, account 
 		defer func() { _ = response.Body.Close() }()
 	}
 	entry.RetryAt = m.now().Unix() + int64(config.IntervalSeconds)
+	entry.RetrySource = "local_backoff"
 	if err != nil || response == nil {
 		entry.Status, entry.Error = "retrying", "capture_transport_error"
 		entry.RetryAt = m.now().Add(time.Minute).Unix()
@@ -485,7 +517,7 @@ func (m *Manager) probe(ctx context.Context, cancel context.CancelFunc, account 
 		entry.Status, entry.Error = "retrying", fmt.Sprintf("upstream_%d", response.StatusCode)
 		entry.RetryAt = retryAt(response.Header.Get("Retry-After"), m.now())
 		entry.RetrySource = "local_backoff"
-		if response.Header.Get("Retry-After") != "" {
+		if _, ok := parsedRetryAfter(response.Header.Get("Retry-After"), m.now()); ok {
 			entry.RetrySource = "retry_after"
 		}
 		if response.StatusCode == 401 || response.StatusCode == 403 || response.StatusCode == 429 {
@@ -510,6 +542,7 @@ func (m *Manager) probe(ctx context.Context, cancel context.CancelFunc, account 
 	entry.Value, entry.Fingerprint = value, statepool.Hash(value)
 	entry.IssuedAt, entry.ExpiresAt, entry.CapturedAt = issued, expires, m.now().Unix()
 	entry.Status, entry.Error, entry.RetryAt = "ready", "", 0
+	entry.RetrySource = ""
 	return entry, response
 }
 
@@ -552,11 +585,22 @@ func (m *Manager) Import(ctx context.Context, pack Portable) error {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	currentIdentity, err := statepool.Snapshot(m.store.FindByID(match.ID()), "")
+	if err != nil || currentIdentity != identity {
+		return errors.New("account_identity_changed")
+	}
 	if !m.config.accepts(pack.Value) {
 		return errors.New("length_not_allowed")
 	}
+	current := m.entries[key(match.ID(), model)]
+	if valid(current, identity, m.now(), m.config) && current.ExpiresAt >= expires {
+		return nil
+	}
 	entry := Entry{AccountID: match.ID(), Model: model, Identity: identity, Value: pack.Value,
 		Fingerprint: statepool.Hash(pack.Value), IssuedAt: issued, ExpiresAt: expires, CapturedAt: m.now().Unix(), LastLength: len(pack.Value), Status: "ready"}
+	if current.Value != "" {
+		entry.UpdatedAt = m.now().Unix()
+	}
 	if err := m.save(ctx, entry); err != nil {
 		return err
 	}
@@ -566,5 +610,6 @@ func (m *Manager) Import(ctx context.Context, pack Portable) error {
 		}
 	}
 	m.entries[key(entry.AccountID, entry.Model)] = entry
+	m.updateBusinessBudgets()
 	return nil
 }

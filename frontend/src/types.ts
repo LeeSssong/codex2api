@@ -161,6 +161,7 @@ export interface StatsChannelCounts {
 }
 
 export interface StatsResponse {
+  state_summary?: import('./lib/accountStateModels').StateSummary
   total: number
   available: number
   rate_limited: number
@@ -494,6 +495,7 @@ export interface AccountEmailDomainFacet {
 }
 
 export interface AccountsPageResponse extends AccountsResponse {
+  state_summary?: import('./lib/accountStateModels').StateSummary
   page: number
   page_size: number
   total: number
@@ -523,6 +525,8 @@ export interface AccountPageStatsResponse {
 }
 
 export interface AccountLiveStateResponse {
+  state_summary?: import('./lib/accountStateModels').StateSummary
+  server_time?: number
   accounts: Record<string, { active_requests: number; occupied_requests: number; state_models?: AccountStateModel[] }>
   session_slot_buffer_enabled: boolean
 }
@@ -553,7 +557,7 @@ export const SUBSCRIPTION_FILTER_OPTIONS: SubscriptionFilter[] = [
 ]
 
 export interface AccountsPageParams {
-  state?: 'all' | 'valid' | 'missing'
+  state?: 'all' | 'valid' | 'available' | 'missing'
   stateModel?: string
   channel?: UpstreamChannel
   page: number
@@ -645,7 +649,7 @@ export interface AccountAnalysisResponse {
 }
 
 export interface AccountOperationSelector {
-  state?: 'valid' | 'missing'
+  state?: 'valid' | 'available' | 'missing'
   state_model?: string
   channel: UpstreamChannel
   search?: string

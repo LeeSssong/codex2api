@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import { Link } from 'react-router-dom'
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { api } from '../api'
@@ -25,6 +26,10 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { BarChart3, Users, CheckCircle, Gauge, XCircle, Activity } from 'lucide-react'
 import PoolRunwayCard from '../components/PoolRunwayCard'
+import StateCoverage from '../components/StateCoverage'
+import { useAccountLiveState } from '../hooks/useAccountLiveState'
+import type { AccountLiveStateResponse } from '../types'
+import type { StateSummary } from '../lib/accountStateModels'
 
 const DashboardUsageCharts = lazy(() => import('../components/DashboardUsageCharts'))
 
@@ -79,6 +84,11 @@ function ChartsSkeleton() {
 
 export default function Dashboard() {
   const { t } = useTranslation()
+  const [stateSummary, setStateSummary] = useState<StateSummary>()
+  const applyStateSummary = useCallback((response: AccountLiveStateResponse) => {
+    if (response.state_summary) setStateSummary(current => current?.revision === response.state_summary!.revision ? current : response.state_summary)
+  }, [])
+  useAccountLiveState([], applyStateSummary)
   const [timeRange, setTimeRange] = useState<TimeRangeKey>('1h')
   const [channel, setChannel] = useUsageChannel()
   const { isChannelVisible } = useVisibleChannels()
@@ -271,6 +281,10 @@ export default function Dashboard() {
     : stats
   const total = effectiveCounts?.total ?? 0
   const available = effectiveCounts?.available ?? 0
+  const state = stateSummary ?? stats?.state_summary
+  const showState = !channel || channel === 'codex'
+  const stateMode = showState && state?.enabled
+  const poolAvailable = stateMode ? state.available_accounts : available
   const rateLimited = effectiveCounts?.rate_limited ?? 0
   const errorCount = effectiveCounts?.error ?? 0
   const todayRequests = effectiveCounts?.today_requests ?? 0
@@ -357,11 +371,11 @@ export default function Dashboard() {
               </div>
               <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
                 <div className="text-3xl font-extrabold tabular-nums tracking-tight text-foreground sm:text-4xl">
-                  {available}
+                  {poolAvailable}
                   <span className="text-lg font-bold text-muted-foreground/80 sm:text-xl">/{total}</span>
                 </div>
                 <div className="pb-0.5 text-sm font-semibold text-muted-foreground">
-                  {t('dashboard.heroAvailable')}
+                  {t(stateMode ? 'ipv6State.availableAccounts' : 'dashboard.heroAvailable')}
                 </div>
               </div>
               <div className="flex flex-wrap items-center gap-2 pt-1 text-xs text-muted-foreground">
@@ -369,7 +383,7 @@ export default function Dashboard() {
                   <span className="size-1.5 rounded-full bg-emerald-500 animate-pulse" />
                   {total > 0
                     ? t('dashboard.heroAvailability', {
-                        rate: Math.round((available / Math.max(total, 1)) * 100),
+                        rate: Math.round((poolAvailable / Math.max(total, 1)) * 100),
                       })
                     : t('dashboard.heroNoAccounts')}
                 </span>
@@ -419,8 +433,9 @@ export default function Dashboard() {
         </div>
 
         {/* Account status */}
-        <div className="mb-6 grid grid-cols-2 gap-2.5 sm:gap-4 md:grid-cols-3 xl:grid-cols-5">
+        <div className={`mb-6 grid grid-cols-2 gap-2.5 sm:gap-4 md:grid-cols-3 ${showState ? 'xl:grid-cols-6' : 'xl:grid-cols-5'}`}>
           <StatCard icon={icons.total} iconClass="blue" label={t('dashboard.totalAccounts')} value={total} />
+          {showState ? <Link to="/accounts?state=valid" className="min-w-0 rounded-lg focus-visible:outline-2" aria-label={t('ipv6State.reuseAccounts')}><StatCard icon={icons.available} iconClass="green" wrapLabel label={t('ipv6State.reuseAccounts')} value={state?.reuse_accounts ?? 0} sub={t('ipv6State.statDetail', { available: state?.available_accounts ?? 0, pairs: state?.valid_combinations ?? 0 })} className="h-full" /></Link> : null}
           <StatCard
             icon={icons.available}
             iconClass="green"
@@ -434,8 +449,10 @@ export default function Dashboard() {
             value={rateLimited}
           />
           <StatCard icon={icons.error} iconClass="red" label={t('dashboard.error')} value={errorCount} />
-          <StatCard icon={icons.requests} iconClass="purple" label={t('dashboard.todayRequests')} value={todayRequests} className="col-span-2 min-[420px]:col-span-1 md:col-span-1" />
+          <StatCard icon={icons.requests} iconClass="purple" label={t('dashboard.todayRequests')} value={todayRequests} className={showState ? undefined : 'col-span-2 min-[420px]:col-span-1 md:col-span-1'} />
         </div>
+
+        {showState ? <div className="mb-6"><StateCoverage summary={state} /></div> : null}
 
         {/* Pool runway（可开关）+ system health */}
         <div className="mb-6 space-y-3">

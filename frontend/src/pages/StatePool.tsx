@@ -97,13 +97,21 @@ export default function StatePool() {
   useEffect(() => {
     const controller = new AbortController()
     let timer: ReturnType<typeof setTimeout>
+    let polling = false
     const poll = async () => {
+      if (polling || controller.signal.aborted) return
+      clearTimeout(timer)
+      if (document.hidden) { timer = setTimeout(poll, 30000); return }
+      polling = true
       await refresh(controller.signal)
-      if (!controller.signal.aborted) timer = setTimeout(poll, 2500)
+      polling = false
+      if (!controller.signal.aborted) timer = setTimeout(poll, mode === 'automatic' ? 30000 : 2500)
     }
+    const visible = () => { if (!document.hidden) void poll() }
+    document.addEventListener('visibilitychange', visible)
     void poll()
-    return () => { controller.abort(); clearTimeout(timer) }
-  }, [refresh])
+    return () => { document.removeEventListener('visibilitychange', visible); controller.abort(); clearTimeout(timer) }
+  }, [refresh, mode])
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now() / 1000 + offset.current), 1000)
     return () => clearInterval(timer)

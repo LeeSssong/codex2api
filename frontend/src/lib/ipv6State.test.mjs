@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { readFileSync } from 'node:fs'
-import { ipv6StateDisplayStatus, isIPv6StateReady, parseIPv6States, parseStateLengths, serializeIPv6States } from './ipv6State.ts'
+import { ipv6StateDisplayStatus, isIPv6StateReady, stateTaskLabel, parseIPv6States, parseStateLengths, serializeIPv6States } from './ipv6State.ts'
 
 test('capture lengths support multiple values, localized separators and deduplication', () => {
   assert.deepEqual(parseStateLengths('292, 332'), [292, 332])
@@ -16,9 +16,11 @@ test('capture settings use shared controls and translated labels', () => {
   assert.match(source, /<Input[^>]*id="ipv6-state-lengths"/)
   assert.match(source, /<DraftNumberInput[^>]*id="ipv6-state-concurrency"[^>]*max=\{20\}/)
   assert.match(source, /api\.configureIPv6State\(next\)/)
+  assert.match(source, /ipv6-state-settings-body/)
+  assert.match(source, /ipv6-state-settings-footer/)
   for (const locale of ['zh', 'zh-TW', 'en']) {
     const { ipv6State } = JSON.parse(readFileSync(new URL(`../locales/${locale}.json`, import.meta.url), 'utf8'))
-    for (const key of ['acceptedLengths', 'lengthsHelp', 'invalidLengths', 'concurrency', 'concurrencyHelp', 'accountLimit']) assert.equal(typeof ipv6State[key], 'string')
+    for (const key of ['acceptedLengths', 'lengthsHelp', 'invalidLengths', 'concurrency', 'concurrencyHelp', 'accountLimit', 'refreshBefore', 'stagedConcurrency', 'urgentBefore', 'earlyConcurrency', 'urgentConcurrency', 'expiredConcurrency', 'urgentBusinessConcurrency', 'mixedMode', 'reuseAccounts', 'availableAccounts', 'coverage', 'outOfScope', 'managementSummary', 'modelSavedCount', 'savedCount', 'savedCoverage', 'availableCount', 'modelCoverage', 'renewalSettings']) assert.equal(typeof ipv6State[key], 'string')
   }
 })
 
@@ -52,4 +54,16 @@ test('disabling capture retains saved values without implying that pending reque
   assert.equal(ipv6StateDisplayStatus({ status: 'collecting', expires_at: 0 }, 100, false), 'paused')
   assert.equal(ipv6StateDisplayStatus({ status: 'waiting', expires_at: 0 }, 100, false), 'paused')
   assert.equal(ipv6StateDisplayStatus({ status: 'account_unavailable', expires_at: 0 }, 100, false), 'account_unavailable')
+})
+
+test('renewal, retry and recent updates are independent from saved validity', () => {
+  const entry = { valid: true, status: 'retrying', capture_phase: 'retrying', expires_at: 200 }
+  assert.equal(isIPv6StateReady(entry, 199), true)
+  assert.equal(ipv6StateDisplayStatus(entry, 199, true), 'ready')
+  assert.equal(isIPv6StateReady(entry, 200), false)
+  assert.equal(stateTaskLabel(true, 'collecting'), 'renewing')
+  assert.equal(stateTaskLabel(false, 'collecting'), 'collecting')
+  assert.equal(stateTaskLabel(true, 'retrying'), 'renewalRetry')
+  assert.equal(stateTaskLabel(true, 'idle', 190, 197), 'updated')
+  assert.equal(stateTaskLabel(true, 'idle', 190, 198), '')
 })

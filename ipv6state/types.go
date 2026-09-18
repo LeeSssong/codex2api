@@ -21,25 +21,40 @@ const RefreshBefore = 10 * time.Minute
 var ErrStateRequired = errors.New("valid_state_required")
 
 type Config struct {
-	Enabled           bool     `json:"enabled"`
-	CaptureMode       string   `json:"capture_mode"`
-	ProxyIDs          []int64  `json:"proxy_ids"`
-	ForwardProxyID    int64    `json:"forward_proxy_id"`
-	NewSession        bool     `json:"new_session"`
-	AccountIDs        []int64  `json:"account_ids"`
-	Models            []string `json:"models"`
-	SourceIPs         []string `json:"source_ips"`
-	IntervalSeconds   int      `json:"interval_seconds"`
-	AcceptedLengths   []int    `json:"accepted_lengths"`
-	Concurrency       int      `json:"concurrency"`
-	RequireValidState bool     `json:"require_valid_state"`
+	RefreshBeforeMinutes      int      `json:"refresh_before_minutes"`
+	StagedConcurrency         bool     `json:"staged_concurrency"`
+	UrgentBeforeMinutes       int      `json:"urgent_before_minutes"`
+	EarlyConcurrency          int      `json:"early_concurrency"`
+	UrgentConcurrency         int      `json:"urgent_concurrency"`
+	ExpiredConcurrency        int      `json:"expired_concurrency"`
+	UrgentBusinessConcurrency int      `json:"urgent_business_concurrency"`
+	Enabled                   bool     `json:"enabled"`
+	CaptureMode               string   `json:"capture_mode"`
+	ProxyIDs                  []int64  `json:"proxy_ids"`
+	ForwardProxyID            int64    `json:"forward_proxy_id"`
+	NewSession                bool     `json:"new_session"`
+	AccountIDs                []int64  `json:"account_ids"`
+	Models                    []string `json:"models"`
+	SourceIPs                 []string `json:"source_ips"`
+	IntervalSeconds           int      `json:"interval_seconds"`
+	AcceptedLengths           []int    `json:"accepted_lengths"`
+	Concurrency               int      `json:"concurrency"`
+	RequireValidState         bool     `json:"require_valid_state"`
 }
 
 func DefaultConfig() Config {
-	return Config{CaptureMode: "proxy", ProxyIDs: []int64{}, NewSession: true, AccountIDs: []int64{}, Models: slices.Clone(statepool.Models), SourceIPs: []string{}, IntervalSeconds: 3, AcceptedLengths: []int{292}, Concurrency: 20}
+	return Config{RefreshBeforeMinutes: 10, UrgentBeforeMinutes: 10, EarlyConcurrency: 1, UrgentConcurrency: 3, ExpiredConcurrency: 5, UrgentBusinessConcurrency: 1, CaptureMode: "proxy", ProxyIDs: []int64{}, NewSession: true, AccountIDs: []int64{}, Models: slices.Clone(statepool.Models), SourceIPs: []string{}, IntervalSeconds: 3, AcceptedLengths: []int{292}, Concurrency: 20}
 }
 
 func (c Config) Validate() error {
+	if c.RefreshBeforeMinutes < 1 || c.RefreshBeforeMinutes > 59 || c.UrgentBeforeMinutes < 1 || c.UrgentBeforeMinutes > c.RefreshBeforeMinutes {
+		return errors.New("invalid_refresh_window")
+	}
+	for _, limit := range []int{c.EarlyConcurrency, c.UrgentConcurrency, c.ExpiredConcurrency, c.UrgentBusinessConcurrency} {
+		if limit < 1 || limit > 20 {
+			return errors.New("invalid_stage_concurrency")
+		}
+	}
 	if c.Concurrency < 1 || c.Concurrency > 20 {
 		return errors.New("capture concurrency must be between 1 and 20")
 	}
@@ -53,7 +68,7 @@ func (c Config) Validate() error {
 		}
 		lengths[length] = true
 	}
-	if c.CaptureMode != "proxy" && c.CaptureMode != "local_ipv6" || len(c.ProxyIDs) > 128 || c.ForwardProxyID < 0 {
+	if c.CaptureMode != "proxy" && c.CaptureMode != "local_ipv6" && c.CaptureMode != "mixed" || len(c.ProxyIDs) > 128 || c.ForwardProxyID < 0 {
 		return errors.New("invalid capture mode or proxy selection")
 	}
 	proxyIDs := map[int64]bool{}
@@ -90,6 +105,10 @@ func (c Config) Validate() error {
 		seen[value] = true
 	}
 	return nil
+}
+
+func (c Config) refreshBefore() time.Duration {
+	return time.Duration(c.RefreshBeforeMinutes) * time.Minute
 }
 
 func (c Config) accepts(value string) bool {
@@ -141,6 +160,11 @@ func TokenTimes(token string, now time.Time) (int64, int64, error) {
 }
 
 type Entry struct {
+	CaptureStage   string             `json:"capture_stage"`
+	Valid          bool               `json:"valid"`
+	Available      bool               `json:"available"`
+	CapturePhase   string             `json:"capture_phase"`
+	UpdatedAt      int64              `json:"updated_at,omitempty"`
 	Refreshing     bool               `json:"refreshing"`
 	CooldownReason string             `json:"cooldown_reason,omitempty"`
 	CooldownUntil  int64              `json:"cooldown_until,omitempty"`
@@ -185,6 +209,7 @@ type Portable struct {
 }
 
 type Status struct {
+	Summary            Summary  `json:"summary"`
 	Config             Config   `json:"config"`
 	Entries            []Entry  `json:"entries"`
 	LocalIPs           []string `json:"local_ips"`

@@ -10,6 +10,7 @@ test('green State requires an exact model and an unexpired valid saved token', (
   assert.equal(hasValidModelState(states, 'gpt-5.6-terra', 100), false)
   assert.equal(hasValidModelState([{ ...states[0], valid: false }], 'gpt-5.6-sol', 100), false)
   assert.equal(hasValidModelState(undefined, 'gpt-5.6-sol', 100), false)
+  assert.equal(hasValidModelState([{ ...states[0], in_scope: false }], 'gpt-5.6-sol', 100), false)
 })
 
 test('State filters reach paginated queries and bulk selectors; settings use a policy patch', () => {

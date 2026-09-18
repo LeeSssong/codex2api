@@ -1,0 +1,109 @@
+import assert from 'node:assert/strict'
+import { mkdir } from 'node:fs/promises'
+import { fileURLToPath } from 'node:url'
+import { chromium } from 'playwright'
+import { createStateFixture } from './state-management-fixture.mjs'
+
+const base = process.env.STATE_UI_URL || 'http://127.0.0.1:5179'
+const output = new URL('../../.dev/state-ui/', import.meta.url)
+await mkdir(output, { recursive: true })
+const browser = await chromium.launch({ headless: true, executablePath: process.env.STATE_BROWSER_PATH || undefined })
+try {
+  for (const device of ['desktop', 'mobile']) for (const theme of ['light', 'dark']) {
+    const context = await browser.newContext({ viewport: device === 'desktop' ? { width: 1440, height: 1050 } : { width: 390, height: 844 }, colorScheme: theme, reducedMotion: 'reduce' })
+    const fixture = createStateFixture()
+    const errors = []
+    await context.addInitScript(({ theme }) => {
+      localStorage.setItem('lang', 'zh')
+      localStorage.setItem('theme', theme)
+      localStorage.setItem('codex2api:dashboard:pool-runway-visible', 'false')
+      localStorage.setItem('codex2api:accounts:analysis-visible', 'false')
+    }, { theme })
+    await context.route('**/*', async route => {
+      const url = new URL(route.request().url())
+      if (url.origin !== base) return route.abort()
+      if (!url.pathname.startsWith('/api/')) return route.continue()
+      const body = route.request().postData()
+      return route.fulfill({ json: await fixture(url, route.request().method(), body ? JSON.parse(body) : {}) })
+    })
+    const page = await context.newPage()
+    page.on('pageerror', error => { errors.push(error.message); console.error(error.message) })
+    page.on('console', message => { if (message.type() === 'error') console.error(message.text()) })
+    const check = async name => {
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, `${name}: horizontal overflow`)
+      await page.evaluate(async () => {
+        await document.fonts.ready
+        const animations = document.getAnimations().filter(animation => animation.effect?.getComputedTiming().iterations !== Infinity)
+        await Promise.allSettled(animations.map(animation => animation.finished))
+      })
+      await page.screenshot({ path: fileURLToPath(new URL(`${name}-${device}-${theme}.png`, output)), fullPage: true, animations: 'disabled' })
+      assert.deepEqual(errors, [], `${name}: browser errors`)
+    }
+    await page.goto(`${base}/admin/`)
+    await page.getByRole('link', { name: 'State 复用账号', exact: true }).waitFor()
+    const channels = page.getByRole('group', { name: '上游渠道', exact: true })
+    assert.equal(await channels.getByRole('button').evaluateAll(buttons => buttons.every(button => button.scrollWidth <= button.clientWidth)), true, 'channel labels overflow their controls')
+    await check('dashboard')
+    await page.getByRole('link', { name: 'State 复用账号', exact: true }).click()
+    await page.waitForURL('**/accounts?state=valid')
+    await page.locator('[data-state-valid="true"]').first().waitFor().catch(async error => { console.error(await page.locator('body').innerText()); throw error })
+    await check('accounts')
+    await page.reload()
+    await page.locator('[data-state-valid="true"]').first().waitFor()
+    assert.equal(new URL(page.url()).searchParams.get('state'), 'valid')
+    await page.goto(`${base}/admin/state-pool?state_model=gpt-5.6-sol`)
+    await page.getByText('补采中', { exact: true }).first().waitFor()
+    await page.getByText('有 2 个账号拥有有效 State', { exact: true }).waitFor()
+    for (const [model, count] of [['Sol', 2], ['Luna', 2], ['GPT-6 Astra', 0]]) {
+      const saved = page.getByRole('link', { name: `${model}：${count} 个账号有 State`, exact: true })
+      assert.match(await saved.getAttribute('href'), /state=valid&state_model=/)
+    }
+    for (const model of ['Sol', 'Luna']) assert.equal(await page.getByRole('link', { name: `${model}：1 个可用账号`, exact: true }).count(), 1)
+    const spinner = page.locator('.ipv6-state-task svg').first()
+    assert.equal(await spinner.evaluate(element => getComputedStyle(element).animationName), 'none')
+    await page.emulateMedia({ reducedMotion: 'no-preference' })
+    assert.equal(await spinner.evaluate(element => getComputedStyle(element).animationName), 'spin')
+    await page.emulateMedia({ reducedMotion: 'reduce' })
+    assert.equal(await page.locator('.ipv6-state-matrix th').filter({ hasText: 'Terra' }).count(), 0)
+    await check('state')
+    await page.getByRole('button', { name: '采集设置', exact: true }).click()
+    await page.getByLabel('提前补采（剩余分钟）').waitFor()
+    const saveButton = page.getByRole('button', { name: '保存配置', exact: true })
+    const footerVisible = () => saveButton.evaluate(element => {
+      const bounds = element.getBoundingClientRect()
+      return bounds.top >= 0 && bounds.bottom <= innerHeight && element.checkVisibility()
+    })
+    assert.equal(await footerVisible(), true, 'save action is outside the viewport')
+    await page.locator('.ipv6-state-settings-body').evaluate(element => { element.scrollTop = element.scrollHeight })
+    assert.equal(await footerVisible(), true, 'save action scrolls out of view')
+    assert.equal(await page.locator('.ipv6-state-settings-body').evaluate(element => element.scrollWidth <= element.clientWidth), true, 'settings body overflows horizontally')
+    await page.locator('.ipv6-state-settings-body').evaluate(element => { element.scrollTop = 0 })
+    await page.getByText('当前已保存配置：2 个账号拥有有效 State', { exact: true }).waitFor()
+    for (const [model, count] of [['Sol', 2], ['Luna', 2], ['GPT-6 Astra', 0]]) {
+      const choice = page.getByRole('checkbox', { name: model, exact: true }).locator('..')
+      assert.match(await choice.innerText(), new RegExp(`${count} 个账号有 State`))
+      assert.equal(await choice.locator('small').evaluate(element => getComputedStyle(element).display), 'block')
+    }
+    assert.match(await page.getByRole('checkbox', { name: 'Terra', exact: true }).locator('..').innerText(), /未纳入范围/)
+    await check('settings')
+    await page.getByRole('checkbox', { name: 'Sol', exact: true }).scrollIntoViewIfNeeded()
+    await check('settings-models')
+    await page.getByRole('checkbox', { name: 'GPT-6 Astra', exact: true }).click()
+    await page.getByRole('button', { name: '保存配置', exact: true }).click()
+    await page.getByRole('dialog').waitFor({ state: 'hidden' })
+    assert.equal(await page.locator('.ipv6-state-matrix thead').getByText('GPT-6 Astra', { exact: true }).count(), 0)
+    await page.goto(`${base}/admin/accounts?state=valid&state_model=gpt-6-astra`)
+    await page.waitForURL(url => !url.searchParams.has('state_model'))
+    await page.locator('[data-state-valid="true"]').first().waitFor()
+    assert.equal(await page.locator('[data-state-valid]').filter({ hasText: 'Terra' }).count(), 0)
+    assert.equal(await page.locator('[data-state-valid]').filter({ hasText: 'GPT-6 Astra' }).count(), 0)
+    await page.goto(`${base}/admin/state-pool`)
+    await page.getByRole('switch', { name: '自动采集与复用' }).click()
+    await page.evaluate(() => fetch('/api/admin/state-pool/ipv6/policy', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ require_valid_state: true }) }))
+    await page.getByText(/严格条件已开启.*自动复用未开启|严格条件已开启.*自动复用已关闭|严格.*自动.*关闭|严格.*自动.*未开启/).first().waitFor()
+    assert.equal(await page.locator('.ipv6-state-matrix .is-ready').count(), 4)
+    assert.deepEqual(errors, [])
+    await context.close()
+  }
+  console.log('State UI: dashboard, accounts, renewal, settings, saved filters and deselection passed on desktop/mobile in light/dark themes.')
+} finally { await browser.close() }

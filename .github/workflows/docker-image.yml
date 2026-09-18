@@ -52,6 +52,7 @@ jobs:
             type=semver,pattern={{version}},value=${{ inputs.build_version || github.ref_name }},enable=${{ inputs.build_version != '' || startsWith(github.ref, 'refs/tags/v') }}
             type=semver,pattern={{major}}.{{minor}},value=${{ inputs.build_version || github.ref_name }},enable=${{ inputs.build_version != '' || startsWith(github.ref, 'refs/tags/v') }}
             type=raw,value=latest
+            type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' }}
             type=sha,format=long
 
       - name: Build an image for the deployment smoke test
@@ -112,12 +113,21 @@ jobs:
             assert.equal(plugin.config.capture_mode, 'proxy');
             assert.deepEqual(plugin.config.models, data.models);
             assert.deepEqual(plugin.entries, []);
+            assert.equal(plugin.summary.reuse_accounts, 0);
+            assert.equal(plugin.summary.available_accounts, 0);
+            assert.equal(plugin.summary.valid_combinations, 0);
             const savedPlugin = await fetch(base + '/ipv6', {
               method: 'PUT', headers,
-              body: JSON.stringify({ ...plugin.config, interval_seconds: 7 }),
+              body: JSON.stringify({ ...plugin.config, interval_seconds: 7,
+                models: ['gpt-5.6-sol', 'gpt-5.6-luna'], capture_mode: 'mixed',
+                refresh_before_minutes: 30, staged_concurrency: true,
+                urgent_before_minutes: 10, early_concurrency: 1,
+                urgent_concurrency: 3, expired_concurrency: 10, urgent_business_concurrency: 1 }),
             });
             assert.equal(savedPlugin.status, 200);
-            assert.equal((await savedPlugin.json()).config.enabled, false);
+            const saved = await savedPlugin.json();
+            assert.equal(saved.config.enabled, false);
+            assert.deepEqual(saved.summary.models.map(item => item.model), ['gpt-5.6-sol', 'gpt-5.6-luna']);
           })().catch(error => { console.error(error); process.exitCode = 1; });
           NODE
           docker restart codex2api-smoke >/dev/null
@@ -133,6 +143,11 @@ jobs:
             const plugin = await pluginResponse.json();
             assert.equal(plugin.config.enabled, false);
             assert.equal(plugin.config.interval_seconds, 7);
+            assert.equal(plugin.config.refresh_before_minutes, 30);
+            assert.equal(plugin.config.staged_concurrency, true);
+            assert.equal(plugin.config.expired_concurrency, 10);
+            assert.equal(plugin.config.capture_mode, 'mixed');
+            assert.deepEqual(plugin.summary.models.map(item => item.model), ['gpt-5.6-sol', 'gpt-5.6-luna']);
             assert.equal(plugin.running, false);
             assert.deepEqual(plugin.entries, []);
           })().catch(error => { console.error(error); process.exitCode = 1; });
@@ -152,6 +167,18 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
           provenance: false
+
+      - name: Pull published images and verify their source revision
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for platform in linux/amd64 linux/arm64; do
+            docker pull --platform "$platform" "$IMAGE:sha-$GITHUB_SHA"
+            revision="$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$IMAGE:sha-$GITHUB_SHA")"
+            test "$revision" = "$GITHUB_SHA"
+          done
 
       - name: Deployment summary
         env:

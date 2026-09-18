@@ -57,6 +57,27 @@ jobs:
         working-directory: frontend
         run: npm run test:svg
 
+      - name: Test State management in the browser with synthetic accounts
+        working-directory: frontend
+        run: |
+          npm run dev -- --host 127.0.0.1 --port 5179 --strictPort > /tmp/state-ui-vite.log 2>&1 &
+          vite_pid=$!
+          trap 'kill "$vite_pid"' EXIT
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:5179/admin/ > /dev/null; then break; fi
+            sleep 1
+          done
+          node tests/state-management.browser.test.mjs
+
+      - name: Upload State interface screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: state-interface
+          path: .dev/state-ui/
+          include-hidden-files: true
+          if-no-files-found: ignore
+
       - name: Build frontend
         working-directory: frontend
         env:

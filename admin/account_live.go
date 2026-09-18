@@ -2,6 +2,7 @@ package admin
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -27,18 +28,21 @@ func (h *Handler) GetAccountLiveState(c *gin.Context) {
 	}
 
 	live := make(map[int64]accountLiveItem, len(ids))
+	state := h.stateSnapshot()
 	for _, id := range ids {
 		account := h.store.FindByID(id)
 		if account == nil {
 			continue
 		}
 		live[id] = accountLiveItem{
-			StateModels:      h.accountStateModels(account),
+			StateModels:      state.Accounts[id],
 			ActiveRequests:   account.GetActiveRequests(),
 			OccupiedRequests: account.GetOccupiedRequests(),
 		}
 	}
 	c.JSON(http.StatusOK, gin.H{
+		"state_summary":               state.Summary,
+		"server_time":                 time.Now().Unix(),
 		"accounts":                    live,
 		"session_slot_buffer_enabled": h.store.SessionSlotBufferEnabled(),
 	})

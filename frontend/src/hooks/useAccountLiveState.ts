@@ -1,6 +1,8 @@
 import { useEffect, useMemo } from 'react'
 import { api } from '../api'
 import type { AccountLiveStateResponse, AccountStateModel } from '../types'
+import { subscribeStateChange } from '../lib/stateSync'
+import { syncStateClock } from './useStateClock'
 
 // Merge a live poll response into an account list. Rows whose live concurrency
 // counters did not change keep their object identity, and a no-op poll returns the
@@ -41,34 +43,45 @@ export function useAccountLiveState(
   const idsKey = useMemo(() => ids.join(','), [ids])
 
   useEffect(() => {
-    if (!enabled || !idsKey) return undefined
+    if (!enabled) return undefined
     let stopped = false
     let timer: number | undefined
     let controller: AbortController | undefined
+    let generation = 0
 
     const poll = async () => {
       if (stopped) return
+      if (timer !== undefined) window.clearTimeout(timer)
+      const version = ++generation
       if (document.hidden) {
-        timer = window.setTimeout(poll, 1000)
+        timer = window.setTimeout(poll, 30000)
         return
       }
       controller?.abort()
       controller = new AbortController()
       try {
         const response = await api.getAccountLiveState(
-          idsKey.split(',').map(Number),
+          idsKey ? idsKey.split(',').map(Number) : [],
           controller.signal,
         )
-        if (!stopped && !controller.signal.aborted) apply(response)
+        if (!stopped && version === generation && !controller.signal.aborted) {
+          syncStateClock(response.server_time)
+          apply(response)
+        }
       } catch {
         // The next tick retries; live counters must never disrupt the page.
       }
-      if (!stopped) timer = window.setTimeout(poll, 1000)
+      if (!stopped && version === generation) timer = window.setTimeout(poll, 1000)
     }
 
+    const refresh = () => { if (!document.hidden) void poll() }
+    const unsubscribe = subscribeStateChange(refresh)
+    document.addEventListener('visibilitychange', refresh)
     void poll()
     return () => {
       stopped = true
+      unsubscribe()
+      document.removeEventListener('visibilitychange', refresh)
       controller?.abort()
       if (timer !== undefined) window.clearTimeout(timer)
     }

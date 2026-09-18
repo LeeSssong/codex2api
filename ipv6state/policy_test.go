@@ -3,11 +3,12 @@ package ipv6state
 import (
 	"context"
 	"errors"
-	"github.com/codex2api/auth"
-	"github.com/codex2api/statepool"
 	"net/http"
 	"testing"
 	"time"
+
+	"github.com/codex2api/auth"
+	"github.com/codex2api/statepool"
 )
 
 func importForTest(t *testing.T, m *Manager, account *auth.Account, issued int64) string {
@@ -142,9 +143,9 @@ func TestStatusUsesCurrentCooldownInsteadOfStaleCaptureError(t *testing.T) {
 	m, account, now := fixture(t, "member", false)
 	identity, _ := statepool.Snapshot(account, "")
 	m.entries[key(account.ID(), m.config.Models[0])] = Entry{AccountID: account.ID(), Model: m.config.Models[0], Identity: identity, Status: "retrying", Error: "upstream_429"}
-	account.SetCooldownUntil(time.Now().Add(time.Hour), "unauthorized")
+	account.SetCooldownUntil(now.Add(time.Hour), "unauthorized")
 	entry := m.Status().Entries[0]
-	if entry.Error != "cooldown_unauthorized" || entry.CooldownUntil <= now.Unix() {
+	if entry.Error != "upstream_429" || entry.CooldownReason != "unauthorized" || entry.CapturePhase != "account_unavailable" || entry.CooldownUntil <= now.Unix() {
 		t.Fatal("stale 429 masked current authorization failure")
 	}
 }

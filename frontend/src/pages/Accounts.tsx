@@ -7,6 +7,9 @@ import type { ProxyRow } from "../api";
 import { ProxyField } from "../components/ProxyField";
 import AccountProxyBadge from "../components/AccountProxyBadge";
 import AccountStateModels from "../components/AccountStateModels";
+import StateCoverage from "../components/StateCoverage";
+import type { StateSummary } from "../lib/accountStateModels";
+import { useStateFilters } from "../hooks/useStateFilters";
 import { STATE_MODEL_LABELS } from "../lib/statePool";
 import AccountProxyQuickEditor from "../components/AccountProxyQuickEditor";
 import SubscriptionBadge from "../components/SubscriptionBadge";
@@ -1435,7 +1438,7 @@ const AccountTableRow = memo(function AccountTableRow({
                                 />
                               </TableCell>
                             )}
-                            {visibleColumns.state && <TableCell><AccountStateModels states={account.state_models} /></TableCell>}
+                            {visibleColumns.state && <TableCell><AccountStateModels states={account.state_models} accountID={account.id} /></TableCell>}
                             {visibleColumns.status && (
                               <TableCell data-account-state-cell="status">
                                 {tableOverlay ?? (
@@ -1773,8 +1776,15 @@ export default function Accounts() {
     20,
     pageSizeOptions,
   );
-  const [stateFilter, setStateFilter] = useState<'all' | 'valid' | 'missing'>('all');
-  const [stateModelFilter, setStateModelFilter] = useState('');
+  const { state: stateFilter, model: stateModelFilter, update: updateStateFilters } = useStateFilters();
+  const [stateSummary, setStateSummary] = useState<StateSummary>();
+  const stateRevision = useRef('');
+  useEffect(() => {
+    if (stateSummary && stateModelFilter && !stateSummary.models.some(item => item.model === stateModelFilter)) {
+      updateStateFilters({ model: '' });
+      setPage(1);
+    }
+  }, [stateSummary, stateModelFilter, updateStateFilters]);
   const [statusFilter, setStatusFilter] = useState<
     | "all"
     | "normal"
@@ -2655,6 +2665,10 @@ export default function Accounts() {
           : sortKey ?? undefined,
       order: sortDir,
     }, controller.signal);
+    if (!controller.signal.aborted && accountsResponse.state_summary) {
+      setStateSummary(accountsResponse.state_summary);
+      stateRevision.current = accountsResponse.state_summary.revision;
+    }
     return {
       accounts: accountsResponse.accounts ?? [],
       total: accountsResponse.total,
@@ -2830,11 +2844,17 @@ export default function Accounts() {
     [data.accounts],
   );
   const applyAccountLiveState = useCallback((response: AccountLiveStateResponse) => {
+    if (response.state_summary) {
+      const summary = response.state_summary;
+      setStateSummary(current => current?.revision === summary.revision ? current : summary);
+      if (stateRevision.current && stateRevision.current !== summary.revision) void reloadSilently();
+      stateRevision.current = summary.revision;
+    }
     setData((current) => {
       const accounts = mergeAccountLiveState(current.accounts, response);
       return accounts === current.accounts ? current : { ...current, accounts };
     });
-  }, [setData]);
+  }, [setData, reloadSilently]);
   useAccountLiveState(visibleAccountIDs, applyAccountLiveState, providerView === "codex");
   const loadAccountDetail = useCallback(
     (account: AccountRow) =>
@@ -6740,9 +6760,10 @@ export default function Accounts() {
                 ))}
               </div>
 
+              <div className="basis-full py-2"><StateCoverage summary={stateSummary} target="state-pool" /></div>
               <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center sm:gap-2">
-                <Select className="w-full min-w-0 sm:w-40" compact aria-label={t('ipv6State.stateFilter')} value={stateFilter} onValueChange={value => { setStateFilter(value as 'all' | 'valid' | 'missing'); setPage(1); }} options={['all', 'valid', 'missing'].map(value => ({ value, label: t(`ipv6State.stateFilter_${value}`) }))} />
-                <Select className="w-full min-w-0 sm:w-40" compact aria-label={t('ipv6State.modelFilter')} value={stateModelFilter || 'all'} onValueChange={value => { setStateModelFilter(value === 'all' ? '' : value); if (value !== 'all' && stateFilter === 'all') setStateFilter('valid'); setPage(1); }} options={[{ value: 'all', label: t('ipv6State.anyModel') }, ...Object.entries(STATE_MODEL_LABELS).map(([value, label]) => ({ value, label }))]} />
+                <Select className="w-full min-w-0 sm:w-44" compact aria-label={t('ipv6State.stateFilter')} value={stateFilter} onValueChange={value => { updateStateFilters({ state: value }); setPage(1); }} options={['all', 'valid', 'available', 'missing'].map(value => ({ value, label: t(`ipv6State.stateFilter_${value}`) }))} />
+                <Select className="w-full min-w-0 sm:w-44" compact aria-label={t('ipv6State.modelFilter')} value={stateModelFilter || 'all'} onValueChange={value => { updateStateFilters({ model: value === 'all' ? '' : value, state: value !== 'all' && stateFilter === 'all' ? 'valid' : stateFilter }); setPage(1); }} options={[{ value: 'all', label: t('ipv6State.anyModel') }, ...(stateSummary?.models ?? []).map(({ model }) => ({ value: model, label: STATE_MODEL_LABELS[model] || model }))]} />
                 <Select
                   className="w-full min-w-0 sm:w-32"
                   compact
@@ -7130,8 +7151,7 @@ export default function Accounts() {
                   type="button"
                   onClick={() => {
                     setStatusFilter("all");
-                    setStateFilter('all');
-                    setStateModelFilter('');
+                    updateStateFilters({ state: 'all', model: '' });
                     setPlanFilter("all");
                     setSubscriptionFilter("all");
                     setTagFilter("");
@@ -13679,7 +13699,7 @@ function AccountMobileCard({
         </div>
       </header>
 
-      {showColumn('state') ? <div className="px-4 py-2"><AccountStateModels states={account.state_models} /></div> : null}
+      {showColumn('state') ? <div className="px-4 py-2"><AccountStateModels states={account.state_models} accountID={account.id} /></div> : null}
       <div className="codex-account-card__notices">
         {overlayKind === "overload" && (
           <div className="codex-account-card__notice">

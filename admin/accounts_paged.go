@@ -12,6 +12,7 @@ import (
 
 	"github.com/codex2api/auth"
 	"github.com/codex2api/database"
+	"github.com/codex2api/ipv6state"
 	"github.com/gin-gonic/gin"
 )
 
@@ -146,6 +147,7 @@ type accountListFacets struct {
 }
 
 type accountsPageResponse struct {
+	StateSummary  ipv6state.Summary  `json:"state_summary"`
 	Accounts      []accountResponse  `json:"accounts"`
 	Page          int                `json:"page"`
 	PageSize      int                `json:"page_size"`
@@ -158,6 +160,7 @@ type accountsPageResponse struct {
 }
 
 type accountPageSelection struct {
+	State         ipv6state.Snapshot
 	Rows          []*database.AccountRow
 	Page          int
 	PageSize      int
@@ -410,7 +413,8 @@ func (h *Handler) getAccountPageSelection(ctx context.Context, c *gin.Context, c
 	if err != nil {
 		return nil, err
 	}
-	stateMatches, err := h.accountStatePredicate(c.Query("state"), c.Query("state_model"))
+	state := h.stateSnapshot()
+	stateMatches, err := statePredicate(state, c.Query("state"), c.Query("state_model"))
 	if err != nil {
 		return nil, &accountPageQueryError{err: err}
 	}
@@ -458,7 +462,8 @@ func (h *Handler) getAccountPageSelection(ctx context.Context, c *gin.Context, c
 		}
 	}
 	return &accountPageSelection{
-		Rows: rows, Page: page, PageSize: query.PageSize, Total: total,
+		State: state,
+		Rows:  rows, Page: page, PageSize: query.PageSize, Total: total,
 		Summary: snapshot.Summary, Facets: snapshot.Facets,
 		SnapshotAt: snapshot.BuiltAt, StatsState: snapshot.StatsState,
 		DisabledSorts: disabledSorts,

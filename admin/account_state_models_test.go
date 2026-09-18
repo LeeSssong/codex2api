@@ -70,6 +70,32 @@ func TestAccountStateFilterPrecedesPaginationAndBulkSelection(t *testing.T) {
 	if r.Code != 400 {
 		t.Fatal("unsupported model was accepted")
 	}
+	config := h.ipv6State.Status().Config
+	config.Models = []string{"gpt-5.6-sol", "gpt-5.6-luna"}
+	if err := h.ipv6State.Configure(context.Background(), config); err != nil {
+		t.Fatal(err)
+	}
+	r = invokeListAccounts(t, h, "/api/admin/accounts?view=page&channel=codex&page_size=1&state=valid&state_model=gpt-5.6-terra")
+	var selectedPage accountsPageResponse
+	if err := json.Unmarshal(r.Body.Bytes(), &selectedPage); err != nil {
+		t.Fatal(err)
+	}
+	if selectedPage.Total != 1 || len(selectedPage.Accounts[0].StateModels) != 2 || selectedPage.StateSummary.ReuseAccounts != 1 || selectedPage.StateSummary.ValidCombinations != 1 {
+		t.Fatal("deselected model did not fall back before pagination")
+	}
+	selected, err = h.resolveAccountOperationSelector(context.Background(), &accountOperationSelector{Channel: "codex", State: "valid", StateModel: "gpt-5.6-terra"})
+	if err != nil || len(selected) != 1 || selected[0] != selectedPage.Accounts[0].ID {
+		t.Fatal("bulk and paginated fallback differed")
+	}
+	account.SetCooldownUntil(time.Now().Add(time.Hour), "rate_limited")
+	r = invokeListAccounts(t, h, "/api/admin/accounts?view=page&channel=codex&state=available")
+	if json.Unmarshal(r.Body.Bytes(), &selectedPage) != nil || selectedPage.Total != 0 || selectedPage.StateSummary.ReuseAccounts != 1 || selectedPage.StateSummary.AvailableAccounts != 0 {
+		t.Fatal("available filter included a cooling account or lost saved coverage")
+	}
+	selected, err = h.resolveAccountOperationSelector(context.Background(), &accountOperationSelector{Channel: "codex", State: "available"})
+	if err != nil || len(selected) != 0 {
+		t.Fatal("bulk selection ignored current State availability")
+	}
 	account.Mu().Lock()
 	account.CredentialGeneration++
 	account.Mu().Unlock()

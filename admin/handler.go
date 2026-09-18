@@ -1481,6 +1481,7 @@ func (h *Handler) GetStats(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, statsResponse{
+		State:         h.stateSnapshot().Summary,
 		Total:         accountCounts.total,
 		Available:     accountCounts.normal,
 		RateLimited:   accountCounts.rateLimited,
@@ -1978,9 +1979,13 @@ func (h *Handler) ListAccounts(c *gin.Context) {
 	}
 
 	if pageSelection != nil {
+		for i := range accounts {
+			accounts[i].StateModels = pageSelection.State.Accounts[accounts[i].ID]
+		}
 		c.JSON(http.StatusOK, accountsPageResponse{
-			Accounts: accounts,
-			Page:     pageSelection.Page, PageSize: pageSelection.PageSize, Total: pageSelection.Total,
+			StateSummary: pageSelection.State.Summary,
+			Accounts:     accounts,
+			Page:         pageSelection.Page, PageSize: pageSelection.PageSize, Total: pageSelection.Total,
 			Summary: pageSelection.Summary, Facets: pageSelection.Facets,
 			SnapshotAt: pageSelection.SnapshotAt.Format(time.RFC3339), StatsState: pageSelection.StatsState,
 			DisabledSorts: pageSelection.DisabledSorts,
