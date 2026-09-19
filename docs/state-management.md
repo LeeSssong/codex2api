@@ -9,6 +9,10 @@ match is not a model capability check.
 ## Counts and switches
 
 - Total accounts do not change when automatic reuse is toggled.
+- Codex account health and scheduling counts do not require a usage sample.
+  Unsampled usage is a separate coverage metric, not an account failure. Account
+  management shows the same distinct State reuse count and per-model saved and
+  available counts as the dashboard and State management.
 - Reuse accounts are distinct in-scope accounts with a valid State for at least
   one selected model. Valid combinations count account/model pairs separately.
 - Available State accounts additionally satisfy account and model scheduling

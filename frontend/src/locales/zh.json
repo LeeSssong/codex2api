@@ -8,6 +8,7 @@
     "reuseAccounts": "State 复用账号",
     "availableAccounts": "State 可用账号",
     "statDetail": "可调度 {{available}} · 有效组合 {{pairs}}",
+    "statDetailOff": "复用未开启 · 有效组合 {{pairs}}",
     "managementSummary": "有 {{accounts}} 个账号拥有有效 State",
     "modelSavedCount": "{{model}}：{{count}} 个账号有 State",
     "savedCount": "{{count}} 个账号有 State",
@@ -1086,6 +1087,9 @@
     "heroChannelTitle": "{{channel}}：可用账号 {{available}}/{{total}} · 今日请求 {{requests}}"
   },
   "accounts": {
+    "schedulableAccounts": "可调度账号",
+    "filterSchedulable": "可调度",
+    "usageSamplingIndependent": "{{count}} 个账号尚无用量采样；未采样不代表账号异常，也不影响正常账号和 State 覆盖计数。",
     "testDiagTurnState": "State 长度",
     "testDiagTurnStateHint": "x-codex-turn-state · 长度匹配不代表能力验证通过",
     "testDiagTurnStateHandshake": "来自 WS 握手，可能属于复用连接；本次响应元数据返回后会更新。",

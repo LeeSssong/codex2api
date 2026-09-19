@@ -518,7 +518,7 @@ func TestAccountStatsCachesNeverBlockColdOrStaleReads(t *testing.T) {
 	}
 }
 
-func TestAccountListUnsampledExcludedFromNormalAndSchedulable(t *testing.T) {
+func TestAccountListCodexSamplingIsIndependentOfHealth(t *testing.T) {
 	unsampled := &accountListSnapshotItem{ID: 1, Status: "active", Enabled: true}
 	sampled := &accountListSnapshotItem{ID: 2, Status: "active", Enabled: true, UsagePercent7d: 12, UsagePercent7dOK: true}
 	only5h := &accountListSnapshotItem{ID: 3, Status: "active", Enabled: true, UsagePercent5h: 8, UsagePercent5hOK: true}
@@ -529,8 +529,8 @@ func TestAccountListUnsampledExcludedFromNormalAndSchedulable(t *testing.T) {
 	if !accountListUnsampled(unsampled) {
 		t.Fatal("active account without usage windows should be unsampled")
 	}
-	if accountListNormal(unsampled) || accountListSchedulable(unsampled) {
-		t.Fatal("unsampled account must not count as normal or schedulable")
+	if !accountListNormal(unsampled) || !accountListSchedulable(unsampled) {
+		t.Fatal("missing Codex usage samples must not exclude a healthy account")
 	}
 	if accountListUnsampled(sampled) || accountListUnsampled(only5h) || accountListUnsampled(responses) || accountListUnsampled(grok) || accountListUnsampled(banned) {
 		t.Fatal("sampled, 5h-only, responses, grok, and banned accounts must not be unsampled")
@@ -538,16 +538,82 @@ func TestAccountListUnsampledExcludedFromNormalAndSchedulable(t *testing.T) {
 	if !accountListNormal(sampled) || !accountListSchedulable(sampled) || !accountListNormal(only5h) || !accountListSchedulable(responses) || !accountListSchedulable(grok) {
 		t.Fatal("sampled / responses / grok accounts should stay available")
 	}
-	if accountListStatusMatches(unsampled, "normal", database.UpstreamChannelCodex) || accountListStatusMatches(unsampled, "scheduling", database.UpstreamChannelCodex) {
-		t.Fatal("unsampled filter buckets must exclude normal and scheduling")
+	if !accountListStatusMatches(unsampled, "normal", database.UpstreamChannelCodex) || !accountListStatusMatches(unsampled, "scheduling", database.UpstreamChannelCodex) {
+		t.Fatal("normal and scheduling filters must include healthy unsampled accounts")
 	}
 	if !accountListStatusMatches(unsampled, "unsampled", database.UpstreamChannelCodex) {
 		t.Fatal("unsampled filter should match accounts without usage windows")
 	}
 
 	summary, _ := summarizeAccountList([]*accountListSnapshotItem{unsampled, sampled, only5h, responses}, database.UpstreamChannelCodex)
-	if summary.Normal != 3 || summary.Active != 3 || summary.Unsampled != 1 {
-		t.Fatalf("summary = %+v, want normal=3 active=3 unsampled=1", summary)
+	if summary.Normal != 4 || summary.Active != 4 || summary.Unsampled != 1 {
+		t.Fatalf("summary = %+v, want normal=4 active=4 unsampled=1", summary)
+	}
+}
+
+func TestAccountListUnsampledRestrictionsAndOtherProviders(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		item           accountListSnapshotItem
+		normal, active bool
+	}{
+		{"codex busy slots", accountListSnapshotItem{Status: "active", Enabled: true, ActiveRequests: 10, OccupiedRequests: 10, DynamicConcurrency: 10}, true, true},
+		{"codex disabled", accountListSnapshotItem{Status: "active"}, true, false},
+		{"codex cooldown", accountListSnapshotItem{Status: "rate_limited", Enabled: true}, false, false},
+		{"codex quota pause", accountListSnapshotItem{Status: "quota_paused", Enabled: true}, false, false},
+		{"codex unauthorized", accountListSnapshotItem{Status: "unauthorized", Enabled: true}, false, false},
+		{"codex error", accountListSnapshotItem{Status: "error", Enabled: true}, false, false},
+		{"codex overload", accountListSnapshotItem{Status: "overload_paused", Enabled: true}, true, false},
+		{"claude unprobed", accountListSnapshotItem{Status: "active", Enabled: true, Claude: true}, false, false},
+		{"claude probed", accountListSnapshotItem{Status: "active", Enabled: true, Claude: true, ClaudeUsageProbeAt: "2026-09-19T00:00:00Z"}, true, true},
+		{"grok", accountListSnapshotItem{Status: "active", Enabled: true, GrokAuthKind: auth.GrokAuthKindOAuth}, true, true},
+		{"antigravity", accountListSnapshotItem{Status: "active", Enabled: true, Antigravity: true}, true, true},
+		{"responses relay", accountListSnapshotItem{Status: "active", Enabled: true, OpenAIResponses: true}, true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if accountListNormal(&tc.item) != tc.normal || accountListSchedulable(&tc.item) != tc.active {
+				t.Fatalf("normal=%v active=%v, want %v/%v", accountListNormal(&tc.item), accountListSchedulable(&tc.item), tc.normal, tc.active)
+			}
+		})
+	}
+}
+
+func TestCodexFiveHealthyAccountsWithOneUsageSample(t *testing.T) {
+	h, ids, _ := newPagedAccountsHandler(t)
+	ctx := context.Background()
+	for i := 0; i < 2; i++ {
+		id, err := h.db.InsertAccountWithCredentials(ctx, "extra-"+strconv.Itoa(i), map[string]interface{}{"refresh_token": "synthetic"}, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, id)
+	}
+	// Use a deterministic list snapshot; no token acquisition or upstream probes.
+	items := make([]*accountListSnapshotItem, 0, len(ids))
+	for i, id := range ids {
+		items = append(items, &accountListSnapshotItem{ID: id, Status: "active", Enabled: true, UsagePercent7dOK: i == 0, UsagePercent7d: 27})
+	}
+	summary, facets := summarizeAccountList(items, database.UpstreamChannelCodex)
+	h.accountListCache = map[string]*accountListSnapshot{database.UpstreamChannelCodex: {
+		Items: items, Summary: summary, Facets: facets, StatsState: "ready", BuiltAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour),
+	}}
+	for _, status := range []string{"normal", "scheduling", "unsampled"} {
+		want := 5
+		if status == "unsampled" {
+			want = 4
+		}
+		r := invokeListAccounts(t, h, "/api/admin/accounts?view=page&channel=codex&page_size=2&status="+status)
+		var page accountsPageResponse
+		if r.Code != http.StatusOK || json.Unmarshal(r.Body.Bytes(), &page) != nil {
+			t.Fatalf("invalid response: %s", r.Body.String())
+		}
+		if page.Summary.Normal != 5 || page.Summary.Active != 5 || page.Summary.Unsampled != 4 || page.Total != want || len(page.Accounts) != 2 {
+			t.Fatalf("%s: summary=%+v total=%d rows=%d", status, page.Summary, page.Total, len(page.Accounts))
+		}
+		selected, err := h.resolveAccountOperationSelector(ctx, &accountOperationSelector{Channel: database.UpstreamChannelCodex, Status: status})
+		if err != nil || len(selected) != want {
+			t.Fatalf("%s bulk selection: ids=%v err=%v", status, selected, err)
+		}
 	}
 }
 

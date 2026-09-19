@@ -6514,15 +6514,16 @@ export default function Accounts() {
               {loading ? t("common.loading") : t("accounts.statsWarming")}
             </div>
           ) : null}
-          <div className="mb-4 grid grid-cols-2 gap-2 sm:gap-3 xl:grid-cols-5">
+          <div className="mb-4 grid grid-cols-2 gap-2 sm:gap-3 md:grid-cols-3 xl:grid-cols-6">
             <CompactStat
               label={t("accounts.totalAccounts")}
               chipLabel={t("accounts.filterAll")}
               value={totalAccounts}
               tone="neutral"
-              active={statusFilter === "all"}
+              active={statusFilter === "all" && stateFilter === "all"}
               onClick={() => {
                 setStatusFilter("all");
+                updateStateFilters({ state: "all", model: "" });
                 setPage(1);
               }}
             />
@@ -6538,13 +6539,26 @@ export default function Accounts() {
               }}
             />
             <CompactStat
-              label={t("accounts.schedulingAccounts")}
-              chipLabel={t("accounts.filterScheduling")}
+              label={t("accounts.schedulableAccounts")}
+              chipLabel={t("accounts.filterSchedulable")}
               value={schedulingAccounts}
               tone="warning"
               active={statusFilter === "scheduling"}
               onClick={() => {
                 setStatusFilter("scheduling");
+                setPage(1);
+              }}
+            />
+            <CompactStat
+              label={t("ipv6State.reuseAccounts")}
+              chipLabel={null}
+              value={stateSummary?.reuse_accounts ?? 0}
+              description={t(stateSummary?.enabled === false ? "ipv6State.statDetailOff" : "ipv6State.statDetail", { available: stateSummary?.available_accounts ?? 0, pairs: stateSummary?.valid_combinations ?? 0 })}
+              tone="success"
+              active={stateFilter === "valid" && !stateModelFilter}
+              onClick={() => {
+                setStatusFilter("all");
+                updateStateFilters({ state: "valid", model: "" });
                 setPage(1);
               }}
             />
@@ -6579,6 +6593,8 @@ export default function Accounts() {
               }}
             />
           </div>
+
+          {unsampledAccounts > 0 ? <p className="mb-4 text-xs leading-relaxed text-muted-foreground">{t("accounts.usageSamplingIndependent", { count: unsampledAccounts })}</p> : null}
 
           {showAnalysisCharts && accountAnalysis ? (
             <div className="mb-4 grid items-stretch gap-4 xl:grid-cols-2">
@@ -6633,7 +6649,7 @@ export default function Accounts() {
                   ["normal", t("accounts.filterNormal"), normalAccounts],
                   [
                     "scheduling",
-                    t("accounts.filterScheduling"),
+                    t("accounts.filterSchedulable"),
                     schedulingAccounts,
                   ],
                   [
@@ -6760,7 +6776,7 @@ export default function Accounts() {
                 ))}
               </div>
 
-              <div className="basis-full py-2"><StateCoverage summary={stateSummary} target="state-pool" /></div>
+              <div className="basis-full py-2"><StateCoverage summary={stateSummary} target="state-pool" includeSaved /></div>
               <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center sm:gap-2">
                 <Select className="w-full min-w-0 sm:w-44" compact aria-label={t('ipv6State.stateFilter')} value={stateFilter} onValueChange={value => { updateStateFilters({ state: value }); setPage(1); }} options={['all', 'valid', 'available', 'missing'].map(value => ({ value, label: t(`ipv6State.stateFilter_${value}`) }))} />
                 <Select className="w-full min-w-0 sm:w-44" compact aria-label={t('ipv6State.modelFilter')} value={stateModelFilter || 'all'} onValueChange={value => { updateStateFilters({ model: value === 'all' ? '' : value, state: value !== 'all' && stateFilter === 'all' ? 'valid' : stateFilter }); setPage(1); }} options={[{ value: 'all', label: t('ipv6State.anyModel') }, ...(stateSummary?.models ?? []).map(({ model }) => ({ value: model, label: STATE_MODEL_LABELS[model] || model }))]} />
@@ -7061,7 +7077,7 @@ export default function Accounts() {
                     {statusFilter === "normal"
                       ? t("accounts.filterNormal")
                       : statusFilter === "scheduling"
-                        ? t("accounts.filterScheduling")
+                        ? t("accounts.filterSchedulable")
                       : statusFilter === "rate_limited"
                         ? t("accounts.filterRateLimited")
                         : statusFilter === "abnormal"

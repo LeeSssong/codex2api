@@ -11,13 +11,14 @@ const browser = await chromium.launch({ headless: true, executablePath: process.
 try {
   for (const device of ['desktop', 'mobile']) for (const theme of ['light', 'dark']) {
     const context = await browser.newContext({ viewport: device === 'desktop' ? { width: 1440, height: 1050 } : { width: 390, height: 844 }, colorScheme: theme, reducedMotion: 'reduce' })
-    const fixture = createStateFixture()
+    let fixture = createStateFixture()
     const errors = []
     await context.addInitScript(({ theme }) => {
       localStorage.setItem('lang', 'zh')
       localStorage.setItem('theme', theme)
       localStorage.setItem('codex2api:dashboard:pool-runway-visible', 'false')
       localStorage.setItem('codex2api:accounts:analysis-visible', 'false')
+      localStorage.setItem('codex2api:accounts:page-mode', 'pool')
     }, { theme })
     await context.route('**/*', async route => {
       const url = new URL(route.request().url())
@@ -47,6 +48,10 @@ try {
     await page.getByRole('link', { name: 'State 复用账号', exact: true }).click()
     await page.waitForURL('**/accounts?state=valid')
     await page.locator('[data-state-valid="true"]').first().waitFor().catch(async error => { console.error(await page.locator('body').innerText()); throw error })
+    const stateCard = page.getByRole('button', { name: /^State 复用账号/ })
+    assert.match(await stateCard.innerText(), /可调度 1 · 有效组合 4/)
+    await stateCard.getByText('2', { exact: true }).waitFor()
+    for (const model of ['Sol', 'Luna']) await page.getByRole('link', { name: `${model}：2 个账号有 State`, exact: true }).waitFor()
     await check('accounts')
     await page.reload()
     await page.locator('[data-state-valid="true"]').first().waitFor()
@@ -102,6 +107,34 @@ try {
     await page.evaluate(() => fetch('/api/admin/state-pool/ipv6/policy', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ require_valid_state: true }) }))
     await page.getByText(/严格条件已开启.*自动复用未开启|严格条件已开启.*自动复用已关闭|严格.*自动.*关闭|严格.*自动.*未开启/).first().waitFor()
     assert.equal(await page.locator('.ipv6-state-matrix .is-ready').count(), 4)
+    assert.deepEqual(errors, [])
+
+    // Reproduce five healthy Codex accounts with only one usage sample.
+    fixture = createStateFixture({ scenario: 'five-healthy' })
+    await page.goto(`${base}/admin/accounts`)
+    for (const label of ['总账号数量', '正常账号', '可调度账号', 'State 复用账号']) {
+      await page.getByRole('button', { name: new RegExp(`^${label}`) }).getByText('5', { exact: true }).waitFor()
+    }
+    await page.getByText('4 个账号尚无用量采样；未采样不代表账号异常，也不影响正常账号和 State 覆盖计数。', { exact: true }).waitFor()
+    for (const model of ['Sol', 'Luna', 'GPT-6 Astra']) await page.getByRole('link', { name: `${model}：5 个账号有 State`, exact: true }).waitFor()
+    assert.match(await stateCard.innerText(), /可调度 5 · 有效组合 15/)
+    await check('accounts-healthy-counts')
+    await page.screenshot({ path: fileURLToPath(new URL(`accounts-summary-${device}-${theme}.png`, output)), animations: 'disabled' })
+    await page.getByRole('button', { name: /^正常账号/ }).click()
+    await stateCard.click()
+    await page.waitForURL('**/accounts?state=valid')
+    await page.reload()
+    await stateCard.getByText('5', { exact: true }).waitFor()
+    assert.equal(await stateCard.getAttribute('aria-pressed'), 'true')
+    assert.equal(await page.locator('[data-state-valid="true"]').count(), 15)
+    await page.getByRole('button', { name: /^总账号数量/ }).click()
+    await page.waitForURL(url => !url.searchParams.has('state'))
+    await page.getByRole('button', { name: /^State 复用账号/, pressed: false }).waitFor()
+    assert.equal(await stateCard.getAttribute('aria-pressed'), 'false')
+    await page.evaluate(() => fetch('/api/admin/state-pool/ipv6', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: false }) }))
+    await page.reload()
+    await stateCard.getByText('5', { exact: true }).waitFor()
+    await stateCard.getByText('复用未开启 · 有效组合 15', { exact: true }).waitFor()
     assert.deepEqual(errors, [])
     await context.close()
   }

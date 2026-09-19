@@ -8,6 +8,7 @@
     "reuseAccounts": "State reuse accounts",
     "availableAccounts": "State available accounts",
     "statDetail": "Schedulable {{available}} · Valid pairs {{pairs}}",
+    "statDetailOff": "Reuse off · Valid pairs {{pairs}}",
     "managementSummary": "{{accounts}} accounts have valid State",
     "modelSavedCount": "{{model}}: {{count}} accounts with State",
     "savedCount": "{{count}} accounts with State",
@@ -1086,6 +1087,9 @@
     "heroChannelTitle": "{{channel}}: {{available}}/{{total}} accounts available · {{requests}} requests today"
   },
   "accounts": {
+    "schedulableAccounts": "Schedulable Accounts",
+    "filterSchedulable": "Schedulable",
+    "usageSamplingIndependent": "{{count}} accounts have no usage samples. Missing samples do not indicate an account error or reduce healthy account and State coverage counts.",
     "testDiagTurnState": "State length",
     "testDiagTurnStateHint": "x-codex-turn-state · Matching length does not verify capability",
     "testDiagTurnStateHandshake": "From the WS handshake, possibly a reused connection. Updates when this response supplies metadata.",

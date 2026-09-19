@@ -1210,7 +1210,7 @@ func accountListStatusMatches(item *accountListSnapshotItem, status, channel str
 	}
 	switch status {
 	case "normal":
-		// 过载暂停、禁用都归入「正常」；真正可调度的账号走 scheduling/active。
+		// Normal describes account health; scheduling also excludes dispatch pauses.
 		return accountListNormal(item)
 	case "active", "scheduling":
 		return accountListSchedulable(item)
@@ -1256,7 +1256,9 @@ func accountListUnsampled(item *accountListSnapshotItem) bool {
 }
 
 func accountListNormal(item *accountListSnapshotItem) bool {
-	if item.Status == "unauthorized" || item.Status == "error" || accountListUnsampled(item) {
+	// Codex usage sampling is independent of health and dispatch eligibility.
+	// Keep the existing native Claude probe classification unchanged.
+	if item.Status == "unauthorized" || item.Status == "error" || item.Claude && accountListUnsampled(item) {
 		return false
 	}
 	if !item.Enabled || accountListOverloadPaused(item) {
@@ -1269,7 +1271,7 @@ func accountListSchedulable(item *accountListSnapshotItem) bool {
 	return item.Enabled &&
 		item.Status != "unauthorized" &&
 		item.Status != "error" &&
-		!accountListUnsampled(item) &&
+		!(item.Claude && accountListUnsampled(item)) &&
 		!accountListRateLimited(item) &&
 		!accountListOverloadPaused(item)
 }

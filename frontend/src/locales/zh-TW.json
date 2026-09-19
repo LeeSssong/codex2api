@@ -8,6 +8,7 @@
     "reuseAccounts": "State 複用帳號",
     "availableAccounts": "State 可用帳號",
     "statDetail": "可排程 {{available}} · 有效組合 {{pairs}}",
+    "statDetailOff": "複用未開啟 · 有效組合 {{pairs}}",
     "managementSummary": "有 {{accounts}} 個帳號擁有有效 State",
     "modelSavedCount": "{{model}}：{{count}} 個帳號有 State",
     "savedCount": "{{count}} 個帳號有 State",
@@ -608,6 +609,9 @@
     }
   },
   "accounts": {
+    "schedulableAccounts": "可排程帳號",
+    "filterSchedulable": "可排程",
+    "usageSamplingIndependent": "{{count}} 個帳號尚無用量採樣；未採樣不代表帳號異常，也不影響正常帳號與 State 涵蓋計數。",
     "testDiagTurnState": "State 長度",
     "testDiagTurnStateHint": "x-codex-turn-state · 長度匹配不代表能力驗證通過",
     "testDiagTurnStateHandshake": "來自 WS 握手，可能屬於複用連線；本次回應中繼資料返回後會更新。",

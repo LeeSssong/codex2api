@@ -18,11 +18,14 @@ test('State filters reach paginated queries and bulk selectors; settings use a p
   assert.match(accounts, /state: stateFilter,/)
   assert.match(accounts, /stateModel: stateModelFilter,/)
   assert.match(accounts, /state_model: stateModelFilter \|\| undefined/)
+  assert.match(accounts, /value=\{stateSummary\?\.reuse_accounts \?\? 0\}/)
+  assert.match(accounts, /<StateCoverage summary=\{stateSummary\} target="state-pool" includeSaved/)
   const settings = readFileSync(new URL('../components/StatePolicySettings.tsx', import.meta.url), 'utf8')
   assert.match(settings, /<Switch/)
   assert.match(settings, /api\.configureStatePolicy\(checked\)/)
   for (const lang of ['zh', 'en', 'zh-TW']) {
-    const { ipv6State } = JSON.parse(readFileSync(new URL(`../locales/${lang}.json`, import.meta.url), 'utf8'))
+    const { ipv6State, accounts: accountCopy } = JSON.parse(readFileSync(new URL(`../locales/${lang}.json`, import.meta.url), 'utf8'))
+    for (const key of ['schedulableAccounts', 'filterSchedulable', 'usageSamplingIndependent']) assert.equal(typeof accountCopy[key], 'string')
     for (const key of ['requireValid', 'renewalHelp', 'stateFilter_valid', 'stateFilter_missing', 'modelValid', 'modelMissing']) assert.equal(typeof ipv6State[key], 'string')
   }
 })
