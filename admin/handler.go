@@ -45,21 +45,27 @@ import (
 
 // Handler 管理后台 API 处理器
 type Handler struct {
-	qualityTestContext context.Context
-	qualityTestWG      sync.WaitGroup
-	store              *auth.Store
-	modelRefreshFuncs  map[string]channelModelRefreshFunc // nil = 各渠道默认实现；测试注入用
-	proxyRiskJobsMu    sync.RWMutex
-	proxyRiskJobs      map[string]*proxyRiskScoringJob
-	cache              cache.TokenCache
-	authCacheProxy     *proxy.Handler
-	db                 *database.DB
-	cacheCfgStore      responseCacheSettingsStore
-	rateLimiter        *proxy.RateLimiter
-	systemUpdate       *systemUpdater
-	systemUpdateOnce   sync.Once
-	refreshAccount     func(context.Context, int64) error
-	probeUsage         func(context.Context, *auth.Account) error
+	qualityTestContext       context.Context
+	qualityTestWG            sync.WaitGroup
+	store                    *auth.Store
+	modelRefreshFuncs        map[string]channelModelRefreshFunc // nil = 各渠道默认实现；测试注入用
+	proxyRiskJobsMu          sync.RWMutex
+	proxyRiskJobs            map[string]*proxyRiskScoringJob
+	cache                    cache.TokenCache
+	authCacheProxy           *proxy.Handler
+	db                       *database.DB
+	cacheCfgStore            responseCacheSettingsStore
+	rateLimiter              *proxy.RateLimiter
+	systemUpdate             *systemUpdater
+	systemUpdateOnce         sync.Once
+	refreshAccount           func(context.Context, int64) error
+	probeUsage               func(context.Context, *auth.Account) error
+	turnStateHarvestEndpoint string
+	turnStateHarvestClient   func(string) *http.Client
+	turnStateHarvestMu       sync.RWMutex
+	turnStateHarvestStates   map[string]*turnStateHarvestAccountState
+	turnStateHarvestOwner    string
+	turnStateHarvestRoute    atomic.Uint64
 
 	codexUsageRefreshRunning atomic.Bool
 

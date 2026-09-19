@@ -360,6 +360,7 @@ func main() {
 	defer store.Stop()
 	backgroundCtx, cancelBackground := context.WithCancel(context.Background())
 	adminHandler.StartQualityTests(backgroundCtx)
+	adminHandler.StartTurnStateHarvester(backgroundCtx)
 	defer cancelBackground()
 	if !proxy.StartResponseCacheSettingsPoller(backgroundCtx, db) {
 		log.Fatalf("启动响应缓存设置同步失败")

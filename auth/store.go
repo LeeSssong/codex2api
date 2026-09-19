@@ -10087,6 +10087,35 @@ func (s *Store) ClearCooldown(acc *Account) {
 	}
 }
 
+// ClearCooldownIfReason clears a durable and in-memory cooldown only when the
+// current durable reason still matches. This prevents a delayed recovery task
+// from erasing a newer unauthorized or rate-limit cooldown.
+func (s *Store) ClearCooldownIfReason(ctx context.Context, acc *Account, reason string) (bool, error) {
+	if s == nil || acc == nil || strings.TrimSpace(reason) == "" {
+		return false, nil
+	}
+	acc.mu.Lock()
+	if acc.CooldownReason != reason {
+		acc.mu.Unlock()
+		return false, nil
+	}
+	if s.db != nil {
+		cleared, err := s.db.ClearCooldownIfReason(ctx, acc.DBID, reason)
+		if err != nil || !cleared {
+			acc.mu.Unlock()
+			return cleared, err
+		}
+	}
+	acc.Status = StatusReady
+	acc.CooldownReason = ""
+	acc.CooldownUtil = time.Time{}
+	acc.recomputeSchedulerLocked(atomic.LoadInt64(&s.maxConcurrency))
+	acc.mu.Unlock()
+	s.fastSchedulerUpdate(acc)
+	s.invalidateRoutingSchedulers()
+	return true, nil
+}
+
 // ReleaseUsageWindowCooldownForCredits 在积分门打开后释放由本地用量窗口判罚产生的 cooldown。
 //
 // 为什么需要：信用开关此前只阻止「进入」用量窗口 cooldown（MarkUsage7dRateLimited 早退），

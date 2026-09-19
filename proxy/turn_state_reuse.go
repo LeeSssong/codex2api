@@ -33,12 +33,17 @@ type turnStateReuseRuntime struct {
 
 type TurnStateReuseAccountStatus struct {
 	AccountID        int64  `json:"account_id"`
+	AccountName      string `json:"account_name,omitempty"`
 	Status           string `json:"status"`
 	EncodedLength    int    `json:"encoded_length,omitempty"`
 	DecodedLength    int    `json:"decoded_length,omitempty"`
 	IssuedAt         string `json:"issued_at,omitempty"`
 	ExpiresAt        string `json:"expires_at,omitempty"`
 	RemainingSeconds int64  `json:"remaining_seconds,omitempty"`
+	LastHTTPStatus   int    `json:"last_http_status,omitempty"`
+	LastError        string `json:"last_error,omitempty"`
+	LastRoute        string `json:"last_route,omitempty"`
+	MissSuspended    bool   `json:"turn_state_miss_suspended"`
 }
 
 var activeTurnStateReuseRuntime atomic.Pointer[turnStateReuseRuntime]
@@ -215,6 +220,9 @@ func (r *turnStateReuseRuntime) accountStatus(ctx context.Context, account *auth
 		return status
 	}
 	status.AccountID = account.ID()
+	account.Mu().RLock()
+	status.MissSuspended = account.CooldownReason == "turn_state_miss"
+	account.Mu().RUnlock()
 	snap, ok := r.snapshot(ctx, now)
 	if !ok || !snap.settings.Enabled {
 		return status
