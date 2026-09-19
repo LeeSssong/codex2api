@@ -11,8 +11,13 @@ import (
 // Historical HTTP failures never replace the account's current restriction.
 func (m *Manager) observe(account *auth.Account, model string, identity statepool.Identity, identityErr error, now time.Time) Entry {
 	entry := m.entries[key(account.ID(), model)]
-	if identityErr != nil || entry.Identity != identity || entry.AccountID != account.ID() || entry.Model != model {
+	if identityErr != nil || !entry.Identity.SameAccount(identity) || entry.AccountID != account.ID() || entry.Model != model {
 		entry = Entry{AccountID: account.ID(), Model: model, Identity: identity}
+	}
+	if identityErr == nil && entry.Identity != identity && (entry.ReplayIdentity == nil || *entry.ReplayIdentity != identity) {
+		// Retry gates from an older login must not delay validation of a new one.
+		// Current account cooldowns are still enforced below.
+		entry.RetryAt, entry.Error, entry.RetrySource = 0, "", ""
 	}
 	account.Mu().RLock()
 	entry.AccountName = account.Email

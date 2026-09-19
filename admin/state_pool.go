@@ -43,7 +43,7 @@ func (h *Handler) StartStatePool(ctx context.Context) error {
 		h.statePool.Stop()
 		return err
 	}
-	proxy.SetStatePoolResolver(h.statePool.Resolve)
+	proxy.SetStatePoolResolver(h.statePool.Resolve, h.statePool.ClaimsInjectedState)
 	return nil
 }
 

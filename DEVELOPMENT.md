@@ -1,7 +1,8 @@
 # Local Development on Windows
 
-This checkout is based on upstream `main` at `600636c8`, seven commits after
-release `v2.9.8`. The local branch is `codex/local-dev`.
+This checkout includes upstream `main` at `de41a5e3` and the State management
+extensions published in `hloolx/codex2api`. Releases retain both upstream
+credential-level Turn State injection and managed account/model state reuse.
 
 Requirements: Go with automatic toolchain selection (the project requires
 1.26.6), Node.js 22.12 or newer, npm, and PowerShell.

@@ -29,6 +29,7 @@ type captureTask struct {
 	account  *auth.Account
 	config   Config
 	revision uint64
+	reuse    bool
 }
 
 type Manager struct {
@@ -188,6 +189,10 @@ func valid(entry Entry, identity statepool.Identity, now time.Time, config Confi
 	return config.accepts(entry.Value) && err == nil && entry.Identity == identity && entry.IssuedAt == issued && entry.ExpiresAt == expires && entry.Fingerprint == statepool.Hash(entry.Value)
 }
 
+func needsReplay(entry Entry, identity statepool.Identity, now time.Time, config Config) bool {
+	return entry.Identity != identity && entry.Identity.SameAccount(identity) && valid(entry, entry.Identity, now, config)
+}
+
 // Empty state with active=true clears client state until a matching token exists.
 func (m *Manager) Resolve(account *auth.Account, model string) (string, bool, error) {
 	m.mu.RLock()
@@ -309,6 +314,14 @@ func (m *Manager) step() {
 			if account == nil {
 				continue
 			}
+			identity, identityErr := statepool.Snapshot(account, "")
+			if identityErr != nil {
+				continue
+			}
+			reuse := needsReplay(entry, identity, m.now(), m.config)
+			if reuse && m.collecting(entry.AccountID, entry.Model) {
+				continue
+			}
 			limit, active := m.captureBudget(account)
 			if active >= limit {
 				continue
@@ -321,8 +334,12 @@ func (m *Manager) step() {
 			m.nextTask++
 			entry.Attempts++
 			entry.Status = "collecting"
+			if reuse {
+				entry.ReplayIdentity = &identity
+			}
 			m.entries[key(entry.AccountID, entry.Model)] = entry
-			selected = &captureTask{id: m.nextTask, ctx: ctx, cancel: cancel, entry: entry, account: account, config: m.config, revision: m.revision}
+			entry.Identity = identity
+			selected = &captureTask{id: m.nextTask, ctx: ctx, cancel: cancel, entry: entry, account: account, config: m.config, revision: m.revision, reuse: reuse}
 			m.active[selected.id] = selected
 			m.cursor = index + 1
 			break
@@ -354,13 +371,21 @@ func (m *Manager) run(task *captureTask) {
 	if ctx.Err() != nil {
 		return
 	}
-	route, routeErr := m.captureRoute(ctx, task.config, entry.Attempts-1)
+	var route Route
+	var routeErr error
+	if task.reuse {
+		route.ReuseState = entry.Value
+	} else {
+		route, routeErr = m.captureRoute(ctx, task.config, entry.Attempts-1)
+	}
 	var response *http.Response
 	if routeErr != nil {
 		entry.Status, entry.Error, entry.RetryAt = "retrying", routeErr.Error(), m.now().Add(time.Minute).Unix()
 		entry.RetrySource = "local_backoff"
 	} else {
-		entry.SourceIP, entry.ProxyID, entry.ProxyName, entry.SessionID = route.SourceIP, route.ProxyID, route.ProxyName, route.SessionID
+		if !task.reuse {
+			entry.SourceIP, entry.ProxyID, entry.ProxyName, entry.SessionID = route.SourceIP, route.ProxyID, route.ProxyName, route.SessionID
+		}
 		entry, response = m.probe(ctx, cancel, task.account, entry, route, task.config)
 	}
 	cancel()
@@ -379,11 +404,15 @@ func (m *Manager) run(task *captureTask) {
 		}
 	}
 	current := m.entries[key(entry.AccountID, entry.Model)]
+	if task.reuse && entry.Status != "ready" && entry.Value != "" {
+		// A failed replay never authorizes the retained value for new credentials.
+		entry.Identity = current.Identity
+	}
 	currentValid := valid(current, identity, m.now(), m.config)
 	if currentValid && (current.Fingerprint != task.entry.Fingerprint || current.ExpiresAt > m.now().Add(m.config.refreshBefore()).Unix()) {
 		return
 	}
-	if currentValid && entry.Status == "ready" && (entry.ExpiresAt <= current.ExpiresAt || entry.ExpiresAt <= m.now().Add(m.config.refreshBefore()).Unix()) {
+	if !task.reuse && currentValid && entry.Status == "ready" && (entry.ExpiresAt <= current.ExpiresAt || entry.ExpiresAt <= m.now().Add(m.config.refreshBefore()).Unix()) {
 		entry.Value, entry.Fingerprint = current.Value, current.Fingerprint
 		entry.IssuedAt, entry.ExpiresAt, entry.CapturedAt = current.IssuedAt, current.ExpiresAt, current.CapturedAt
 		entry.UpdatedAt = current.UpdatedAt
@@ -498,6 +527,7 @@ func (m *Manager) probe(ctx context.Context, cancel context.CancelFunc, account 
 	entry.HTTPStatus, entry.LastLength = 0, 0
 	entry.CooldownReason, entry.CooldownUntil, entry.RetrySource = "", 0, ""
 	response, err := m.execute(ctx, account, entry.Model, route)
+	rejected := route.ReuseState != "" && replayRejected(response)
 	// Cancel before Close so a transport cannot drain a streaming response body.
 	cancel()
 	if response != nil && response.Body != nil {
@@ -523,6 +553,20 @@ func (m *Manager) probe(ctx context.Context, cancel context.CancelFunc, account 
 		if response.StatusCode == 401 || response.StatusCode == 403 || response.StatusCode == 429 {
 			entry.Status = "account_unavailable"
 		}
+		if rejected {
+			entry.Value, entry.Fingerprint = "", ""
+			entry.Error = "turn_state_rejected"
+		}
+		return entry, response
+	}
+	if route.ReuseState != "" {
+		identity, err = statepool.Snapshot(account, "")
+		if err != nil || !valid(entry, identity, m.now(), config) {
+			entry.Status, entry.Error = "waiting", "account_changed_or_state_expired"
+			return entry, response
+		}
+		entry.Status, entry.Error, entry.RetryAt, entry.RetrySource = "ready", "", 0, ""
+		entry.ReplayIdentity = nil
 		return entry, response
 	}
 	if !config.accepts(value) {
@@ -540,6 +584,7 @@ func (m *Manager) probe(ctx context.Context, cancel context.CancelFunc, account 
 		return entry, response
 	}
 	entry.Value, entry.Fingerprint = value, statepool.Hash(value)
+	entry.ReplayIdentity = nil
 	entry.IssuedAt, entry.ExpiresAt, entry.CapturedAt = issued, expires, m.now().Unix()
 	entry.Status, entry.Error, entry.RetryAt = "ready", "", 0
 	entry.RetrySource = ""

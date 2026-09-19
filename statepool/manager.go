@@ -172,6 +172,11 @@ func (m *Manager) Capture(ctx context.Context, accounts []int64, models []string
 			if err != nil {
 				return nil, fmt.Errorf("account %d: %w", id, err)
 			}
+			if existing, ok := m.reusableEntry(job); ok {
+				job.Source, job.CapturedAt, job.ExpiresAt = "reuse", existing.CapturedAt, existing.ExpiresAt
+				rows = append(rows, jobRow(job, existing.Value))
+				continue
+			}
 			for candidate := 1; candidate <= options.Candidates; candidate++ {
 				copy := job
 				copy.ForwardProxy = forward
@@ -509,6 +514,10 @@ func (m *Manager) validate(ctx context.Context, job *Job, value string, progress
 		return Entry{}, err
 	}
 	if !check.Passed {
+		if job.Source == "reuse" && (check.Error == "benchmark_failed" || check.Error == "invalid_answer_format" || check.Error == "HTTP 400: invalid_turn_state" || check.Error == "HTTP 400: turn_state_expired") {
+			job.Source, job.CapturedAt, job.ExpiresAt = "capture", 0, 0
+			return m.validate(ctx, job, "", progress)
+		}
 		return Entry{}, errors.New(firstError(check.Error, "verification_failed"))
 	}
 	if m.now().Unix() >= job.ExpiresAt {

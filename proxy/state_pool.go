@@ -12,16 +12,24 @@ import (
 )
 
 type StatePoolResolver func(*auth.Account, string, string, string, string) (string, error)
-type statePoolProvider struct{ resolve StatePoolResolver }
+type StatePoolClaim func(*auth.Account, string, string, string) bool
+type statePoolProvider struct {
+	resolve StatePoolResolver
+	claims  StatePoolClaim
+}
 type statePoolBypassKey struct{}
 
 var verifiedStateProvider atomic.Pointer[statePoolProvider]
 
-func SetStatePoolResolver(resolve StatePoolResolver) {
+func SetStatePoolResolver(resolve StatePoolResolver, claims ...StatePoolClaim) {
 	if resolve == nil {
 		verifiedStateProvider.Store(nil)
 	} else {
-		verifiedStateProvider.Store(&statePoolProvider{resolve: resolve})
+		provider := &statePoolProvider{resolve: resolve}
+		if len(claims) > 0 {
+			provider.claims = claims[0]
+		}
+		verifiedStateProvider.Store(provider)
 	}
 }
 

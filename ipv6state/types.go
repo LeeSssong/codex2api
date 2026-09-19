@@ -160,38 +160,40 @@ func TokenTimes(token string, now time.Time) (int64, int64, error) {
 }
 
 type Entry struct {
-	CaptureStage   string             `json:"capture_stage"`
-	Valid          bool               `json:"valid"`
-	Available      bool               `json:"available"`
-	CapturePhase   string             `json:"capture_phase"`
-	UpdatedAt      int64              `json:"updated_at,omitempty"`
-	Refreshing     bool               `json:"refreshing"`
-	CooldownReason string             `json:"cooldown_reason,omitempty"`
-	CooldownUntil  int64              `json:"cooldown_until,omitempty"`
-	RetrySource    string             `json:"retry_source,omitempty"`
-	AccountID      int64              `json:"account_id"`
-	AccountName    string             `json:"account_name"`
-	Model          string             `json:"model"`
-	Identity       statepool.Identity `json:"identity"`
-	Value          string             `json:"-"`
-	Fingerprint    string             `json:"fingerprint,omitempty"`
-	IssuedAt       int64              `json:"issued_at"`
-	ExpiresAt      int64              `json:"expires_at"`
-	CapturedAt     int64              `json:"captured_at"`
-	SourceIP       string             `json:"source_ip,omitempty"`
-	ProxyID        int64              `json:"proxy_id,omitempty"`
-	ProxyName      string             `json:"proxy_name,omitempty"`
-	SessionID      string             `json:"session_id,omitempty"`
-	Attempts       int64              `json:"attempts"`
-	LastLength     int                `json:"last_length"`
-	HTTPStatus     int                `json:"http_status"`
-	Status         string             `json:"status"`
-	Error          string             `json:"error,omitempty"`
-	RetryAt        int64              `json:"retry_at"`
+	CaptureStage   string              `json:"capture_stage"`
+	Valid          bool                `json:"valid"`
+	Available      bool                `json:"available"`
+	CapturePhase   string              `json:"capture_phase"`
+	UpdatedAt      int64               `json:"updated_at,omitempty"`
+	Refreshing     bool                `json:"refreshing"`
+	CooldownReason string              `json:"cooldown_reason,omitempty"`
+	CooldownUntil  int64               `json:"cooldown_until,omitempty"`
+	RetrySource    string              `json:"retry_source,omitempty"`
+	AccountID      int64               `json:"account_id"`
+	AccountName    string              `json:"account_name"`
+	Model          string              `json:"model"`
+	Identity       statepool.Identity  `json:"identity"`
+	ReplayIdentity *statepool.Identity `json:"replay_identity,omitempty"`
+	Value          string              `json:"-"`
+	Fingerprint    string              `json:"fingerprint,omitempty"`
+	IssuedAt       int64               `json:"issued_at"`
+	ExpiresAt      int64               `json:"expires_at"`
+	CapturedAt     int64               `json:"captured_at"`
+	SourceIP       string              `json:"source_ip,omitempty"`
+	ProxyID        int64               `json:"proxy_id,omitempty"`
+	ProxyName      string              `json:"proxy_name,omitempty"`
+	SessionID      string              `json:"session_id,omitempty"`
+	Attempts       int64               `json:"attempts"`
+	LastLength     int                 `json:"last_length"`
+	HTTPStatus     int                 `json:"http_status"`
+	Status         string              `json:"status"`
+	Error          string              `json:"error,omitempty"`
+	RetryAt        int64               `json:"retry_at"`
 }
 
 // Proxy credentials only travel to the executor, never to status or migration.
 type Route struct {
+	ReuseState string `json:"-"`
 	SourceIP   string
 	ProxyID    int64
 	ProxyName  string

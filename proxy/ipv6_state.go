@@ -45,6 +45,9 @@ func withRequiredStateFilter(model string, filter auth.AccountFilter) auth.Accou
 }
 
 func ExecuteStateHeaderProbe(ctx context.Context, account *auth.Account, model string, route ipv6state.Route) (*http.Response, error) {
+	if route.ReuseState != "" {
+		return executeStateReplay(ctx, account, model, route.ReuseState)
+	}
 	if route.SourceIP != "" {
 		return ExecuteIPv6StateProbe(ctx, account, model, route.SourceIP)
 	}
@@ -73,6 +76,42 @@ func ExecuteStateHeaderProbe(ctx context.Context, account *auth.Account, model s
 	}
 	applyCodexRequestHeaders(req, account, token, "", "", nil, nil)
 	req.Header.Del(codexTurnStateHeader)
+	response, err := client.Do(req)
+	finish(response)
+	return response, err
+}
+
+// Replay uses the automatic manager's normal direct egress and the exact saved
+// state. It bypasses both state managers and manual credential-level injection.
+func executeStateReplay(ctx context.Context, account *auth.Account, model, state string) (*http.Response, error) {
+	if account == nil || account.IsRelayStyle() || account.IsCodexAgentIdentity() {
+		return nil, errors.New("invalid state replay identity")
+	}
+	body, err := stateHeaderProbeBody(model)
+	if err != nil {
+		return nil, err
+	}
+	body, err = sjson.SetBytes(body, "client_metadata.x-codex-turn-state", state)
+	if err != nil {
+		return nil, err
+	}
+	account.Mu().RLock()
+	token := account.AccessToken
+	account.Mu().RUnlock()
+	if token == "" {
+		return nil, errors.New("missing OAuth credential")
+	}
+	client, finish, err := stateProbeClient(WithFreshStateProbe(ctx), CodexEgress{Kind: CodexEgressDirect})
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, CodexBaseURL+"/responses", bytes.NewReader(body))
+	if err != nil {
+		finish(nil)
+		return nil, err
+	}
+	applyCodexRequestHeaders(req, account, token, "", "", nil, nil)
+	req.Header.Set(codexTurnStateHeader, state)
 	response, err := client.Do(req)
 	finish(response)
 	return response, err

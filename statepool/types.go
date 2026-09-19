@@ -27,6 +27,11 @@ type Identity struct {
 	ProxyHash            string `json:"proxy_hash"`
 }
 
+// SameAccount separates stable membership from rotating OAuth credentials.
+func (i Identity) SameAccount(other Identity) bool {
+	return i.MemberHash != "" && i.WorkspaceHash != "" && i.MemberHash == other.MemberHash && i.WorkspaceHash == other.WorkspaceHash
+}
+
 type Check struct {
 	Phase            string `json:"phase"`
 	HTTPStatus       int    `json:"http_status"`
