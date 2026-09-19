@@ -627,6 +627,7 @@ export interface AccountPressureForecastAnalysis {
 
 export interface AccountAnalysisResponse {
   channel: UpstreamChannel
+  turn_state_inject_enabled: boolean
   quota: Record<'5h' | '7d', AccountQuotaAnalysis>
   recovery: Record<'5h' | '7d', AccountRecoveryAnalysis>
   reset: AccountResetAnalysis
@@ -1492,6 +1493,7 @@ export interface CreateAccountGroupRequest {
   auto_pause_7d_threshold?: number
   proxy_urls?: string[]
   channel?: UpstreamChannel
+  turn_state_inject_enabled?: boolean
 }
 
 export interface UpdateAccountGroupRequest {
@@ -1504,6 +1506,7 @@ export interface UpdateAccountGroupRequest {
   auto_pause_7d_threshold?: number
   proxy_urls?: string[]
   channel?: UpstreamChannel
+  turn_state_inject_enabled?: boolean
 }
 
 export interface AccountModelStat {

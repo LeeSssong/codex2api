@@ -36,6 +36,7 @@ type accountGroupResponse struct {
 	AutoPause7dThreshold    float64  `json:"auto_pause_7d_threshold"`
 	ProxyURLs               []string `json:"proxy_urls"`
 	Channel                 string   `json:"channel"`
+	TurnStateInjectEnabled  bool     `json:"turn_state_inject_enabled"`
 	CreatedAt               string   `json:"created_at"`
 	UpdatedAt               string   `json:"updated_at"`
 }
@@ -57,6 +58,7 @@ func toAccountGroupResponse(g database.AccountGroup) accountGroupResponse {
 		AutoPause7dThreshold:    g.AutoPause7dThreshold,
 		ProxyURLs:               proxyURLs,
 		Channel:                 database.NormalizeAccountGroupChannel(g.Channel),
+		TurnStateInjectEnabled:  g.TurnStateInjectEnabled,
 		CreatedAt:               g.CreatedAt.Format(time.RFC3339),
 		UpdatedAt:               g.UpdatedAt.Format(time.RFC3339),
 	}
@@ -113,6 +115,7 @@ type createAccountGroupReq struct {
 	AutoPause7dThreshold    float64         `json:"auto_pause_7d_threshold"`
 	ProxyURLs               []string        `json:"proxy_urls"`
 	Channel                 string          `json:"channel"`
+	TurnStateInjectEnabled  bool            `json:"turn_state_inject_enabled"`
 }
 
 func validateAutoPauseThreshold(name string, value float64) error {
@@ -174,6 +177,11 @@ func (h *Handler) CreateAccountGroup(c *gin.Context) {
 		writeError(c, http.StatusBadRequest, err.Error())
 		return
 	}
+	channel := database.NormalizeAccountGroupChannel(req.Channel)
+	if req.TurnStateInjectEnabled && channel != database.AccountGroupChannelCodex {
+		writeError(c, http.StatusBadRequest, "turn_state_inject_enabled 仅支持 codex 分组")
+		return
+	}
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
 	groups, err := h.db.ListAccountGroups(ctx)
@@ -194,9 +202,8 @@ func (h *Handler) CreateAccountGroup(c *gin.Context) {
 		writeInternalError(c, err)
 		return
 	}
-	channel := database.NormalizeAccountGroupChannel(req.Channel)
-	if len(proxyURLs) > 0 || channel != database.AccountGroupChannelCodex {
-		opts := &database.UpdateAccountGroupOpts{Channel: &channel}
+	if len(proxyURLs) > 0 || channel != database.AccountGroupChannelCodex || req.TurnStateInjectEnabled {
+		opts := &database.UpdateAccountGroupOpts{Channel: &channel, TurnStateInjectEnabled: &req.TurnStateInjectEnabled}
 		if len(proxyURLs) > 0 {
 			opts.ProxyURLs = &proxyURLs
 		}
@@ -232,7 +239,8 @@ type updateAccountGroupReq struct {
 	// ProxyURLs 缺省(null)表示不修改;传空数组表示清空组代理。
 	ProxyURLs *[]string `json:"proxy_urls"`
 	// Channel 缺省表示不修改;仅空组允许改渠道。
-	Channel *string `json:"channel"`
+	Channel                *string `json:"channel"`
+	TurnStateInjectEnabled *bool   `json:"turn_state_inject_enabled"`
 }
 
 func (h *Handler) UpdateAccountGroup(c *gin.Context) {
@@ -300,13 +308,31 @@ func (h *Handler) UpdateAccountGroup(c *gin.Context) {
 		req.Channel = &normalized
 	}
 	var opts *database.UpdateAccountGroupOpts
-	if req.AutoPause5hThreshold != nil || req.AutoPause7dThreshold != nil || baseConcurrencyOverride.Set || req.ProxyURLs != nil || req.Channel != nil {
+	if req.TurnStateInjectEnabled != nil {
+		channel := database.AccountGroupChannelCodex
+		if req.Channel != nil {
+			channel = *req.Channel
+		} else if groups, listErr := h.db.ListAccountGroups(c.Request.Context()); listErr == nil {
+			for _, group := range groups {
+				if group.ID == id {
+					channel = group.Channel
+					break
+				}
+			}
+		}
+		if *req.TurnStateInjectEnabled && database.NormalizeAccountGroupChannel(channel) != database.AccountGroupChannelCodex {
+			writeError(c, http.StatusBadRequest, "turn_state_inject_enabled 仅支持 codex 分组")
+			return
+		}
+	}
+	if req.AutoPause5hThreshold != nil || req.AutoPause7dThreshold != nil || baseConcurrencyOverride.Set || req.ProxyURLs != nil || req.Channel != nil || req.TurnStateInjectEnabled != nil {
 		opts = &database.UpdateAccountGroupOpts{
 			AutoPause5hThreshold:    req.AutoPause5hThreshold,
 			AutoPause7dThreshold:    req.AutoPause7dThreshold,
 			BaseConcurrencyOverride: baseConcurrencyOverride,
 			ProxyURLs:               req.ProxyURLs,
 			Channel:                 req.Channel,
+			TurnStateInjectEnabled:  req.TurnStateInjectEnabled,
 		}
 	}
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)

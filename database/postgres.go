@@ -1147,6 +1147,7 @@ func (db *DB) migrate(ctx context.Context) error {
 	ALTER TABLE account_groups ADD COLUMN IF NOT EXISTS base_concurrency_override INT NULL;
 	ALTER TABLE account_groups ADD COLUMN IF NOT EXISTS proxy_urls TEXT DEFAULT '[]';
 	ALTER TABLE account_groups ADD COLUMN IF NOT EXISTS channel VARCHAR(16) DEFAULT 'codex';
+	ALTER TABLE account_groups ADD COLUMN IF NOT EXISTS turn_state_inject_enabled BOOLEAN NOT NULL DEFAULT FALSE;
 	ALTER TABLE account_groups ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();
 	ALTER TABLE account_groups ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
 
@@ -1505,6 +1506,7 @@ func (db *DB) migrate(ctx context.Context) error {
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS auto_activate_5h_window_enabled BOOLEAN DEFAULT FALSE;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS utls_shutdown_timeout_minutes INT DEFAULT 30;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_fingerprint_default_mode VARCHAR(20) DEFAULT 'off';
+	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS turn_state_reuse_config TEXT NOT NULL DEFAULT '{}';
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS response_cache_local_max_bytes BIGINT NOT NULL DEFAULT 67108864;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS response_cache_local_max_entry_bytes BIGINT NOT NULL DEFAULT 8388608;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS response_cache_reconstruct_max_bytes BIGINT NOT NULL DEFAULT 67108864;

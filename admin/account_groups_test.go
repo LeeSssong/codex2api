@@ -218,6 +218,28 @@ func TestCreateAccountGroupRejectsInvalidBaseConcurrencyOverride(t *testing.T) {
 	}
 }
 
+func TestCreateAccountGroupRejectsTurnStateReuseBeforeInsert(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newTestAdminDB(t)
+	handler := &Handler{db: db}
+
+	recorder := invokeAccountGroupHandler(t, http.MethodPost, "/api/admin/account-groups", nil,
+		`{"name":"invalid-turn-state","channel":"grok","turn_state_inject_enabled":true}`, handler.CreateAccountGroup)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d: %s", recorder.Code, http.StatusBadRequest, recorder.Body.String())
+	}
+
+	groups, err := db.ListAccountGroups(context.Background())
+	if err != nil {
+		t.Fatalf("ListAccountGroups: %v", err)
+	}
+	for _, group := range groups {
+		if group.Name == "invalid-turn-state" {
+			t.Fatalf("invalid group was persisted: %+v", group)
+		}
+	}
+}
+
 func TestListAccountsReportsGroupBaseConcurrencyEffective(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := newTestAdminDB(t)
