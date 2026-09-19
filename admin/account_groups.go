@@ -15,6 +15,7 @@ import (
 
 	"github.com/codex2api/auth"
 	"github.com/codex2api/database"
+	"github.com/codex2api/proxy"
 	"github.com/codex2api/security"
 	"github.com/gin-gonic/gin"
 )
@@ -225,6 +226,7 @@ func (h *Handler) CreateAccountGroup(c *gin.Context) {
 	if h.store != nil {
 		h.store.SetGroupName(id, name)
 	}
+	proxy.InvalidateTurnStateReuseRuntime()
 	c.JSON(http.StatusOK, gin.H{"id": id, "message": "分组已创建"})
 }
 
@@ -382,6 +384,7 @@ func (h *Handler) UpdateAccountGroup(c *gin.Context) {
 	if req.Name != nil && h.store != nil {
 		h.store.SetGroupName(id, *req.Name)
 	}
+	proxy.InvalidateTurnStateReuseRuntime()
 	writeMessage(c, http.StatusOK, "分组已更新")
 }
 

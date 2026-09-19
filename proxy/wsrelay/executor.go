@@ -127,6 +127,7 @@ func (e *Executor) ExecuteRequestViaWebsocket(
 
 	// 准备请求体
 	wsBody := e.prepareWebsocketBody(requestBody, sessionID)
+	wsBody = proxy.ApplyTurnStateReuseWebsocket(ctx, account, wsBody)
 
 	headerSessionID := resolveHandshakeSessionID(sessionID, poolRouteKey, wsBody)
 

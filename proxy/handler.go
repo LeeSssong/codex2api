@@ -1242,6 +1242,7 @@ func (h *Handler) SetRuntimeCache(tc cache.TokenCache) {
 		return
 	}
 	h.cache = tc
+	configureTurnStateReuseRuntime(h.db, tc)
 	if h.authCache != nil {
 		h.authCache.close()
 		h.authCache = nil
@@ -3925,6 +3926,7 @@ func (h *Handler) Responses(c *gin.Context) {
 	accountFilter = excludeClaudeAccountsFilter(accountFilter)
 	accountFilter = applyAffinityGroupRouting(c, sessionIdentity, accountFilter)
 	accountFilter = h.applyScopeBudgetFilter(c, accountFilter)
+	accountFilter = withTurnStateReuseSchedulerFilter(c.Request.Context(), codexBody, "/responses", accountFilter)
 	// resolveCompactionAffinity 只在已知来源相互冲突时报错；缓存故障按未知
 	// 来源处理，保持正常调度。
 	compactionAffinity, compactionAffinityErr := h.resolveCompactionAffinity(c.Request.Context(), rawBody)
@@ -6726,6 +6728,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 
 	sessionIdentity := resolveRequestSessionIdentity(c.Request.Header, codexBody)
 	accountFilter = applyAffinityGroupRouting(c, sessionIdentity, accountFilter)
+	accountFilter = withTurnStateReuseSchedulerFilter(c.Request.Context(), codexBody, "/responses", accountFilter)
 	apiKeyID := requestAPIKeyID(c)
 	affinityKey := sessionAffinityKey(sessionIdentity.affinityID, apiKeyID)
 

@@ -709,6 +709,10 @@ func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []by
 		}
 		// routing hint 由网关按最终出站 body 合成，须在账号自定义头之后设置。
 		ApplyCodexRoutingHint(req.Header, account, requestBody)
+		// Existing continuation/provenance filtering has completed in
+		// applyCodexRequestHeaders. The reusable account ticket is a final,
+		// Astra-only overlay and never feeds back into continuation detection.
+		applyTurnStateReuseHTTP(ctx, req.Header, account, requestBody, "/responses")
 
 		// Resin 反代：注入账号身份头
 		if IsResinEnabled() {

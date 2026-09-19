@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/codex2api/database"
+	"github.com/codex2api/proxy"
 	"github.com/codex2api/security"
 	"github.com/gin-gonic/gin"
 )
@@ -19,6 +20,16 @@ func (h *Handler) GetTurnStateReuseSettings(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, settings)
+}
+
+func (h *Handler) GetTurnStateReuseStatus(c *gin.Context) {
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 3*time.Second)
+	defer cancel()
+	if h.store == nil {
+		c.JSON(http.StatusOK, gin.H{"accounts": []proxy.TurnStateReuseAccountStatus{}})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"accounts": proxy.TurnStateReuseStatuses(ctx, h.store.Accounts())})
 }
 
 func (h *Handler) UpdateTurnStateReuseSettings(c *gin.Context) {
@@ -51,5 +62,6 @@ func (h *Handler) UpdateTurnStateReuseSettings(c *gin.Context) {
 		writeError(c, http.StatusBadRequest, err.Error())
 		return
 	}
+	proxy.InvalidateTurnStateReuseRuntime()
 	h.GetTurnStateReuseSettings(c)
 }
