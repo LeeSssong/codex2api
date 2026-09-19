@@ -76,6 +76,7 @@ import type {
   UpstreamChannel,
   OpenAIResponsesBalanceResponse,
   SubscriptionFilter,
+  TurnStateReuseAccountStatus,
 } from "../types";
 import { SUBSCRIPTION_FILTER_OPTIONS } from "../types";
 import { getErrorMessage } from "../utils/error";
@@ -1128,6 +1129,7 @@ const AccountTableRow = memo(function AccountTableRow({
   authJsonExporting,
   t,
   actions,
+  turnStateStatus,
 }: {
   account: AccountRow;
   sequence: number;
@@ -1143,6 +1145,7 @@ const AccountTableRow = memo(function AccountTableRow({
   authJsonExporting: boolean;
   t: ReturnType<typeof useTranslation>["t"];
   actions: AccountRowActions;
+  turnStateStatus?: TurnStateReuseAccountStatus;
 }) {
   const tableOverlayKind = resolveAccountOverlayKind(account);
   const tableOverlay = renderAccountStateOverlay(account, t, {
@@ -1461,6 +1464,14 @@ const AccountTableRow = memo(function AccountTableRow({
                                         errorMessage={account.error_message}
                                       />
                                       <UsingCreditsBadge account={account} />
+                                      {turnStateStatus ? (
+                                        <span
+                                          className="inline-flex items-center rounded-md border border-border bg-muted/50 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground"
+                                          title={[turnStateStatus.last_error, turnStateStatus.last_route].filter(Boolean).join(" · ")}
+                                        >
+                                          TS · {t(`settings.turnStateStatus_${turnStateStatus.status}`)}
+                                        </span>
+                                      ) : null}
                                       {account.status !== "overload_paused" && (
                                         <AccountStatusCountdown account={account} />
                                       )}
@@ -1683,6 +1694,18 @@ const AccountCardItem = memo(function AccountCardItem({
 
 export default function Accounts() {
   const { t } = useTranslation();
+  const [turnStateStatusByAccount, setTurnStateStatusByAccount] = useState<Record<number, TurnStateReuseAccountStatus>>({});
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = () => void api.getTurnStateReuseStatus().then((response) => {
+      if (cancelled) return;
+      setTurnStateStatusByAccount(Object.fromEntries((response.accounts ?? []).map((item) => [item.account_id, item])));
+    }).catch(() => undefined);
+    load();
+    const timer = window.setInterval(load, 30_000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, []);
   const pageSizeOptions = DEFAULT_PAGE_SIZE_OPTIONS;
   const [showAdd, setShowAdd] = useState(false);
   // providerView 由路由驱动，刷新浏览器后停留在当前上游视图。
@@ -7556,6 +7579,7 @@ export default function Accounts() {
                           authJsonExporting={authJsonExportingIds.has(account.id)}
                           t={t}
                           actions={rowActions}
+                          turnStateStatus={turnStateStatusByAccount[account.id]}
                         />
                       ))}
                     </TableBody>

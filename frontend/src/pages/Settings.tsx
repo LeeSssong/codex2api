@@ -7,7 +7,7 @@ import PageHeader from '../components/PageHeader'
 import StateShell from '../components/StateShell'
 import { useDataLoader } from '../hooks/useDataLoader'
 import { useToast } from '../hooks/useToast'
-import type { AntigravityOAuthClientSetting, AntigravitySettingsResponse, ChannelTestSettings, CodexUserAgentCatalog, CodexUserAgentPreview, HealthResponse, ModelInfo, SiteBranding, SystemSettings, UpstreamChannel } from '../types'
+import type { AccountGroup, AntigravityOAuthClientSetting, AntigravitySettingsResponse, ChannelTestSettings, CodexUserAgentCatalog, CodexUserAgentPreview, HealthResponse, ModelInfo, SiteBranding, SystemSettings, TurnStateReuseAccountStatus, TurnStateReuseSettings, UpstreamChannel } from '../types'
 import { ANTIGRAVITY_DEFAULT_MODELS } from '../lib/antigravityModels'
 import { countPayloadRules } from './PayloadRules'
 import { getErrorMessage } from '../utils/error'
@@ -206,6 +206,7 @@ const LEGACY_SECTION_TABS: Record<string, SettingsTabKey> = {
   'settings-reference': 'general',
   'settings-models': 'codex',
   'settings-codex-quota': 'codex',
+  'settings-codex-turn-state': 'codex',
   'settings-codex-transport': 'codex',
   'settings-codex-client': 'codex',
   'settings-codex-images': 'codex',
@@ -218,6 +219,7 @@ const LEGACY_SECTION_TABS: Record<string, SettingsTabKey> = {
 // icon 与对应 SettingsSection 的图标保持一致，目录项和分区标题才能互相对上。
 const SETTINGS_TAB_SECTION_INDEX: Record<SettingsTabKey, ReadonlyArray<{ id: string; labelKey: string; icon: ReactNode }>> = {
   codex: [
+    { id: 'settings-codex-turn-state', labelKey: 'settings.turnStateReuse', icon: <RefreshCw /> },
     { id: 'settings-codex-quota', labelKey: 'settings.nav.codexQuota', icon: <Gauge /> },
     { id: 'settings-codex-transport', labelKey: 'settings.nav.codexTransport', icon: <Wifi /> },
     { id: 'settings-codex-client', labelKey: 'settings.nav.codexClient', icon: <Terminal /> },
@@ -2382,11 +2384,30 @@ export default function Settings() {
   // 表单——那条 UPSERT 的占位符已经排到 $119,每加一列都要整体顺移。
   // null 表示还没加载出来,此时开关不渲染,避免先闪一个错误的默认态。
   const [inviteGuideEnabled, setInviteGuideEnabled] = useState<boolean | null>(null)
+  const [turnStateSettings, setTurnStateSettings] = useState<TurnStateReuseSettings | null>(null)
+  const [turnStateStatuses, setTurnStateStatuses] = useState<TurnStateReuseAccountStatus[]>([])
+  const [turnStateGroups, setTurnStateGroups] = useState<AccountGroup[]>([])
+  const [turnStateProxyDraft, setTurnStateProxyDraft] = useState('')
+  const [turnStateSaving, setTurnStateSaving] = useState(false)
 
   useEffect(() => {
     let cancelled = false
     void api.getInviteGuideSettings()
       .then((res) => { if (!cancelled) setInviteGuideEnabled(res.enabled) })
+      .catch(() => undefined)
+    return () => { cancelled = true }
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    void Promise.all([api.getTurnStateReuseSettings(), api.getTurnStateReuseStatus(), api.listAccountGroups()])
+      .then(([settings, status, groups]) => {
+        if (cancelled) return
+        setTurnStateSettings(settings)
+        setTurnStateProxyDraft((settings.harvest_proxy_urls ?? []).join('\n'))
+        setTurnStateStatuses(status.accounts ?? [])
+        setTurnStateGroups(groups.groups.filter((group) => group.channel === 'codex'))
+      })
       .catch(() => undefined)
     return () => { cancelled = true }
   }, [])
@@ -2402,6 +2423,27 @@ export default function Settings() {
     } catch (error) {
       setInviteGuideEnabled(previous)
       showToast(getErrorMessage(error), 'error')
+    }
+  }
+
+  const saveTurnStateSettings = async (patch: Partial<TurnStateReuseSettings>) => {
+    if (!turnStateSettings) return
+    const previous = turnStateSettings
+    const next: TurnStateReuseSettings = { ...previous, ...patch, harvest_model: 'gpt-6-astra', inject_compact: false }
+    setTurnStateSettings(next)
+    setTurnStateSaving(true)
+    try {
+      const saved = await api.updateTurnStateReuseSettings(next)
+      setTurnStateSettings(saved)
+      setTurnStateProxyDraft((saved.harvest_proxy_urls ?? []).join('\n'))
+      const status = await api.getTurnStateReuseStatus()
+      setTurnStateStatuses(status.accounts ?? [])
+      showToast(t('settings.autoSaved'), 'success', AUTO_SAVE_TOAST_MS)
+    } catch (error) {
+      setTurnStateSettings(previous)
+      showToast(getErrorMessage(error), 'error')
+    } finally {
+      setTurnStateSaving(false)
     }
   }
 
@@ -3257,6 +3299,77 @@ export default function Settings() {
           <div className="min-w-0 space-y-7">
           {activeTab === 'codex' ? (
             <>
+              {turnStateSettings ? (
+                <SettingsSection id="settings-codex-turn-state" title={t('settings.turnStateReuse')} description={t('settings.turnStateReuseDesc')} icon={<RefreshCw className="size-4" />}>
+                  <SettingsCard title={t('settings.turnStateReuse')} description={t('settings.turnStateReuseDesc')} icon={<RefreshCw className="size-4" />}>
+                    <div className="space-y-4">
+                      <div className={SETTINGS_SWITCH_GRID}>
+                        <SettingField label={t('settings.turnStateEnabled')} description={t('settings.turnStateEnabledDesc')} layout="switch">
+                          <Switch checked={turnStateSettings.enabled} disabled={turnStateSaving} onCheckedChange={(enabled) => void saveTurnStateSettings({ enabled })} />
+                        </SettingField>
+                        <SettingField label={t('settings.turnStateUseProxyPool')} description={t('settings.turnStateUseProxyPoolDesc')} layout="switch">
+                          <Switch checked={turnStateSettings.harvest_use_proxy_pool} disabled={turnStateSaving || turnStateProxyDraft.trim() !== ''} onCheckedChange={(harvest_use_proxy_pool) => void saveTurnStateSettings({ harvest_use_proxy_pool })} />
+                        </SettingField>
+                      </div>
+                      <div className={SETTINGS_FIELD_GRID}>
+                        <SettingField label={t('settings.turnStateModel')} description={t('settings.turnStateModelDesc')}>
+                          <Input value={turnStateSettings.harvest_model} disabled />
+                        </SettingField>
+                        <SettingField className="sm:col-span-2" label={t('settings.turnStateProxyUrls')} description={t('settings.turnStateProxyUrlsDesc')}>
+                          <textarea
+                            className="min-h-20 w-full resize-y rounded-md border border-input bg-background px-3 py-2 font-mono text-xs"
+                            value={turnStateProxyDraft}
+                            onChange={(event) => setTurnStateProxyDraft(event.target.value)}
+                            onBlur={() => void saveTurnStateSettings({ harvest_proxy_urls: turnStateProxyDraft.split(/[\n,]/).map((value) => value.trim()).filter(Boolean) })}
+                          />
+                        </SettingField>
+                        <SettingField label={t('settings.turnStateMissAction')} description={t('settings.turnStateMissActionDesc')}>
+                          <Select
+                            value={turnStateSettings.miss_action}
+                            onValueChange={(miss_action) => void saveTurnStateSettings({ miss_action: miss_action as TurnStateReuseSettings['miss_action'], miss_target_group_id: miss_action === 'rebind_group' ? (turnStateSettings.miss_target_group_id ?? turnStateGroups[0]?.id) : undefined })}
+                            options={['none', 'rebind_group', 'unbind_groups', 'unschedulable'].map((value) => ({ value, label: t(`settings.turnStateAction_${value}`), disabled: value === 'rebind_group' && turnStateGroups.length === 0 }))}
+                          />
+                        </SettingField>
+                        {turnStateSettings.miss_action === 'rebind_group' ? (
+                          <SettingField label={t('settings.turnStateTargetGroup')}>
+                            <Select value={String(turnStateSettings.miss_target_group_id ?? '')} onValueChange={(value) => void saveTurnStateSettings({ miss_target_group_id: Number(value) })} options={turnStateGroups.map((group) => ({ value: String(group.id), label: group.name }))} />
+                          </SettingField>
+                        ) : null}
+                        <SettingField label={t('settings.turnStateRecoveredAction')} description={t('settings.turnStateRecoveredActionDesc')}>
+                          <Select
+                            value={turnStateSettings.recovered_action}
+                            onValueChange={(recovered_action) => void saveTurnStateSettings({ recovered_action: recovered_action as TurnStateReuseSettings['recovered_action'], recovered_target_group_id: recovered_action === 'rebind_group' ? (turnStateSettings.recovered_target_group_id ?? turnStateGroups[0]?.id) : undefined })}
+                            options={['none', 'rebind_group', 'restore_schedulable'].map((value) => ({ value, label: t(`settings.turnStateAction_${value}`), disabled: value === 'rebind_group' && turnStateGroups.length === 0 }))}
+                          />
+                        </SettingField>
+                        {turnStateSettings.recovered_action === 'rebind_group' ? (
+                          <SettingField label={t('settings.turnStateTargetGroup')}>
+                            <Select value={String(turnStateSettings.recovered_target_group_id ?? '')} onValueChange={(value) => void saveTurnStateSettings({ recovered_target_group_id: Number(value) })} options={turnStateGroups.map((group) => ({ value: String(group.id), label: group.name }))} />
+                          </SettingField>
+                        ) : null}
+                      </div>
+                      <div className="overflow-x-auto rounded-md border border-border">
+                        <table className="w-full min-w-[720px] text-left text-xs">
+                          <thead className="bg-muted/50 text-muted-foreground">
+                            <tr><th className="px-3 py-2">{t('settings.turnStateAccount')}</th><th className="px-3 py-2">{t('settings.turnStateStatus')}</th><th className="px-3 py-2">{t('settings.turnStateExpiry')}</th><th className="px-3 py-2">HTTP</th><th className="px-3 py-2">{t('settings.turnStateRoute')}</th></tr>
+                          </thead>
+                          <tbody>
+                            {turnStateStatuses.map((item) => (
+                              <tr key={item.account_id} className="border-t border-border">
+                                <td className="px-3 py-2 font-mono">#{item.account_id}</td>
+                                <td className="px-3 py-2">{t(`settings.turnStateStatus_${item.status}`)}</td>
+                                <td className="px-3 py-2 tabular-nums">{item.remaining_seconds ?? 0}s</td>
+                                <td className="px-3 py-2 tabular-nums">{item.last_http_status || '-'}</td>
+                                <td className="max-w-[240px] truncate px-3 py-2 font-mono" title={item.last_route}>{item.last_route || '-'}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </SettingsCard>
+                </SettingsSection>
+              ) : null}
               <SettingsSection id="settings-codex-quota" title={t('settings.nav.codexQuota')} description={t('settings.nav.codexQuotaDesc')} icon={<Gauge className="size-4" />}>
               <div className={SETTINGS_CARD_GRID_2}>
                 <SettingsCard title={t('settings.probeScheduling')} icon={<RefreshCw className="size-4" />}>

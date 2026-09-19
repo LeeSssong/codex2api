@@ -1475,8 +1475,43 @@ export interface AccountGroup {
   auto_pause_7d_threshold: number
   proxy_urls: string[]
   channel: UpstreamChannel
+  turn_state_inject_enabled: boolean
   created_at: ISODateString
   updated_at: ISODateString
+}
+
+export type TurnStateMissAction = 'none' | 'rebind_group' | 'unbind_groups' | 'unschedulable'
+export type TurnStateRecoveredAction = 'none' | 'rebind_group' | 'restore_schedulable'
+
+export interface TurnStateReuseSettings {
+  enabled: boolean
+  harvest_model: string
+  harvest_proxy_urls: string[]
+  harvest_use_proxy_pool: boolean
+  miss_action: TurnStateMissAction
+  miss_target_group_id?: number
+  recovered_action: TurnStateRecoveredAction
+  recovered_target_group_id?: number
+  inject_compact: boolean
+}
+
+export interface TurnStateReuseAccountStatus {
+  account_id: number
+  account_name?: string
+  status: 'out_of_scope' | 'missing' | 'fresh' | 'renew_due' | 'paused_auth' | 'paused_429'
+  encoded_length?: number
+  decoded_length?: number
+  issued_at?: ISODateString
+  expires_at?: ISODateString
+  remaining_seconds?: number
+  last_http_status?: number
+  last_error?: string
+  last_route?: string
+  turn_state_miss_suspended: boolean
+}
+
+export interface TurnStateReuseStatusResponse {
+  accounts: TurnStateReuseAccountStatus[]
 }
 
 export interface AccountGroupsResponse {

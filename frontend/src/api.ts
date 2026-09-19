@@ -899,6 +899,12 @@ export const api = {
     request<MessageResponse>(`/account-groups/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
   deleteAccountGroup: (id: number, force = false) =>
     request<MessageResponse>(`/account-groups/${id}${force ? '?force=true' : ''}`, { method: 'DELETE' }),
+  getTurnStateReuseSettings: () =>
+    request<import('./types').TurnStateReuseSettings>('/turn-state/settings'),
+  updateTurnStateReuseSettings: (data: import('./types').TurnStateReuseSettings) =>
+    request<import('./types').TurnStateReuseSettings>('/turn-state/settings', { method: 'PUT', body: JSON.stringify(data) }),
+  getTurnStateReuseStatus: () =>
+    request<import('./types').TurnStateReuseStatusResponse>('/turn-state/status'),
   toggleAccountEnabled: (id: number, enabled: boolean) =>
     request<MessageResponse>(`/accounts/${id}/enable`, { method: 'POST', body: JSON.stringify({ enabled }) }),
   toggleAccountLock: (id: number, locked: boolean) =>
