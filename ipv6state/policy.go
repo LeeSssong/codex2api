@@ -159,12 +159,13 @@ func (m *Manager) snapshot(now time.Time) Snapshot {
 	return result
 }
 
+// Only models selected for capture participate in strict state eligibility.
 // Take the snapshot before entering the account scheduler to avoid lock inversion.
 // Resolve checks again immediately before dispatch, including expiry and identity.
 func (m *Manager) EligibleAccounts(model string) (bool, map[int64]bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	if !m.config.RequireValidState {
+	if !m.config.RequireValidState || !slices.Contains(m.config.Models, model) {
 		return false, nil
 	}
 	allowed := map[int64]bool{}

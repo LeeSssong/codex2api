@@ -198,7 +198,7 @@ func (m *Manager) Resolve(account *auth.Account, model string) (string, bool, er
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	if !m.config.Enabled || !m.selected(account, model) {
-		if m.config.RequireValidState && NativeAccount(account) {
+		if m.config.RequireValidState && slices.Contains(m.config.Models, model) && NativeAccount(account) {
 			return "", true, ErrStateRequired
 		}
 		return "", false, nil

@@ -26,6 +26,7 @@ func importForTest(t *testing.T, m *Manager, account *auth.Account, issued int64
 
 func TestRequiredStateRejectsMissingExpiredWrongModelAndDisabledReuse(t *testing.T) {
 	m, account, now := fixture(t, "member", false)
+	m.config.Models = []string{"gpt-5.6-sol", "gpt-6-astra"}
 	if err := m.SetRequireValidState(context.Background(), true); err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +42,7 @@ func TestRequiredStateRejectsMissingExpiredWrongModelAndDisabledReuse(t *testing
 	if !strict || !eligible[account.ID()] {
 		t.Fatal("valid account not eligible")
 	}
-	if _, _, err := m.Resolve(account, statepool.Models[1]); !errors.Is(err, ErrStateRequired) {
+	if _, _, err := m.Resolve(account, "gpt-6-astra"); !errors.Is(err, ErrStateRequired) {
 		t.Fatal("wrong model accepted")
 	}
 	config := m.Status().Config
@@ -71,6 +72,71 @@ func TestRequiredStateRejectsMissingExpiredWrongModelAndDisabledReuse(t *testing
 	}
 	if _, active, err := m.Resolve(account, model); err != nil || !active {
 		t.Fatal("non-strict fallback was lost")
+	}
+}
+
+func TestRequiredStateOnlyAppliesToSelectedCaptureModels(t *testing.T) {
+	m, account, _ := fixture(t, "member", false)
+	if err := m.SetRequireValidState(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
+	for _, enabled := range []bool{true, false} {
+		config := m.Status().Config
+		config.Models = []string{"gpt-5.6-sol", "gpt-6-astra"}
+		config.Enabled = enabled
+		if err := m.Configure(context.Background(), config); err != nil {
+			t.Fatal(err)
+		}
+		for _, model := range []string{"gpt-5.6-terra", "gpt-5.6-luna", "codex-auto-review", "gpt-5.5", "gpt-5.6-sol-custom"} {
+			if strict, allowed := m.EligibleAccounts(model); strict || allowed != nil {
+				t.Fatalf("unselected model %s was filtered with reuse enabled=%t", model, enabled)
+			}
+			if value, active, err := m.Resolve(account, model); err != nil || active || value != "" {
+				t.Fatalf("unselected model %s was intercepted with reuse enabled=%t: active=%t err=%v", model, enabled, active, err)
+			}
+		}
+		for _, model := range config.Models {
+			if strict, allowed := m.EligibleAccounts(model); !strict || len(allowed) != 0 {
+				t.Fatalf("selected model %s admitted missing state with reuse enabled=%t", model, enabled)
+			}
+			if _, active, err := m.Resolve(account, model); !active || !errors.Is(err, ErrStateRequired) {
+				t.Fatalf("selected model %s bypassed strict state with reuse enabled=%t: %v", model, enabled, err)
+			}
+		}
+	}
+}
+
+func TestCaptureModelSelectionUpdatesStrictPolicyImmediately(t *testing.T) {
+	m, account, now := fixture(t, "member", false)
+	if err := m.SetRequireValidState(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
+	importForTest(t, m, account, now.Unix()-30)
+	*now = now.Add(time.Hour)
+	if _, _, err := m.Resolve(account, "gpt-5.6-sol"); !errors.Is(err, ErrStateRequired) {
+		t.Fatal("selected model accepted expired state")
+	}
+	config := m.Status().Config
+	config.Models = []string{"gpt-6-astra"}
+	if err := m.Configure(context.Background(), config); err != nil {
+		t.Fatal(err)
+	}
+	if strict, _ := m.EligibleAccounts("gpt-5.6-sol"); strict {
+		t.Fatal("deselected model remained filtered")
+	}
+	if _, active, err := m.Resolve(account, "gpt-5.6-sol"); active || err != nil {
+		t.Fatal("expired saved state blocked the deselected model")
+	}
+	config.Models = append(config.Models, "gpt-5.6-sol")
+	config.AccountIDs = []int64{account.ID() + 1}
+	if err := m.Configure(context.Background(), config); err != nil {
+		t.Fatal(err)
+	}
+	if strict, allowed := m.EligibleAccounts("gpt-5.6-sol"); !strict || allowed[account.ID()] {
+		t.Fatal("selected model bypassed the account scope")
+	}
+	if _, _, err := m.Resolve(account, "gpt-5.6-sol"); !errors.Is(err, ErrStateRequired) {
+		t.Fatal("reselected model bypassed strict state outside the account scope")
 	}
 }
 
