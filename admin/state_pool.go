@@ -68,6 +68,7 @@ func (h *Handler) registerStatePoolRoutes(api *gin.RouterGroup) {
 		}
 	})
 	group.GET("", h.statePoolList)
+	group.GET("/supply-signal", h.GetSupplySignal)
 	h.registerIPv6StateRoutes(group)
 	group.PUT("/limits", h.statePoolLimits)
 	group.POST("/capture", h.statePoolCapture)
