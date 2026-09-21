@@ -61,6 +61,7 @@ import type {
   AddOpenAIResponsesAccountRequest,
   CodexClientMetadataMode,
   CodexPassthroughMode,
+  ResponsesUpstreamTransport,
   CodexFingerprintMode,
   UpdateOpenAIResponsesAccountRequest,
   APIKeyRow,
@@ -1962,6 +1963,7 @@ export default function Accounts() {
       models: [],
       codex_client_metadata_mode: "auto",
       codex_passthrough_mode: "off",
+      responses_upstream_transport: "http",
       proxy_url: "",
     });
   const [openAIModelDraft, setOpenAIModelDraft] = useState("");
@@ -2061,6 +2063,7 @@ export default function Accounts() {
       models: [],
       codex_client_metadata_mode: "auto",
       codex_passthrough_mode: "off",
+      responses_upstream_transport: "http",
       proxy_url: "",
     });
   const [openAIModelMappingText, setOpenAIModelMappingText] = useState("");
@@ -3735,6 +3738,7 @@ export default function Accounts() {
         models: [],
         codex_client_metadata_mode: "auto",
         codex_passthrough_mode: "off",
+        responses_upstream_transport: "http",
         proxy_url: "",
       });
       setOpenAIModelDraft("");
@@ -5681,6 +5685,8 @@ export default function Accounts() {
         account.codex_client_metadata_mode ?? "auto",
       codex_passthrough_mode:
         account.codex_passthrough_mode ?? "off",
+      responses_upstream_transport:
+        account.responses_upstream_transport ?? "http",
       proxy_url: account.proxy_url ?? "",
     });
     setEditOpenAIModelDraft("");
@@ -5740,6 +5746,7 @@ export default function Accounts() {
       models: [],
       codex_client_metadata_mode: "auto",
       codex_passthrough_mode: "off",
+      responses_upstream_transport: "http",
       proxy_url: "",
     });
     setEditOpenAIModelDraft("");
@@ -8202,6 +8209,34 @@ export default function Accounts() {
                   </p>
                 </div>
                 <div>
+                  <label className="block mb-2 text-sm font-semibold text-muted-foreground">
+                    {t("accounts.responsesUpstreamTransport")}
+                  </label>
+                  <Select
+                    value={openAIForm.responses_upstream_transport ?? "http"}
+                    onValueChange={(value) =>
+                      setOpenAIForm((form) => ({
+                        ...form,
+                        responses_upstream_transport:
+                          value as ResponsesUpstreamTransport,
+                      }))
+                    }
+                    options={[
+                      {
+                        value: "http",
+                        label: t("accounts.responsesUpstreamHTTP"),
+                      },
+                      {
+                        value: "websocket",
+                        label: t("accounts.responsesUpstreamWebsocket"),
+                      },
+                    ]}
+                  />
+                  <p className="mt-1.5 text-xs text-muted-foreground">
+                    {t("accounts.responsesUpstreamTransportHint")}
+                  </p>
+                </div>
+                <div>
                   <div className="mb-2 flex items-center justify-between gap-2">
                     <label className="text-sm font-semibold text-muted-foreground">
                       {t("accounts.openaiModels")} *
@@ -9362,6 +9397,34 @@ export default function Accounts() {
                       />
                       <p className="mt-1.5 text-xs text-muted-foreground">
                         {t("accounts.codexPassthroughHint")}
+                      </p>
+                    </div>
+                    <div>
+                      <label className="block mb-2 text-xs font-semibold text-muted-foreground">
+                        {t("accounts.responsesUpstreamTransport")}
+                      </label>
+                      <Select
+                        value={editOpenAIForm.responses_upstream_transport ?? "http"}
+                        onValueChange={(value) =>
+                          setEditOpenAIForm((form) => ({
+                            ...form,
+                            responses_upstream_transport:
+                              value as ResponsesUpstreamTransport,
+                          }))
+                        }
+                        options={[
+                          {
+                            value: "http",
+                            label: t("accounts.responsesUpstreamHTTP"),
+                          },
+                          {
+                            value: "websocket",
+                            label: t("accounts.responsesUpstreamWebsocket"),
+                          },
+                        ]}
+                      />
+                      <p className="mt-1.5 text-xs text-muted-foreground">
+                        {t("accounts.responsesUpstreamTransportHint")}
                       </p>
                     </div>
 
