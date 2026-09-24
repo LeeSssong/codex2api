@@ -18,6 +18,43 @@ import (
 
 var basispointsReplay basispoints.ReplayCache
 
+const ErrorCodeBasispointsInvalidRequest = "basispoints_invalid_request"
+
+// basispointsPreparationCategory deliberately returns only fixed labels. The
+// original validation message may contain caller-controlled tool names or modes.
+func basispointsPreparationCategory(err error) string {
+	message := err.Error()
+	switch {
+	case strings.Contains(message, "original tool item"), strings.Contains(message, "history") && strings.Contains(message, "tool"):
+		return "tool_history"
+	case strings.Contains(message, "image"):
+		return "image_input"
+	case strings.Contains(message, "tool_choice"):
+		return "tool_choice"
+	case strings.Contains(message, "tool"):
+		return "tool_catalog"
+	case strings.Contains(message, "previous_response_id"), strings.Contains(message, "item_reference"):
+		return "history_reference"
+	case strings.Contains(message, "reasoning"), strings.Contains(message, "configuration_update"):
+		return "reasoning_configuration"
+	case strings.Contains(message, "structured output"):
+		return "output_format"
+	case strings.Contains(message, "requires a model"):
+		return "model"
+	case strings.Contains(message, "JSON"):
+		return "request_json"
+	default:
+		return "request_shape"
+	}
+}
+
+func newBasispointsPreparationError(err error) *Error {
+	return &Error{
+		Code: ErrorCodeBasispointsInvalidRequest, Message: err.Error(),
+		Type: ErrorTypeInvalidRequest, HTTPStatus: http.StatusBadRequest,
+	}
+}
+
 func basispointsRequestErrorCode(body []byte) string {
 	code := firstGJSONString(body, "error.code", "response.error.code", "response.status_details.error.code")
 	if code == "basispoints_model_access_changed" || code == "basispoints_protocol_error" {
@@ -45,13 +82,17 @@ func executeBasispointsRequest(ctx context.Context, account *auth.Account, reque
 	RecordObservedInstructions(requestBody, headers)
 	requestBody = ApplyPayloadRulesToBody(requestBody, gjson.GetBytes(requestBody, "model").String(), headers, PayloadRuleIdentityFromContext(ctx))
 	// Native stateless session IDs change per request; they cannot identify a tool loop.
-	if gjson.GetBytes(requestBody, "prompt_cache_key").String() == "" && headers.Get("Session_id") != "" {
-		requestBody, _ = sjson.SetBytes(requestBody, "prompt_cache_key", headers.Get("Session_id"))
+	if explicitSessionID := ResolveExplicitSessionID(headers, requestBody); explicitSessionID != "" {
+		requestBody, _ = sjson.SetBytes(requestBody, "prompt_cache_key", explicitSessionID)
 	}
 	scope := fmt.Sprintf("%d|%x", account.ID(), sha256.Sum256([]byte(apiKey)))
+	if conversation := gjson.GetBytes(requestBody, "prompt_cache_key").String(); conversation != "" {
+		scope += fmt.Sprintf("|%x", sha256.Sum256([]byte(conversation)))
+	}
 	body, bridge, err := basispoints.Prepare(requestBody, scope, &basispointsReplay)
 	if err != nil {
-		return nil, ErrBadRequest(err.Error())
+		log.Printf("[Basispoints] stage=prepare result=rejected code=%s category=%s account=%d", ErrorCodeBasispointsInvalidRequest, basispointsPreparationCategory(err), account.ID())
+		return nil, newBasispointsPreparationError(err)
 	}
 	endpoint := basispoints.ResponsesURL
 	client, err := getBasispointsClient(account, proxyURL)
@@ -97,6 +138,9 @@ func executeBasispointsRequest(ctx context.Context, account *auth.Account, reque
 	}
 	resp.Header.Set("X-Codex2API-Upstream", "basispoints")
 	resp.Header.Set("X-Codex2API-Reasoning-Effort", bridge.Effort)
+	if len(bridge.Warnings) > 0 {
+		resp.Header.Set("X-Codex2API-Basispoints-Warnings", strings.Join(bridge.Warnings, "; "))
+	}
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		resp.Body = bridge.Stream(resp.Body)
 		resp.ContentLength = -1

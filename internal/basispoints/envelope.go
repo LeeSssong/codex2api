@@ -79,9 +79,35 @@ func transportShape(value any) string {
 	var syntax *json.SyntaxError
 	var decoded any
 	if err := json.Unmarshal([]byte(raw), &decoded); errors.As(err, &syntax) {
-		detail += fmt.Sprintf("; json_offset=%d", syntax.Offset)
+		detail += fmt.Sprintf("; json_offset=%d; json_failure=%s", syntax.Offset, jsonFailureKind(raw, syntax))
 	}
 	return detail
+}
+
+// Classify the parser's structural context without returning its message, which
+// can contain a byte from the caller's code. Offsets use the original wire text.
+func jsonFailureKind(raw string, syntax *json.SyntaxError) string {
+	if syntax == nil {
+		return "unknown"
+	}
+	message := syntax.Error()
+	switch {
+	case strings.Contains(message, "unexpected end of JSON input"):
+		return "unexpected_eof"
+	case strings.Contains(message, "after top-level value"):
+		return "trailing_data"
+	case strings.Contains(message, "in string escape code"), strings.Contains(message, "in \\u hexadecimal character escape"):
+		return "invalid_escape"
+	case strings.Contains(message, "in string literal"):
+		if syntax.Offset > 0 && syntax.Offset <= int64(len(raw)) && raw[syntax.Offset-1] < 0x20 {
+			return "raw_control"
+		}
+		return "invalid_string"
+	case strings.Contains(message, "after object key"), strings.Contains(message, "after array element"):
+		return "missing_separator"
+	default:
+		return "unexpected_token"
+	}
 }
 
 func decodeTransportEnvelope(value any) (object, error) {
@@ -150,16 +176,17 @@ func decodeEnvelopeValue(raw string) (any, bool) {
 	if decode([]byte(raw), &value) == nil {
 		return value, true
 	}
-	// Repair only illegal JSON escapes, and only after strict decoding fails.
-	// Valid escapes, quotes and argument values otherwise retain their meaning.
-	fixed := repairIllegalEscapes(raw)
+	// Escape raw line breaks and tabs inside strings, preserving those exact
+	// characters, and repair illegal backslash escapes only after strict decoding
+	// fails. Never infer missing quotes, separators, closing delimiters or values.
+	fixed := repairTransportJSONStrings(raw)
 	if fixed != raw && decode([]byte(fixed), &value) == nil {
 		return value, true
 	}
 	return nil, false
 }
 
-func repairIllegalEscapes(raw string) string {
+func repairTransportJSONStrings(raw string) string {
 	var out strings.Builder
 	out.Grow(len(raw))
 	quoted := false
@@ -167,6 +194,19 @@ func repairIllegalEscapes(raw string) string {
 		ch := raw[i]
 		if ch == '"' {
 			quoted = !quoted
+		}
+		if quoted {
+			switch ch {
+			case '\n':
+				out.WriteString(`\n`)
+				continue
+			case '\r':
+				out.WriteString(`\r`)
+				continue
+			case '\t':
+				out.WriteString(`\t`)
+				continue
+			}
 		}
 		if ch != '\\' || !quoted || i+1 >= len(raw) {
 			out.WriteByte(ch)

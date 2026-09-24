@@ -17,7 +17,7 @@ func describeCatalog(catalog []any) string {
 			line += " " + description
 		}
 		if text(entry["type"]) == "custom" {
-			line += " Pass its exact raw text in the envelope's input field."
+			line += " Set run_officejs summary to " + quoted("codex2api.custom/"+text(entry["name"])) + " and pass its exact raw text directly in code."
 			if format := entry["format"]; format != nil {
 				line += " Input format: " + quoted(format) + "."
 			}

@@ -736,7 +736,15 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 				attemptReplay = nil
 			}
 		}
-		if gjson.GetBytes(rawBody, "store").Type == gjson.False {
+		// BPS always uses stateless HTTP with upstream store=false, so a WS
+		// continuation needs the existing owner-isolated, bounded local replay
+		// cache even when the client disables upstream response storage.
+		// Native Codex WS retains its existing no-local-storage behavior.
+		if CurrentRuntimeSettings().CodexBasispointsEnabled && !account.IsRelayStyle() {
+			// Admit the root response under on_demand too: this transport cannot
+			// retrieve the previous response from upstream on the next WS turn.
+			markResponseCacheChainOwnerIfOnDemand(respCacheOwner)
+		} else if gjson.GetBytes(rawBody, "store").Type == gjson.False {
 			attemptReplay = nil
 		}
 		// service_tier 记账按 payload 规则改写后的值归因（覆写 service_tier 的规则才生效）。
@@ -760,6 +768,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 		}
 
 		if reqErr != nil {
+			h.logBasispointsPreparationFailure(c, account, reqErr, logModel, reasoningEffort, durationMs, attempt, true)
 			if quotaErr := apiKeyModelRequestError(reqErr); quotaErr != nil {
 				ttftGuard.Stop()
 				h.store.Release(account)
@@ -810,6 +819,14 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 			if !retryable {
 				if !claimContinuousRetrySuccessContext(c.Request.Context()) {
 					return errResponsesWSClientGone
+				}
+				var localFailure *Error
+				if errors.As(reqErr, &localFailure) && localFailure.Code == ErrorCodeBasispointsInvalidRequest {
+					clientErr := api.NewAPIErrorWithDetails(api.ErrorCode(localFailure.Code), localFailure.Message, api.ErrorTypeInvalidRequest, map[string]string{
+						"stage": "prepare", "category": basispointsPreparationCategory(localFailure),
+					})
+					_ = writeResponsesWSError(conn, clientErr)
+					return newResponsesWSCloseError(websocket.ClosePolicyViolation, clientErr.Message, reqErr)
 				}
 				apiErr = api.NewAPIError(api.ErrCodeUpstreamError, reqErr.Error(), api.ErrorTypeUpstream)
 				clientErr := responsesWSClientUpstreamAPIError(apiErr, hideUpstreamErrors)

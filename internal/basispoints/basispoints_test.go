@@ -83,7 +83,7 @@ func TestEffortAndUnsupportedCapabilities(t *testing.T) {
 	for _, patch := range []object{
 		{"reasoning": object{"effort": "unknown"}},
 		{"reasoning": object{"mode": "pro"}},
-		{"tools": []any{object{"type": "image_generation"}}},
+		{"tools": []any{object{"type": "unknown_hosted_tool"}}},
 		{"tool_choice": "required"},
 		{"previous_response_id": "resp_missing"},
 		{"input": []any{object{"role": "user", "content": []any{object{"type": "input_image", "image_url": "data:image/png;base64,AAAA"}}}}},
@@ -238,10 +238,10 @@ func TestToolAliasAndObjectArgumentsPreserveCompleteReplay(t *testing.T) {
 	}
 }
 
-func TestMissingOriginalToolItemCannotBeFabricated(t *testing.T) {
+func TestMissingOriginalToolItemCannotBeFabricatedFromOutputOnly(t *testing.T) {
 	source := testSource()
 	source["tools"] = []any{object{"type": "function", "name": "get_weather"}}
-	source["input"] = []any{message("user", "weather"), object{"type": "function_call", "id": "fc_client", "call_id": "call_missing", "name": "get_weather", "arguments": `{}`}, object{"type": "function_call_output", "call_id": "call_missing", "output": "18 C"}}
+	source["input"] = []any{message("user", "weather"), object{"type": "function_call_output", "call_id": "call_missing", "output": "18 C"}}
 	raw, _ := json.Marshal(source)
 	if _, _, err := Prepare(raw, "account/key", new(ReplayCache)); err == nil || !strings.Contains(err.Error(), "original tool item is unavailable") {
 		t.Fatalf("missing native identity must produce an actionable error: %v", err)

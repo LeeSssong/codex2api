@@ -4255,6 +4255,7 @@ func (h *Handler) Responses(c *gin.Context) {
 				}
 
 				if !retryable {
+					h.logBasispointsPreparationFailure(c, account, reqErr, logModel, reasoningEffort, durationMs, attempt, isStream)
 					if isStream && writeCommittedResponsesRetryError(c, continuousRetryRequestErrorMessage(reqErr)) {
 						return
 					}
@@ -4285,6 +4286,8 @@ func (h *Handler) Responses(c *gin.Context) {
 			if !isStream {
 				stopTTFTGuard()
 			}
+
+			relayBasispointsResponseHeaders(c, resp)
 
 			if resp.StatusCode != http.StatusOK {
 				stopTTFTGuard()
@@ -5010,6 +5013,7 @@ func (h *Handler) Responses(c *gin.Context) {
 
 			// 不可重试的结构化错误直接返回
 			if !retryable {
+				h.logBasispointsPreparationFailure(c, account, reqErr, logModel, reasoningEffort, durationMs, attempt, isStream)
 				if isStream && writeCommittedResponsesRetryError(c, continuousRetryRequestErrorMessage(reqErr)) {
 					return
 				}
@@ -5037,6 +5041,8 @@ func (h *Handler) Responses(c *gin.Context) {
 			ErrorToGinResponse(c, reqErr)
 			return
 		}
+
+		relayBasispointsResponseHeaders(c, resp)
 
 		if resp.StatusCode != http.StatusOK {
 			ttftGuard.Stop()
@@ -6084,6 +6090,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 				}
 
 				if !retryable {
+					h.logBasispointsPreparationFailure(c, account, reqErr, logModel, reasoningEffort, durationMs, attempt, false)
 					ErrorToGinResponse(c, reqErr)
 					return
 				}
@@ -6099,6 +6106,8 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 				ErrorToGinResponse(c, reqErr)
 				return
 			}
+
+			relayBasispointsResponseHeaders(c, resp)
 
 			if resp.StatusCode != http.StatusOK {
 				errBody, _ := readAllWithContinuousRetryKeepalive(c.Request.Context(), resp.Body)
@@ -6330,6 +6339,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 			}
 
 			if !retryable {
+				h.logBasispointsPreparationFailure(c, account, reqErr, logModel, reasoningEffort, durationMs, attempt, false)
 				ErrorToGinResponse(c, reqErr)
 				return
 			}
@@ -6345,6 +6355,8 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 			ErrorToGinResponse(c, reqErr)
 			return
 		}
+
+		relayBasispointsResponseHeaders(c, resp)
 
 		if resp.StatusCode != http.StatusOK {
 			errBody, _ := readAllWithContinuousRetryKeepalive(c.Request.Context(), resp.Body)
@@ -7004,6 +7016,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 
 			// 不可重试的结构化错误直接返回
 			if !retryable {
+				h.logBasispointsPreparationFailure(c, account, reqErr, logModel, reasoningEffort, durationMs, attempt, isStream)
 				if isStream && writeCommittedChatRetryError(c, continuousRetryRequestErrorMessage(reqErr)) {
 					return
 				}
@@ -7031,6 +7044,8 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			ErrorToGinResponse(c, reqErr)
 			return
 		}
+
+		relayBasispointsResponseHeaders(c, resp)
 
 		if resp.StatusCode != http.StatusOK {
 			ttftGuard.Stop()
