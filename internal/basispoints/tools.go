@@ -378,7 +378,7 @@ func (b *Bridge) translateCall(native object) (object, error) {
 		return b.translateNativePlan(native)
 	}
 	if name != "run_officejs" && name != "functions.run_officejs" {
-		return nil, fmt.Errorf("Basispoints returned an unsupported native tool; no tool was executed")
+		return b.translateDirectCatalogCall(native)
 	}
 	var arguments object
 	if value, ok := native["arguments"].(object); ok {
@@ -404,6 +404,72 @@ func (b *Bridge) translateCall(native object) (object, error) {
 	if !allowed {
 		return nil, fmt.Errorf("Basispoints returned a tool outside the client's catalog")
 	}
+	result, err := b.finishClientToolCall(native, info, envelope, marked)
+	if err != nil {
+		return nil, err
+	}
+	// run_officejs is a real BPS-native tool, so its item replays upstream verbatim.
+	b.replay.put(b.scope, text(native["call_id"]), native, result)
+	return result, nil
+}
+
+// translateDirectCatalogCall recovers a native tool call the model addressed by the
+// client tool's own name instead of through the run_officejs transport. Some turns
+// skip the wrapper and call the catalog tool directly; the reference plugins accept
+// this rather than failing the whole response. It relays the client's declared tool
+// call to the client unchanged and never executes any code. Only exact catalog names
+// (optionally carrying a host "functions." display prefix) are accepted; any other
+// native tool remains an unsupported-native-tool error.
+func (b *Bridge) translateDirectCatalogCall(native object) (object, error) {
+	name := text(native["name"])
+	info, ok := b.tools[name]
+	if !ok {
+		if trimmed := strings.TrimPrefix(name, "functions."); trimmed != name {
+			info, ok = b.tools[trimmed]
+		}
+	}
+	if !ok {
+		return nil, fmt.Errorf("Basispoints returned an unsupported native tool; no tool was executed")
+	}
+	kind := text(native["type"])
+	var envelope object
+	switch info.Kind {
+	case "function":
+		if kind != "function_call" {
+			return nil, fmt.Errorf("Basispoints returned client function tool %q as a %q; no tool was executed", info.Name, kind)
+		}
+		envelope = object{"name": info.Name, "arguments": native["arguments"]}
+	case "custom":
+		if kind != "custom_tool_call" {
+			return nil, fmt.Errorf("Basispoints returned client custom tool %q as a %q; no tool was executed", info.Name, kind)
+		}
+		input, ok := native["input"].(string)
+		if !ok {
+			return nil, fmt.Errorf("Basispoints direct custom tool input must be a string")
+		}
+		envelope = object{"name": info.Name, "input": input}
+	default:
+		return nil, fmt.Errorf("Basispoints returned an unsupported native tool; no tool was executed")
+	}
+	result, err := b.finishClientToolCall(native, info, envelope, false)
+	if err != nil {
+		return nil, err
+	}
+	// The model bypassed run_officejs, so the bare native name is not a BPS tool.
+	// Cache a transport-wrapped replay so the next turn presents a BPS-known
+	// run_officejs item, matching how absent history is rebuilt.
+	wrapped, err := rebuildNativeHistoryCall(result)
+	if err != nil {
+		return nil, err
+	}
+	b.replay.put(b.scope, text(native["call_id"]), wrapped, result)
+	return result, nil
+}
+
+// finishClientToolCall builds the client-facing tool item from a resolved catalog
+// tool and its envelope. It performs no caching and executes nothing; callers decide
+// how the call replays upstream.
+func (b *Bridge) finishClientToolCall(native object, info tool, envelope object, marked bool) (object, error) {
 	if marked && info.Kind != "custom" {
 		return nil, fmt.Errorf("Basispoints raw transport requires a declared custom tool")
 	}
@@ -453,7 +519,6 @@ func (b *Bridge) translateCall(native object) (object, error) {
 		encoded, _ := json.Marshal(args)
 		result["arguments"] = string(encoded)
 	}
-	b.replay.put(b.scope, id, native, result)
 	return result, nil
 }
 

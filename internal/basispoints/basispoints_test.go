@@ -191,7 +191,9 @@ func TestMalformedAndUndeclaredCallsFailWithoutDispatch(t *testing.T) {
 		nativeCall(object{"name": "shell", "tool": "other", "args": object{}}),
 		nativeCall(object{"name": "shell", "arguments": object{}, "args": object{}}),
 		{"type": "function_call", "name": "run_officejs", "arguments": `{"code":"Excel.run(...)"}`},
-		{"type": "function_call", "name": "shell", "arguments": `{}`, "call_id": "call_other"},
+		// A direct native call to a tool outside the client's catalog stays rejected;
+		// direct calls to declared tools are recovered separately in direct_call_test.go.
+		{"type": "function_call", "name": "delete_workbook", "arguments": `{}`, "call_id": "call_other"},
 	} {
 		_, bridge := mustPrepare(t, source, "", nil)
 		body := bridge.Stream(io.NopCloser(strings.NewReader(sse(object{"type": "response.completed", "response": object{"output": []any{native}}}))))
