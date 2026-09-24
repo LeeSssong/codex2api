@@ -150,23 +150,7 @@ func (b *Bridge) translateHistory(input []any) ([]any, error) {
 			if native := b.replay.get(b.scope, id); native != nil {
 				item = native
 			} else {
-				name := text(item["name"])
-				if namespace := text(item["namespace"]); namespace != "" {
-					name = namespace + "." + name
-				}
-				envelope := object{"name": name}
-				if text(item["type"]) == "custom_tool_call" {
-					envelope["input"] = item["input"]
-				} else {
-					var arguments object
-					if decode([]byte(text(item["arguments"])), &arguments) != nil || arguments == nil {
-						return nil, fmt.Errorf("invalid client tool arguments in Basispoints history")
-					}
-					envelope["arguments"] = arguments
-				}
-				code, _ := json.Marshal(envelope)
-				args, _ := json.Marshal(object{"code": string(code), "summary": name, "extended_summary": name, "destructive": false, "references": []any{}})
-				item = object{"type": "function_call", "call_id": id, "name": "run_officejs", "arguments": string(args)}
+				return nil, fmt.Errorf("Basispoints original tool item is unavailable after a restart, account change or cache eviction; start a new conversation")
 			}
 		case "custom_tool_call_output":
 			item["type"] = "function_call_output"
@@ -203,13 +187,24 @@ func (b *Bridge) translateCall(native object) (object, error) {
 		return nil, fmt.Errorf("Basispoints returned an unsupported native tool; no tool was executed")
 	}
 	var arguments, envelope object
-	if decode([]byte(text(native["arguments"])), &arguments) != nil || arguments == nil {
+	if value, ok := native["arguments"].(object); ok {
+		arguments = value
+	} else if err := decode([]byte(text(native["arguments"])), &arguments); err != nil {
 		return nil, fmt.Errorf("Basispoints returned invalid tool transport arguments")
+	}
+	if arguments == nil {
+		return nil, fmt.Errorf("Basispoints returned empty tool transport arguments")
 	}
 	if decode([]byte(text(arguments["code"])), &envelope) != nil || envelope == nil {
 		return nil, fmt.Errorf("Basispoints tool transport code must be one JSON client-tool envelope")
 	}
-	info, allowed := b.tools[text(envelope["name"])]
+	toolName := text(envelope["name"])
+	if toolName == "" {
+		toolName = text(envelope["tool"])
+	} else if alias := text(envelope["tool"]); alias != "" && alias != toolName {
+		return nil, fmt.Errorf("Basispoints tool envelope contains conflicting names")
+	}
+	info, allowed := b.tools[toolName]
 	if !allowed {
 		return nil, fmt.Errorf("Basispoints returned a tool outside the client's catalog")
 	}
@@ -235,6 +230,12 @@ func (b *Bridge) translateCall(native object) (object, error) {
 		result["input"] = input
 	} else {
 		args := envelope["arguments"]
+		if alias, exists := envelope["args"]; exists {
+			if _, original := envelope["arguments"]; original {
+				return nil, fmt.Errorf("Basispoints tool envelope contains duplicate argument fields")
+			}
+			args = alias
+		}
 		if raw, ok := args.(string); ok {
 			if decode([]byte(raw), &args) != nil {
 				return nil, fmt.Errorf("Basispoints function arguments are invalid JSON")

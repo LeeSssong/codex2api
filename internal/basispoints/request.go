@@ -172,7 +172,7 @@ func Prepare(raw []byte, scope string, replay *ReplayCache) ([]byte, *Bridge, er
 		"context_management": []any{object{"type": "compaction", "compact_threshold": 200000}},
 		"metadata": object{
 			"task_id": fingerprint([]any{scope, conversation}),
-			"turn_id": fingerprint(input[:turnEnd]), "agent_iteration": fmt.Sprint(iteration),
+			"turn_id": fingerprint([]any{scope, input[:turnEnd]}), "agent_iteration": fmt.Sprint(iteration),
 		},
 	}
 	if cacheKey != "" {

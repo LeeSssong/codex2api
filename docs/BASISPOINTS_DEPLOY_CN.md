@@ -86,6 +86,8 @@ docker build --build-arg BUILD_VERSION=basispoints-local -t ghcr.io/hloolx/codex
 - 真实账号已验证 `gpt-5.6-sol` 的文本、`max → xhigh`、函数工具调用和工具结果回传。测试中的 `gpt-5.4` 被上游以 `basispoints_model_access_changed` 拒绝。模型名称保持原样，不会偷偷换成另一个模型。
 - 此接口带有 Excel 产品的上游行为和提示词。兼容文本、客户端 function/custom 工具，不能保证与原 Codex 通道的行为完全一致。图片、托管工具、结构化输出和强制指定工具等不支持的请求会明确报错。
 - 开启后上游统一走 HTTP/SSE；客户端 WebSocket 入口仍由代理转换。Basispoints 使用独立连接池，不继承 Codex 的 HTTP/2 保活探测截止时间。网络读取错误保留为传输错误，交由现有重试逻辑处理。
+- 工具目录作为 developer 消息发送，客户端 `tools` 不直接传给上游。`run_officejs.code` 中的 JSON 支持 `name/arguments` 和 `tool/args` 两种信封；代理只转发已声明的客户端工具，不执行 Office 代码。完整原始工具 item 按账号和客户端隔离缓存，回放保留 `id`、`call_id`、`summary`、`references` 等原始内容。同一用户轮次保持 `turn_id`，工具结果增加时递增 `agent_iteration`。
+- 原始工具 item 缓存有容量上限，保存在当前进程内。服务重启、跨实例或切换账号后若缓存缺失，会明确要求新建会话，不会拼造不完整的工具历史。多实例部署需保持会话粘性。
 - 关闭开关恢复原 Codex 上游。切换前后请新建会话，避免旧上游的加密历史或压缩内容混用。
 - 本机测试通过 `http://127.0.0.1:9000` 代理访问。服务器上的 `127.0.0.1` 是服务器/容器自身，不是你的电脑；若服务器需要代理，请配置它能访问到的代理地址。
 - 账号权限、模型权限、额度和限流仍由上游决定。开关切换的是请求路由，不能增加账号权限。

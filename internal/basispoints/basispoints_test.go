@@ -102,7 +102,7 @@ func TestEffortAndUnsupportedCapabilities(t *testing.T) {
 
 func nativeCall(envelope object) object {
 	code, _ := json.Marshal(envelope)
-	arguments, _ := json.Marshal(object{"code": string(code), "summary": "Call client tool", "destructive": false})
+	arguments, _ := json.Marshal(object{"code": string(code), "summary": "Call client tool", "extended_summary": "Preserve the original envelope", "destructive": false, "references": []any{"Tokyo weather"}})
 	return object{"type": "function_call", "id": "fc_native", "call_id": "call_native", "name": "run_officejs", "arguments": string(arguments), "status": "completed"}
 }
 
@@ -183,6 +183,8 @@ func TestMalformedAndUndeclaredCallsFailWithoutDispatch(t *testing.T) {
 	source["tools"] = []any{object{"type": "function", "name": "shell"}}
 	for _, native := range []object{
 		nativeCall(object{"name": "delete_workbook", "arguments": object{}}),
+		nativeCall(object{"name": "shell", "tool": "other", "args": object{}}),
+		nativeCall(object{"name": "shell", "arguments": object{}, "args": object{}}),
 		{"type": "function_call", "name": "run_officejs", "arguments": `{"code":"Excel.run(...)"}`},
 		{"type": "function_call", "name": "shell", "arguments": `{}`, "call_id": "call_other"},
 	} {
@@ -193,6 +195,90 @@ func TestMalformedAndUndeclaredCallsFailWithoutDispatch(t *testing.T) {
 		if err != nil || !bytes.Contains(out, []byte("response.failed")) || bytes.Contains(out, []byte("response.output_item.added")) {
 			t.Fatalf("unsafe tool was not rejected: %s; %v", out, err)
 		}
+	}
+}
+
+func TestToolAliasAndObjectArgumentsPreserveCompleteReplay(t *testing.T) {
+	for _, outerObject := range []bool{false, true} {
+		t.Run(fmt.Sprint(outerObject), func(t *testing.T) {
+			cache := new(ReplayCache)
+			source := testSource()
+			source["tools"] = []any{object{"type": "function", "name": "get_weather"}}
+			_, bridge := mustPrepare(t, source, "account/key", cache)
+			native := nativeCall(object{"tool": "get_weather", "args": object{"city": "Tokyo", "note": "a \"quote\" and \\ slash"}})
+			if outerObject {
+				var arguments object
+				if err := decode([]byte(text(native["arguments"])), &arguments); err != nil {
+					t.Fatal(err)
+				}
+				native["arguments"] = arguments
+			}
+			call, err := bridge.translateCall(native)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var args object
+			if err := decode([]byte(text(call["arguments"])), &args); err != nil || call["name"] != "get_weather" || args["city"] != "Tokyo" || args["note"] != "a \"quote\" and \\ slash" {
+				t.Fatalf("nested JSON was not decoded correctly: %+v, %v", call, err)
+			}
+			output := object{"type": "function_call_output", "call_id": call["call_id"], "output": "18 C"}
+			source["input"] = []any{message("user", "weather"), call, output}
+			next, _ := mustPrepare(t, source, "account/key", cache)
+			items := next["input"].([]any)
+			if !reflect.DeepEqual(items[len(items)-2], native) || !reflect.DeepEqual(items[len(items)-1], output) {
+				t.Fatal("replay lost the original item ID, arguments, references or tool result")
+			}
+		})
+	}
+}
+
+func TestMissingOriginalToolItemCannotBeFabricated(t *testing.T) {
+	source := testSource()
+	source["tools"] = []any{object{"type": "function", "name": "get_weather"}}
+	source["input"] = []any{message("user", "weather"), object{"type": "function_call", "id": "fc_client", "call_id": "call_missing", "name": "get_weather", "arguments": `{}`}, object{"type": "function_call_output", "call_id": "call_missing", "output": "18 C"}}
+	raw, _ := json.Marshal(source)
+	if _, _, err := Prepare(raw, "account/key", new(ReplayCache)); err == nil || !strings.Contains(err.Error(), "original tool item is unavailable") {
+		t.Fatalf("missing native identity must produce an actionable error: %v", err)
+	}
+}
+
+func TestToolLoopKeepsTurnIdentityUntilNextUserMessage(t *testing.T) {
+	cache := new(ReplayCache)
+	source := testSource()
+	delete(source, "prompt_cache_key")
+	source["tools"] = []any{object{"type": "function", "name": "update_plan"}}
+	history := []any{message("user", "complete the task")}
+	source["input"] = history
+	first, bridge := mustPrepare(t, source, "account/key", cache)
+	initial := first["metadata"].(object)
+	if initial["agent_iteration"] != "1" {
+		t.Fatal("first iteration must be one")
+	}
+	for i := 1; i <= 2; i++ {
+		native := nativeCall(object{"tool": "update_plan", "args": object{"step": fmt.Sprint(i)}})
+		native["id"], native["call_id"] = fmt.Sprint("fc_", i), fmt.Sprint("call_", i)
+		call, err := bridge.translateCall(native)
+		if err != nil {
+			t.Fatal(err)
+		}
+		history = append(history, call, object{"type": "function_call_output", "call_id": call["call_id"], "output": "completed"})
+		source["input"] = history
+		next, nextBridge := mustPrepare(t, source, "account/key", cache)
+		bridge = nextBridge
+		metadata := next["metadata"].(object)
+		if metadata["turn_id"] != initial["turn_id"] || metadata["task_id"] != initial["task_id"] || metadata["agent_iteration"] != fmt.Sprint(i+1) {
+			t.Fatalf("tool loop changed identity or lost its iteration: %+v", metadata)
+		}
+		retry, _ := mustPrepare(t, source, "account/key", cache)
+		if !reflect.DeepEqual(metadata, retry["metadata"]) {
+			t.Fatal("a network retry must not start a new iteration")
+		}
+	}
+	source["input"] = append(history, message("user", "next task"))
+	next, _ := mustPrepare(t, source, "account/key", cache)
+	metadata := next["metadata"].(object)
+	if metadata["turn_id"] == initial["turn_id"] || metadata["task_id"] != initial["task_id"] || metadata["agent_iteration"] != "1" {
+		t.Fatalf("a new user turn must reset only the turn and iteration: %+v", metadata)
 	}
 }
 

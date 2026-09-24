@@ -81,6 +81,39 @@ func TestBasispointsDoesNotRequireCodexTurnState(t *testing.T) {
 	}
 }
 
+func TestBasispointsIgnoresRotatingNativeSessionIdentity(t *testing.T) {
+	enableBasispointsForTest(t)
+	account := &auth.Account{DBID: 91236, AccountID: "workspace", AccessToken: "test-token"}
+	var bodies [][]byte
+	installBasispointsTransport(t, account, func(req *http.Request) (*http.Response, error) {
+		body, err := io.ReadAll(req.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		bodies = append(bodies, body)
+		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("data: {\"type\":\"response.completed\",\"response\":{\"output\":[]}}\n\n"))}, nil
+	})
+	for _, sessionID := range []string{"native-request-one", "native-request-two"} {
+		resp, err := ExecuteRequest(context.Background(), account, []byte(`{"model":"gpt-5.6-sol","input":"hello"}`), sessionID, "", "client-key", nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, field := range []string{"metadata.task_id", "metadata.turn_id"} {
+		if gjson.GetBytes(bodies[0], field).String() == "" || gjson.GetBytes(bodies[0], field).String() != gjson.GetBytes(bodies[1], field).String() {
+			t.Fatalf("per-request native session changed %s", field)
+		}
+	}
+	if gjson.GetBytes(bodies[0], "prompt_cache_key").Exists() {
+		t.Fatal("native stateless session ID must not become a conversation cache key")
+	}
+}
+
 func TestBasispointsDisabledRestoresCodexRoute(t *testing.T) {
 	enableBasispointsForTest(t)
 	settings := CurrentRuntimeSettings()

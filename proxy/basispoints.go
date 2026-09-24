@@ -36,8 +36,9 @@ func executeBasispointsRequest(ctx context.Context, account *auth.Account, reque
 	resetWsAcquireAudit(ctx)
 	RecordObservedInstructions(requestBody, headers)
 	requestBody = ApplyPayloadRulesToBody(requestBody, gjson.GetBytes(requestBody, "model").String(), headers, PayloadRuleIdentityFromContext(ctx))
-	if sessionID != "" {
-		requestBody, _ = sjson.SetBytes(requestBody, "prompt_cache_key", sessionID)
+	// Native stateless session IDs change per request; they cannot identify a tool loop.
+	if gjson.GetBytes(requestBody, "prompt_cache_key").String() == "" && headers.Get("Session_id") != "" {
+		requestBody, _ = sjson.SetBytes(requestBody, "prompt_cache_key", headers.Get("Session_id"))
 	}
 	scope := fmt.Sprintf("%d|%x", account.ID(), sha256.Sum256([]byte(apiKey)))
 	body, bridge, err := basispoints.Prepare(requestBody, scope, &basispointsReplay)
