@@ -103,3 +103,70 @@ func TestToolOutputIDsAreBoundedAndCallerIDsPreserved(t *testing.T) {
 		}
 	}
 }
+
+func TestNestedTransportRetainsExactReplayAndArguments(t *testing.T) {
+	for _, kind := range []string{"function", "custom"} {
+		for depth := 0; depth <= 3; depth++ {
+			cache := new(ReplayCache)
+			source := testSource()
+			source["tools"] = []any{object{"type": kind, "name": "shell"}}
+			_, bridge := mustPrepare(t, source, "account/key", cache)
+			envelope := object{"tool": "shell", "args": object{"number": json.Number("9007199254740993")}}
+			if kind == "custom" {
+				envelope["args"] = "exact raw input\nwith \\ and quotes \""
+			}
+			for i := 0; i < depth; i++ {
+				raw, _ := json.Marshal(envelope)
+				args, _ := json.Marshal(object{"code": string(raw)})
+				envelope = object{"name": "functions.run_officejs", "arguments": string(args)}
+			}
+			native := nativeCall(envelope)
+			call, err := bridge.translateCall(native)
+			if depth > 2 {
+				if err == nil {
+					t.Fatal("excessive nested transport accepted")
+				}
+				continue
+			}
+			if err != nil || call["name"] != "shell" {
+				t.Fatalf("kind=%s depth=%d: %v", kind, depth, err)
+			}
+			if kind == "function" && !strings.Contains(text(call["arguments"]), "9007199254740993") {
+				t.Fatal("nested arguments lost numeric precision")
+			}
+			if kind == "custom" && call["input"] != "exact raw input\nwith \\ and quotes \"" {
+				t.Fatal("custom input was modified")
+			}
+			if !reflect.DeepEqual(cache.get("account/key", "call_native"), native) {
+				t.Fatal("nested wrapper must remain intact for upstream replay")
+			}
+		}
+	}
+}
+
+func TestTransportShapeDoesNotDiscloseCode(t *testing.T) {
+	const secret = "private-secret-never-in-errors"
+	for _, value := range []any{nil, 42, "", "Excel.run(" + secret + ")", `{"name":"` + secret, "[\"" + secret + "\"]"} {
+		_, err := decodeTransportCode(value)
+		if err == nil || strings.Contains(err.Error(), secret) || !strings.Contains(err.Error(), "format=") {
+			t.Fatalf("missing or unsafe structural diagnostic: %v", err)
+		}
+	}
+}
+
+func TestNestedAndCustomAliasesRejectAmbiguity(t *testing.T) {
+	source := testSource()
+	source["tools"] = []any{object{"type": "custom", "name": "patch"}}
+	_, bridge := mustPrepare(t, source, "", nil)
+	for _, envelope := range []object{
+		{"name": "run_officejs", "tool": "patch", "arguments": object{}},
+		{"name": "run_officejs", "arguments": object{}, "args": object{}},
+		{"name": "patch", "input": "one", "args": "two"},
+		{"name": "patch", "args": object{"text": "do not stringify"}},
+		{"name": "patch", "arguments": object{}, "input": "one"},
+	} {
+		if _, err := bridge.translateCall(nativeCall(envelope)); err == nil {
+			t.Fatal("ambiguous or non-string custom input accepted")
+		}
+	}
+}

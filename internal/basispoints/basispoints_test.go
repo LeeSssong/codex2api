@@ -118,7 +118,12 @@ func TestStreamingToolRoundTripPreservesNativeIdentity(t *testing.T) {
 			source := testSource()
 			source["tools"] = []any{object{"type": "namespace", "name": "client", "tools": []any{object{"type": kind, "name": "run"}}}}
 			_, bridge := mustPrepare(t, source, "account/key/session", cache)
-			native := nativeCall(object{"name": "client.run", "arguments": object{"number": json.Number("9007199254740993")}, "input": "*** Begin Patch\n*** End Patch"})
+			envelope := object{"name": "client.run", "arguments": object{"number": json.Number("9007199254740993")}}
+			if kind == "custom" {
+				delete(envelope, "arguments")
+				envelope["input"] = "*** Begin Patch\n*** End Patch"
+			}
+			native := nativeCall(envelope)
 			wire := sse(object{"type": "response.created", "response": object{"id": "resp_1", "output": []any{}}}) +
 				sse(object{"type": "response.output_item.added", "output_index": 1, "item": native}) +
 				sse(object{"type": "response.function_call_arguments.delta", "output_index": 1, "delta": "SECRET_NATIVE_ENVELOPE"}) +
@@ -189,7 +194,7 @@ func TestMalformedAndUndeclaredCallsFailWithoutDispatch(t *testing.T) {
 		{"type": "function_call", "name": "shell", "arguments": `{}`, "call_id": "call_other"},
 	} {
 		_, bridge := mustPrepare(t, source, "", nil)
-		body := bridge.Stream(io.NopCloser(strings.NewReader(sse(object{"type": "response.output_item.done", "item": native}))))
+		body := bridge.Stream(io.NopCloser(strings.NewReader(sse(object{"type": "response.completed", "response": object{"output": []any{native}}}))))
 		out, err := io.ReadAll(body)
 		_ = body.Close()
 		if err != nil || !bytes.Contains(out, []byte("response.failed")) || bytes.Contains(out, []byte("response.output_item.added")) {

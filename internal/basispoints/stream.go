@@ -46,6 +46,7 @@ func (b *Bridge) transform(reader io.Reader, writer io.Writer) error {
 	sequence := 0
 	terminal := false
 	emitted := make(map[string]bool)
+	pendingTools := make(map[string]bool)
 	emit := func(kind string, payload object) error {
 		payload["type"] = kind
 		payload["sequence_number"] = sequence
@@ -103,18 +104,30 @@ func (b *Bridge) transform(reader io.Reader, writer io.Writer) error {
 			return nil
 		}
 		if kind == "response.output_item.done" && isTool(item) {
-			translated, err := b.translateCall(item)
-			if err != nil {
-				return err
+			// Only the terminal response contains the authoritative native item.
+			// Text keeps streaming; tool calls wait until the whole response validates.
+			if len(pendingTools) >= 1024 {
+				return fmt.Errorf("Basispoints response contains too many tool items")
 			}
-			return emitTool(translated, payload["output_index"])
+			pendingTools[text(item["call_id"])+"\x00"+text(item["id"])] = true
+			return nil
 		}
 		if response, ok := payload["response"].(object); ok {
-			if err := b.translateResponse(response); err != nil {
-				return err
-			}
-			if kind == "response.completed" || kind == "response.incomplete" {
+			if kind == "response.completed" {
 				output, _ := response["output"].([]any)
+				for _, raw := range output {
+					item, _ := raw.(object)
+					if isTool(item) {
+						delete(pendingTools, text(item["call_id"])+"\x00"+text(item["id"]))
+					}
+				}
+				if len(pendingTools) != 0 {
+					return fmt.Errorf("Basispoints completed response omitted an original tool item")
+				}
+				if err := b.translateResponse(response); err != nil {
+					return err
+				}
+				output, _ = response["output"].([]any)
 				for i, raw := range output {
 					item, _ := raw.(object)
 					if isTool(item) {
@@ -123,6 +136,18 @@ func (b *Bridge) transform(reader io.Reader, writer io.Writer) error {
 						}
 					}
 				}
+			} else {
+				// Never expose native or incomplete tool arguments to the client.
+				output, _ := response["output"].([]any)
+				filtered := make([]any, 0, len(output))
+				for _, raw := range output {
+					item, _ := raw.(object)
+					if !isTool(item) {
+						filtered = append(filtered, raw)
+					}
+				}
+				response["output"] = filtered
+				response["reasoning"] = object{"effort": b.Effort}
 			}
 		}
 		terminal = kind == "response.completed" || kind == "response.incomplete" || kind == "response.failed" || kind == "error"

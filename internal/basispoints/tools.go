@@ -213,15 +213,13 @@ func (b *Bridge) translateCall(native object) (object, error) {
 	if arguments == nil {
 		return nil, fmt.Errorf("Basispoints returned empty tool transport arguments")
 	}
-	envelope, err := decodeTransportCode(arguments["code"])
+	envelope, err := decodeTransportEnvelope(arguments["code"])
 	if err != nil {
 		return nil, err
 	}
-	toolName := text(envelope["name"])
-	if toolName == "" {
-		toolName = text(envelope["tool"])
-	} else if alias := text(envelope["tool"]); alias != "" && alias != toolName {
-		return nil, fmt.Errorf("Basispoints tool envelope contains conflicting names")
+	toolName, err := envelopeName(envelope)
+	if err != nil {
+		return nil, err
 	}
 	info, allowed := b.tools[toolName]
 	if !allowed {
@@ -240,7 +238,17 @@ func (b *Bridge) translateCall(native object) (object, error) {
 		result["namespace"] = info.Namespace
 	}
 	if info.Kind == "custom" {
-		input, ok := envelope["input"].(string)
+		value, hasInput := envelope["input"]
+		if alias, hasAlias := envelope["args"]; hasAlias {
+			if hasInput {
+				return nil, fmt.Errorf("Basispoints custom tool envelope contains conflicting input fields")
+			}
+			value = alias
+		}
+		if _, exists := envelope["arguments"]; exists {
+			return nil, fmt.Errorf("Basispoints custom tools require input text, not arguments")
+		}
+		input, ok := value.(string)
 		if !ok {
 			return nil, fmt.Errorf("Basispoints custom tool input must be a string")
 		}
@@ -248,12 +256,9 @@ func (b *Bridge) translateCall(native object) (object, error) {
 		result["id"] = "ctc_" + fingerprint(id)
 		result["input"] = input
 	} else {
-		args := envelope["arguments"]
-		if alias, exists := envelope["args"]; exists {
-			if _, original := envelope["arguments"]; original {
-				return nil, fmt.Errorf("Basispoints tool envelope contains duplicate argument fields")
-			}
-			args = alias
+		args, err := envelopeArguments(envelope)
+		if err != nil {
+			return nil, err
 		}
 		if raw, ok := args.(string); ok {
 			if decode([]byte(raw), &args) != nil {

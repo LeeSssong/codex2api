@@ -1,6 +1,8 @@
 package basispoints
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -10,6 +12,7 @@ const maxEnvelopeBytes = 1 << 20
 // decodeTransportCode unwraps common model formatting without evaluating code.
 // Each layer must contain one complete JSON value; ambiguous batches are rejected.
 func decodeTransportCode(value any) (object, error) {
+	original := value
 	for depth := 0; depth < 4; depth++ {
 		if item, ok := value.(object); ok && item != nil {
 			return item, nil
@@ -46,7 +49,96 @@ func decodeTransportCode(value any) (object, error) {
 		}
 		break
 	}
-	return nil, fmt.Errorf("Basispoints tool transport code must contain one JSON client-tool envelope; OfficeJS and multiple calls are unsupported")
+	return nil, fmt.Errorf("Basispoints tool transport code must contain one JSON client-tool envelope; OfficeJS and multiple calls are unsupported (%s)", transportShape(original))
+}
+
+// Report only structural facts, never client code, prompts or tool arguments.
+func transportShape(value any) string {
+	raw, ok := value.(string)
+	if !ok {
+		if value == nil {
+			return "format=missing"
+		}
+		return fmt.Sprintf("format=non_string_%T", value)
+	}
+	trimmed := strings.TrimSpace(raw)
+	format := "text_or_code"
+	switch {
+	case trimmed == "":
+		format = "empty"
+	case strings.HasPrefix(trimmed, "```"):
+		format = "markdown"
+	case strings.HasPrefix(trimmed, "{"):
+		format = "json_object"
+	case strings.HasPrefix(trimmed, "["):
+		format = "json_array"
+	case strings.HasPrefix(trimmed, `"`):
+		format = "json_string"
+	}
+	detail := fmt.Sprintf("format=%s; bytes=%d", format, len(raw))
+	var syntax *json.SyntaxError
+	var decoded any
+	if err := json.Unmarshal([]byte(raw), &decoded); errors.As(err, &syntax) {
+		detail += fmt.Sprintf("; json_offset=%d", syntax.Offset)
+	}
+	return detail
+}
+
+func decodeTransportEnvelope(value any) (object, error) {
+	for depth := 0; depth < 3; depth++ {
+		envelope, err := decodeTransportCode(value)
+		if err != nil {
+			return nil, err
+		}
+		name, err := envelopeName(envelope)
+		if err != nil {
+			return nil, err
+		}
+		if name != "run_officejs" && name != "functions.run_officejs" {
+			return envelope, nil
+		}
+		args, err := envelopeArguments(envelope)
+		if err != nil {
+			return nil, err
+		}
+		if raw, ok := args.(string); ok {
+			var parsed object
+			if decode([]byte(raw), &parsed) != nil {
+				return nil, fmt.Errorf("Basispoints nested transport arguments must be one JSON object")
+			}
+			args = parsed
+		}
+		outer, ok := args.(object)
+		if !ok {
+			return nil, fmt.Errorf("Basispoints nested transport arguments must be an object")
+		}
+		value = outer["code"]
+	}
+	return nil, fmt.Errorf("Basispoints tool transport exceeds two nested wrappers")
+}
+
+func envelopeName(envelope object) (string, error) {
+	name := text(envelope["name"])
+	alias := text(envelope["tool"])
+	if name != "" && alias != "" && name != alias {
+		return "", fmt.Errorf("Basispoints tool envelope contains conflicting names")
+	}
+	if name == "" {
+		name = alias
+	}
+	return name, nil
+}
+
+func envelopeArguments(envelope object) (any, error) {
+	args, exists := envelope["arguments"]
+	alias, hasAlias := envelope["args"]
+	if exists && hasAlias {
+		return nil, fmt.Errorf("Basispoints tool envelope contains conflicting argument fields")
+	}
+	if !exists {
+		args = alias
+	}
+	return args, nil
 }
 
 func prosePrefix(prefix string) bool {
