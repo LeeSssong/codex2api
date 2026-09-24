@@ -2,6 +2,7 @@ name: Build Docker Image
 
 on:
   push:
+    branches: [main]
     tags:
       - 'v*'
   workflow_dispatch:
@@ -52,6 +53,7 @@ jobs:
             type=semver,pattern={{version}},value=${{ inputs.build_version || github.ref_name }},enable=${{ inputs.build_version != '' || startsWith(github.ref, 'refs/tags/v') }}
             type=semver,pattern={{major}}.{{minor}},value=${{ inputs.build_version || github.ref_name }},enable=${{ inputs.build_version != '' || startsWith(github.ref, 'refs/tags/v') }}
             type=raw,value=latest
+            type=raw,value=basispoints,enable=${{ github.ref == 'refs/heads/main' }}
             type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' }}
             type=sha,format=long
 
@@ -75,6 +77,7 @@ jobs:
           echo "::add-mask::$admin_secret"
           export SMOKE_ADMIN_SECRET="$admin_secret"
           ADMIN_SECRET="$admin_secret" docker compose -f compose.state.yml config -q
+          ADMIN_SECRET="$admin_secret" docker compose -f docker-compose.basispoints.yml config -q
           docker run -d --name codex2api-smoke \
             -p 127.0.0.1:18080:8080 \
             -e ADMIN_SECRET="$admin_secret" \
@@ -97,6 +100,12 @@ jobs:
           (async () => {
             const base = 'http://127.0.0.1:18080/api/admin/state-pool';
             const headers = { 'X-Admin-Key': process.env.SMOKE_ADMIN_SECRET, 'Content-Type': 'application/json' };
+            const settingsURL = 'http://127.0.0.1:18080/api/admin/settings';
+            const settings = await fetch(settingsURL, { headers });
+            assert.equal(settings.status, 200);
+            assert.equal((await settings.json()).codex_basispoints_enabled, false);
+            const updatedSettings = await fetch(settingsURL, { method: 'PUT', headers, body: JSON.stringify({ codex_basispoints_enabled: true }) });
+            assert.equal(updatedSettings.status, 200);
             const response = await fetch(base, { headers });
             assert.equal(response.status, 200);
             const data = await response.json();
@@ -136,6 +145,9 @@ jobs:
           const assert = require('node:assert/strict');
           (async () => {
             const response = await fetch('http://127.0.0.1:18080/api/admin/state-pool', { headers: { 'X-Admin-Key': process.env.SMOKE_ADMIN_SECRET } });
+            const settings = await fetch('http://127.0.0.1:18080/api/admin/settings', { headers: { 'X-Admin-Key': process.env.SMOKE_ADMIN_SECRET } });
+            assert.equal(settings.status, 200);
+            assert.equal((await settings.json()).codex_basispoints_enabled, true);
             assert.equal(response.status, 200);
             assert.deepEqual((await response.json()).limits, { concurrency: 2, per_account: 1, per_proxy: 1 });
             const pluginResponse = await fetch('http://127.0.0.1:18080/api/admin/state-pool/ipv6', { headers: { 'X-Admin-Key': process.env.SMOKE_ADMIN_SECRET } });
@@ -179,6 +191,26 @@ jobs:
             revision="$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$IMAGE:sha-$GITHUB_SHA")"
             test "$revision" = "$GITHUB_SHA"
           done
+
+      - name: Export offline AMD64 Docker package
+        if: github.ref == 'refs/heads/main'
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+        run: |
+          docker pull --platform linux/amd64 "$IMAGE:sha-$GITHUB_SHA"
+          docker tag "$IMAGE:sha-$GITHUB_SHA" "$IMAGE:basispoints"
+          docker save "$IMAGE:basispoints" | gzip > codex2api-basispoints-linux-amd64.tar.gz
+          sha256sum codex2api-basispoints-linux-amd64.tar.gz > SHA256SUMS
+
+      - uses: actions/upload-artifact@v4
+        if: github.ref == 'refs/heads/main'
+        with:
+          name: codex2api-basispoints-linux-amd64
+          path: |
+            codex2api-basispoints-linux-amd64.tar.gz
+            SHA256SUMS
+          compression-level: 0
+          retention-days: 14
 
       - name: Deployment summary
         env:

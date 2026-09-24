@@ -80,8 +80,9 @@ type RuntimeSettings struct {
 	FirstTokenTimeoutSec  int
 	BillingTierPolicy     string
 	// ModelsListReadMaxBytes 是上游 /v1/models 与 Codex 模型清单成功响应的读取上限。
-	ModelsListReadMaxBytes int64
-	CodexForceWebsocket    bool // 强制 Codex 上游走 WebSocket（默认 false）
+	ModelsListReadMaxBytes  int64
+	CodexBasispointsEnabled bool // Basispoints takes precedence over Codex transport settings.
+	CodexForceWebsocket     bool // 强制 Codex 上游走 WebSocket（默认 false）
 	// CodexRequestCompression 对 HTTP /responses 请求体做 zstd 压缩（默认 true，
 	// 与真实 Codex CLI 一致）。与 CodexForceWebsocket 正交：WS 路径走
 	// permessage-deflate（拨号器已开启），本项只作用于 HTTP 路径，两者可同时生效。
@@ -353,6 +354,7 @@ func ApplyRuntimeSettingsFromSystem(settings *database.SystemSettings) RuntimeSe
 		next.BillingTierPolicy = settings.BillingTierPolicy
 		next.ModelsListReadMaxBytes = settings.ModelsListReadMaxBytes
 		next.CodexForceWebsocket = settings.CodexForceWebsocket
+		next.CodexBasispointsEnabled = settings.CodexBasispointsEnabled
 		next.CodexRequestCompression = settings.CodexRequestCompression
 		next.CodexWSWeakNetworkMode = settings.CodexWSWeakNetworkMode
 		next.CodexWSHideErrors = settings.CodexWSHideUpstreamErrors

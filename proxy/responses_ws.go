@@ -701,7 +701,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 		upstreamCtx = WithPayloadRuleIdentity(upstreamCtx, attemptIdentity)
 		lastUpstreamCancel = upstreamCancel
 		ttftGuard := newFirstTokenTimeoutGuard(firstTokenTimeoutForRequest(currentFirstTokenTimeout(), bodySignalCompact), upstreamCancel)
-		useWebsocket := !wsHTTPFallback.ForceHTTP()
+		useWebsocket := !CurrentRuntimeSettings().CodexBasispointsEnabled && !wsHTTPFallback.ForceHTTP()
 		// 生图请求改走 HTTP 上游（客户端仍是 WS）：WebSocket 上游传输大体积
 		// 图片数据会卡死（issue #220）；自然语言生图意图也需保留图片工具（issue #288）。
 		if useWebsocket && (responsesBodyRequestsImageGeneration(rawBody) || naturalImageIntent) {
@@ -921,7 +921,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 				EffectiveModel:         logEffectiveModel,
 				StatusCode:             resp.StatusCode,
 				DurationMs:             durationMs,
-				ReasoningEffort:        reasoningEffort,
+				ReasoningEffort:        effectiveReasoningEffortForAccount(account, reasoningEffort),
 				InboundEndpoint:        "/v1/responses",
 				UpstreamEndpoint:       "/v1/responses",
 				Stream:                 true,
@@ -1420,7 +1420,7 @@ func (h *Handler) streamResponsesWSUpstream(
 		clearNewAPIUpstreamCyberPolicyDecision(c)
 		h.logPromptPolicyRetryUsage(c, database.UsageLogInput{
 			AccountID: account.ID(), Endpoint: "/v1/responses", Model: model, EffectiveModel: logEffectiveModel,
-			StatusCode: outcome.logStatusCode, DurationMs: totalDuration, FirstTokenMs: firstTokenMs, ReasoningEffort: reasoningEffort,
+			StatusCode: outcome.logStatusCode, DurationMs: totalDuration, FirstTokenMs: firstTokenMs, ReasoningEffort: effectiveReasoningEffortForAccount(account, reasoningEffort),
 			InboundEndpoint: "/v1/responses", UpstreamEndpoint: "/v1/responses", Stream: true, ViaWebsocket: viaWebsocket,
 			AttemptIndex: fallbackAttempt, UpstreamErrorKind: outcome.failureKind,
 			ErrorMessage: usageLogFailureMessage(outcome.logStatusCode, outcome.failureMessage),
@@ -1506,7 +1506,7 @@ func (h *Handler) streamResponsesWSUpstream(
 		StatusCode:             outcome.logStatusCode,
 		DurationMs:             totalDuration,
 		FirstTokenMs:           firstTokenMs,
-		ReasoningEffort:        reasoningEffort,
+		ReasoningEffort:        effectiveReasoningEffortForAccount(account, reasoningEffort),
 		InboundEndpoint:        "/v1/responses",
 		UpstreamEndpoint:       "/v1/responses",
 		Stream:                 true,

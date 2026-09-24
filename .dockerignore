@@ -19,6 +19,16 @@ Thumbs.db
 # Env
 .env
 .env.local
+
+# Runtime data never belongs in an image build context.
+data/
+logs/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
 .env.*
 !.env.example
 

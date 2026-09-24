@@ -523,6 +523,9 @@ func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []by
 	if account == nil || account.IsRelayStyle() {
 		return nil, ErrNoAvailableAccount()
 	}
+	if CurrentRuntimeSettings().CodexBasispointsEnabled {
+		return executeBasispointsRequest(ctx, account, requestBody, sessionID, proxyOverride, apiKey, headers)
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -970,6 +973,9 @@ func ExecuteOpenAIResponsesCompactRequest(ctx context.Context, account *auth.Acc
 func ExecuteCompactRequest(ctx context.Context, account *auth.Account, requestBody []byte, sessionID string, proxyOverride string, apiKey string, deviceCfg *DeviceProfileConfig, headers http.Header) (upstreamResponse *http.Response, upstreamErr error) {
 	if account == nil || account.IsRelayStyle() {
 		return nil, ErrNoAvailableAccount()
+	}
+	if CurrentRuntimeSettings().CodexBasispointsEnabled {
+		return executeBasispointsCompactRequest(ctx, account, requestBody, sessionID, proxyOverride, apiKey, headers)
 	}
 	if ctx == nil {
 		ctx = context.Background()

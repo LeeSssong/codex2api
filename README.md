@@ -1,3 +1,15 @@
+# hlool · Self-hosted AI Account Pool
+
+**学 AI，上 L 站。** [Linux.do · hlool](https://linux.do/u/hlool)
+
+Maintained by [hlool](https://linux.do/u/hlool) for self-hosted account management and compatible API access. Based on [Codex2API](https://github.com/james-6-23/codex2api), with a visual account pool, State management, and an optional Basispoints upstream.
+
+## hlool Docker Build
+
+Docker image: **`ghcr.io/hloolx/codex2api:basispoints`** (`latest` also includes this build). The Basispoints switch is off by default; enable it under **Settings → Codex → Transport** to route all Codex OAuth pool accounts through Basispoints. `max` is sent as `xhigh`, and the actual effort is reported. See the [deployment guide](docs/BASISPOINTS_DEPLOY_CN.md) for new installations, upgrades, and offline Docker packages.
+
+---
+
 <p align="center">
   <img src="assets/banner.svg" alt="Codex2API" width="100%">
 </p>
@@ -116,7 +128,7 @@ This fork includes per-account state capture and verified cross-host import for 
 Standard image mode:
 
 ```bash
-git clone https://github.com/james-6-23/codex2api.git
+git clone https://github.com/hloolx/codex2api.git
 cd codex2api
 cp .env.example .env
 docker compose pull

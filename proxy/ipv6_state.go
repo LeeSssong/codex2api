@@ -31,6 +31,9 @@ var ipv6StateProvider atomic.Pointer[IPv6StateProvider]
 func SetIPv6StateProvider(provider *IPv6StateProvider) { ipv6StateProvider.Store(provider) }
 
 func withRequiredStateFilter(model string, filter auth.AccountFilter) auth.AccountFilter {
+	if CurrentRuntimeSettings().CodexBasispointsEnabled {
+		return filter
+	}
 	provider := ipv6StateProvider.Load()
 	if provider == nil || provider.EligibleAccounts == nil {
 		return filter

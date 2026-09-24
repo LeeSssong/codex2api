@@ -734,6 +734,9 @@ func responsesModelRejectsHostedImageTool(body map[string]any) bool {
 }
 
 func shouldAutoInjectResponsesImageGenerationTool(body map[string]any) bool {
+	if CurrentRuntimeSettings().CodexBasispointsEnabled {
+		return false
+	}
 	if len(body) == 0 || hasResponsesImageGenerationTool(body) {
 		return false
 	}
