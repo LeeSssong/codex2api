@@ -18,6 +18,14 @@ import (
 
 var basispointsReplay basispoints.ReplayCache
 
+func basispointsRequestErrorCode(body []byte) string {
+	code := firstGJSONString(body, "error.code", "response.error.code", "response.status_details.error.code")
+	if code == "basispoints_model_access_changed" || code == "basispoints_protocol_error" {
+		return code
+	}
+	return ""
+}
+
 func executeBasispointsRequest(ctx context.Context, account *auth.Account, requestBody []byte, sessionID, proxyOverride, apiKey string, headers http.Header) (*http.Response, error) {
 	if ctx == nil {
 		ctx = context.Background()

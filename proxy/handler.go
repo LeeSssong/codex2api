@@ -2091,7 +2091,12 @@ func classifyTransportFailure(err error) string {
 	return "transport"
 }
 
-func classifyHTTPFailure(statusCode int) string {
+func classifyHTTPFailure(statusCode int, bodies ...[]byte) string {
+	for _, body := range bodies {
+		if basispointsRequestErrorCode(body) != "" {
+			return ""
+		}
+	}
 	switch {
 	case statusCode == http.StatusUnauthorized:
 		return "unauthorized"
@@ -2285,6 +2290,13 @@ func classifyResponseFailedOutcome(payload []byte) streamOutcome {
 	if emptyIncomplete {
 		kind = codexEmptyIncompleteFailureKind
 	}
+	requestError := basispointsRequestErrorCode(payload)
+	if requestError != "" {
+		kind = requestError
+		if requestError == "basispoints_model_access_changed" {
+			statusCode = http.StatusForbidden
+		}
+	}
 	// 400 中"账号不支持该模型"属账号权益问题，冷却后换号重试有意义，视同可重试故障。
 	modelUnsupported := statusCode == http.StatusBadRequest && isCodexModelUnsupportedError(errorBody)
 	return streamOutcome{
@@ -2292,9 +2304,9 @@ func classifyResponseFailedOutcome(payload []byte) streamOutcome {
 		failureKind:    kind,
 		failureMessage: message,
 		failurePayload: append([]byte(nil), payload...),
-		penalize:       !safetyPolicy && (statusCode == http.StatusUnauthorized || statusCode == http.StatusTooManyRequests || statusCode >= 500 || modelUnsupported),
+		penalize:       requestError == "" && !safetyPolicy && (statusCode == http.StatusUnauthorized || statusCode == http.StatusTooManyRequests || statusCode >= 500 || modelUnsupported),
 		capacityShed:   !capacityShedHandlingDisabled() && isCapacityShedPayload(payload),
-		requestScoped:  emptyIncomplete,
+		requestScoped:  emptyIncomplete || requestError != "",
 	}
 }
 
@@ -3359,6 +3371,9 @@ func isRetryableStatus(code int) bool {
 }
 
 func shouldRetryHTTPStatus(statusCode int, body []byte, generalRetries *int, rateLimitRetries *int, maxGeneralRetries, maxRateLimitRetries int, policies ...database.ContinuousRetryPolicy) bool {
+	if basispointsRequestErrorCode(body) != "" {
+		return false
+	}
 	policy := continuousRetryPolicyForCall(policies)
 	if isExplicitUpstreamCyberPolicy(body) {
 		return false
@@ -3674,6 +3689,9 @@ func upstreamAccountErrorMessage(statusCode int, body []byte) string {
 }
 
 func upstreamErrorKind(statusCode int, body []byte, decision codex429Decision) string {
+	if code := basispointsRequestErrorCode(body); code != "" {
+		return code
+	}
 	if IsUsageLimitReachedError(body) {
 		if decision.Reason != "" {
 			return decision.Reason
@@ -4315,7 +4333,7 @@ func (h *Handler) Responses(c *gin.Context) {
 					}
 				}
 
-				if kind := classifyHTTPFailure(resp.StatusCode); kind != "" && !antigravityRefreshFailed && !antigravityNonPenalizingUpstreamFailure(account, resp.StatusCode, errBody) {
+				if kind := classifyHTTPFailure(resp.StatusCode, errBody); kind != "" && !antigravityRefreshFailed && !antigravityNonPenalizingUpstreamFailure(account, resp.StatusCode, errBody) {
 					h.store.ReportRequestFailure(account, kind, time.Duration(durationMs)*time.Millisecond)
 				}
 				h.store.Release(account)
@@ -5072,7 +5090,7 @@ func (h *Handler) Responses(c *gin.Context) {
 				}
 			}
 
-			if kind := classifyHTTPFailure(resp.StatusCode); kind != "" {
+			if kind := classifyHTTPFailure(resp.StatusCode, errBody); kind != "" {
 				h.store.ReportRequestFailure(account, kind, time.Duration(durationMs)*time.Millisecond)
 			}
 			SyncCodexUsageState(h.store, account, resp)
@@ -6110,7 +6128,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 					}
 				}
 
-				if kind := classifyHTTPFailure(resp.StatusCode); kind != "" {
+				if kind := classifyHTTPFailure(resp.StatusCode, errBody); kind != "" {
 					h.store.ReportRequestFailure(account, kind, time.Duration(durationMs)*time.Millisecond)
 				}
 				h.store.Release(account)
@@ -6356,7 +6374,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 				}
 			}
 
-			if kind := classifyHTTPFailure(resp.StatusCode); kind != "" {
+			if kind := classifyHTTPFailure(resp.StatusCode, errBody); kind != "" {
 				h.store.ReportRequestFailure(account, kind, time.Duration(durationMs)*time.Millisecond)
 			}
 			SyncCodexUsageState(h.store, account, resp)
@@ -7039,7 +7057,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 					log.Printf("Antigravity OAuth refresh failed after upstream 401 (account=%d, endpoint=/v1/chat/completions): %v", account.ID(), refreshErr)
 				}
 			}
-			if kind := classifyHTTPFailure(resp.StatusCode); kind != "" && !antigravityNonPenalizingUpstreamFailure(account, resp.StatusCode, errBody) {
+			if kind := classifyHTTPFailure(resp.StatusCode, errBody); kind != "" && !antigravityNonPenalizingUpstreamFailure(account, resp.StatusCode, errBody) {
 				h.store.ReportRequestFailure(account, kind, time.Duration(durationMs)*time.Millisecond)
 			}
 			SyncCodexUsageState(h.store, account, resp)
@@ -8290,6 +8308,10 @@ func (h *Handler) applyCooldown(account *auth.Account, statusCode int, body []by
 }
 
 func (h *Handler) applyCooldownForModel(account *auth.Account, statusCode int, body []byte, resp *http.Response, model string) codex429Decision {
+	// Basispoints model availability and relay-format failures do not invalidate credentials.
+	if basispointsRequestErrorCode(body) != "" {
+		return codex429Decision{}
+	}
 	// Grok 上游的错误语义与 Codex 不同（免费额度耗尽/超支限制/Retry-After），单独映射。
 	if account.IsGrokAPI() {
 		return h.applyGrokCooldownForModel(account, statusCode, body, resp, model)
@@ -8675,6 +8697,10 @@ func parseFloat(s string) float64 {
 
 // sendUpstreamError 发送上游错误响应给客户端
 func (h *Handler) sendUpstreamError(c *gin.Context, statusCode int, body []byte) {
+	if code := basispointsRequestErrorCode(body); code != "" {
+		c.JSON(statusCode, gin.H{"error": gin.H{"code": code, "type": "upstream_error", "message": usageLogErrorMessage(statusCode, body)}})
+		return
+	}
 	if isExplicitUpstreamCyberPolicy(body) {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error": gin.H{
@@ -8722,6 +8748,10 @@ func normalizedRetryAfter(value string) string {
 // sendFinalUpstreamError 重试用尽后的最终错误响应：识别 usage_limit_reached 改写为 503，其余透传
 func (h *Handler) sendFinalUpstreamError(c *gin.Context, statusCode int, body []byte) {
 	if !claimContinuousRetryTerminal(c, continuousRetryProtocolOpenAI) {
+		return
+	}
+	if basispointsRequestErrorCode(body) != "" {
+		h.sendUpstreamError(c, statusCode, body)
 		return
 	}
 	if details, ok := parseUsageLimitDetails(body); ok {

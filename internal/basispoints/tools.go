@@ -125,6 +125,7 @@ func (b *Bridge) collectTools(value any, namespace string) ([]any, error) {
 
 func (b *Bridge) translateHistory(input []any) ([]any, error) {
 	result := make([]any, 0, len(input))
+	seenCalls := make(map[string]bool)
 	var trigger any
 	for _, raw := range input {
 		item, ok := raw.(object)
@@ -152,8 +153,25 @@ func (b *Bridge) translateHistory(input []any) ([]any, error) {
 			} else {
 				return nil, fmt.Errorf("Basispoints original tool item is unavailable after a restart, account change or cache eviction; start a new conversation")
 			}
-		case "custom_tool_call_output":
+			seenCalls[id] = true
+		case "function_call_output", "custom_tool_call_output":
+			id := text(item["call_id"])
+			if !seenCalls[id] {
+				native := b.replay.get(b.scope, id)
+				if native == nil {
+					return nil, fmt.Errorf("Basispoints original tool item is unavailable for this tool result; start a new conversation")
+				}
+				result = append(result, native)
+				seenCalls[id] = true
+			}
 			item["type"] = "function_call_output"
+			if text(item["id"]) == "" {
+				itemID := "fc_" + id
+				if len(itemID) > 64 {
+					itemID = "fc_" + fingerprint(id)
+				}
+				item["id"] = itemID
+			}
 		case "configuration_update":
 			return nil, fmt.Errorf("Basispoints does not support configuration_update; start a new request with the desired effort")
 		}
@@ -186,7 +204,7 @@ func (b *Bridge) translateCall(native object) (object, error) {
 	if name != "run_officejs" && name != "functions.run_officejs" {
 		return nil, fmt.Errorf("Basispoints returned an unsupported native tool; no tool was executed")
 	}
-	var arguments, envelope object
+	var arguments object
 	if value, ok := native["arguments"].(object); ok {
 		arguments = value
 	} else if err := decode([]byte(text(native["arguments"])), &arguments); err != nil {
@@ -195,8 +213,9 @@ func (b *Bridge) translateCall(native object) (object, error) {
 	if arguments == nil {
 		return nil, fmt.Errorf("Basispoints returned empty tool transport arguments")
 	}
-	if decode([]byte(text(arguments["code"])), &envelope) != nil || envelope == nil {
-		return nil, fmt.Errorf("Basispoints tool transport code must be one JSON client-tool envelope")
+	envelope, err := decodeTransportCode(arguments["code"])
+	if err != nil {
+		return nil, err
 	}
 	toolName := text(envelope["name"])
 	if toolName == "" {

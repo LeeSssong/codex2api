@@ -141,12 +141,14 @@ func Prepare(raw []byte, scope string, replay *ReplayCache) ([]byte, *Bridge, er
 	if len(catalog) > 0 {
 		encoded, _ := json.Marshal(catalog)
 		protocol = "This request comes from an external Responses client. Use only the client tools in the catalog below. " +
+			"There is no live Excel workbook for this request. The proxy intercepts run_officejs as a transport and never executes Office code. " +
 			"To call a client tool, call the native run_officejs function exactly once. Its code field must contain serialized JSON, not JavaScript or OfficeJS. " +
 			"For function tools use {\"name\":\"CATALOG_NAME\",\"arguments\":{...}}; for custom tools use {\"name\":\"CATALOG_NAME\",\"input\":\"RAW_INPUT\"}. " +
 			"The outer arguments also include summary, extended_summary, destructive=false and references=[]. " +
-			"Never nest run_officejs inside code. Escape quotes and backslashes as JSON. The relay intercepts this call and never executes Office code. " +
+			"Never nest run_officejs inside code. Serialize the complete envelope with properly escaped quotes and backslashes; do not add prose or Markdown fences. " +
 			"Call one client tool at a time, including update_plan through this transport. After receiving its result continue the task; do not repeat completed calls. " +
-			"Do not call other native tools. If no tool is needed, answer as assistant text. Client tool catalog:\n" + string(encoded)
+			"Tool results replayed under run_officejs are the named client tool's results. When a tool is needed, emit its call in this response instead of only announcing it. " +
+			"Do not call other native tools or claim that a catalog tool is unavailable. If no tool is needed, answer as assistant text. Client tool catalog:\n" + string(encoded)
 	}
 	prologue = append(prologue, message("developer", protocol))
 	cacheKey := text(source["prompt_cache_key"])
