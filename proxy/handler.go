@@ -8713,7 +8713,7 @@ func parseFloat(s string) float64 {
 // sendUpstreamError 发送上游错误响应给客户端
 func (h *Handler) sendUpstreamError(c *gin.Context, statusCode int, body []byte) {
 	if code := basispointsRequestErrorCode(body); code != "" {
-		c.JSON(statusCode, gin.H{"error": gin.H{"code": code, "type": "upstream_error", "message": usageLogErrorMessage(statusCode, body)}})
+		c.JSON(statusCode, gin.H{"error": gin.H{"code": code, "type": "upstream_error", "message": basispointsClientErrorMessage(code, usageLogErrorMessage(statusCode, body))}})
 		return
 	}
 	if isExplicitUpstreamCyberPolicy(body) {

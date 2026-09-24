@@ -165,6 +165,12 @@ func Prepare(raw []byte, scope string, replay *ReplayCache) ([]byte, *Bridge, er
 		warning := "Hosted tools unavailable through Basispoints: " + strings.Join(kinds, ", ")
 		b.Warnings = append(b.Warnings, warning)
 		protocol += "\n" + warning + ". These declarations were omitted. Do not claim to have used them. If the task requires one, explain the limitation or use a suitable declared client tool."
+		if b.omitsWebSearch() {
+			// Explicit live/indexed web search requests route to the original Codex
+			// channel before reaching this bridge; only the default cached declaration
+			// lands here, so the user can opt in.
+			protocol += " If the user needs current web information, say that web search is off on this channel and that enabling Codex live web search (for example the --search flag or web_search = \"live\") turns it on."
+		}
 	}
 	prologue = append(prologue, message("developer", protocol))
 	cacheKey := text(source["prompt_cache_key"])

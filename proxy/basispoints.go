@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 
 	"github.com/codex2api/auth"
@@ -18,41 +19,76 @@ import (
 
 var basispointsReplay basispoints.ReplayCache
 
-const ErrorCodeBasispointsInvalidRequest = "basispoints_invalid_request"
+const (
+	ErrorCodeBasispointsInvalidRequest = "basispoints_invalid_request"
+	basispointsBypassHeader            = "X-Codex2API-Basispoints-Bypass"
+	basispointsNativeFallbackEnv       = "BASISPOINTS_NATIVE_FALLBACK"
+)
 
 // basispointsPreparationCategory deliberately returns only fixed labels. The
 // original validation message may contain caller-controlled tool names or modes.
 func basispointsPreparationCategory(err error) string {
-	message := err.Error()
-	switch {
-	case strings.Contains(message, "original tool item"), strings.Contains(message, "history") && strings.Contains(message, "tool"):
-		return "tool_history"
-	case strings.Contains(message, "image"):
-		return "image_input"
-	case strings.Contains(message, "tool_choice"):
-		return "tool_choice"
-	case strings.Contains(message, "tool"):
-		return "tool_catalog"
-	case strings.Contains(message, "previous_response_id"), strings.Contains(message, "item_reference"):
-		return "history_reference"
-	case strings.Contains(message, "reasoning"), strings.Contains(message, "configuration_update"):
-		return "reasoning_configuration"
-	case strings.Contains(message, "structured output"):
-		return "output_format"
-	case strings.Contains(message, "requires a model"):
-		return "model"
-	case strings.Contains(message, "JSON"):
-		return "request_json"
-	default:
-		return "request_shape"
-	}
+	return basispoints.Category(err)
 }
 
 func newBasispointsPreparationError(err error) *Error {
 	return &Error{
-		Code: ErrorCodeBasispointsInvalidRequest, Message: err.Error(),
+		Code: ErrorCodeBasispointsInvalidRequest, Message: basispoints.UserMessage(err),
 		Type: ErrorTypeInvalidRequest, HTTPStatus: http.StatusBadRequest,
 	}
+}
+
+// basispointsNativeFallbackEnabled reports whether requests Basispoints cannot
+// serve (explicit web search, hosted image tools, embedded images, structured
+// output, forced tool choice) use the original Codex channel instead of failing.
+// BASISPOINTS_NATIVE_FALLBACK=off keeps the pool strictly on Basispoints.
+func basispointsNativeFallbackEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(basispointsNativeFallbackEnv))) {
+	case "0", "off", "false", "no", "disabled":
+		return false
+	default:
+		return true
+	}
+}
+
+// basispointsNativeRoute decides whether a request under the Basispoints switch
+// must use the original Codex channel. Account selection in Basispoints mode
+// ignores State eligibility, so the native attempt skips the State pool too.
+func basispointsNativeRoute(ctx context.Context, account *auth.Account, requestBody []byte) (context.Context, []byte, string) {
+	if !basispointsNativeFallbackEnabled() {
+		return ctx, requestBody, ""
+	}
+	reason := basispoints.NativeCodexReason(requestBody)
+	if reason == "" {
+		return ctx, requestBody, ""
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	log.Printf("[Basispoints] stage=route result=native_codex reason=%s account=%d", reason, account.ID())
+	return WithoutStatePool(ctx), stripBasispointsRoutingFields(requestBody), reason
+}
+
+// stripBasispointsRoutingFields restores the Codex wire shape: ingress keeps
+// web_search.external_web_access only so the route decision can see it.
+func stripBasispointsRoutingFields(body []byte) []byte {
+	for index, tool := range gjson.GetBytes(body, "tools").Array() {
+		if strings.HasPrefix(tool.Get("type").String(), "web_search") && tool.Get(codexWebSearchExternalAccessField).Exists() {
+			body, _ = sjson.DeleteBytes(body, fmt.Sprintf("tools.%d.%s", index, codexWebSearchExternalAccessField))
+		}
+	}
+	return body
+}
+
+func markBasispointsNativeRoute(resp *http.Response, reason string) {
+	if resp == nil || reason == "" {
+		return
+	}
+	if resp.Header == nil {
+		resp.Header = make(http.Header)
+	}
+	resp.Header.Set("X-Codex2API-Upstream", "codex")
+	resp.Header.Set(basispointsBypassHeader, reason)
 }
 
 func basispointsRequestErrorCode(body []byte) string {
@@ -61,6 +97,20 @@ func basispointsRequestErrorCode(body []byte) string {
 		return code
 	}
 	return ""
+}
+
+// basispointsClientErrorMessage explains request-scoped Basispoints failures to the
+// caller. Protocol failures are already explained by the bridge; the upstream
+// model rejection is the only one that still arrives in English.
+func basispointsClientErrorMessage(code, upstreamMessage string) string {
+	if code != "basispoints_model_access_changed" {
+		return upstreamMessage
+	}
+	message := "当前模型在 Basispoints 渠道不可用，请更换模型，或关闭 Basispoints 后新建会话"
+	if upstreamMessage = strings.TrimSpace(upstreamMessage); upstreamMessage != "" {
+		message += "（" + upstreamMessage + "）"
+	}
+	return message
 }
 
 func executeBasispointsRequest(ctx context.Context, account *auth.Account, requestBody []byte, sessionID, proxyOverride, apiKey string, headers http.Header) (*http.Response, error) {

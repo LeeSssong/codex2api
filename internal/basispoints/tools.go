@@ -205,6 +205,15 @@ func (b *Bridge) collectTools(value any, namespace string) ([]any, error) {
 	return catalog, nil
 }
 
+func (b *Bridge) omitsWebSearch() bool {
+	for kind := range b.unsupportedTools {
+		if strings.HasPrefix(kind, "web_search") {
+			return true
+		}
+	}
+	return false
+}
+
 // Hosted capabilities cannot be relayed as client function calls. Ignore known
 // declarations in automatic mode; forced selections are rejected by Prepare.
 func isUnsupportedHostedTool(kind string) bool {

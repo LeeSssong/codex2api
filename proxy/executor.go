@@ -524,7 +524,12 @@ func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []by
 		return nil, ErrNoAvailableAccount()
 	}
 	if CurrentRuntimeSettings().CodexBasispointsEnabled {
-		return executeBasispointsRequest(ctx, account, requestBody, sessionID, proxyOverride, apiKey, headers)
+		var nativeReason string
+		ctx, requestBody, nativeReason = basispointsNativeRoute(ctx, account, requestBody)
+		if nativeReason == "" {
+			return executeBasispointsRequest(ctx, account, requestBody, sessionID, proxyOverride, apiKey, headers)
+		}
+		defer func() { markBasispointsNativeRoute(upstreamResponse, nativeReason) }()
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -975,7 +980,12 @@ func ExecuteCompactRequest(ctx context.Context, account *auth.Account, requestBo
 		return nil, ErrNoAvailableAccount()
 	}
 	if CurrentRuntimeSettings().CodexBasispointsEnabled {
-		return executeBasispointsCompactRequest(ctx, account, requestBody, sessionID, proxyOverride, apiKey, headers)
+		var nativeReason string
+		ctx, requestBody, nativeReason = basispointsNativeRoute(ctx, account, requestBody)
+		if nativeReason == "" {
+			return executeBasispointsCompactRequest(ctx, account, requestBody, sessionID, proxyOverride, apiKey, headers)
+		}
+		defer func() { markBasispointsNativeRoute(upstreamResponse, nativeReason) }()
 	}
 	if ctx == nil {
 		ctx = context.Background()

@@ -362,7 +362,8 @@ func TestBasispointsHTTPIngressToolRoundTrip(t *testing.T) {
 				"model": "gpt-6-astra", "stream": true, "input": []any{userItem},
 				"tools": []any{map[string]any{"type": "namespace", "name": "functions", "tools": []any{map[string]any{"type": tc.kind, "name": "run", "parameters": map[string]any{"type": "object"}}}}},
 			}
-			requestBody["tools"] = append(requestBody["tools"].([]any), map[string]any{"type": "web_search"})
+			// Codex CLI's default cached declaration carries no search intent and stays on BPS.
+			requestBody["tools"] = append(requestBody["tools"].([]any), map[string]any{"type": "web_search", "external_web_access": false})
 			invoke := func(body map[string]any) gjson.Result {
 				t.Helper()
 				raw, _ := json.Marshal(body)

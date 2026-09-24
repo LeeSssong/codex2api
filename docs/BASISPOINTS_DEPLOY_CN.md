@@ -80,12 +80,26 @@ cd codex2api
 docker build --build-arg BUILD_VERSION=basispoints-local -t ghcr.io/hloolx/codex2api:basispoints .
 ```
 
+## 自动回退到原 Codex 通道（搜索 / 图片 / 结构化输出）
+
+开启 Basispoints 后，Basispoints 无法承载的请求会**逐个请求自动改走原 Codex 通道**，而不是本地报错，功能保持可用：
+
+- **联网搜索**：客户端**显式**要求联网（`web_search` 工具带 `external_web_access:true`，或 `indexed`/`live` 模式，或 `tool_choice` 指向 `web_search`）时回退到原 Codex，用原本的联网搜索能力。Codex CLI 默认的 `cached` 声明（`external_web_access:false`）不含联网意图，仍留在 Basispoints，并在提示词里告诉模型如何开启（`--search` 或 `web_search = "live"`）。Codex CLI 的 standalone `/alpha/search` 端点本就直连 ChatGPT 后端，不受此开关影响。
+- **图片**：请求带 `data:image/...;base64`、`file_id` 或非 HTTPS 图片时回退到原 Codex，用原生图片能力处理；HTTPS 图片链接继续留在 Basispoints。`image_generation` 工具或其 `tool_choice` 同样回退。
+- **结构化输出**：`text.format` / `response_format` 为 `json_schema`/`json_object` 时回退到原 Codex。
+- **强制指定工具**：`tool_choice` 强制某个具体工具时回退到原 Codex（`auto`/`none` 不回退）。
+
+回退请求在响应头标记 `X-Codex2API-Upstream: codex` 与 `X-Codex2API-Basispoints-Bypass: <原因>`（原因为固定标签，如 `web_search`、`image_input`、`output_format`）。回退走原 Codex 的 HTTP/SSE 通道，跳过 State 池校验（Basispoints 选号不筛选 State）。已实测同一账号下 Basispoints 与原 Codex 后端的加密推理内容可互相回放（同一 ChatGPT 后端），逐请求切换通道不会破坏历史；但强烈建议不要在同一会话里频繁来回切换加密/压缩历史。
+
+环境变量 `BASISPOINTS_NATIVE_FALLBACK=off` 可关闭此回退，恢复严格「全部走 Basispoints」：届时上述请求按原有方式在本地返回明确的中文 400（图片）或直接发给 Basispoints（搜索声明被略过）。默认开启。
+
 ## 使用和限制
 
 - `max`、`ultra` 转成实际支持的 `xhigh`，响应中的 `reasoning.effort` 和用量记录显示实际档位；不会声称执行了更高档位。`none`、`minimal` 转成 `low`。
+- **报错信息中文化**：本地协议转换阶段拒绝的请求（`basispoints_invalid_request`）返回中文说明加英文原文，指明是图片格式、工具历史、结构化输出还是推理设置问题及如何处理；模型不守工具信封约定的 `basispoints_protocol_error` 也返回中文说明（内置工具无法转发 / 数据流异常 / 格式不符）加英文诊断；上游 `basispoints_model_access_changed` 提示「当前模型在 Basispoints 渠道不可用，请更换模型或关闭后新建会话」。用量日志仍只记录固定 `category` 标签，不落客户端机密。
 - 真实账号已验证 `gpt-5.6-sol` 的文本、`max → xhigh`、函数工具调用和工具结果回传。测试中的 `gpt-5.4` 被上游以 `basispoints_model_access_changed` 拒绝。模型名称保持原样，不会偷偷换成另一个模型。
-- 此接口带有 Excel 产品的上游行为和提示词。兼容文本、HTTPS URL 图片、客户端 function/custom 工具，不能保证与原 Codex 通道的行为完全一致。`auto` 下会略过已知的托管工具声明（如 `web_search`、`image_generation`），同时告知模型该能力不可用，并在 HTTP 响应头 `X-Codex2API-Basispoints-Warnings` 中列出；不会声称已经联网搜索或生成图片。结构化输出、强制指定工具和未知工具类型仍明确报错。`tool_choice:none` 不处理工具目录。
-- 图片使用 Responses 的 `{"type":"input_image","image_url":"https://...","detail":"auto"}` 格式；URL 必须能被上游读取，`detail` 可省略或使用 `auto`、`low`、`high`。`data:image/...;base64,...`、本地路径和文件 ID 会在本地返回明确的 400 错误。代理不自动把用户图片上传到第三方；需要客户端提供 HTTPS 链接，或关闭 Basispoints 后新建会话使用原 Codex 通道。
+- 此接口带有 Excel 产品的上游行为和提示词。兼容文本、HTTPS URL 图片、客户端 function/custom 工具，不能保证与原 Codex 通道的行为完全一致。未被上面「自动回退」拦下的场景里（例如 Codex 默认 `cached` 搜索声明），`auto` 下会略过已知的托管工具声明并在提示词告知模型该能力不可用，同时在 HTTP 响应头 `X-Codex2API-Basispoints-Warnings` 中列出；不会声称已经联网搜索或生成图片。未知工具类型仍明确报错。`tool_choice:none` 不处理工具目录。
+- 图片优先使用 Responses 的 `{"type":"input_image","image_url":"https://...","detail":"auto"}` 格式，`detail` 可省略或使用 `auto`、`low`、`high`，HTTPS 图片直接走 Basispoints。`data:image/...;base64,...`、本地路径和文件 ID 无法被 Basispoints 处理：默认自动回退到原 Codex 通道用原生能力处理（见上）；`BASISPOINTS_NATIVE_FALLBACK=off` 时改为本地返回明确的中文 400。代理自身不把用户图片上传到第三方。
 - 开启后上游统一走 HTTP/SSE；客户端 WebSocket 入口仍由代理转换。Basispoints 使用独立连接池，不继承 Codex 的 HTTP/2 保活探测截止时间。网络读取错误保留为传输错误，交由现有重试逻辑处理。
 - 工具目录作为 developer 消息发送，客户端 `tools` 不直接传给上游。`run_officejs.code` 中的 JSON 支持 `name/arguments` 和 `tool/args` 两种信封，并兼容对象、重复 JSON 编码、完整 JSON 代码块和短文字前缀。仅在严格解析失败时修复非法反斜杠转义及字符串内原始换行、回车和制表符，保留实际工具文本；多条信封拼接、任意 JavaScript、缺失引号或截断内容仍会报错，不会猜成空参数后执行。
 - 工具目录使用自然语言描述名称、参数、必填项和约束。最多解开两层重复的 `run_officejs` JSON 包装；custom 工具支持 `input` 或字符串 `args`，原始文本保持不变。歧义字段继续报错。
@@ -109,7 +123,7 @@ docker build --build-arg BUILD_VERSION=basispoints-local -t ghcr.io/hloolx/codex
 | `basispoints_invalid_request · stage=prepare` | 请求在本地协议转换阶段被拒绝，尚未发给 BPS。用量日志记录固定 `category`，例如 `tool_history`、`image_input`、`tool_choice`；不会惩罚账号或换号重试。 |
 | `format=...; bytes=...; json_offset=...; json_failure=...` | 工具解析错误的结构诊断。`raw_control` 表示原始控制字符，`invalid_escape` 表示转义问题，`trailing_data` 表示首个 JSON 后还有内容，`unexpected_eof` 表示截断。不会记录原始工具代码、参数或提示词。只有字节数和偏移量时，不能断言具体原因。 |
 | `499` / `context canceled` | 下游客户端或反向代理先取消了请求，不等于账号失效。检查 Codex 与反向代理的超时设置；若总在接近固定秒数中断，优先核对该时间限制。代理默认每 30 秒发送 SSE 保活，但不能覆盖客户端的总请求时限。 |
-| `data:image/base64 image input` | 当前图片由客户端以内嵌 base64 发送。BPS 要求 HTTPS 图片链接；改用上游可访问的 HTTPS URL，或关闭开关后新建会话。仅切换 stream 或 effort 不会解决图片格式问题。 |
+| `data:image/base64 image input` | 客户端以内嵌 base64 发送图片。默认已自动回退到原 Codex 通道处理，无需干预（响应头 `X-Codex2API-Basispoints-Bypass: image_input`）。仅当 `BASISPOINTS_NATIVE_FALLBACK=off` 时才返回中文 400：此时需改用 HTTPS 图片链接或关闭开关后新建会话。 |
 | `unexpected EOF` / WebSocket `1006` | 检查出站代理和网络。若多个不同模型、不同账号的流同时断开，先核对代理重启、IPv6 删除或定时轮换的时间；更换 Docker 标签或思考档位不能修复被切断的连接。 |
 
 IPv6 轮换需要保留仍承载连接的旧地址。直接删除旧 IPv6 并重启 SOCKS 代理会打断在途请求，即使将周期调长，轮换发生时仍会断流。优先在业务空闲时轮换，或使用保留旧连接、等待其结束后再回收地址的方案。

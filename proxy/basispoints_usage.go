@@ -10,14 +10,16 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+var basispointsRelayedHeaders = []string{"X-Codex2API-Upstream", "X-Codex2API-Reasoning-Effort", "X-Codex2API-Basispoints-Warnings", basispointsBypassHeader}
+
 func relayBasispointsResponseHeaders(c *gin.Context, response *http.Response) {
-	for _, name := range []string{"X-Codex2API-Upstream", "X-Codex2API-Reasoning-Effort", "X-Codex2API-Basispoints-Warnings"} {
+	for _, name := range basispointsRelayedHeaders {
 		c.Writer.Header().Del(name)
 	}
-	if response.Header.Get("X-Codex2API-Upstream") != "basispoints" {
+	if response.Header.Get("X-Codex2API-Upstream") != "basispoints" && response.Header.Get(basispointsBypassHeader) == "" {
 		return
 	}
-	for _, name := range []string{"X-Codex2API-Upstream", "X-Codex2API-Reasoning-Effort", "X-Codex2API-Basispoints-Warnings"} {
+	for _, name := range basispointsRelayedHeaders {
 		if value := response.Header.Get(name); value != "" {
 			c.Header(name, value)
 		}

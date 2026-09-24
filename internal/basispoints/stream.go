@@ -172,7 +172,7 @@ func (b *Bridge) transform(reader io.Reader, writer io.Writer) error {
 		}
 		return emit("response.failed", object{"response": object{
 			"status": "failed", "output": []any{},
-			"error": object{"code": "basispoints_protocol_error", "message": err.Error()},
+			"error": object{"code": "basispoints_protocol_error", "message": ProtocolFailureMessage(err)},
 		}})
 	}
 	if !terminal {

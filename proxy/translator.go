@@ -543,15 +543,22 @@ func normalizeResponsesWebSearchTools(body map[string]any) bool {
 
 // normalizeCodexWebSearchTool 返回一个仅包含 {type, <白名单字段>} 的新 map。
 // 调用前请确保 toolMap.type 以 "web_search" 开头。
+//
+// Basispoints 开启时额外保留 external_web_access：它区分 Codex CLI 默认的 cached 声明
+// （false，无搜索意图，留在 Basispoints）与显式的 live/indexed 搜索（回原 Codex 通道）。
+// 该字段只用于路由判定，回原通道前由 stripBasispointsRoutingFields 剥除，出站形态不变。
 func normalizeCodexWebSearchTool(toolMap map[string]any) map[string]any {
 	out := map[string]any{"type": "web_search"}
+	keepRoutingField := CurrentRuntimeSettings().CodexBasispointsEnabled
 	for k, v := range toolMap {
-		if _, ok := codexWebSearchAllowedFields[k]; ok {
+		if _, ok := codexWebSearchAllowedFields[k]; ok || (keepRoutingField && k == codexWebSearchExternalAccessField) {
 			out[k] = v
 		}
 	}
 	return out
 }
+
+const codexWebSearchExternalAccessField = "external_web_access"
 
 func mapsEqual(a, b map[string]any) bool {
 	if len(a) != len(b) {
