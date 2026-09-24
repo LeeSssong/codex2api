@@ -721,7 +721,7 @@
     "codexBasispoints": "Basispoints 上游",
     "codexBasispointsDesc": "為全部 Codex 號池帳號切換推理通道，儲存後立即生效。",
     "codexBasispointsEnabled": "啟用 Basispoints（實驗）",
-    "codexBasispointsEnabledDesc": "開啟後使用 ChatGPT Excel 介面和 HTTP/SSE，優先於 WebSocket 設定。max / ultra 按 xhigh 傳送；僅支援文字及用戶端工具。關閉恢復 Codex 通道。切換後請建立新對話，帳號權限和額度由上游決定。 模型權限與 Codex 不同，已驗證 gpt-5.6-sol。",
+    "codexBasispointsEnabledDesc": "開啟後使用 ChatGPT Excel 介面和 HTTP/SSE，優先於 WebSocket 設定。max / ultra 按 xhigh 傳送；支援文字、HTTPS 圖片連結及用戶端工具，不接受 base64 圖片。關閉恢復 Codex 通道。切換後請建立新對話，帳號權限和額度由上游決定。模型權限與 Codex 不同。",
     "codexOAuthKeepalive": "惰性模式下保持 Codex 授權",
     "codexOAuthKeepaliveDesc": "開啟後，惰性模式仍會為即將到期的 Codex Token 續期，包括額度冷卻中的帳號；不會解除冷卻或發送生成請求。預設關閉。",
     "codexTelemetry": "用戶端遙測（實驗性）",

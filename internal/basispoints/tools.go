@@ -180,8 +180,12 @@ func (b *Bridge) translateHistory(input []any) ([]any, error) {
 				part, _ := rawPart.(object)
 				switch text(part["type"]) {
 				case "input_text", "output_text", "text", "refusal":
+				case "input_image":
+					if err := validateImage(part); err != nil {
+						return nil, err
+					}
 				default:
-					return nil, fmt.Errorf("Basispoints supports text input only")
+					return nil, fmt.Errorf("Basispoints supports text and HTTPS input_image content only")
 				}
 			}
 		}

@@ -86,7 +86,7 @@ func TestEffortAndUnsupportedCapabilities(t *testing.T) {
 		{"tools": []any{object{"type": "image_generation"}}},
 		{"tool_choice": "required"},
 		{"previous_response_id": "resp_missing"},
-		{"input": []any{object{"role": "user", "content": []any{object{"type": "input_image", "image_url": "https://example.com/image"}}}}},
+		{"input": []any{object{"role": "user", "content": []any{object{"type": "input_image", "image_url": "data:image/png;base64,AAAA"}}}}},
 		{"text": object{"format": object{"type": "json_schema"}}},
 	} {
 		source := testSource()
