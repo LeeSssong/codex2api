@@ -5607,6 +5607,35 @@ func (h *Handler) Responses(c *gin.Context) {
 			wsHTTPFallback.LogHTTPAttemptCompletion("/v1/responses", account.ID(), attempt+1, totalDuration, firstTokenMs, outcome.logStatusCode)
 		}
 		downstreamWrote := streamAttempt.downstreamWrote(wroteAnyBody)
+		// A streamed response.failed carrying invalid_encrypted_content is
+		// recovered like the HTTP 400 branch above: drop the ciphertext the
+		// upstream cannot decrypt and retry once. Basispoints always returns
+		// HTTP 200 with the failure inside the SSE stream, so this is the only
+		// path that reaches its encrypted-reasoning continuations after an
+		// account rotation or cross-channel replay. Only before any downstream
+		// bytes, and once.
+		if !invalidEncryptedContentRetried && !downstreamWrote && len(terminalFailurePayload) > 0 &&
+			isInvalidEncryptedContentError(outcome.logStatusCode, responseFailedErrorBody(terminalFailurePayload)) {
+			strippedRawBody, rawChanged := stripInvalidEncryptedContentFromResponsesBody(rawBody)
+			strippedCodexBody, codexChanged := stripInvalidEncryptedContentFromResponsesBody(codexBody)
+			if rawChanged || codexChanged {
+				invalidEncryptedContentRetried = true
+				if rawChanged {
+					rawBody = strippedRawBody
+					resetOpenAIResponsesBody()
+				}
+				if codexChanged {
+					codexBody = strippedCodexBody
+					expandedInputRaw = responsesInputRaw(codexBody)
+				}
+				log.Printf("上游流内 response.failed 拒绝 encrypted_content，已移除加密 reasoning 上下文并重试一次 (attempt %d, account %d, /v1/responses)", attempt+1, account.ID())
+				_ = streamAttempt.Close()
+				resp.Body.Close()
+				h.store.Release(account)
+				h.store.UnbindSessionAffinity(affinityKey, account.ID())
+				continue
+			}
+		}
 		if shouldFallbackWebsocketMessageTooBigToHTTP(outcome, useWebsocket, downstreamWrote, c.Request.Context().Err(), writeErr) {
 			_ = streamAttempt.Close()
 			wsElapsed := time.Since(start)
