@@ -105,7 +105,7 @@ class Release:
  def verify_protected_containers(self):
   assert_unchanged_containers(self.protected_before,self.protected_containers())
  def drain(self):
-  deadline=time.monotonic()+300; remaining=None
+  self.drain_started=time.monotonic();deadline=self.drain_started+300; remaining=None
   while time.monotonic()<deadline:
    try:
     value=json.loads(self.request('/api/admin/runtime-status',True)[2])['accounts']['active_requests']
@@ -187,7 +187,7 @@ class Release:
    self.network_gate(True)
    self.maintenance=True;self.load_caddy(maintenance_config(self.caddy()));self.event('maintenance-on')
    self.drain()
-   self.stopped=True;self.dc('stop','-t','300','codex2api',timeout=330);self.event('app-stopped')
+   self.stopped=True;stop_grace=max(0,int(300-(time.monotonic()-self.drain_started)));self.dc('stop','-t',str(stop_grace),'codex2api',timeout=stop_grace+30);self.event('app-stopped')
    self.dump(self.dir/'stopped.dump');self.event('consistent-backup-completed')
    self.write_compose(replace_image(self.before,self.args.image));self.dc('config','--quiet')
    self.migrated=True

@@ -37,7 +37,9 @@ class RollbackDecisionTests(unittest.TestCase):
     self.args=types.SimpleNamespace(image='new',digest='digest',release_id='test');self.before='services:\n  codex2api:\n    image: old\n';self.dir=pathlib.Path('/unused');self.report={};self.maintenance=False;self.stopped=False;self.opened=False;self.migrated=False;self.app_started=False;self.gated=False;self.calls=[]
    def preflight(self):self.original_settings={'codex_basispoints_enabled':False};self.original_account_ops_enabled=False
    def event(self,n):self.calls.append(n)
-   def drain(self):self.calls.append('drain')
+   def drain(self):
+    import time
+    self.drain_started=time.monotonic();self.calls.append('drain')
    def verify_protected_containers(self):pass
    def feature_smoke(self,public=False):self.request('/health',public=public)
    def save(self):pass
@@ -107,3 +109,19 @@ class ProbeIdentityTests(unittest.TestCase):
    self.assertEqual(req.get_header('User-agent'),'Codex2API-ReleaseCheck/1.0')
    self.assertIsNone(req.get_header('X-admin-key'))
 if __name__=='__main__':unittest.main()
+
+class DrainTests(unittest.TestCase):
+ def make(self):
+  from release_host import Release
+  r=Release.__new__(Release);r.report={};r.event=lambda x:None
+  return r
+ def test_finishes_early_when_no_active_requests(self):
+  from unittest.mock import patch
+  r=self.make();r.request=lambda *a:(200,{},b'{"accounts":{"active_requests":0}}')
+  with patch('release_host.time.sleep') as sleep:r.drain()
+  sleep.assert_not_called();self.assertEqual(r.report['drain_remaining_requests'],0);self.assertFalse(r.report['drain_deadline_reached'])
+ def test_missing_counter_waits_until_deadline(self):
+  from unittest.mock import patch
+  r=self.make();r.request=lambda *a:(200,{},b'{"accounts":{}}')
+  with patch('release_host.time.monotonic',side_effect=[0,0,301,301]),patch('release_host.time.sleep') as sleep:r.drain()
+  sleep.assert_called_once_with(2);self.assertIsNone(r.report['drain_remaining_requests']);self.assertTrue(r.report['drain_deadline_reached'])
