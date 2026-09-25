@@ -127,6 +127,14 @@ BPS 只接受**绝对 HTTPS 图片 URL**，硬拒 `data:image/...;base64`、`fil
 
 环境变量 `BASISPOINTS_NATIVE_FALLBACK=off` 从 BPS 优先策略中移除原 Codex 备用路径，包括图片和协议降级。它不改变模型名单，也不覆盖显式 `codex_only` / `codex_prefer` 策略。不满足路径或协议条件时明确报错，不静默绕过限制。默认开启。
 
+## 子代理明文消息兼容
+
+已参考 [sub2api PR #78](https://github.com/ranxi2001/sub2api/pull/78) 实现工具参数标记修复：BPS 工具桥生成的函数调用显式携带 `encrypted_function_args: []`，让 Codex 将 `collaboration.spawn_agent`、`send_message` 和 `followup_task` 的明文 `message` 作为子代理 `input_text` 处理，避免误包装为 `encrypted_content`。
+
+标记在 SSE 的 added、done 和 completed 阶段保持一致，并通过 HTTP JSON、SSE 和 WebSocket 入口验证。直接调用已声明工具时，保留上游已有的非 null 加密参数声明。OfficeJS 外层信封的加密字段不会错误传给客户端工具；custom 工具协议不变。
+
+更新后请用新会话验证。旧会话中已经错误保存的 `agent_message.content[].encrypted_content` 不会自动转回明文；未知密文仍然拒绝，不根据内容猜测或丢弃。回归使用模拟上游覆盖三种协作调用、独立子会话和缓存命中／丢失后的历史恢复，不代表真实 CLI 或生产账号验收。
+
 ## 工具协议失败的修复（不回退）
 
 模型不按 `run_officejs` 信封约定输出曾经整轮报 `basispoints_protocol_error`（500）。这些是可修的桥接 bug，按类别做了针对性处理，全部是**语法级恢复**，不执行任何代码，有歧义仍然失败：
