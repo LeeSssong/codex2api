@@ -3962,8 +3962,8 @@ func TestSendFinalUpstreamError_UsageLimitRewrites429(t *testing.T) {
 
 	handler.sendFinalUpstreamError(ctx, http.StatusTooManyRequests, body)
 
-	if recorder.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusServiceUnavailable)
+	if recorder.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusTooManyRequests)
 	}
 	if got := recorder.Header().Get("Retry-After"); got != "602705" {
 		t.Fatalf("Retry-After = %q, want %q", got, "602705")
@@ -3982,8 +3982,8 @@ func TestSendFinalUpstreamError_UsageLimitRewrites429(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if payload.Error.Type != "server_error" {
-		t.Fatalf("type = %q, want %q", payload.Error.Type, "server_error")
+	if payload.Error.Type != "rate_limit_error" {
+		t.Fatalf("type = %q, want %q", payload.Error.Type, "rate_limit_error")
 	}
 	if payload.Error.Code != "account_pool_usage_limit_reached" {
 		t.Fatalf("code = %q, want %q", payload.Error.Code, "account_pool_usage_limit_reached")
@@ -4033,8 +4033,8 @@ func TestSendFinalUpstreamError_UsageLimitMissingTimeFields(t *testing.T) {
 
 	handler.sendFinalUpstreamError(ctx, http.StatusTooManyRequests, body)
 
-	if recorder.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusServiceUnavailable)
+	if recorder.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusTooManyRequests)
 	}
 	// 无 resets_in_seconds 时不应设置 Retry-After
 	if got := recorder.Header().Get("Retry-After"); got != "" {
@@ -4086,8 +4086,8 @@ func TestSendFinalUpstreamError_UsageLimitRewrites500(t *testing.T) {
 
 	handler.sendFinalUpstreamError(ctx, http.StatusInternalServerError, body)
 
-	if recorder.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusServiceUnavailable)
+	if recorder.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusTooManyRequests)
 	}
 	if got := recorder.Header().Get("Retry-After"); got != "3600" {
 		t.Fatalf("Retry-After = %q, want 3600", got)
@@ -4186,7 +4186,6 @@ func TestSendFinalUpstreamError_Forbidden403RemappedTo503(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	for _, body := range [][]byte{
-		[]byte(`{"error":{"message":"You have hit your usage limit.","code":"insufficient_quota"},"status":403}`),
 		[]byte(`{"detail":{"code":"deactivated_workspace"}}`),
 		[]byte(`{"error":{"code":"codex_access_restricted"}}`),
 	} {

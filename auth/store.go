@@ -9785,14 +9785,18 @@ func (s *Store) MarkResponsesRateLimited(acc *Account, duration time.Duration) {
 		return
 	}
 	now := time.Now()
-	acc.mu.RLock()
-	alreadyLimited := acc.Status == StatusCooldown &&
-		acc.CooldownReason == ResponsesRateLimitedCooldownReason &&
-		(acc.CooldownUtil.IsZero() || now.Before(acc.CooldownUtil))
-	acc.mu.RUnlock()
-
-	s.MarkCooldown(acc, duration, ResponsesRateLimitedCooldownReason)
-	if !alreadyLimited {
+	probe := false
+	_ = acc.ApplyUsageObservation(now, func() {
+		acc.mu.RLock()
+		alreadyLimited := acc.Status == StatusCooldown &&
+			acc.CooldownReason == ResponsesRateLimitedCooldownReason &&
+			!acc.isTransientRateLimitCooldownLocked() &&
+			(acc.CooldownUtil.IsZero() || now.Before(acc.CooldownUtil))
+		acc.mu.RUnlock()
+		s.MarkCooldown(acc, duration, ResponsesRateLimitedCooldownReason)
+		probe = !alreadyLimited
+	})
+	if probe {
 		s.TriggerUsageProbeForAccountAsync(acc)
 	}
 }
@@ -9919,9 +9923,14 @@ func (s *Store) markCooldown(acc *Account, duration time.Duration, reason string
 	if errorMsg != "" {
 		acc.ErrorMsg = errorMsg
 	}
-	acc.recomputeSchedulerLocked(atomic.LoadInt64(&s.maxConcurrency))
 	until := now.Add(duration)
+	if reason == ResponsesRateLimitedCooldownReason && acc.Status == StatusCooldown &&
+		acc.CooldownReason == ResponsesRateLimitedCooldownReason && !acc.isTransientRateLimitCooldownLocked() &&
+		acc.CooldownUtil.After(until) {
+		until = acc.CooldownUtil
+	}
 	acc.setCooldownUntilLocked(until, reason)
+	acc.recomputeSchedulerLocked(atomic.LoadInt64(&s.maxConcurrency))
 	acc.mu.Unlock()
 	s.fastSchedulerUpdate(acc)
 	s.setCachedAccountCooldown(acc.DBID, reason, until)

@@ -192,6 +192,9 @@ func TestCodexProbeHonorsLocalGatesWithoutDispatch(t *testing.T) {
 			a.CooldownReason = "rate_limited"
 			a.CooldownUtil = time.Now().Add(time.Hour)
 		}, "rate_limited"},
+		{"responses_quota_exhausted", func(_ *testing.T, h *Handler, a *auth.Account) {
+			h.store.MarkResponsesRateLimited(a, time.Hour)
+		}, "rate_limited"},
 		{"workspace", func(_ *testing.T, _ *Handler, a *auth.Account) {
 			a.Status = auth.StatusError
 			a.ErrorMsg = "deactivated_workspace"

@@ -221,8 +221,10 @@ func (h *Handler) runCodexAccountProbe(ctx context.Context, id int64, req codexP
 		switch reason {
 		case "unauthorized", "credential_unavailable":
 			outcome = "unauthorized"
-		case "rate_limited", "usage_exhausted", "quota_paused", "model_cooldown":
-			outcome = "rate_limited"
+		default:
+			if isDashboardRateLimitedAccount(reason, reason) || reason == "usage_limit" || reason == "model_cooldown" {
+				outcome = "rate_limited"
+			}
 		}
 		result := local(outcome, reason, "Current account state prevents a BPS probe")
 		result.Capability = account.CodexPathSnapshot(database.CodexPathBasispoints, req.Model, time.Now()).Capability

@@ -310,13 +310,23 @@ func (s *Store) markPremium5hRateLimited(acc *Account, resetAt, observedAt time.
 	}
 
 	acc.mu.Lock()
+	until := resetAt
+	if acc.Status == StatusCooldown && acc.CooldownReason == ResponsesRateLimitedCooldownReason &&
+		!acc.isTransientRateLimitCooldownLocked() && acc.CooldownUtil.After(now) {
+		// A WHAM observation or shorter concurrent 5h rejection cannot clear
+		// an authoritative rejection with a later deadline (for example 7d).
+		cooldownReason = ResponsesRateLimitedCooldownReason
+		if acc.CooldownUtil.After(until) {
+			until = acc.CooldownUtil
+		}
+	}
 	acc.UsagePercent5h = 100
 	acc.UsagePercent5hValid = true
 	acc.Reset5hAt = resetAt
 	acc.UsageUpdatedAt5h = now
 	acc.LastRateLimitedAt = now
 	acc.Status = StatusCooldown
-	acc.CooldownUtil = resetAt
+	acc.CooldownUtil = until
 	acc.CooldownReason = cooldownReason
 	if acc.HealthTier != HealthTierBanned {
 		acc.HealthTier = HealthTierRisky
@@ -325,7 +335,7 @@ func (s *Store) markPremium5hRateLimited(acc *Account, resetAt, observedAt time.
 	acc.mu.Unlock()
 
 	s.fastSchedulerUpdate(acc)
-	s.setCachedAccountCooldown(acc.DBID, cooldownReason, resetAt)
+	s.setCachedAccountCooldown(acc.DBID, cooldownReason, until)
 
 	if s.db == nil {
 		return
@@ -333,7 +343,7 @@ func (s *Store) markPremium5hRateLimited(acc *Account, resetAt, observedAt time.
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	if err := s.db.SetCooldown(ctx, acc.DBID, cooldownReason, resetAt); err != nil {
+	if err := s.db.SetCooldown(ctx, acc.DBID, cooldownReason, until); err != nil {
 		log.Printf("[账号 %d] 持久化 premium 5h 限流冷却状态失败: %v", acc.DBID, err)
 	}
 	if err := s.db.UpdateUsageSnapshot5h(ctx, acc.DBID, 100, resetAt, now); err != nil {

@@ -2559,6 +2559,9 @@ func responseFailedStatusCodeWithEvidence(payload []byte) (int, bool) {
 		}
 	}
 
+	if IsUsageLimitReachedError(payload) {
+		return http.StatusTooManyRequests, true
+	}
 	codeOrType := strings.ToLower(strings.Join([]string{
 		gjson.GetBytes(payload, "response.error.code").String(),
 		gjson.GetBytes(payload, "response.error.type").String(),
@@ -3760,7 +3763,31 @@ func parseUsageLimitDetails(body []byte) (usageLimitDetails, bool) {
 // IsUsageLimitReachedError reports whether an upstream error body represents
 // account quota exhaustion, even when the transport status is incorrectly 5xx.
 func IsUsageLimitReachedError(body []byte) bool {
-	return strings.EqualFold(firstGJSONString(body, "error.type", "response.error.type", "response.status_details.error.type"), "usage_limit_reached")
+	// State changes require exact structured evidence. Mentions of quota in
+	// free text (including the ambiguous BPS usage-policy 403) are not proof.
+	for _, prefix := range []string{"error.", "response.error.", "response.status_details.error."} {
+		for _, field := range []string{"type", "code"} {
+			switch strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, prefix+field).String())) {
+			case "usage_limit_reached", "usage_limited", "insufficient_quota", "quota_exceeded", "quota_exhausted",
+				"billing_hard_limit", "billing_hard_limit_reached", "billing_limit_reached", "spend_limit_reached",
+				"credit_balance_exhausted", "insufficient_balance":
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func isCodexUsageWindowError(body []byte) bool {
+	for _, prefix := range []string{"error.", "response.error.", "response.status_details.error."} {
+		for _, field := range []string{"type", "code"} {
+			switch strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, prefix+field).String())) {
+			case "usage_limit_reached", "usage_limited":
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func firstGJSONString(body []byte, paths ...string) string {
@@ -4057,13 +4084,6 @@ func (h *Handler) Responses(c *gin.Context) {
 				h.sendFinalUpstreamError(c, lastStatusCode, lastBody)
 				return
 			}
-			if compactionAffinity.Known {
-				if isStream && writeCommittedResponsesRetryError(c, "No account is available for the upstream that created this compaction state") {
-					return
-				}
-				sendCompactionUpstreamUnavailable(c)
-				return
-			}
 			// 候选被 scope 预算剔空时给出真实原因，而不是含糊的「无可用账号」。
 			if msg := scopeBudgetExhaustedMessage(c); msg != "" {
 				if isStream && writeCommittedResponsesRetryError(c, msg) {
@@ -4083,6 +4103,13 @@ func (h *Handler) Responses(c *gin.Context) {
 					c.Header("Retry-After", strconv.Itoa(msg.RetryAfterSeconds))
 				}
 				SendAPIKeyLimitError(c, http.StatusTooManyRequests, msg.Chinese)
+				return
+			}
+			if compactionAffinity.Known {
+				if isStream && writeCommittedResponsesRetryError(c, "No account is available for the upstream that created this compaction state") {
+					return
+				}
+				sendCompactionUpstreamUnavailable(c)
 				return
 			}
 			if continuationUnavailable && !relayContinuationAttempted {
@@ -6063,6 +6090,14 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 					return
 				}
 				if compactionAffinity.Known {
+					if limited := h.store.UsageLimitedCandidateSummary(apiKeyID, retryExclusions.ForSelection(), accountFilter, dispatchPolicy); limited.Found {
+						msg := usageLimitedPoolMessages(limited)
+						if msg.RetryAfterSeconds > 0 {
+							c.Header("Retry-After", strconv.Itoa(msg.RetryAfterSeconds))
+						}
+						SendAPIKeyLimitError(c, http.StatusTooManyRequests, msg.Chinese)
+						return
+					}
 					sendCompactionUpstreamUnavailable(c)
 					return
 				}
@@ -8150,7 +8185,7 @@ func classifySpark429RateLimit(account *auth.Account, body []byte, resp *http.Re
 
 func classify429RateLimit(account *auth.Account, body []byte, resp *http.Response, now time.Time, model string) codex429Decision {
 	model = strings.TrimSpace(model)
-	if isProOnlyModel(model) {
+	if isProOnlyModel(model) && (!IsUsageLimitReachedError(body) || isCodexUsageWindowError(body)) {
 		return classifySpark429RateLimit(account, body, resp, now, model)
 	}
 
@@ -8243,6 +8278,11 @@ func transient429RetryAfter(body []byte, resp *http.Response, now time.Time) tim
 }
 
 func usageLimitFallbackCooldown(account *auth.Account, body []byte) time.Duration {
+	if !isCodexUsageWindowError(body) {
+		// A billing/quota code proves exhaustion, not a subscription window.
+		// Park it for a bounded recheck instead of inventing a 5h/7d reset.
+		return 30 * time.Minute
+	}
 	planType := ""
 	if details, ok := parseUsageLimitDetails(body); ok {
 		planType = details.planType
@@ -8791,7 +8831,7 @@ func normalizedRetryAfter(value string) string {
 	return ""
 }
 
-// sendFinalUpstreamError 重试用尽后的最终错误响应：识别 usage_limit_reached 改写为 503，其余透传
+// sendFinalUpstreamError preserves quota semantics when eligible accounts are exhausted.
 func (h *Handler) sendFinalUpstreamError(c *gin.Context, statusCode int, body []byte) {
 	if !claimContinuousRetryTerminal(c, continuousRetryProtocolOpenAI) {
 		return
@@ -8812,7 +8852,7 @@ func (h *Handler) sendFinalUpstreamError(c *gin.Context, statusCode int, body []
 
 		errInfo := gin.H{
 			"message": message,
-			"type":    "server_error",
+			"type":    "rate_limit_error",
 			"code":    "account_pool_usage_limit_reached",
 		}
 		if details.planType != "" {
@@ -8824,7 +8864,7 @@ func (h *Handler) sendFinalUpstreamError(c *gin.Context, statusCode int, body []
 		if details.resetsInSeconds != 0 {
 			errInfo["resets_in_seconds"] = details.resetsInSeconds
 		}
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": errInfo})
+		c.JSON(http.StatusTooManyRequests, gin.H{"error": errInfo})
 		return
 	}
 

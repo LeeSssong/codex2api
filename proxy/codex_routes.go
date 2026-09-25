@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/codex2api/auth"
+	"github.com/codex2api/cache"
 	"github.com/codex2api/database"
 	"github.com/codex2api/internal/basispoints"
 	"github.com/gin-gonic/gin"
@@ -37,6 +38,7 @@ type CodexRouteAttempt struct {
 	ErrorCode      string `json:"error_code,omitempty"`
 	Source         string `json:"source,omitempty"`
 	Reason         string `json:"reason,omitempty"`
+	SwitchBlocked  string `json:"switch_blocked,omitempty"`
 }
 
 // One decision is shared by ordinary, encrypted, continuation and route retries.
@@ -56,6 +58,11 @@ type CodexRouteDecision struct {
 	Switched           bool
 	Committed          bool
 	NoSwitch           bool
+	HistoryLockReason  string
+	pinnedPath         string
+	historyError       *Error
+	historyCache       cache.TokenCache
+	historyOwner       string
 	schedulerSelected  bool
 	routeConstrained   bool
 	FinalPath          string
@@ -137,6 +144,12 @@ func nativeStateEligible(account *auth.Account, model string) bool {
 }
 
 func (d *CodexRouteDecision) pathEligible(account *auth.Account, path, model string, body []byte) bool {
+	d.mu.Lock()
+	blocked := d.historyError != nil || d.pinnedPath != "" && d.pinnedPath != path
+	d.mu.Unlock()
+	if blocked {
+		return false
+	}
 	if account == nil || account.IsRelayStyle() {
 		return false
 	}
@@ -182,6 +195,9 @@ func (d *CodexRouteDecision) eligiblePaths() []string {
 	if d.FinalPath != "" {
 		return []string{d.FinalPath}
 	}
+	if d.pinnedPath != "" {
+		return []string{d.pinnedPath}
+	}
 	return append([]string(nil), d.Paths...)
 }
 
@@ -197,6 +213,9 @@ func (h *Handler) withCodexRouteFilter(c *gin.Context, requested, model string, 
 	}
 	budget = min(budget, 32)
 	d := newCodexRouteDecision(c.Request.Context(), requested, model, limits, budget)
+	d.historyCache = h.cache
+	d.historyOwner = responseCacheOwner(requestAPIKeyID(c))
+	d.bindHistory(body)
 	if row != nil {
 		d.AllowedGroupIDs = append([]int64(nil), row.AllowedGroupIDs...)
 		d.NoAffinityGroupIDs = append([]int64(nil), row.Limits.NoAffinityGroupIDs...)
@@ -211,7 +230,8 @@ func (h *Handler) withCodexRouteFilter(c *gin.Context, requested, model string, 
 			return false
 		}
 		if account.IsRelayStyle() {
-			return true
+			// Known direct-upstream state cannot be replayed through an arbitrary relay.
+			return !d.hasKnownHistoryRoute()
 		}
 		for _, p := range d.eligiblePaths() {
 			if d.pathEligible(account, p, model, body) {
@@ -234,6 +254,12 @@ func (d *CodexRouteDecision) begin(account *auth.Account, path, model string) er
 	if d.Remaining <= 0 {
 		return routeLocalError("codex_route_budget_exhausted", "Upstream attempt budget exhausted")
 	}
+	if d.historyError != nil {
+		return d.historyError
+	}
+	if d.pinnedPath != "" && d.pinnedPath != path {
+		return routeLocalError("codex_route_history_pinned", "History is pinned to its original upstream")
+	}
 	if d.Switched && d.FinalPath != path {
 		return routeLocalError("codex_route_loop_blocked", "An upstream switch has already been attempted")
 	}
@@ -246,33 +272,42 @@ func (d *CodexRouteDecision) begin(account *auth.Account, path, model string) er
 func (d *CodexRouteDecision) commit() { d.mu.Lock(); d.Committed = true; d.mu.Unlock() }
 
 func safeCodexSwitchBody(body []byte) ([]byte, error) {
+	if err := codexHistoryReplayError(body); err != nil {
+		return nil, err
+	}
+	return append([]byte(nil), body...), nil
+}
+
+func codexHistoryReplayError(body []byte) error {
 	if gjson.GetBytes(body, "previous_response_id").String() != "" {
-		return nil, routeLocalError("codex_route_history_required", "Complete normalized history is required to switch upstreams")
+		return routeLocalError("codex_route_history_required", "Complete normalized history is required to switch upstreams")
 	}
 	pending := map[string]string{}
+	seen := map[string]bool{}
 	for _, item := range gjson.GetBytes(body, "input").Array() {
-		if item.Get("type").String() == "compaction" || item.Get("type").String() == "item_reference" || item.Get("encrypted_content").String() != "" {
-			return nil, routeLocalError("codex_route_history_incompatible", "Opaque reasoning or compact history cannot be replayed across upstreams; supply complete plaintext history")
+		if gjsonResultHasEncryptedCompaction(item) || item.Get("type").String() == "item_reference" || item.Get("encrypted_content").String() != "" || hasNestedCodexEncryptedContent(item) {
+			return routeLocalError("codex_route_history_incompatible", "Opaque reasoning or compact history cannot be replayed across upstreams; supply complete plaintext history")
 		}
 		switch kind := item.Get("type").String(); kind {
 		case "function_call", "custom_tool_call":
 			id := item.Get("call_id").String()
-			if id == "" || pending[id] != "" {
-				return nil, routeLocalError("codex_route_history_incompatible", "Complete, paired tool history is required to switch upstreams")
+			if id == "" || seen[id] {
+				return routeLocalError("codex_route_history_incompatible", "Complete, paired tool history is required to switch upstreams")
 			}
 			pending[id] = kind
+			seen[id] = true
 		case "function_call_output", "custom_tool_call_output":
 			id := item.Get("call_id").String()
 			if pending[id] != strings.TrimSuffix(kind, "_output") {
-				return nil, routeLocalError("codex_route_history_incompatible", "A tool result without its matching call cannot be replayed across upstreams")
+				return routeLocalError("codex_route_history_incompatible", "A tool result without its matching call cannot be replayed across upstreams")
 			}
 			delete(pending, id)
 		}
 	}
 	if len(pending) > 0 {
-		return nil, routeLocalError("codex_route_history_incompatible", "Pending tool calls cannot be replayed across upstreams")
+		return routeLocalError("codex_route_history_incompatible", "Pending tool calls cannot be replayed across upstreams")
 	}
-	return append([]byte(nil), body...), nil
+	return nil
 }
 
 type codexNativeExecutor func(context.Context, *auth.Account, []byte, string, string, string, *DeviceProfileConfig, http.Header) (*http.Response, error)
@@ -303,6 +338,10 @@ func executeCodexRoute(ctx context.Context, account *auth.Account, body []byte, 
 			d = newCodexRouteDecision(ctx, model, model, limits, 3)
 		}
 		ctx = context.WithValue(ctx, codexRouteKey{}, d)
+	}
+	d.bindHistory(body)
+	if err := codexRouteBudgetError(ctx); err != nil {
+		return nil, err
 	}
 	if d.Preferred == database.CodexPathBasispoints && (account.IsCodexAgentIdentity() || account.GetAccessToken() == "" || account.EffectiveAccountID() == "") {
 		return nil, ErrBadRequest("Basispoints requires a ChatGPT OAuth access token and account ID")
@@ -355,11 +394,7 @@ func executeCodexRoute(ctx context.Context, account *auth.Account, body []byte, 
 			if images.converted+images.reused > 0 {
 				log.Printf("[Basispoints] stage=images result=hosted converted=%d reused=%d account=%d", images.converted, images.reused, account.ID())
 			}
-			if err != nil && !d.Switched && d.Remaining > 0 {
-				if _, historyErr := safeCodexSwitchBody(canonical); historyErr != nil {
-					release()
-					return nil, historyErr
-				}
+			if err != nil && !d.NoSwitch && !d.Switched && d.Remaining > 0 {
 				for _, path := range paths {
 					if path == database.CodexPathNative && d.pathEligible(account, path, model, canonical) {
 						release()
@@ -422,12 +457,6 @@ func executeCodexRoute(ctx context.Context, account *auth.Account, body []byte, 
 				}
 			}
 			if alternate != "" {
-				fresh, recoverErr := safeCodexSwitchBody(canonical)
-				if recoverErr != nil {
-					resp.Body.Close()
-					release()
-					return nil, recoverErr
-				}
 				if errClose := resp.Body.Close(); errClose != nil {
 					log.Printf("[CodexRoute] response close failed account=%d", account.ID())
 				}
@@ -438,7 +467,7 @@ func executeCodexRoute(ctx context.Context, account *auth.Account, body []byte, 
 				d.Reason = failure.Category
 				d.mu.Unlock()
 				log.Printf("[CodexRoute] preferred=%s final=%s reason=%s account=%d model=%s", d.Preferred, alternate, failure.Category, account.ID(), model)
-				canonical, selected = fresh, alternate
+				selected = alternate
 				continue
 			}
 		}
@@ -460,9 +489,13 @@ func (a *codexRouteAttemptState) recordFailure(f codexRouteFailure) {
 		last.Source = f.Source
 		last.ErrorCode = f.Code
 		last.Reason = f.Category
+		if f.Switch && d.NoSwitch {
+			last.SwitchBlocked = d.HistoryLockReason
+		}
 	}
+	blocked := d.HistoryLockReason
 	d.mu.Unlock()
-	log.Printf("[CodexRoute] preferred=%s path=%s account=%d http_status=%d reported_status=%d source=%s code=%s reason=%s", d.Preferred, a.path, a.account.ID(), f.HTTPStatus, f.ReportedStatus, f.Source, f.Code, f.Category)
+	log.Printf("[CodexRoute] preferred=%s path=%s account=%d http_status=%d reported_status=%d source=%s code=%s reason=%s switch_blocked=%s", d.Preferred, a.path, a.account.ID(), f.HTTPStatus, f.ReportedStatus, f.Source, f.Code, f.Category, blocked)
 	if f.Category == "upstream_access" {
 		a.account.SetCodexPathCooldown(a.path, a.model, f.Category, a.started, time.Now().Add(30*time.Second))
 	}
@@ -502,6 +535,9 @@ func codexRouteBudgetError(ctx context.Context) error {
 		}
 		d.mu.Lock()
 		defer d.mu.Unlock()
+		if d.historyError != nil {
+			return d.historyError
+		}
 		if d.Remaining <= 0 {
 			return routeLocalError("codex_route_budget_exhausted", fmt.Sprintf("Upstream attempt budget exhausted after %d attempts", len(d.Attempts)))
 		}

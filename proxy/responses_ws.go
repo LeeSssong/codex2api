@@ -645,10 +645,11 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 			if c.Request.Context().Err() != nil {
 				return errResponsesWSClientGone
 			}
-			if errors.Is(selectionErr, auth.ErrSchedulerQueueFull) {
+			if codexRouteSelectionError(selectionErr) {
+				routeErr := selectionErr.(*Error)
+				apiErr = api.NewAPIError(api.ErrorCode(routeErr.Code), routeErr.Message, api.ErrorType(routeErr.Type))
+			} else if errors.Is(selectionErr, auth.ErrSchedulerQueueFull) {
 				apiErr = schedulerQueueFullAPIError()
-			} else if compactionAffinity.Known {
-				apiErr = compactionUpstreamUnavailableAPIError()
 			} else if lastRetryableUpstreamErr != nil {
 				apiErr = responsesWSClientUpstreamAPIError(lastRetryableUpstreamErr, hideUpstreamErrors)
 			} else if lastStatusCode == http.StatusTooManyRequests && len(lastBody) > 0 {
@@ -659,6 +660,8 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 			} else if limited := h.store.UsageLimitedCandidateSummary(apiKeyID, retryExclusions.ForSelection(), accountFilter, dispatchPolicy); limited.Found {
 				// WS 帧没有 Retry-After 头，瞬时 throttle 的等待秒数写进文案。
 				apiErr = api.NewAPIError(api.ErrCodeRateLimitReached, usageLimitedPoolMessages(limited).Chinese, api.ErrorTypeRateLimit)
+			} else if compactionAffinity.Known {
+				apiErr = compactionUpstreamUnavailableAPIError()
 			} else {
 				apiErr = api.NewAPIError(api.ErrCodeServiceUnavailable, noAvailableAccountMessage(effectiveModel), api.ErrorTypeServer)
 			}
@@ -1593,6 +1596,11 @@ func (h *Handler) streamResponsesWSUpstream(
 		// 首 token 前上游失败且未向客户端写过任何帧:发结构化 error 帧后按错误类别
 		// 关闭连接,避免下游把"正常收尾的会话"当成功并按预估 input token 计费。
 		apiErr := api.NewAPIError(api.ErrCodeUpstreamError, outcome.failureMessage, api.ErrorTypeUpstream)
+		clientStatus := outcome.logStatusCode
+		if IsUsageLimitReachedError(terminalFailurePayload) {
+			apiErr = responsesWSUpstreamAPIError(clientStatus, terminalFailurePayload)
+			clientStatus = http.StatusTooManyRequests
+		}
 		preserveErrorCode := isPreviousResponseNotFoundBody(terminalFailurePayload)
 		if preserveErrorCode {
 			// This is deterministic continuation state, not an infrastructure error.
@@ -1608,7 +1616,7 @@ func (h *Handler) streamResponsesWSUpstream(
 			return errResponsesWSClientGone
 		}
 		_ = writeResponsesWSError(conn, clientErr)
-		return newResponsesWSCloseError(responsesWSCloseCodeForStatus(outcome.logStatusCode), clientErr.Message, apiErr)
+		return newResponsesWSCloseError(responsesWSCloseCodeForStatus(clientStatus), clientErr.Message, apiErr)
 	}
 	if outcome.logStatusCode != http.StatusOK && !hideUpstreamErrors && len(terminalFailureClientPayload) > 0 && !downstreamWrote {
 		// An unselected selective-mode failure still ends the logical turn. Its
@@ -1780,6 +1788,9 @@ func responsesWSClientUpstreamAPIError(apiErr *api.APIError, hideUpstreamErrors 
 	if !hideUpstreamErrors {
 		return apiErr
 	}
+	if apiErr != nil && apiErr.Code == api.ErrorCode(ErrorCodeAccountPoolUsageLimit) {
+		return api.NewAPIError(apiErr.Code, usageWindowExhaustedMessageEN, api.ErrorTypeRateLimit)
+	}
 	return api.NewAPIError(api.ErrCodeUpstreamError, responsesWSFriendlyUpstreamErr, api.ErrorTypeUpstream)
 }
 
@@ -1839,6 +1850,9 @@ func responsesWSUpstreamAPIError(statusCode int, body []byte) *api.APIError {
 	}
 	if isExplicitUpstreamCyberPolicy(body) {
 		return api.NewAPIError(api.ErrCodeInvalidRequest, upstreamCyberPolicyUserMessage, api.ErrorTypeInvalidRequest)
+	}
+	if IsUsageLimitReachedError(body) {
+		return api.NewAPIError(api.ErrorCode(ErrorCodeAccountPoolUsageLimit), usageWindowExhaustedMessageEN, api.ErrorTypeRateLimit)
 	}
 	message := usageLogErrorMessage(statusCode, body)
 	if strings.TrimSpace(message) == "" {

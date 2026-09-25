@@ -15,6 +15,7 @@ import (
 )
 
 const codexRoutePrefixLimit = 64 * 1024
+const codexRouteObservationLimit = 8 * 1024 * 1024
 const codexUsageRejectedCode = "codex_upstream_usage_rejected"
 const codexAmbiguousUsageMessage = "403: This request was blocked by our usage policy."
 
@@ -261,10 +262,11 @@ type codexObservedBody struct {
 	oversized bool
 	failed    bool
 	success   sync.Once
+	history   map[string]bool
 }
 
 func observeCodexRouteBody(body io.ReadCloser, a *codexRouteAttemptState, contentType string) io.ReadCloser {
-	return &codexObservedBody{ReadCloser: body, attempt: a, json: strings.Contains(contentType, "application/json")}
+	return &codexObservedBody{ReadCloser: body, attempt: a, json: strings.Contains(contentType, "application/json"), history: make(map[string]bool)}
 }
 
 func (b *codexObservedBody) observe(payload []byte) {
@@ -276,6 +278,9 @@ func (b *codexObservedBody) observe(payload []byte) {
 	}
 	if kind != "" && kind != "response.created" && kind != "response.in_progress" && kind != "response.failed" && kind != "error" {
 		b.attempt.decision.commit()
+	}
+	if !b.failed && (kind == "response.output_item.done" || kind == "response.completed" || b.json && gjson.GetBytes(payload, "object").String() == "response.compaction") {
+		b.attempt.recordHistoryRoute(payload, b.history)
 	}
 	if !b.failed && (kind == "response.completed" && response.IsObject() || b.json && gjson.GetBytes(payload, "object").String() == "response.compaction" && !codexCompletedHasError(gjson.ParseBytes(payload))) {
 		b.success.Do(func() {
@@ -290,7 +295,7 @@ func (b *codexObservedBody) Read(p []byte) (int, error) {
 	if !b.oversized {
 		b.pending = append(b.pending, p[:n]...)
 		if b.json {
-			if len(b.pending) > codexRoutePrefixLimit {
+			if len(b.pending) > codexRouteObservationLimit {
 				b.pending = nil
 				b.oversized = true
 			} else if err == io.EOF {
@@ -303,12 +308,12 @@ func (b *codexObservedBody) Read(p []byte) (int, error) {
 					break
 				}
 				line := b.pending[:index]
-				if bytes.HasPrefix(line, []byte("data:")) {
+				if len(line) <= codexRouteObservationLimit && bytes.HasPrefix(line, []byte("data:")) {
 					b.observe(bytes.TrimSpace(line[5:]))
 				}
 				b.pending = b.pending[index+1:]
 			}
-			if len(b.pending) > codexRoutePrefixLimit {
+			if len(b.pending) > codexRouteObservationLimit {
 				b.pending = nil
 				b.oversized = true
 				b.attempt.decision.commit()
