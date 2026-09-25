@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -224,5 +225,61 @@ func TestAccountQualityCredentialChangeDuringRoundPreventsIsolation(t *testing.T
 			}
 
 		})
+	}
+}
+
+// A failed replacement must leave the old fence installed, including when a
+// second application instance is already serving writes against this schema.
+func TestAccountQualityPostgresTriggerReplacementIsAtomic(t *testing.T) {
+	db := newAccountQualitySafetyDB(t, "postgres")
+	ctx := context.Background()
+	p, group := newQualitySafetyPlan(t, db, "remove_groups")
+	if action, err := db.ApplyAccountQualityOutcome(ctx, p, "failed"); err != nil || action != "groups_removed" {
+		t.Fatalf("isolate: %s %v", action, err)
+	}
+	var schema string
+	if err := db.conn.QueryRowContext(ctx, "SELECT current_schema()").Scan(&schema); err != nil {
+		t.Fatal(err)
+	}
+	eventName := "quality_replace_fail_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	function := quotePostgresIdent(schema) + "." + quotePostgresIdent(eventName)
+	createFunction := fmt.Sprintf("CREATE FUNCTION %s() RETURNS event_trigger LANGUAGE plpgsql AS $$ BEGIN IF current_schema() = '%s' AND position('CREATE TRIGGER account_quality_removed_group_ownership ' in current_query()) > 0 THEN RAISE EXCEPTION 'quality_replacement_failpoint'; END IF; END $$", function, strings.ReplaceAll(schema, "'", "''"))
+	if _, err := db.conn.ExecContext(ctx, createFunction); err != nil {
+		t.Fatal(err)
+	}
+	// Event-trigger names are database-wide; use a unique name and filter on
+	// this fixture's schema so concurrent root/guard fixtures are unaffected.
+	dropEvent := "DROP EVENT TRIGGER IF EXISTS " + quotePostgresIdent(eventName)
+	t.Cleanup(func() {
+		cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if _, err := db.conn.ExecContext(cleanup, dropEvent); err != nil {
+			t.Errorf("remove test failpoint: %v", err)
+		}
+	})
+	if _, err := db.conn.ExecContext(ctx, "CREATE EVENT TRIGGER "+quotePostgresIdent(eventName)+" ON ddl_command_start WHEN TAG IN ('CREATE TRIGGER') EXECUTE FUNCTION "+function+"()"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.ensureAccountQualityOwnershipTriggers(ctx); err == nil || !strings.Contains(err.Error(), "quality_replacement_failpoint") {
+		t.Fatalf("expected injected replacement failure, got %v", err)
+	}
+	var fences int
+	if err := db.conn.QueryRowContext(ctx, "SELECT COUNT(*) FROM pg_trigger WHERE tgrelid='account_groups'::regclass AND tgname='account_quality_removed_group_ownership'").Scan(&fences); err != nil {
+		t.Fatal(err)
+	}
+	if fences != 1 {
+		t.Fatalf("failed replacement removed the existing ownership fence: count=%d", fences)
+	}
+	if _, err := db.conn.ExecContext(ctx, "UPDATE account_groups SET name=name WHERE id=$1", group); err != nil {
+		t.Fatal(err)
+	}
+	if action, err := db.ApplyAccountQualityOutcome(ctx, p, "passed"); err != nil || action != "restore_conflict" {
+		t.Fatalf("old fence did not protect an intervening group edit: %s %v", action, err)
+	}
+	if _, err := db.conn.ExecContext(ctx, dropEvent); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.ensureAccountQualityOwnershipTriggers(ctx); err != nil {
+		t.Fatalf("replacement after failpoint removal: %v", err)
 	}
 }

@@ -537,6 +537,16 @@ func (db *DB) ensureAccountQualityOwnershipTriggers(ctx context.Context) error {
 			"DROP TRIGGER IF EXISTS account_quality_removed_group_ownership ON account_groups",
 			"CREATE TRIGGER account_quality_removed_group_ownership AFTER UPDATE OR DELETE ON account_groups FOR EACH ROW EXECUTE FUNCTION invalidate_quality_removed_group_ownership()",
 		}
+		// PostgreSQL holds the DDL locks through commit, so another instance
+		// never observes a committed gap between dropping and replacing the fence.
+		return db.withWriteTx(ctx, func(tx *sql.Tx) error {
+			for _, statement := range statements {
+				if _, err := tx.ExecContext(ctx, statement); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
 	}
 	for _, statement := range statements {
 		if _, err := db.conn.ExecContext(ctx, statement); err != nil {
