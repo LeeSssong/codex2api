@@ -103,7 +103,7 @@ func TestCodexRouteKeyCompatibility(t *testing.T) {
 	if err := json.Unmarshal([]byte(`{}`), &old); err != nil || !old.IsZero() {
 		t.Fatal("old Key changed", err)
 	}
-	for _, policy := range []string{"inherit", "codex_only", "basispoints_only", "codex_prefer", "basispoints_prefer"} {
+	for _, policy := range []string{"inherit", "codex_only", "basispoints_only", "codex_prefer", "basispoints_prefer", "basispoints_models_only"} {
 		l := APIKeyLimits{CodexRoutePolicy: policy, CodexCapabilityFilter: "dual_supported"}
 		if err := l.ValidateCodexRouting(); err != nil {
 			t.Fatal(err)

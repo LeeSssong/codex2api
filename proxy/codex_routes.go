@@ -61,6 +61,7 @@ type CodexRouteDecision struct {
 	HistoryLockReason    string
 	pinnedPath           string
 	historyError         *Error
+	policyError          *Error
 	historyCache         cache.TokenCache
 	historyOwner         string
 	schedulerSelected    bool
@@ -119,6 +120,13 @@ func newCodexRouteDecision(ctx context.Context, requested, model string, limits 
 	}
 	d := &CodexRouteDecision{routeConstrained: limits.CodexRoutePolicy != "" && limits.CodexRoutePolicy != "inherit" || limits.CodexCapabilityFilter != "" && limits.CodexCapabilityFilter != "any", RequestedModel: requested, EffectiveModel: model, Policy: policy, CapabilityFilter: limits.CodexCapabilityFilter, Remaining: budget, client: ctx, limits: limits}
 	switch policy {
+	case database.CodexRouteBasispointsModelsOnly:
+		// Catalog membership is independent of account health and the BPS switch.
+		d.routeConstrained = true
+		d.Paths = []string{database.CodexPathNative}
+		if basispointsModelAllowed(model) {
+			d.Paths = []string{database.CodexPathBasispoints}
+		}
 	case database.CodexRouteNativeOnly:
 		d.Paths = []string{database.CodexPathNative}
 	case database.CodexRouteBasispointsOnly:
@@ -152,10 +160,13 @@ func (d *CodexRouteDecision) pathEligible(account *auth.Account, path, model str
 
 func (d *CodexRouteDecision) pathIneligibleReason(account *auth.Account, path, model string, body []byte) string {
 	d.mu.Lock()
-	blocked := d.historyError != nil || d.pinnedPath != "" && d.pinnedPath != path
+	blocked := d.historyError != nil || d.policyError != nil || d.pinnedPath != "" && d.pinnedPath != path
 	d.mu.Unlock()
 	if blocked {
 		return "history_path"
+	}
+	if d.Policy == database.CodexRouteBasispointsModelsOnly && (path != d.Preferred || basispointsModelAllowed(model) != d.requiresVerifiedBasispoints()) {
+		return "model_route_policy"
 	}
 	if account == nil || account.IsRelayStyle() {
 		return "account_identity"
@@ -187,6 +198,9 @@ func (d *CodexRouteDecision) pathIneligibleReason(account *auth.Account, path, m
 	}
 	if s.Health == "cooldown" || s.Health == "recovering" {
 		return "path_" + s.Health
+	}
+	if d.requiresVerifiedBasispoints() && !s.ExactModelSupported {
+		return "exact_model_unverified"
 	}
 	supported := func(p string) bool {
 		return account.CodexPathSnapshot(p, model, time.Now()).Capability == database.CapabilitySupported
@@ -238,6 +252,7 @@ func (h *Handler) withCodexRouteFilter(c *gin.Context, requested, model string, 
 	d.historyOwner = responseCacheOwner(requestAPIKeyID(c))
 	d.recordSelectionError = func(err *Error) { h.logCodexRouteSelectionError(c, d, err) }
 	d.bindHistory(body)
+	d.validateModelPolicy(body)
 	if row != nil {
 		d.AllowedGroupIDs = append([]int64(nil), row.AllowedGroupIDs...)
 		d.NoAffinityGroupIDs = append([]int64(nil), row.Limits.NoAffinityGroupIDs...)
@@ -256,6 +271,10 @@ func (h *Handler) withCodexRouteFilter(c *gin.Context, requested, model string, 
 			return false
 		}
 		if account.IsRelayStyle() {
+			if d.relayViolatesModelPolicy(account, c.Request.URL.Path, body) {
+				d.rememberSelectionReasons(account.ID(), []string{"basispoints:relay_forbidden"})
+				return false
+			}
 			// Known direct-upstream state cannot be replayed through an arbitrary relay.
 			if d.hasKnownHistoryRoute() {
 				d.rememberSelectionReasons(account.ID(), []string{"history_relay"})
@@ -292,6 +311,12 @@ func (d *CodexRouteDecision) begin(account *auth.Account, path, model string) er
 	}
 	if d.historyError != nil {
 		return d.historyError
+	}
+	if d.policyError != nil {
+		return d.policyError
+	}
+	if d.Policy == database.CodexRouteBasispointsModelsOnly && path != d.Preferred {
+		return routeLocalError("codex_route_model_policy_conflict", "The model routing policy does not permit this upstream")
 	}
 	if d.pinnedPath != "" && d.pinnedPath != path {
 		return routeLocalError("codex_route_history_pinned", "History is pinned to its original upstream")
@@ -376,6 +401,7 @@ func executeCodexRoute(ctx context.Context, account *auth.Account, body []byte, 
 		ctx = context.WithValue(ctx, codexRouteKey{}, d)
 	}
 	d.bindHistory(body)
+	d.validateModelPolicy(body)
 	if err := codexRouteBudgetError(ctx); err != nil {
 		return nil, err
 	}
@@ -576,6 +602,9 @@ func codexRouteBudgetError(ctx context.Context) error {
 		defer d.mu.Unlock()
 		if d.historyError != nil {
 			return d.historyError
+		}
+		if d.policyError != nil {
+			return d.policyError
 		}
 		if d.Remaining <= 0 {
 			return routeLocalError("codex_route_budget_exhausted", fmt.Sprintf("Upstream attempt budget exhausted after %d attempts", len(d.Attempts)))

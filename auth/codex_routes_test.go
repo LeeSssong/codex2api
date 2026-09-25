@@ -36,6 +36,26 @@ func TestCodexPathEvidenceOrderingAndIsolation(t *testing.T) {
 		t.Fatal("success overrode admin disable")
 	}
 }
+
+func TestCodexExactModelEvidenceHonorsGenerationAndGlobalDenial(t *testing.T) {
+	a := &Account{DBID: 1, CredentialGeneration: 2}
+	now := time.Unix(100, 0)
+	a.ObserveCodexPath(context.Background(), database.CodexCapability{Upstream: "basispoints", Model: "m", Capability: "supported", ObservedAt: now.UnixNano(), CredentialGeneration: 2})
+	if !a.CodexPathSnapshot("basispoints", "M", now).ExactModelSupported {
+		t.Fatal("exact-model success lost")
+	}
+	a.Mu().Lock()
+	a.CredentialGeneration = 3
+	a.Mu().Unlock()
+	if a.CodexPathSnapshot("basispoints", "m", now).ExactModelSupported {
+		t.Fatal("old credential evidence admitted")
+	}
+	a.ObserveCodexPath(context.Background(), database.CodexCapability{Upstream: "basispoints", Model: "m", Capability: "supported", ObservedAt: now.Add(time.Second).UnixNano(), CredentialGeneration: 3})
+	a.ObserveCodexPath(context.Background(), database.CodexCapability{Upstream: "basispoints", Capability: "unsupported", ObservedAt: now.Add(2 * time.Second).UnixNano(), CredentialGeneration: 3})
+	if a.CodexPathSnapshot("basispoints", "m", now).ExactModelSupported {
+		t.Fatal("account-wide denial bypassed")
+	}
+}
 func TestCodexPathSingleRecoveryProbe(t *testing.T) {
 	a := &Account{DBID: 1}
 	now := time.Unix(100, 0)

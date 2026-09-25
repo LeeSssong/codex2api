@@ -3577,7 +3577,8 @@ function LimitsEditor({
         <LimitSection icon={<SlidersHorizontal className="size-3.5" />} title={t("codexRoutes.title")} description={t("codexRoutes.keyHint")}>
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="space-y-1.5"><label className="text-xs font-medium" htmlFor="codex-route-policy">{t("codexRoutes.policy")}</label>
-              <Select id="codex-route-policy" value={value.codexRoutePolicy} onValueChange={v => patch({ codexRoutePolicy: v as CodexRoutePolicy })} options={["inherit", "codex_only", "basispoints_only", "basispoints_prefer", "codex_prefer"].map(v => ({ value: v, label: t(`codexRoutes.policies.${v}`) }))} />
+              <Select id="codex-route-policy" value={value.codexRoutePolicy} onValueChange={v => patch({ codexRoutePolicy: v as CodexRoutePolicy })} options={["inherit", "codex_only", "basispoints_only", "basispoints_models_only", "basispoints_prefer", "codex_prefer"].map(v => ({ value: v, label: t(`codexRoutes.policies.${v}`) }))} />
+              {value.codexRoutePolicy === "basispoints_models_only" && <p className="text-xs leading-relaxed text-muted-foreground">{t("codexRoutes.modelsOnlyHint")}</p>}
             </div>
             <div className="space-y-1.5"><label className="text-xs font-medium" htmlFor="codex-capability-filter">{t("codexRoutes.capability")}</label>
               <Select id="codex-capability-filter" value={value.codexCapabilityFilter} onValueChange={v => patch({ codexCapabilityFilter: v as CodexCapabilityFilter })} options={["any", "supported", "dual_supported", "codex_supported", "basispoints_supported"].map(v => ({ value: v, label: t(`codexRoutes.keyFilters.${v}`) }))} />

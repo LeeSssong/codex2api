@@ -7181,6 +7181,7 @@
     }
   },
   "codexRoutes": {
+    "modelsOnlyHint": "Models in the BPS catalog require accounts verified for that exact model on BPS. Rejections, rate limits, exhausted quota, unknown capability and incompatible features never permit native or relay fallback. Other models use native Codex or other accounts within this Key's permissions. Capability filters still apply; Any retains the built-in strict BPS verification.",
     "title": "Codex upstream paths",
     "keyHint": "Restricted to the existing account groups, plan, model and quota permissions. The global BPS switch and model list remain required. Native fallback must satisfy exact-model State.",
     "policy": "Routing policy",
@@ -7192,6 +7193,7 @@
       "inherit": "Inherit global default",
       "codex_only": "Codex only",
       "basispoints_only": "BPS only",
+      "basispoints_models_only": "Enforce BPS for listed models",
       "basispoints_prefer": "Prefer BPS",
       "codex_prefer": "Prefer Codex"
     },

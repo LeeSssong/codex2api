@@ -104,6 +104,7 @@ func TestCodexHistoryProvenancePinsActualPathAndRespectsKeyPolicy(t *testing.T) 
 		{"key:1", "basispoints_prefer", `{"previous_response_id":"resp-native"}`, "codex", ""},
 		{"key:2", "basispoints_prefer", `{"previous_response_id":"resp-native"}`, "basispoints", ""},
 		{"key:1", "basispoints_only", `{"previous_response_id":"resp-native"}`, "basispoints", "codex_route_history_policy_conflict"},
+		{"key:1", "basispoints_models_only", `{"previous_response_id":"resp-native"}`, "basispoints", "codex_route_history_policy_conflict"},
 	} {
 		t.Run(tc.owner+tc.policy+tc.body, func(t *testing.T) {
 			d := newCodexRouteDecision(context.Background(), "gpt-6-astra", "gpt-6-astra", database.APIKeyLimits{CodexRoutePolicy: tc.policy}, 3)

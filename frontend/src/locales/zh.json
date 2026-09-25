@@ -7178,6 +7178,7 @@
     }
   },
   "codexRoutes": {
+    "modelsOnlyHint": "BPS 名单内模型只用已确认支持该精确模型的 BPS 账号；403、限流、额度不足、能力未知和功能不兼容均不转原生或中转。名单外模型按此 Key 权限走原 Codex 或其他账号。能力筛选继续叠加；选择“任意能力”即可启用内置的 BPS 严格验证。",
     "title": "Codex 双上游路径",
     "keyHint": "与现有账号组、套餐、模型及额度权限取交集。全局 BPS 开关和模型名单仍为硬限制；原 Codex 回退必须满足当前模型的 State 条件。",
     "policy": "路由策略",
@@ -7189,6 +7190,7 @@
       "inherit": "继承全局默认",
       "codex_only": "仅原 Codex",
       "basispoints_only": "仅 BPS",
+      "basispoints_models_only": "BPS 模型强制专用",
       "basispoints_prefer": "优先 BPS",
       "codex_prefer": "优先原 Codex"
     },

@@ -9,23 +9,24 @@ import (
 )
 
 const (
-	CodexPathNative             = "codex"
-	CodexPathBasispoints        = "basispoints"
-	CodexRouteInherit           = "inherit"
-	CodexRouteNativeOnly        = "codex_only"
-	CodexRouteBasispointsOnly   = "basispoints_only"
-	CodexRouteNativePrefer      = "codex_prefer"
-	CodexRouteBasispointsPrefer = "basispoints_prefer"
-	CapabilityUnknown           = "unknown"
-	CapabilitySupported         = "supported"
-	CapabilityUnsupported       = "unsupported"
+	CodexPathNative                 = "codex"
+	CodexPathBasispoints            = "basispoints"
+	CodexRouteInherit               = "inherit"
+	CodexRouteNativeOnly            = "codex_only"
+	CodexRouteBasispointsOnly       = "basispoints_only"
+	CodexRouteNativePrefer          = "codex_prefer"
+	CodexRouteBasispointsPrefer     = "basispoints_prefer"
+	CodexRouteBasispointsModelsOnly = "basispoints_models_only"
+	CapabilityUnknown               = "unknown"
+	CapabilitySupported             = "supported"
+	CapabilityUnsupported           = "unsupported"
 )
 
 func ValidCodexPath(path string) bool { return path == CodexPathNative || path == CodexPathBasispoints }
 
 func ValidCodexRoutePolicy(policy string) bool {
 	switch policy {
-	case "", CodexRouteInherit, CodexRouteNativeOnly, CodexRouteBasispointsOnly, CodexRouteNativePrefer, CodexRouteBasispointsPrefer:
+	case "", CodexRouteInherit, CodexRouteNativeOnly, CodexRouteBasispointsOnly, CodexRouteNativePrefer, CodexRouteBasispointsPrefer, CodexRouteBasispointsModelsOnly:
 		return true
 	}
 	return false

@@ -33,16 +33,17 @@ type codexAccountRoutes struct {
 
 // CodexPathSnapshot keeps administration, evidence and temporary health separate.
 type CodexPathSnapshot struct {
-	Upstream      string    `json:"upstream"`
-	Model         string    `json:"model"`
-	Allowed       bool      `json:"allowed"`
-	Capability    string    `json:"capability"`
-	Source        string    `json:"source,omitempty"`
-	Reason        string    `json:"reason,omitempty"`
-	ObservedAt    int64     `json:"observed_at,omitempty"`
-	Health        string    `json:"health"`
-	CooldownUntil time.Time `json:"cooldown_until,omitempty"`
-	HealthReason  string    `json:"health_reason,omitempty"`
+	ExactModelSupported bool      `json:"-"`
+	Upstream            string    `json:"upstream"`
+	Model               string    `json:"model"`
+	Allowed             bool      `json:"allowed"`
+	Capability          string    `json:"capability"`
+	Source              string    `json:"source,omitempty"`
+	Reason              string    `json:"reason,omitempty"`
+	ObservedAt          int64     `json:"observed_at,omitempty"`
+	Health              string    `json:"health"`
+	CooldownUntil       time.Time `json:"cooldown_until,omitempty"`
+	HealthReason        string    `json:"health_reason,omitempty"`
 }
 
 func codexFactKey(path, model string) string {
@@ -107,6 +108,7 @@ func (a *Account) codexPathSnapshotLocked(path, model string, now time.Time, gen
 	if f.Capability != "" {
 		s.Capability, s.Source, s.Reason, s.ObservedAt = f.Capability, f.Source, f.Reason, f.ObservedAt
 	}
+	s.ExactModelSupported = strings.TrimSpace(model) != "" && codexFactKey(path, f.Model) == codexFactKey(path, model) && f.Capability == database.CapabilitySupported
 	h := r.health[codexFactKey(path, model)]
 	s.CooldownUntil = h.Until
 	if h.Reason != "" {

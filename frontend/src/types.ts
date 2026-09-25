@@ -270,7 +270,7 @@ export interface SubscriptionRefreshResponse {
 export type { AccountStateModel } from './lib/accountStateModels'
 import type { AccountStateModel } from './lib/accountStateModels'
 
-export type CodexRoutePolicy = 'inherit' | 'codex_only' | 'basispoints_only' | 'basispoints_prefer' | 'codex_prefer'
+export type CodexRoutePolicy = 'inherit' | 'codex_only' | 'basispoints_only' | 'basispoints_prefer' | 'codex_prefer' | 'basispoints_models_only'
 export type CodexCapabilityFilter = 'any' | 'supported' | 'dual_supported' | 'codex_supported' | 'basispoints_supported'
 export interface CodexPathSnapshot {
   upstream: 'codex' | 'basispoints'
