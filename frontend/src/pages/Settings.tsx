@@ -2204,6 +2204,7 @@ export default function Settings() {
     auto_reset_credits_enabled: false,
     auto_reset_credits_before_expiry_min: 60,
     auto_activate_5h_window_enabled: false,
+    codex_basispoints_enabled: false,
     codex_force_websocket: false,
     codex_telemetry_enabled: false,
     codex_turn_state_template_cache_enabled: false,
@@ -3607,6 +3608,17 @@ export default function Settings() {
               </SettingsSection>
 
               <SettingsSection id="settings-codex-transport" title={t('settings.nav.codexTransport')} description={t('settings.nav.codexTransportDesc')} icon={<Wifi className="size-4" />}>
+              <SettingsCard title={t('settings.codexBasispoints')} description={t('settings.codexBasispointsDesc')} icon={<Wifi className="size-4" />}>
+                <div className={SETTINGS_SWITCH_ROW}>
+                  <SettingField label={t('settings.codexBasispointsEnabled')} description={t('settings.codexBasispointsEnabledDesc')} layout="switch">
+                    <Switch
+                      aria-label={t('settings.codexBasispointsEnabled')}
+                      checked={settingsForm.codex_basispoints_enabled}
+                      onCheckedChange={(checked) => autoSaveBooleanField('codex_basispoints_enabled', checked)}
+                    />
+                  </SettingField>
+                </div>
+              </SettingsCard>
               <SettingsCard title={t('settings.codexWebsocket')} description={t('settings.codexWebsocketDesc')} icon={<Wifi className="size-4" />}>
                 <div className="space-y-4">
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">

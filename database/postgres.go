@@ -298,31 +298,31 @@ func NormalizeUsageLogFlushIntervalSeconds(n int) int {
 // usageLogEntry 日志缓冲条目
 type usageLogEntry struct {
 	UserBilling
-	RequestID              string
-	UpstreamRequestID      string
-	UpstreamProxyID        int64
-	UpstreamProxyName      string
-	InjectedTurnState      string
-	UpstreamTurnState      string
-	StoreUsageLog          bool
-	AccountID              int64
-	CredentialGeneration   int64
-	Channel                string
-	ClientIP               string
-	ClientUserAgent        string
-	UpstreamUserAgent      string
-	UserAgentOverridden    bool
-	TurnStateOverridden    bool
-	TurnStateRewriteNote   string
-	InternalReason         string
-	ParentRequestID        string
-	Endpoint               string
-	Model                  string
-	EffectiveModel         string
+	RequestID            string
+	UpstreamRequestID    string
+	UpstreamProxyID      int64
+	UpstreamProxyName    string
+	InjectedTurnState    string
+	UpstreamTurnState    string
+	StoreUsageLog        bool
+	AccountID            int64
+	CredentialGeneration int64
+	Channel              string
+	ClientIP             string
+	ClientUserAgent      string
+	UpstreamUserAgent    string
+	UserAgentOverridden  bool
+	TurnStateOverridden  bool
+	TurnStateRewriteNote string
+	InternalReason       string
+	ParentRequestID      string
+	Endpoint             string
+	Model                string
+	EffectiveModel       string
 	// UpstreamResponseModel 是上游响应自报的模型名（观测值，未自报为空串）。
 	UpstreamResponseModel string
 	// UpstreamModelMismatch 三态：nil=上游未自报；true/false=自报与实发是否一致。
-	UpstreamModelMismatch *bool
+	UpstreamModelMismatch  *bool
 	PromptTokens           int
 	CompletionTokens       int
 	TotalTokens            int
@@ -1485,6 +1485,7 @@ func (db *DB) migrate(ctx context.Context) error {
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS public_image_studio_page_enabled BOOLEAN DEFAULT TRUE;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS public_account_portal_page_enabled BOOLEAN DEFAULT FALSE;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_force_websocket BOOLEAN DEFAULT FALSE;
+	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_basispoints_enabled BOOLEAN DEFAULT FALSE;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_request_compression BOOLEAN DEFAULT TRUE;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_ws_weak_network_mode BOOLEAN DEFAULT FALSE;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_ws_keepalive_enabled BOOLEAN DEFAULT FALSE;
@@ -2420,6 +2421,7 @@ type SystemSettings struct {
 	PublicKeyUsagePageEnabled          bool
 	PublicImageStudioPageEnabled       bool
 	PublicAccountPortalPageEnabled     bool // 账号自助添加公开门户开关，默认 false
+	CodexBasispointsEnabled            bool // Route Codex OAuth requests through Basispoints.
 	CodexForceWebsocket                bool // 强制 Codex 上游走 WebSocket（复用连接池），默认 false
 	CodexRequestCompression            bool // HTTP /responses 请求体 zstd 压缩（对齐真实客户端），默认 true
 	CodexWSWeakNetworkMode             bool // WS 弱网保守复用模式，默认 false
@@ -2655,6 +2657,7 @@ func (db *DB) GetSystemSettings(ctx context.Context) (*SystemSettings, error) {
 		       COALESCE(public_account_portal_page_enabled, false),
 			       COALESCE(reasoning_effort_models, '[]'),
 			       COALESCE(codex_force_websocket, false),
+			       COALESCE(codex_basispoints_enabled, false),
 			       COALESCE(codex_request_compression, true),
 			       COALESCE(codex_ws_keepalive_enabled, false),
 			       COALESCE(codex_ws_keepalive_interval_sec, 60),
@@ -2741,6 +2744,7 @@ func (db *DB) GetSystemSettings(ctx context.Context) (*SystemSettings, error) {
 		&s.PublicAccountPortalPageEnabled,
 		&s.ReasoningEffortModels,
 		&s.CodexForceWebsocket,
+		&s.CodexBasispointsEnabled,
 		&s.CodexRequestCompression,
 		&s.CodexWSKeepaliveEnabled,
 		&s.CodexWSKeepaliveIntervalSec,
@@ -3047,9 +3051,10 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 					codex_turn_state_template_cache_enabled,
 					codex_turn_state_account_mode,
 					codex_oauth_keepalive_enabled,
-					codex_telemetry_timing_debug
+					codex_telemetry_timing_debug,
+					codex_basispoints_enabled
 					)
-						VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65, $66, $67, $68, $69, $70, $71, $72, $73, $74, $75, $76, $77, $78, $79, $80, $81, $82, $83, $84, $85, $86, $87, $88, $89, $90, $91, $92, $93, $94, $95, $96, $97, $98, $99, $100, $101, $102, $103, $104, $105, $106, $107, $108, $109, $110, $111, $112, $113, $114, $115, $116, $117, $118, $119, $120, $121, $122, $123, $124, $125)
+						VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65, $66, $67, $68, $69, $70, $71, $72, $73, $74, $75, $76, $77, $78, $79, $80, $81, $82, $83, $84, $85, $86, $87, $88, $89, $90, $91, $92, $93, $94, $95, $96, $97, $98, $99, $100, $101, $102, $103, $104, $105, $106, $107, $108, $109, $110, $111, $112, $113, $114, $115, $116, $117, $118, $119, $120, $121, $122, $123, $124, $125, $128)
 				ON CONFLICT (id) DO UPDATE SET
 				site_name               = EXCLUDED.site_name,
 				site_logo               = EXCLUDED.site_logo,
@@ -3120,6 +3125,7 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 				public_image_studio_page_enabled = EXCLUDED.public_image_studio_page_enabled,
 					reasoning_effort_models = EXCLUDED.reasoning_effort_models,
 					codex_force_websocket = EXCLUDED.codex_force_websocket,
+					codex_basispoints_enabled = EXCLUDED.codex_basispoints_enabled,
 					codex_request_compression = EXCLUDED.codex_request_compression,
 					codex_ws_keepalive_enabled = EXCLUDED.codex_ws_keepalive_enabled,
 					codex_ws_keepalive_interval_sec = EXCLUDED.codex_ws_keepalive_interval_sec,
@@ -3229,7 +3235,8 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 		s.CodexOAuthKeepaliveEnabled,
 		s.CodexTelemetryTimingDebug,
 		s.PreservePromptFilterCustomPatterns,
-		s.PreservePromptFilterReviewAPIKey)
+		s.PreservePromptFilterReviewAPIKey,
+		s.CodexBasispointsEnabled)
 	return err
 }
 
@@ -4184,34 +4191,34 @@ func (db *DB) RebindAccountProxyURLs(ctx context.Context, oldURL, newURL string)
 // UsageLog 请求日志行
 type UsageLog struct {
 	UserBilling
-	RequestID              string    `json:"request_id"`
-	UpstreamRequestID      string    `json:"upstream_request_id"`
-	UpstreamProxyID        int64     `json:"upstream_proxy_id"`
-	UpstreamProxyName      string    `json:"upstream_proxy_name"`
-	InjectedTurnState      string    `json:"injected_turn_state,omitempty"`
-	UpstreamTurnState      string    `json:"upstream_turn_state,omitempty"`
-	ID                     int64     `json:"id"`
-	AccountID              int64     `json:"account_id"`
-	CredentialGeneration   int64     `json:"credential_generation,omitempty"`
-	Channel                string    `json:"channel,omitempty"`
-	ClientIP               string    `json:"client_ip"`
-	ClientUserAgent        string    `json:"client_user_agent"`
-	UpstreamUserAgent      string    `json:"upstream_user_agent"`
-	UserAgentOverridden    bool      `json:"user_agent_overridden"`
-	TurnStateOverridden    bool      `json:"turn_state_overridden"`
-	TurnStateRewriteNote   string    `json:"turn_state_rewrite_note"`
-	InternalReason         string    `json:"internal_reason"`
-	ParentRequestID        string    `json:"parent_request_id"`
-	Endpoint               string    `json:"endpoint"`
-	Model                  string    `json:"model"`
-	EffectiveModel         string    `json:"effective_model"`
+	RequestID            string `json:"request_id"`
+	UpstreamRequestID    string `json:"upstream_request_id"`
+	UpstreamProxyID      int64  `json:"upstream_proxy_id"`
+	UpstreamProxyName    string `json:"upstream_proxy_name"`
+	InjectedTurnState    string `json:"injected_turn_state,omitempty"`
+	UpstreamTurnState    string `json:"upstream_turn_state,omitempty"`
+	ID                   int64  `json:"id"`
+	AccountID            int64  `json:"account_id"`
+	CredentialGeneration int64  `json:"credential_generation,omitempty"`
+	Channel              string `json:"channel,omitempty"`
+	ClientIP             string `json:"client_ip"`
+	ClientUserAgent      string `json:"client_user_agent"`
+	UpstreamUserAgent    string `json:"upstream_user_agent"`
+	UserAgentOverridden  bool   `json:"user_agent_overridden"`
+	TurnStateOverridden  bool   `json:"turn_state_overridden"`
+	TurnStateRewriteNote string `json:"turn_state_rewrite_note"`
+	InternalReason       string `json:"internal_reason"`
+	ParentRequestID      string `json:"parent_request_id"`
+	Endpoint             string `json:"endpoint"`
+	Model                string `json:"model"`
+	EffectiveModel       string `json:"effective_model"`
 	// UpstreamResponseModel 是上游响应自报的模型名（取自 response.model 等字段，
 	// 未经协议转换或改写）。空串=上游未自报或历史行。
 	UpstreamResponseModel string `json:"upstream_response_model,omitempty"`
 	// UpstreamModelMismatch 三态：nil=上游未自报（或历史行），无法比对；
 	// true/false=已比对，上游自报与实发模型是否一致。
-	UpstreamModelMismatch *bool `json:"upstream_model_mismatch,omitempty"`
-	PromptTokens          int   `json:"prompt_tokens"`
+	UpstreamModelMismatch  *bool     `json:"upstream_model_mismatch,omitempty"`
+	PromptTokens           int       `json:"prompt_tokens"`
 	CompletionTokens       int       `json:"completion_tokens"`
 	TotalTokens            int       `json:"total_tokens"`
 	StatusCode             int       `json:"status_code"`
@@ -4283,10 +4290,10 @@ type UsageLog struct {
 // 整条批量 INSERT 回滚，失败的 batch 又会被原样放回缓冲区头部，下一轮继续失败——
 // 单条脏数据就能永久堵死整个日志写入。因此写入前按列宽截断。
 const (
-	usageLogChannelMaxLen    = 16  // channel
-	usageLogImageSizeMaxLen  = 32  // image_size
-	usageLogShortTextMaxLen  = 64  // client_ip / api_key_masked / upstream_error_kind
-	usageLogTextMaxLen       = 100 // endpoint / model / *_service_tier / reasoning_effort ...
+	usageLogChannelMaxLen   = 16  // channel
+	usageLogImageSizeMaxLen = 32  // image_size
+	usageLogShortTextMaxLen = 64  // client_ip / api_key_masked / upstream_error_kind
+	usageLogTextMaxLen      = 100 // endpoint / model / *_service_tier / reasoning_effort ...
 	// upstreamResponseModelMaxLen 与 usage_logs.upstream_response_model 列宽一致：
 	// 上游自报模型名不受网关控制，写入前按列宽截断。
 	upstreamResponseModelMaxLen = 200
@@ -4456,22 +4463,22 @@ type UsageLogInput struct {
 	// credential snapshot that issued it. Zero is legacy/unscoped traffic.
 	CredentialGeneration int64
 	// Channel 是处理该请求的上游渠道（codex/grok），写入时固化，空值表示未知。
-	Channel                string
-	ClientIP               string
-	ClientUserAgent        string
-	UpstreamUserAgent      string
-	UserAgentOverridden    bool
-	TurnStateOverridden    bool
-	TurnStateRewriteNote   string
-	InternalReason         string
-	ParentRequestID        string
-	Endpoint               string
-	Model                  string
-	EffectiveModel         string
+	Channel              string
+	ClientIP             string
+	ClientUserAgent      string
+	UpstreamUserAgent    string
+	UserAgentOverridden  bool
+	TurnStateOverridden  bool
+	TurnStateRewriteNote string
+	InternalReason       string
+	ParentRequestID      string
+	Endpoint             string
+	Model                string
+	EffectiveModel       string
 	// UpstreamResponseModel 是上游响应自报的模型名（观测值，未自报为空串）。
 	UpstreamResponseModel string
 	// UpstreamModelMismatch 三态：nil=上游未自报；true/false=自报与实发是否一致。
-	UpstreamModelMismatch *bool
+	UpstreamModelMismatch  *bool
 	PromptTokens           int
 	CompletionTokens       int
 	TotalTokens            int

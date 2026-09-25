@@ -50,14 +50,24 @@ func ImageAssetURLWithTTL(assetID int64, thumbKB int, ttl time.Duration) string 
 	return publicImageAssetURL(fmt.Sprintf("%s/%d?exp=%d&sig=%s", imageAssetPathPrefix, assetID, exp, sig))
 }
 
-func publicImageAssetURL(path string) string {
+// PublicBaseURL returns the validated IMAGE_ASSET_PUBLIC_BASE_URL without a
+// trailing slash, or "" when it is unset or malformed. Signed links stay
+// relative in that case, which only works for same-origin browsers.
+func PublicBaseURL() string {
 	baseURL := strings.TrimRight(strings.TrimSpace(os.Getenv(imageAssetPublicBaseURLEnv)), "/")
 	parsed, err := url.Parse(baseURL)
 	if baseURL == "" || err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") ||
 		parsed.User != nil || parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" {
-		return path
+		return ""
 	}
-	return baseURL + path
+	return baseURL
+}
+
+func publicImageAssetURL(path string) string {
+	if baseURL := PublicBaseURL(); baseURL != "" {
+		return baseURL + path
+	}
+	return path
 }
 
 func VerifyImageAssetURL(assetID int64, exp int64, thumbKB int, sig string, now time.Time) bool {

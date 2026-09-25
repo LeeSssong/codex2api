@@ -653,6 +653,7 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 		{"system_settings", "fast_scheduler_enabled", "INTEGER DEFAULT 0"},
 		{"system_settings", "scheduler_engine", "TEXT DEFAULT ''"},
 		{"system_settings", "codex_force_websocket", "INTEGER DEFAULT 0"},
+		{"system_settings", "codex_basispoints_enabled", "INTEGER DEFAULT 0"},
 		{"system_settings", "codex_telemetry_enabled", "INTEGER DEFAULT 0"},
 		{"system_settings", "codex_turn_state_template_cache_enabled", "INTEGER DEFAULT 0"},
 		{"system_settings", "codex_turn_state_account_mode", "TEXT DEFAULT 'auto'"},

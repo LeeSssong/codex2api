@@ -375,6 +375,9 @@ func main() {
 	adminHandler.StartOfficialPricingSync(backgroundCtx)
 	// Prompt 审核日志保留清理：默认保留 7 天，每小时分批清理过期行，CY 关联行不动。
 	adminHandler.StartPromptLogRetention(backgroundCtx)
+	// Basispoints inbound images: embedded base64 images become self-hosted signed
+	// HTTPS links (imagestore + /p/img) and are swept after their retention window.
+	proxy.StartBasispointsImageHost(backgroundCtx, db)
 
 	// 后台定时同步 Codex CLI 模拟版本（启动即拉一次，之后按设置的间隔）；
 	// 出上游新版本门槛时无需发版即可跟进。开关/间隔在设置页可调，

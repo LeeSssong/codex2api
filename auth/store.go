@@ -3544,7 +3544,8 @@ type Store struct {
 	dispatchReconciledAt     int64
 
 	// Codex 上游 WebSocket 相关（默认全部关闭，不影响现有 HTTP 路径）
-	codexForceWebsocket atomic.Bool // 强制 Codex 上游走 WebSocket（复用连接池）
+	codexBasispointsEnabled atomic.Bool // Global Codex pool upstream selection.
+	codexForceWebsocket     atomic.Bool // 强制 Codex 上游走 WebSocket（复用连接池）
 	// codexRequestCompression HTTP /responses 请求体 zstd 压缩，默认开启（对齐真实客户端）。
 	// 与上面几项 WS 设置正交：WS 走 permessage-deflate，本项只作用于 HTTP 路径。
 	codexRequestCompression     atomic.Bool
@@ -4257,6 +4258,7 @@ func NewStore(db *database.DB, tc cache.TokenCache, settings *database.SystemSet
 
 	// Codex 上游 WebSocket 相关设置（默认关闭，不影响现有路径）
 	s.codexForceWebsocket.Store(settings.CodexForceWebsocket)
+	s.codexBasispointsEnabled.Store(settings.CodexBasispointsEnabled)
 	s.codexRequestCompression.Store(settings.CodexRequestCompression)
 	s.codexWSKeepaliveEnabled.Store(settings.CodexWSKeepaliveEnabled)
 	s.codexWSKeepaliveIntervalSec.Store(normalizeWSKeepaliveInterval(settings.CodexWSKeepaliveIntervalSec))

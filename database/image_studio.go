@@ -592,6 +592,26 @@ func (db *DB) ListImageAssetsByJobID(ctx context.Context, jobID int64) ([]ImageA
 	return scanImageAssets(rows)
 }
 
+// ListImageAssetsByModelBefore returns up to limit assets recorded under model
+// and created before cutoff, oldest first. Retention sweeps of self-hosted
+// inbound images use it; generated images carry real model names and are never
+// matched by the inbound tag.
+func (db *DB) ListImageAssetsByModelBefore(ctx context.Context, model string, cutoff time.Time, limit int) ([]ImageAsset, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := db.conn.QueryContext(ctx, imageAssetSelectSQL("")+`
+		WHERE model=$1 AND created_at < $2
+		ORDER BY created_at ASC, id ASC
+		LIMIT $3
+	`, model, db.timeArg(cutoff.UTC()), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanImageAssets(rows)
+}
+
 // GetImageAssetJobAPIKeyID returns the owning API key id for an asset via its job.
 // Returns 0 when the asset has no job linkage.
 func (db *DB) GetImageAssetJobAPIKeyID(ctx context.Context, assetID int64) (int64, error) {

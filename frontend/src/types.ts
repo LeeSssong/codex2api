@@ -2078,6 +2078,7 @@ export interface SystemSettings {
   proxy_pool_enabled: boolean
   fast_scheduler_enabled: boolean
   scheduler_engine: 'legacy' | 'shadow' | 'indexed'
+  codex_basispoints_enabled: boolean
   codex_force_websocket: boolean
   codex_telemetry_enabled: boolean
   codex_turn_state_template_cache_enabled: boolean
