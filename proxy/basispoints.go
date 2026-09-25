@@ -23,7 +23,63 @@ const (
 	ErrorCodeBasispointsInvalidRequest = "basispoints_invalid_request"
 	basispointsBypassHeader            = "X-Codex2API-Basispoints-Bypass"
 	basispointsNativeFallbackEnv       = "BASISPOINTS_NATIVE_FALLBACK"
+	basispointsModelsEnv               = "BASISPOINTS_MODELS"
 )
+
+// defaultBasispointsModels are the Codex models verified to work on the
+// Basispoints channel. With the switch on, every other model is served by the
+// original Codex endpoint instead, because Basispoints rejects them with
+// basispoints_model_access_changed. Override with BASISPOINTS_MODELS (comma
+// separated); "*" or "all" keeps every model on Basispoints (the earlier
+// pool-wide behavior).
+var defaultBasispointsModels = []string{"gpt-5.6-sol", "gpt-6-astra"}
+
+func basispointsAllowedModels() (models []string, all bool) {
+	raw := strings.TrimSpace(os.Getenv(basispointsModelsEnv))
+	if raw == "" {
+		return defaultBasispointsModels, false
+	}
+	if raw == "*" || strings.EqualFold(raw, "all") {
+		return nil, true
+	}
+	for _, part := range strings.Split(raw, ",") {
+		if p := strings.ToLower(strings.TrimSpace(part)); p != "" {
+			models = append(models, p)
+		}
+	}
+	if len(models) == 0 {
+		return defaultBasispointsModels, false
+	}
+	return models, false
+}
+
+// basispointsModelAllowed reports whether the Basispoints channel should serve
+// this model. Matching is case-insensitive on the exact name or a name prefix so
+// dated snapshots (gpt-6-astra-2026-..) resolve with their family.
+func basispointsModelAllowed(model string) bool {
+	m := strings.ToLower(strings.TrimSpace(model))
+	if m == "" {
+		return false
+	}
+	models, all := basispointsAllowedModels()
+	if all {
+		return true
+	}
+	for _, allowed := range models {
+		if m == allowed || strings.HasPrefix(m, allowed) {
+			return true
+		}
+	}
+	return false
+}
+
+// basispointsActiveForModel is the per-request truth: the switch is on and this
+// model is one Basispoints serves. Every request-scoped Basispoints decision
+// keys on this so a non-served model behaves exactly like the original Codex
+// channel would with the switch off.
+func basispointsActiveForModel(model string) bool {
+	return CurrentRuntimeSettings().CodexBasispointsEnabled && basispointsModelAllowed(model)
+}
 
 // basispointsPreparationCategory deliberately returns only fixed labels. The
 // original validation message may contain caller-controlled tool names or modes.

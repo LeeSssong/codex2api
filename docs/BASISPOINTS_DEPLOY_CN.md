@@ -4,6 +4,15 @@
 
 此分支给 Codex 号池增加全局上游开关。设置路径：**系统设置 → Codex → 传输 → 启用 Basispoints（实验）**。开关默认关闭，保存后立即生效，开启时全部 Codex OAuth 号池账号使用 `https://bps.openai.com/basispoints/api/responses`。其他渠道账号继续使用各自的接口。
 
+## 只有指定模型走 Basispoints，其余走原 Codex 接口
+
+开启 Basispoints 后，**只有实测可用的模型走 BPS 通道，其余模型逐请求改走原 Codex 接口**。原因：BPS 上游只对少数 Codex 模型放行，其它模型一律以 `basispoints_model_access_changed`（403）硬拒——生产日志里这类 403 曾占相当比例。默认放行 `gpt-5.6-sol` 和 `gpt-6-astra`。
+
+- 环境变量 `BASISPOINTS_MODELS` 覆盖白名单：逗号分隔，大小写不敏感，按精确名或前缀匹配（`gpt-6-astra` 命中 `gpt-6-astra-2026-01-15` 之类日期快照）。例：`BASISPOINTS_MODELS=gpt-5.6-sol,gpt-6-astra`。
+- 设为 `*` 或 `all` 恢复旧行为：开关开启时全部 Codex 号池模型都走 BPS。
+- 不在白名单的模型：**完全按原 Codex 通道处理**——保留 State 校验、原生图片工具注入、原生 web_search，不套用 BPS 的工具信封协议，也不打 BPS 响应头。等价于「对这个模型没开 BPS」。
+- 该判定按**每个请求的 model** 生效，与账号无关：同一号池里 `gpt-6-astra` 走 BPS、`gpt-5.5` 走原生，互不影响。
+
 ## 镜像和名称
 
 | 用途 | 填写内容 |

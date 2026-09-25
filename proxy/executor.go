@@ -524,16 +524,23 @@ func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []by
 		return nil, ErrNoAvailableAccount()
 	}
 	if CurrentRuntimeSettings().CodexBasispointsEnabled {
-		var nativeReason string
-		var routeErr error
-		ctx, requestBody, nativeReason, routeErr = basispointsNativeRoute(ctx, account, requestBody)
-		if routeErr != nil {
-			return nil, routeErr
+		if basispointsModelAllowed(gjson.GetBytes(requestBody, "model").String()) {
+			var nativeReason string
+			var routeErr error
+			ctx, requestBody, nativeReason, routeErr = basispointsNativeRoute(ctx, account, requestBody)
+			if routeErr != nil {
+				return nil, routeErr
+			}
+			if nativeReason == "" {
+				return executeBasispointsRequest(ctx, account, requestBody, sessionID, proxyOverride, apiKey, headers)
+			}
+			defer func() { markBasispointsNativeRoute(upstreamResponse, nativeReason) }()
+		} else {
+			// Switch on but this model is not served by Basispoints: use the
+			// original Codex channel and drop the routing-only web_search field
+			// ingress kept for the Basispoints decision.
+			requestBody = stripBasispointsRoutingFields(requestBody)
 		}
-		if nativeReason == "" {
-			return executeBasispointsRequest(ctx, account, requestBody, sessionID, proxyOverride, apiKey, headers)
-		}
-		defer func() { markBasispointsNativeRoute(upstreamResponse, nativeReason) }()
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -984,16 +991,20 @@ func ExecuteCompactRequest(ctx context.Context, account *auth.Account, requestBo
 		return nil, ErrNoAvailableAccount()
 	}
 	if CurrentRuntimeSettings().CodexBasispointsEnabled {
-		var nativeReason string
-		var routeErr error
-		ctx, requestBody, nativeReason, routeErr = basispointsNativeRoute(ctx, account, requestBody)
-		if routeErr != nil {
-			return nil, routeErr
+		if basispointsModelAllowed(gjson.GetBytes(requestBody, "model").String()) {
+			var nativeReason string
+			var routeErr error
+			ctx, requestBody, nativeReason, routeErr = basispointsNativeRoute(ctx, account, requestBody)
+			if routeErr != nil {
+				return nil, routeErr
+			}
+			if nativeReason == "" {
+				return executeBasispointsCompactRequest(ctx, account, requestBody, sessionID, proxyOverride, apiKey, headers)
+			}
+			defer func() { markBasispointsNativeRoute(upstreamResponse, nativeReason) }()
+		} else {
+			requestBody = stripBasispointsRoutingFields(requestBody)
 		}
-		if nativeReason == "" {
-			return executeBasispointsCompactRequest(ctx, account, requestBody, sessionID, proxyOverride, apiKey, headers)
-		}
-		defer func() { markBasispointsNativeRoute(upstreamResponse, nativeReason) }()
 	}
 	if ctx == nil {
 		ctx = context.Background()

@@ -31,7 +31,9 @@ var ipv6StateProvider atomic.Pointer[IPv6StateProvider]
 func SetIPv6StateProvider(provider *IPv6StateProvider) { ipv6StateProvider.Store(provider) }
 
 func withRequiredStateFilter(model string, filter auth.AccountFilter) auth.AccountFilter {
-	if CurrentRuntimeSettings().CodexBasispointsEnabled {
+	// Only models Basispoints actually serves skip State eligibility; a model
+	// routed to the original Codex channel keeps its native State filtering.
+	if basispointsActiveForModel(model) {
 		return filter
 	}
 	provider := ipv6StateProvider.Load()

@@ -741,7 +741,9 @@ func responsesModelRejectsHostedImageTool(body map[string]any) bool {
 }
 
 func shouldAutoInjectResponsesImageGenerationTool(body map[string]any) bool {
-	if CurrentRuntimeSettings().CodexBasispointsEnabled {
+	// Only models Basispoints serves suppress native image-tool injection; a
+	// model routed to the original Codex channel keeps native auto-injection.
+	if basispointsActiveForModel(firstNonEmptyAnyString(body["model"])) {
 		return false
 	}
 	if len(body) == 0 || hasResponsesImageGenerationTool(body) {

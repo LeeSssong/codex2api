@@ -397,13 +397,14 @@ func TestBasispointsTransportIsIsolatedAndHonorsProxy(t *testing.T) {
 func TestBasispointsRejectsOtherCredentialTypes(t *testing.T) {
 	enableBasispointsForTest(t)
 	account := &auth.Account{UpstreamType: auth.UpstreamOpenAIResponses, BaseURL: "https://relay.example", APIKey: "sk-test"}
-	if _, err := ExecuteRequest(context.Background(), account, []byte(`{}`), "", "", "", nil, nil); err == nil {
+	if _, err := ExecuteRequest(context.Background(), account, []byte(`{"model":"gpt-6-astra"}`), "", "", "", nil, nil); err == nil {
 		t.Fatal("relay credentials must not reach Basispoints")
 	}
 	if effectiveReasoningEffortForAccount(account, "max") != "max" {
 		t.Fatal("relay reasoning effort changed")
 	}
-	if _, err := ExecuteRequest(context.Background(), &auth.Account{AccessToken: "token"}, []byte(`{}`), "", "", "", nil, nil); err == nil {
+	// A Basispoints-served model still requires a ChatGPT account ID.
+	if _, err := ExecuteRequest(context.Background(), &auth.Account{AccessToken: "token"}, []byte(`{"model":"gpt-6-astra"}`), "", "", "", nil, nil); err == nil {
 		t.Fatal("missing ChatGPT account ID must be rejected")
 	}
 }
