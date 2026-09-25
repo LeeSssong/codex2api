@@ -81,14 +81,14 @@ class Release:
   current=self.caddy();codex_route(current)['handle']=self.route_before;self.load_caddy(current);self.maintenance=False
  def write_compose(self,text):
   temp=self.compose.with_suffix('.release-tmp');temp.write_text(text);shutil.copymode(self.compose,temp);os.replace(temp,self.compose)
- def request(self,path,auth=False,public=False):
+ def request(self,path,auth=False,public=False,timeout=10):
   base='https://codex.xingqiaolab.top' if public else 'http://127.0.0.1:'+str(self.port)
   headers={"User-Agent":"Codex2API-ReleaseCheck/1.0"}
   if auth:
    secret=self.env.get('ADMIN_SECRET','')
    if not secret:raise RuntimeError('environment-backed admin credential required for release smoke')
    headers['X-Admin-Key']=secret
-  with urllib.request.urlopen(urllib.request.Request(base+path,headers=headers),timeout=10) as response:
+  with urllib.request.urlopen(urllib.request.Request(base+path,headers=headers),timeout=timeout) as response:
    payload=response.read();return response.status,dict(response.headers),payload
  def ready(self):
   deadline=time.monotonic()+90
@@ -108,14 +108,15 @@ class Release:
   self.drain_started=time.monotonic();deadline=self.drain_started+300; remaining=None
   while time.monotonic()<deadline:
    try:
-    value=json.loads(self.request('/api/admin/runtime-status',True)[2])['accounts']['active_requests']
+    value=json.loads(self.request('/api/admin/runtime-status',True,timeout=min(10,max(0.1,deadline-time.monotonic())))[2])['accounts']['active_requests']
     if not isinstance(value,int) or value<0:raise ValueError('invalid drain counter')
     remaining=value
     if remaining==0:break
    except Exception:
     # Missing telemetry is not proof of an empty pool. Preserve the full window.
     remaining=None
-   time.sleep(2)
+   remaining_seconds=deadline-time.monotonic()
+   if remaining_seconds>0:time.sleep(min(2,remaining_seconds))
   self.report['drain_remaining_requests']=remaining
   self.report['drain_deadline_reached']=time.monotonic()>=deadline
   self.event('old-requests-drained')
@@ -125,10 +126,10 @@ class Release:
    status,headers,payload=self.request(endpoint,True,public)
    if status!=200 or 'application/json' not in headers.get('Content-Type',headers.get('content-type','')):raise RuntimeError('feature endpoint did not return JSON: '+endpoint)
    json.loads(payload)
-  info=json.loads(self.request('/api/admin/system/update',True,public)[2])
+  info=json.loads(self.request('/api/admin/system/build',True,public)[2])
   if info.get('source_revision')!=self.args.revision or info.get('source_tree')!=self.args.tree or info.get('mode')!='source_image' or info.get('supported') is not False:raise RuntimeError('managed build provenance mismatch')
   self.report['upstream_revision']=info.get('upstream_revision')
-  self.report['upstream_check_status']=info.get('check_status')
+  self.report['upstream_check_status']='verified-before-build'
  def preflight(self):
   image=json.loads(self.run(['docker','image','inspect',self.args.image]))[0]
   if image['Id']!=self.args.digest:raise ValueError('image digest mismatch')
@@ -182,7 +183,11 @@ class Release:
    self.network_gate(True)
    self.load_caddy(maintenance_config(self.caddy()));self.maintenance=True
   exists=self.run(['docker','ps','-aq','--filter','name=^codex2api$']).strip()
-  if exists and self.inspect('codex2api')['State']['Running']:self.dc('stop','-t','300','codex2api',timeout=330)
+  if exists and self.inspect('codex2api')['State']['Running']:
+   stop_grace=300
+   if preserve_database and self.opened:
+    self.drain();stop_grace=max(0,int(300-(time.monotonic()-self.drain_started)))
+   self.dc('stop','-t',str(stop_grace),'codex2api',timeout=stop_grace+30)
   self.write_compose(self.rollback_compose)
   if self.migrated and not preserve_database:
    self.run(['docker','exec','codex2api-postgres','sh','-c','dropdb --force -U "$POSTGRES_USER" "$POSTGRES_DB" && createdb -U "$POSTGRES_USER" -O "$POSTGRES_USER" "$POSTGRES_DB"'])
@@ -210,7 +215,7 @@ class Release:
    settings=json.loads(self.request('/api/admin/settings',True)[2])
    for key in ['codex_basispoints_enabled']:
     if key in self.original_settings and settings.get(key)!=self.original_settings.get(key):raise RuntimeError('existing setting changed: '+key)
-   for path in ['/admin/quality-ops','/admin/account-ops','/admin/token-guard']:
+   for path in ['/admin/smart-ops/quality','/admin/smart-ops/alerts','/admin/smart-ops/tokens']:
     if b'<html' not in self.request(path)[2].lower():raise RuntimeError('admin UI shell missing')
    self.verify_protected_containers()
    self.event('internal-feature-smoke-passed')

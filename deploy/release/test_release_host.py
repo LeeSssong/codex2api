@@ -117,11 +117,22 @@ class DrainTests(unittest.TestCase):
   return r
  def test_finishes_early_when_no_active_requests(self):
   from unittest.mock import patch
-  r=self.make();r.request=lambda *a:(200,{},b'{"accounts":{"active_requests":0}}')
+  r=self.make();r.request=lambda *a,**kw:(200,{},b'{"accounts":{"active_requests":0}}')
   with patch('release_host.time.sleep') as sleep:r.drain()
   sleep.assert_not_called();self.assertEqual(r.report['drain_remaining_requests'],0);self.assertFalse(r.report['drain_deadline_reached'])
  def test_missing_counter_waits_until_deadline(self):
   from unittest.mock import patch
-  r=self.make();r.request=lambda *a:(200,{},b'{"accounts":{}}')
-  with patch('release_host.time.monotonic',side_effect=[0,0,301,301]),patch('release_host.time.sleep') as sleep:r.drain()
-  sleep.assert_called_once_with(2);self.assertIsNone(r.report['drain_remaining_requests']);self.assertTrue(r.report['drain_deadline_reached'])
+  r=self.make();r.request=lambda *a,**kw:(200,{},b'{"accounts":{}}')
+  with patch('release_host.time.monotonic',side_effect=[0,0,0,301,301,301]),patch('release_host.time.sleep') as sleep:r.drain()
+  sleep.assert_not_called();self.assertIsNone(r.report['drain_remaining_requests']);self.assertTrue(r.report['drain_deadline_reached'])
+
+class PublicRollbackDrainTests(unittest.TestCase):
+ def test_public_failure_drains_before_stopping_new_app(self):
+  import time
+  from release_host import Release
+  r=Release.__new__(Release);r.stopped=True;r.migrated=True;r.opened=True;r.maintenance=False;r.report={};r.rollback_compose='pinned';calls=[]
+  r.event=lambda name:None;r.stop_migrator=lambda:None;r.network_gate=lambda on:None;r.caddy=lambda:{'apps':{'http':{'servers':{'s':{'routes':[{'match':[{'host':['codex.xingqiaolab.top']}],'handle':[]}]}}}}}
+  r.load_caddy=lambda c:None;r.run=lambda *a,**k:b'exists';r.inspect=lambda n:{'State':{'Running':True}};r.ready=lambda:None;r.restore_route=lambda:None;r.write_compose=lambda c:None
+  def drain():calls.append('drain');r.drain_started=time.monotonic()
+  r.drain=drain;r.dc=lambda *a,**k:calls.append(a[0]);r.rollback(preserve_database=True)
+  self.assertLess(calls.index('drain'),calls.index('stop'));self.assertFalse(r.report['database_restored'])
