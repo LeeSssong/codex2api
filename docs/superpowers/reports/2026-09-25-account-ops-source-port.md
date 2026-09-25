@@ -91,3 +91,13 @@ node --experimental-strip-types --test src/lib/accountOps.test.mjs tests/account
 - 没有连接生产/测试站，没有访问真实上游或发信；真实供应商模型效果与真实 SMTP 投递需部署后按目标环境验收。
 - PostgreSQL 验证覆盖真实事务、租约、持久化、恢复、冷却及迁移初始化；没有做全系统负载或多节点 SMTP 压测。
 - 只在独立分支提交；没有推送、改根工作树 main、合并、部署。原有根工作树改动保留。
+
+## 提交与最终执行证据
+
+- 功能及测试提交：`084db3d87452af87518c696ed9e1cd3015c05b76` — `feat: port source account quality operations and alerts`。
+- 此后仅补充本段报告，不修改实现。
+- 最终相关 Go 包输出：`accountops 2.486s`、`database 2.717s`、`admin 5.285s`、`proxy 2.680s`，全部 `ok`。
+- 最终 PostgreSQL 用例：`ok github.com/codex2api/database 2.335s`。
+- 最终前端测试：3 tests / 3 pass / 0 fail；浏览器用例 `3574.644833ms`。
+- Go 完整构建须在前端构建完成后串行执行：一次并行构建因 Vite 清空旧 hash 文件而触发 embed 文件不存在；前端构建结束后已重新执行 `go build ./...` 成功。这是验证命令顺序问题，无源代码失败或未解决事项。
+- 临时容器 `codex-account-ops-port-test` 已停止并由 `--rm` 清除，Vite 5197 监听进程已停止；未创建依赖目录软链接。
