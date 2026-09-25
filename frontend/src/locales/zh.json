@@ -7176,5 +7176,74 @@
       "6": "周六",
       "7": "周日"
     }
+  },
+  "codexRoutes": {
+    "title": "Codex 双上游路径",
+    "keyHint": "与现有账号组、套餐、模型及额度权限取交集。全局 BPS 开关和模型名单仍为硬限制；原 Codex 回退必须满足当前模型的 State 条件。",
+    "policy": "路由策略",
+    "capability": "能力筛选",
+    "model": "能力对应的精确模型",
+    "path": "上游路径",
+    "action": "管理操作",
+    "policies": {
+      "inherit": "继承全局默认",
+      "codex_only": "仅原 Codex",
+      "basispoints_only": "仅 BPS",
+      "basispoints_prefer": "优先 BPS",
+      "codex_prefer": "优先原 Codex"
+    },
+    "keyFilters": {
+      "any": "任意能力（含未知）",
+      "supported": "所选路径已确认支持",
+      "dual_supported": "两条路径均已确认支持",
+      "codex_supported": "原 Codex 已确认支持",
+      "basispoints_supported": "BPS 已确认支持"
+    },
+    "filters": {
+      "all": "全部能力",
+      "bps_supported": "BPS 已支持",
+      "bps_unsupported": "BPS 已确认不支持",
+      "bps_unknown": "BPS 未知",
+      "dual_supported": "双上游均支持",
+      "codex_only_supported": "仅原 Codex 确认可用",
+      "bps_only_supported": "仅 BPS 确认可用",
+      "cooldown": "上游路径冷却中",
+      "admin_disabled": "管理员禁用路径"
+    },
+    "capabilities": {
+      "unknown": "未知",
+      "supported": "支持",
+      "unsupported": "不支持"
+    },
+    "health": {
+      "ready": "就绪",
+      "cooldown": "冷却中",
+      "recovering": "恢复检测中",
+      "probe_ready": "可尝试恢复",
+      "unavailable": "配置不可用"
+    },
+    "disabled": "管理员禁用",
+    "never": "尚无观察",
+    "observed": "观察时间",
+    "until": "截至",
+    "accountWide": "账号级观察",
+    "more": "详情另有 {{count}} 条观察",
+    "manage": "管理上游路径（{{count}} 个）",
+    "explanation": "未知表示尚未确认，不等于不支持。能力按模型记录；临时冷却与管理员权限独立。两条路径共用同一份凭据、额度和并发。",
+    "actions": {
+      "reset": "清除能力观察",
+      "allow": "允许此路径",
+      "disable": "禁用此路径"
+    },
+    "apply": "应用",
+    "resetHint": "清除仅重置观察和冷却，不解除管理员禁用，也不主动发送付费探测。后续合格请求重新积累证据；严格“已支持”筛选的 Key 需先通过其他获准的测试请求确认。",
+    "batchLimit": "每批最多选择 100 个账号。",
+    "saved": "已更新 {{count}} 个账号。",
+    "loadFailed": "无法加载路径观察，请重新展开重试。",
+    "saveFailed": "更新未全部完成，请刷新账号后重试。",
+    "paths": {
+      "codex": "Codex",
+      "basispoints": "Basispoints"
+    }
   }
 }

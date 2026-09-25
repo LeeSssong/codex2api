@@ -506,7 +506,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 	}
 
 	accountFilter := accountFilterForModel(effectiveModel)
-	accountFilter = h.withModelCooldownFilter(effectiveModel, accountFilter)
+	accountFilter = h.withCodexRouteFilter(c, model, effectiveModel, codexBody, accountFilter)
 	accountFilter = applyAffinityGroupRouting(c, sessionIdentity, accountFilter)
 	accountFilter = h.applyScopeBudgetFilter(c, accountFilter)
 	// resolveCompactionAffinity 只在已知来源相互冲突时报错；缓存故障按未知
@@ -938,7 +938,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 				EffectiveModel:         logEffectiveModel,
 				StatusCode:             resp.StatusCode,
 				DurationMs:             durationMs,
-				ReasoningEffort:        effectiveReasoningEffortForAccount(account, reasoningEffort),
+				ReasoningEffort:        effectiveReasoningEffortForAccount(account, reasoningEffort, c.Request.Context()),
 				InboundEndpoint:        "/v1/responses",
 				UpstreamEndpoint:       "/v1/responses",
 				Stream:                 true,
@@ -1437,7 +1437,7 @@ func (h *Handler) streamResponsesWSUpstream(
 		clearNewAPIUpstreamCyberPolicyDecision(c)
 		h.logPromptPolicyRetryUsage(c, database.UsageLogInput{
 			AccountID: account.ID(), Endpoint: "/v1/responses", Model: model, EffectiveModel: logEffectiveModel,
-			StatusCode: outcome.logStatusCode, DurationMs: totalDuration, FirstTokenMs: firstTokenMs, ReasoningEffort: effectiveReasoningEffortForAccount(account, reasoningEffort),
+			StatusCode: outcome.logStatusCode, DurationMs: totalDuration, FirstTokenMs: firstTokenMs, ReasoningEffort: effectiveReasoningEffortForAccount(account, reasoningEffort, c.Request.Context()),
 			InboundEndpoint: "/v1/responses", UpstreamEndpoint: "/v1/responses", Stream: true, ViaWebsocket: viaWebsocket,
 			AttemptIndex: fallbackAttempt, UpstreamErrorKind: outcome.failureKind,
 			ErrorMessage: usageLogFailureMessage(outcome.logStatusCode, outcome.failureMessage),
@@ -1523,7 +1523,7 @@ func (h *Handler) streamResponsesWSUpstream(
 		StatusCode:             outcome.logStatusCode,
 		DurationMs:             totalDuration,
 		FirstTokenMs:           firstTokenMs,
-		ReasoningEffort:        effectiveReasoningEffortForAccount(account, reasoningEffort),
+		ReasoningEffort:        effectiveReasoningEffortForAccount(account, reasoningEffort, c.Request.Context()),
 		InboundEndpoint:        "/v1/responses",
 		UpstreamEndpoint:       "/v1/responses",
 		Stream:                 true,

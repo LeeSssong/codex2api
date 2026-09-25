@@ -10,8 +10,10 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/codex2api/auth"
+	"github.com/codex2api/database"
 	"github.com/codex2api/internal/basispoints"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -54,8 +56,8 @@ func basispointsAllowedModels() (models []string, all bool) {
 }
 
 // basispointsModelAllowed reports whether the Basispoints channel should serve
-// this model. Matching is case-insensitive on the exact name or a name prefix so
-// dated snapshots (gpt-6-astra-2026-..) resolve with their family.
+// this model. Matching is case-insensitive and accepts only exact names or
+// valid YYYY-MM-DD snapshots of the configured family.
 func basispointsModelAllowed(model string) bool {
 	m := strings.ToLower(strings.TrimSpace(model))
 	if m == "" {
@@ -66,7 +68,7 @@ func basispointsModelAllowed(model string) bool {
 		return true
 	}
 	for _, allowed := range models {
-		if m == allowed || strings.HasPrefix(m, allowed) {
+		if m == allowed || validBasispointsSnapshot(m, allowed) {
 			return true
 		}
 	}
@@ -108,42 +110,12 @@ func basispointsNativeFallbackEnabled() bool {
 	}
 }
 
-// basispointsNativeRoute decides whether a request under the Basispoints switch
-// must use the original Codex channel and otherwise rehosts embedded images as
-// HTTPS links so Basispoints can fetch them. This is the last step before the
-// bridge, after ingress has inlined the full history, so it covers images from
-// every turn including tool results. Account selection in Basispoints mode
-// ignores State eligibility, so the native attempt skips the State pool too.
-func basispointsNativeRoute(ctx context.Context, account *auth.Account, requestBody []byte) (context.Context, []byte, string, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	fallback := basispointsNativeFallbackEnabled()
-	if fallback {
-		if reason := basispoints.NativeCodexReason(requestBody, basispointsImageHostAvailable()); reason != "" {
-			log.Printf("[Basispoints] stage=route result=native_codex reason=%s account=%d", reason, account.ID())
-			return WithoutStatePool(ctx), stripBasispointsRoutingFields(requestBody), reason, nil
-		}
-	}
-	converted, images, err := rewriteBasispointsImages(ctx, requestBody)
-	if err != nil {
-		category := basispoints.Category(err)
-		if fallback {
-			log.Printf("[Basispoints] stage=images result=native_codex category=%s account=%d", category, account.ID())
-			return WithoutStatePool(ctx), stripBasispointsRoutingFields(requestBody), basispoints.RouteImageInput, nil
-		}
-		log.Printf("[Basispoints] stage=images result=rejected code=%s category=%s account=%d", ErrorCodeBasispointsInvalidRequest, category, account.ID())
-		return ctx, requestBody, "", newBasispointsPreparationError(err)
-	}
-	if images.converted+images.reused > 0 {
-		log.Printf("[Basispoints] stage=images result=hosted converted=%d reused=%d account=%d", images.converted, images.reused, account.ID())
-	}
-	return ctx, converted, "", nil
-}
-
 // stripBasispointsRoutingFields restores the Codex wire shape: ingress keeps
 // web_search.external_web_access only so the route decision can see it.
 func stripBasispointsRoutingFields(body []byte) []byte {
+	for _, field := range []string{"codex_route_policy", "codex_capability_filter"} {
+		body, _ = sjson.DeleteBytes(body, field)
+	}
 	for index, tool := range gjson.GetBytes(body, "tools").Array() {
 		if strings.HasPrefix(tool.Get("type").String(), "web_search") && tool.Get(codexWebSearchExternalAccessField).Exists() {
 			body, _ = sjson.DeleteBytes(body, fmt.Sprintf("tools.%d.%s", index, codexWebSearchExternalAccessField))
@@ -165,7 +137,7 @@ func markBasispointsNativeRoute(resp *http.Response, reason string) {
 
 func basispointsRequestErrorCode(body []byte) string {
 	code := firstGJSONString(body, "error.code", "response.error.code", "response.status_details.error.code")
-	if code == "basispoints_model_access_changed" || code == "basispoints_protocol_error" {
+	if code == "basispoints_model_access_changed" || code == "basispoints_protocol_error" || code == codexUsageRejectedCode || code == "codex_path_temporarily_unavailable" {
 		return code
 	}
 	return ""
@@ -201,8 +173,10 @@ func executeBasispointsRequest(ctx context.Context, account *auth.Account, reque
 	}
 	resetUpstreamUserAgentAudit(ctx)
 	resetWsAcquireAudit(ctx)
-	RecordObservedInstructions(requestBody, headers)
-	requestBody = ApplyPayloadRulesToBody(requestBody, gjson.GetBytes(requestBody, "model").String(), headers, PayloadRuleIdentityFromContext(ctx))
+	if codexAttemptFromContext(ctx) == nil {
+		RecordObservedInstructions(requestBody, headers)
+		requestBody = ApplyPayloadRulesToBody(requestBody, gjson.GetBytes(requestBody, "model").String(), headers, PayloadRuleIdentityFromContext(ctx))
+	}
 	// Native stateless session IDs change per request; they cannot identify a tool loop.
 	explicitSessionID := ResolveExplicitSessionID(headers, requestBody)
 	if explicitSessionID != "" {
@@ -268,6 +242,10 @@ func executeBasispointsRequest(ctx context.Context, account *auth.Account, reque
 		}
 		return nil, ErrUpstream(0, "请求 Basispoints 上游失败", err)
 	}
+	if resp.Header == nil {
+		resp.Header = make(http.Header)
+	}
+	inspectCodexRouteResponse(ctx, resp)
 	resp.Header.Set("X-Codex2API-Upstream", "basispoints")
 	resp.Header.Set("X-Codex2API-Reasoning-Effort", bridge.Effort)
 	if len(bridge.Warnings) > 0 {
@@ -310,11 +288,28 @@ func executeBasispointsCompactRequest(ctx context.Context, account *auth.Account
 	return resp, nil
 }
 
-func effectiveReasoningEffortForAccount(account *auth.Account, requested string) string {
-	if CurrentRuntimeSettings().CodexBasispointsEnabled && account != nil && !account.IsRelayStyle() {
+func effectiveReasoningEffortForAccount(account *auth.Account, requested string, contexts ...context.Context) string {
+	useBasispoints := CurrentRuntimeSettings().CodexBasispointsEnabled
+	if len(contexts) > 0 {
+		if d := codexRouteFromContext(contexts[0]); d != nil {
+			d.mu.Lock()
+			useBasispoints = d.FinalPath == database.CodexPathBasispoints
+			d.mu.Unlock()
+		}
+	}
+	if useBasispoints && account != nil && !account.IsRelayStyle() {
 		if effort, err := basispoints.NormalizeEffort(requested); err == nil {
 			return effort
 		}
 	}
 	return requested
+}
+
+func validBasispointsSnapshot(model, family string) bool {
+	if !strings.HasPrefix(model, family+"-") {
+		return false
+	}
+	suffix := strings.TrimPrefix(model, family+"-")
+	parsed, err := time.Parse("2006-01-02", suffix)
+	return err == nil && parsed.Format("2006-01-02") == suffix
 }

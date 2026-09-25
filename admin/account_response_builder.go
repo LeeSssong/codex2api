@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"context"
 	"encoding/json"
 	"strconv"
 	"strings"
@@ -489,6 +490,12 @@ func (h *Handler) buildAccountResponse(
 	}
 	if !includeDetails {
 		stripAccountDetailFields(&resp)
+	}
+	if h.db != nil && row.GetCredential("auth_mode") != auth.CodexAuthModeAgentIdentity && !isOpenAIResponsesAccount && !isGrokAccount && !isAntigravityAccount && !isClaudeAccount {
+		paths, facts, err := h.db.GetCodexRoutes(context.Background(), row.ID)
+		if err == nil {
+			resp.CodexPaths = codexViewsFromRecords(&database.CodexRouteRecords{Paths: paths, Facts: facts}, "", runtimeAccount, time.Now())
+		}
 	}
 	return resp
 }

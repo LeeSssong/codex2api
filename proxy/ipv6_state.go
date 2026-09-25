@@ -36,6 +36,10 @@ func withRequiredStateFilter(model string, filter auth.AccountFilter) auth.Accou
 	if basispointsActiveForModel(model) {
 		return filter
 	}
+	return withNativeRequiredStateFilter(model, filter)
+}
+
+func withNativeRequiredStateFilter(model string, filter auth.AccountFilter) auth.AccountFilter {
 	provider := ipv6StateProvider.Load()
 	if provider == nil || provider.EligibleAccounts == nil {
 		return filter

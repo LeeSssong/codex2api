@@ -199,7 +199,7 @@ jobs:
         run: |
           docker pull --platform linux/amd64 "$IMAGE:sha-$GITHUB_SHA"
           docker tag "$IMAGE:sha-$GITHUB_SHA" "$IMAGE:basispoints"
-          docker save "$IMAGE:basispoints" | gzip > codex2api-basispoints-linux-amd64.tar.gz
+          docker save "$IMAGE:basispoints" "$IMAGE:sha-$GITHUB_SHA" | gzip > codex2api-basispoints-linux-amd64.tar.gz
           sha256sum codex2api-basispoints-linux-amd64.tar.gz > SHA256SUMS
 
       - uses: actions/upload-artifact@v4

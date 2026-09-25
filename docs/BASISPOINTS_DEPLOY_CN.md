@@ -2,16 +2,24 @@
 
 由 [hlool](https://linux.do/u/hlool) 维护。**学 AI，上 L 站。**
 
-此分支给 Codex 号池增加全局上游开关。设置路径：**系统设置 → Codex → 传输 → 启用 Basispoints（实验）**。开关默认关闭，保存后立即生效，开启时全部 Codex OAuth 号池账号使用 `https://bps.openai.com/basispoints/api/responses`。其他渠道账号继续使用各自的接口。
+此分支给 Codex 号池增加全局上游开关。设置路径：**系统设置 → Codex → 传输 → 启用 Basispoints（实验）**。开关默认关闭，保存后立即生效；开启后，符合模型名单、Key/分组权限、账号路径配置和能力条件的请求可以使用 Basispoints。其他渠道账号继续使用各自的接口。
 
 ## 只有指定模型走 Basispoints，其余走原 Codex 接口
 
 开启 Basispoints 后，**只有实测可用的模型走 BPS 通道，其余模型逐请求改走原 Codex 接口**。原因：BPS 上游只对少数 Codex 模型放行，其它模型一律以 `basispoints_model_access_changed`（403）硬拒——生产日志里这类 403 曾占相当比例。默认放行 `gpt-5.6-sol` 和 `gpt-6-astra`。
 
-- 环境变量 `BASISPOINTS_MODELS` 覆盖白名单：逗号分隔，大小写不敏感，按精确名或前缀匹配（`gpt-6-astra` 命中 `gpt-6-astra-2026-01-15` 之类日期快照）。例：`BASISPOINTS_MODELS=gpt-5.6-sol,gpt-6-astra`。
-- 设为 `*` 或 `all` 恢复旧行为：开关开启时全部 Codex 号池模型都走 BPS。
+- 环境变量 `BASISPOINTS_MODELS` 覆盖白名单：逗号分隔，大小写不敏感，匹配精确名或合法 `YYYY-MM-DD` 日期快照；近似前缀和非法日期不匹配。例：`BASISPOINTS_MODELS=gpt-5.6-sol,gpt-6-astra`。
+- 设为 `*` 或 `all` 扩大候选模型范围，不授予账号或 Key 额外权限，也不表示所有请求强制使用 BPS。
 - 不在白名单的模型：**完全按原 Codex 通道处理**——保留 State 校验、原生图片工具注入、原生 web_search，不套用 BPS 的工具信封协议，也不打 BPS 响应头。等价于「对这个模型没开 BPS」。
-- 该判定按**每个请求的 model** 生效，与账号无关：同一号池里 `gpt-6-astra` 走 BPS、`gpt-5.5` 走原生，互不影响。
+- 默认策略按**每个请求的实际 model** 决定；Key 可以进一步限制为原 Codex、BPS 或设置优先路径。能力证据按账号、上游和精确模型分别记录。
+
+## 双上游策略与受控回退
+
+配置优先级为 Key 的 `limits.codex_route_policy` → `CODEX_ROUTE_POLICY` → 原模型默认规则。未配置的新字段兼容旧 Key；全局 BPS 总开关始终是硬限制。`codex_only` 和 `basispoints_only` 不跨上游；`basispoints_prefer` 的原 Codex 备用路径还需 `BASISPOINTS_NATIVE_FALLBACK=true`。账号仍使用同一 ID、凭据、额度和并发。
+
+当前 Compose 文件转发 `CODEX_ROUTE_POLICY`、`BASISPOINTS_MODELS` 和 `BASISPOINTS_NATIVE_FALLBACK`；修改 `.env` 后重新创建容器生效。只设置这些环境变量不会开启后台 BPS 总开关。
+
+上游示例 `server_error`、`code:null`、精确消息 `403: This request was blocked by our usage policy.` 只有在来源可信、尚无输出或用量、备用路径权限与 State 满足条件时，才允许同账号切换一次。明确的内容安全拒绝、本地权限拒绝或无关的“403”文本不触发。完整策略、配置示例、数据库兼容和回滚要求见[双上游说明](codex-dual-upstream.md)。
 
 ## 镜像和名称
 
@@ -25,6 +33,8 @@
 | 数据库文件 | `/data/codex2api.db`（下方单容器方案） |
 
 镜像包含前端和后端，支持 `linux/amd64` 和 `linux/arm64`。`main` 的 **Build Docker Image** 工作流发布 `basispoints`、`latest` 和 `main` 标签，同时发布 `sha-<完整提交SHA>` 标签供固定版本部署。只有工作流成功后，对应镜像才可使用。
+
+镜像构建只发布镜像和离线包，不自动部署服务器。**Deploy Render** 改为仅能手动触发。离线 AMD64 包同时包含 `basispoints` 和对应 `sha-<完整提交SHA>` 标签；建议设置 `CODEX_IMAGE` 为固定 SHA 标签后自行部署。
 
 ## 新建单容器部署
 
@@ -113,9 +123,9 @@ BPS 只接受**绝对 HTTPS 图片 URL**，硬拒 `data:image/...;base64`、`fil
 - **托管生图**：`image_generation` 工具或其 `tool_choice` 回退。
 - **无法转换的图片**：`file_id`、`http://` 链接等代理无法托管的图片形式回退；base64 内嵌图片按上一节转换，不回退。
 
-回退请求在响应头标记 `X-Codex2API-Upstream: codex` 与 `X-Codex2API-Basispoints-Bypass: <原因>`（原因为固定标签，如 `web_search`、`image_input`、`output_format`）。回退走原 Codex 的 HTTP/SSE 通道，跳过 State 池校验（Basispoints 选号不筛选 State）。已实测同一账号下 Basispoints 与原 Codex 后端的加密推理内容可互相回放（同一 ChatGPT 后端），逐请求切换通道不会破坏历史；但强烈建议不要在同一会话里频繁来回切换加密/压缩历史。
+回退请求在响应头标记实际上游和固定原因。原 Codex 备用路径必须重新验证账号和精确模型的 State，不能继承 BPS 的 State 绕过。每次尝试从原始请求构造，不转发 BPS 工具信封；带 `previous_response_id`、加密 reasoning、compact 引用或不完整工具历史的请求不能直接跨路径重放，需提供完整、规范化的明文历史，否则返回明确续链错误。已有输出或用量时不切换。
 
-环境变量 `BASISPOINTS_NATIVE_FALLBACK=off` 可关闭此回退，恢复严格「全部走 Basispoints」：届时上述请求按原有方式在本地返回明确的中文 400（图片托管不可用）或直接发给 Basispoints（搜索声明被略过）。默认开启。
+环境变量 `BASISPOINTS_NATIVE_FALLBACK=off` 从 BPS 优先策略中移除原 Codex 备用路径，包括图片和协议降级。它不改变模型名单，也不覆盖显式 `codex_only` / `codex_prefer` 策略。不满足路径或协议条件时明确报错，不静默绕过限制。默认开启。
 
 ## 工具协议失败的修复（不回退）
 

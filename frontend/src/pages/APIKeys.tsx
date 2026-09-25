@@ -1,3 +1,4 @@
+import type { CodexRoutePolicy, CodexCapabilityFilter } from "../types";
 import { ANTIGRAVITY_DEFAULT_MODELS as DEFAULT_ANTIGRAVITY_MODEL_OPTIONS } from "../lib/antigravityModels";
 import type { ChangeEvent, FormEvent, ReactNode } from "react";
 import {
@@ -140,6 +141,8 @@ interface LimitsFormState {
   imageGenerationPolicy: ImageGenerationPolicy;
   allowLive: boolean;
   upstreamChannel: UpstreamChannel;
+  codexRoutePolicy: CodexRoutePolicy;
+  codexCapabilityFilter: CodexCapabilityFilter;
   scopeLimits: ScopeLimitFormState[];
   modelRequestLimits: ModelRequestLimitFormState[];
 }
@@ -259,6 +262,8 @@ const emptyLimitsForm: LimitsFormState = {
   imageGenerationPolicy: "allow",
   allowLive: false,
   upstreamChannel: "auto",
+  codexRoutePolicy: "inherit",
+  codexCapabilityFilter: "any",
   scopeLimits: [],
   modelRequestLimits: [],
 };
@@ -2744,6 +2749,8 @@ function limitsFromAPIKey(limits: APIKeyLimits | undefined): LimitsFormState {
       || limits.upstream_channel === "claude"
         ? limits.upstream_channel
         : "auto",
+    codexRoutePolicy: limits.codex_route_policy ?? "inherit",
+    codexCapabilityFilter: limits.codex_capability_filter ?? "any",
     scopeLimits: scopeLimitsFromAPIKey(limits.scope_limits),
     modelRequestLimits: modelRequestLimitsFromAPIKey(limits.model_request_limits),
   };
@@ -2873,6 +2880,8 @@ function applyUpstreamChannel(
   return {
     ...limits,
     upstreamChannel,
+    codexRoutePolicy: ["auto", "codex"].includes(upstreamChannel) ? limits.codexRoutePolicy : "inherit",
+    codexCapabilityFilter: ["auto", "codex"].includes(upstreamChannel) ? limits.codexCapabilityFilter : "any",
     allowLive: upstreamChannel === "codex" ? limits.allowLive : false,
     planAllow: prunePlanAllow(limits.planAllow, upstreamChannel),
   };
@@ -2985,6 +2994,8 @@ function limitsFormToPayload(form: LimitsFormState, t: Translator): APIKeyLimits
     allow_live: form.upstreamChannel === "codex" && form.allowLive,
     upstream_channel:
       form.upstreamChannel === "auto" ? undefined : form.upstreamChannel,
+    codex_route_policy: ["auto", "codex"].includes(form.upstreamChannel) ? form.codexRoutePolicy : undefined,
+    codex_capability_filter: ["auto", "codex"].includes(form.upstreamChannel) ? form.codexCapabilityFilter : undefined,
     model_request_limits: modelRequestLimitsToPayload(form.modelRequestLimits, t),
     scope_limits: form.scopeLimits
       .filter((row) => Number(row.scopeId.trim()) > 0)
@@ -3561,6 +3572,19 @@ function LimitsEditor({
       <p className="text-[11px] leading-relaxed text-muted-foreground">
         {t("apiKeys.limits.desc")}
       </p>
+
+      {["auto", "codex"].includes(value.upstreamChannel) && (
+        <LimitSection icon={<SlidersHorizontal className="size-3.5" />} title={t("codexRoutes.title")} description={t("codexRoutes.keyHint")}>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="space-y-1.5"><label className="text-xs font-medium" htmlFor="codex-route-policy">{t("codexRoutes.policy")}</label>
+              <Select id="codex-route-policy" value={value.codexRoutePolicy} onValueChange={v => patch({ codexRoutePolicy: v as CodexRoutePolicy })} options={["inherit", "codex_only", "basispoints_only", "basispoints_prefer", "codex_prefer"].map(v => ({ value: v, label: t(`codexRoutes.policies.${v}`) }))} />
+            </div>
+            <div className="space-y-1.5"><label className="text-xs font-medium" htmlFor="codex-capability-filter">{t("codexRoutes.capability")}</label>
+              <Select id="codex-capability-filter" value={value.codexCapabilityFilter} onValueChange={v => patch({ codexCapabilityFilter: v as CodexCapabilityFilter })} options={["any", "supported", "dual_supported", "codex_supported", "basispoints_supported"].map(v => ({ value: v, label: t(`codexRoutes.keyFilters.${v}`) }))} />
+            </div>
+          </div>
+        </LimitSection>
+      )}
 
       <LimitSection
         icon={<SlidersHorizontal className="size-3.5" />}

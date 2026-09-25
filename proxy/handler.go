@@ -1557,7 +1557,7 @@ func (h *Handler) logContinueThinkingRounds(c *gin.Context, res continueFoldResu
 			EffectiveModel:       logEffectiveModel,
 			StatusCode:           statusCode,
 			DurationMs:           round.DurationMs,
-			ReasoningEffort:      effectiveReasoningEffortForAccount(account, reasoningEffort),
+			ReasoningEffort:      effectiveReasoningEffortForAccount(account, reasoningEffort, c.Request.Context()),
 			InboundEndpoint:      "/v1/responses",
 			UpstreamEndpoint:     "/v1/responses",
 			Stream:               true,
@@ -3154,6 +3154,7 @@ func (h *Handler) authMiddleware() gin.HandlerFunc {
 func (h *Handler) authMiddlewareWithQuotaRead(allowQuotaRead bool) gin.HandlerFunc {
 	allowAnonymous := h.cfg != nil && h.cfg.AllowAnonymousV1
 	return func(c *gin.Context) {
+		c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), codexRouteSharedKey{}, &codexRouteShared{}))
 		attachUserAgentAudit(c)
 		attachWsAcquireAudit(c)
 		attachUpstreamTrace(c, h.store)
@@ -3236,6 +3237,7 @@ func (h *Handler) authMiddlewareWithQuotaRead(allowQuotaRead bool) gin.HandlerFu
 		c.Set(contextAPIKeyName, strings.TrimSpace(apiKeyRow.Name))
 		c.Set(contextAPIKeyMasked, security.MaskAPIKey(apiKeyRow.Key))
 		c.Set(contextAPIKeyRow, apiKeyRow)
+		c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), codexRouteLimitsKey{}, apiKeyRow.Limits))
 		h.attachAPIKeyModelRequestQuota(c, false)
 		c.Set("apiKey", key)
 		if h.enforceRequiredNewAPIIdentityAtIngress(c) {
@@ -3964,7 +3966,7 @@ func (h *Handler) Responses(c *gin.Context) {
 	} else {
 		accountFilter = accountFilterForResponsesModelWithOriginal(logModel, effectiveModel, allowCodexAccounts)
 	}
-	accountFilter = h.withModelCooldownFilter(effectiveModel, accountFilter)
+	accountFilter = h.withCodexRouteFilter(c, model, effectiveModel, codexBody, accountFilter)
 	if continuationUnavailable {
 		accountFilter = relayOnlyAccountFilter(accountFilter)
 	}
@@ -4359,7 +4361,7 @@ func (h *Handler) Responses(c *gin.Context) {
 					EffectiveModel:         attemptLogEffectiveModel,
 					StatusCode:             resp.StatusCode,
 					DurationMs:             durationMs,
-					ReasoningEffort:        effectiveReasoningEffortForAccount(account, reasoningEffort),
+					ReasoningEffort:        effectiveReasoningEffortForAccount(account, reasoningEffort, c.Request.Context()),
 					InboundEndpoint:        "/v1/responses",
 					UpstreamEndpoint:       upstreamEndpoint,
 					Stream:                 isStream,
@@ -4403,7 +4405,7 @@ func (h *Handler) Responses(c *gin.Context) {
 				Inbound: GrokProtocolResponses, IsStream: isStream,
 				Endpoint: "/v1/responses", UpstreamPath: upstreamEndpoint,
 				LogModel: logModel, EffectiveModel: attemptLogEffectiveModel,
-				GateModel: attemptEffectiveModel, ReasoningEffort: effectiveReasoningEffortForAccount(account, reasoningEffort),
+				GateModel: attemptEffectiveModel, ReasoningEffort: effectiveReasoningEffortForAccount(account, reasoningEffort, c.Request.Context()),
 				RawBody: rawBody, UpstreamBody: upstreamBody,
 				Start: start, Attempt: attempt, Attempts: &grokQualityAttempts,
 			}) {
@@ -4480,7 +4482,7 @@ func (h *Handler) Responses(c *gin.Context) {
 				logInput := &database.UsageLogInput{
 					AccountID: account.ID(), Endpoint: "/v1/responses", Model: logModel,
 					EffectiveModel: attemptLogEffectiveModel, StatusCode: outcome.logStatusCode,
-					DurationMs: totalDuration, FirstTokenMs: firstTokenMs, ReasoningEffort: effectiveReasoningEffortForAccount(account, reasoningEffort),
+					DurationMs: totalDuration, FirstTokenMs: firstTokenMs, ReasoningEffort: effectiveReasoningEffortForAccount(account, reasoningEffort, c.Request.Context()),
 					InboundEndpoint: "/v1/responses", UpstreamEndpoint: upstreamEndpoint,
 					Stream: isStream, ViaWebsocket: false, AttemptIndex: attempt + 1,
 				}
@@ -4759,7 +4761,7 @@ func (h *Handler) Responses(c *gin.Context) {
 				clearNewAPIUpstreamCyberPolicyDecision(c)
 				h.logPromptPolicyRetryUsage(c, database.UsageLogInput{
 					AccountID: account.ID(), Endpoint: "/v1/responses", Model: logModel, EffectiveModel: attemptLogEffectiveModel,
-					StatusCode: outcome.logStatusCode, DurationMs: totalDuration, FirstTokenMs: firstTokenMs, ReasoningEffort: effectiveReasoningEffortForAccount(account, reasoningEffort),
+					StatusCode: outcome.logStatusCode, DurationMs: totalDuration, FirstTokenMs: firstTokenMs, ReasoningEffort: effectiveReasoningEffortForAccount(account, reasoningEffort, c.Request.Context()),
 					InboundEndpoint: "/v1/responses", UpstreamEndpoint: upstreamEndpoint, Stream: isStream, ViaWebsocket: useWebsocket,
 					AttemptIndex: attempt + 1, UpstreamErrorKind: outcome.failureKind,
 					ErrorMessage: usageLogFailureMessage(outcome.logStatusCode, outcome.failureMessage),
@@ -4879,7 +4881,7 @@ func (h *Handler) Responses(c *gin.Context) {
 				StatusCode:             outcome.logStatusCode,
 				DurationMs:             totalDuration,
 				FirstTokenMs:           firstTokenMs,
-				ReasoningEffort:        effectiveReasoningEffortForAccount(account, reasoningEffort),
+				ReasoningEffort:        effectiveReasoningEffortForAccount(account, reasoningEffort, c.Request.Context()),
 				InboundEndpoint:        "/v1/responses",
 				UpstreamEndpoint:       upstreamEndpoint,
 				Stream:                 isStream,
@@ -5122,7 +5124,7 @@ func (h *Handler) Responses(c *gin.Context) {
 				EffectiveModel:         logEffectiveModel,
 				StatusCode:             resp.StatusCode,
 				DurationMs:             durationMs,
-				ReasoningEffort:        effectiveReasoningEffortForAccount(account, reasoningEffort),
+				ReasoningEffort:        effectiveReasoningEffortForAccount(account, reasoningEffort, c.Request.Context()),
 				InboundEndpoint:        "/v1/responses",
 				UpstreamEndpoint:       "/v1/responses",
 				Stream:                 isStream,
@@ -5651,7 +5653,7 @@ func (h *Handler) Responses(c *gin.Context) {
 			clearNewAPIUpstreamCyberPolicyDecision(c)
 			h.logPromptPolicyRetryUsage(c, database.UsageLogInput{
 				AccountID: account.ID(), Endpoint: "/v1/responses", Model: logModel, EffectiveModel: logEffectiveModel,
-				StatusCode: outcome.logStatusCode, DurationMs: totalDuration, FirstTokenMs: firstTokenMs, ReasoningEffort: effectiveReasoningEffortForAccount(account, reasoningEffort),
+				StatusCode: outcome.logStatusCode, DurationMs: totalDuration, FirstTokenMs: firstTokenMs, ReasoningEffort: effectiveReasoningEffortForAccount(account, reasoningEffort, c.Request.Context()),
 				InboundEndpoint: "/v1/responses", UpstreamEndpoint: "/v1/responses", Stream: isStream, ViaWebsocket: useWebsocket,
 				AttemptIndex: attempt + 1, UpstreamErrorKind: outcome.failureKind,
 				ErrorMessage: usageLogFailureMessage(outcome.logStatusCode, outcome.failureMessage),
@@ -5801,7 +5803,7 @@ func (h *Handler) Responses(c *gin.Context) {
 			StatusCode:             logStatusCode,
 			DurationMs:             totalDuration,
 			FirstTokenMs:           firstTokenMs,
-			ReasoningEffort:        effectiveReasoningEffortForAccount(account, reasoningEffort),
+			ReasoningEffort:        effectiveReasoningEffortForAccount(account, reasoningEffort, c.Request.Context()),
 			InboundEndpoint:        "/v1/responses",
 			UpstreamEndpoint:       "/v1/responses",
 			Stream:                 isStream,
@@ -5970,7 +5972,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 	// compact 同时允许官方 Codex OAuth 账号与中转（OpenAI Responses API）账号：
 	// 中转账号会命中上游自身的 /responses/compact，使仅接入中转的用户也能压缩（issue #174）。
 	accountFilter := accountFilterForCompactResponsesModelWithOriginal(routingModel, effectiveModel, modelIDInList(effectiveModel, SupportedModelIDs(c.Request.Context(), h.db)))
-	accountFilter = h.withModelCooldownFilter(effectiveModel, accountFilter)
+	accountFilter = h.withCodexRouteFilter(c, model, effectiveModel, codexBody, accountFilter)
 	accountFilter = excludeClaudeAccountsFilter(accountFilter)
 	if continuationUnavailable {
 		accountFilter = relayOnlyAccountFilter(accountFilter)
@@ -6188,7 +6190,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 					EffectiveModel:         attemptLogEffectiveModel,
 					StatusCode:             resp.StatusCode,
 					DurationMs:             durationMs,
-					ReasoningEffort:        effectiveReasoningEffortForAccount(account, reasoningEffort),
+					ReasoningEffort:        effectiveReasoningEffortForAccount(account, reasoningEffort, c.Request.Context()),
 					InboundEndpoint:        "/v1/responses/compact",
 					UpstreamEndpoint:       upstreamEndpoint,
 					ServiceTier:            usageTiers.ServiceTier,
@@ -6246,7 +6248,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 					EffectiveModel:       attemptLogEffectiveModel,
 					StatusCode:           http.StatusBadGateway,
 					DurationMs:           totalDuration,
-					ReasoningEffort:      effectiveReasoningEffortForAccount(account, reasoningEffort),
+					ReasoningEffort:      effectiveReasoningEffortForAccount(account, reasoningEffort, c.Request.Context()),
 					InboundEndpoint:      "/v1/responses/compact",
 					UpstreamEndpoint:     upstreamEndpoint,
 					ServiceTier:          usageTiers.ServiceTier,
@@ -6310,7 +6312,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 				OutputTokens:         completionTokens,
 				ReasoningTokens:      reasoningTokens,
 				CachedTokens:         cachedTokens,
-				ReasoningEffort:      effectiveReasoningEffortForAccount(account, reasoningEffort),
+				ReasoningEffort:      effectiveReasoningEffortForAccount(account, reasoningEffort, c.Request.Context()),
 				InboundEndpoint:      "/v1/responses/compact",
 				UpstreamEndpoint:     upstreamEndpoint,
 				ServiceTier:          usageTiers.ServiceTier,
@@ -6335,7 +6337,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 		// compact_via_responses_enabled：上游已下线 /responses/compact 专用端点（404），
 		// 开启后官方账号改走 /responses + compaction_trigger 的 body-signal 形态
 		// （强制 HTTP SSE），成功后聚合回 compact 的一次性 JSON。
-		compactViaResponses := CurrentRuntimeSettings().CompactViaResponses || CurrentRuntimeSettings().CodexBasispointsEnabled
+		compactViaResponses := CurrentRuntimeSettings().CompactViaResponses || requestCodexBasispointsCandidate(c.Request.Context(), effectiveModel)
 		upstreamEndpointLabel := "/v1/responses/compact"
 		var resp *http.Response
 		var reqErr error
@@ -6438,7 +6440,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 				EffectiveModel:         logEffectiveModel,
 				StatusCode:             resp.StatusCode,
 				DurationMs:             durationMs,
-				ReasoningEffort:        effectiveReasoningEffortForAccount(account, reasoningEffort),
+				ReasoningEffort:        effectiveReasoningEffortForAccount(account, reasoningEffort, c.Request.Context()),
 				InboundEndpoint:        "/v1/responses/compact",
 				UpstreamEndpoint:       upstreamEndpointLabel,
 				ServiceTier:            usageTiers.ServiceTier,
@@ -6505,7 +6507,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 				EffectiveModel:       logEffectiveModel,
 				StatusCode:           http.StatusBadGateway,
 				DurationMs:           totalDuration,
-				ReasoningEffort:      effectiveReasoningEffortForAccount(account, reasoningEffort),
+				ReasoningEffort:      effectiveReasoningEffortForAccount(account, reasoningEffort, c.Request.Context()),
 				InboundEndpoint:      "/v1/responses/compact",
 				UpstreamEndpoint:     upstreamEndpointLabel,
 				ServiceTier:          usageTiers.ServiceTier,
@@ -6622,7 +6624,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 				EffectiveModel:         logEffectiveModel,
 				StatusCode:             failStatus,
 				DurationMs:             durationMs,
-				ReasoningEffort:        effectiveReasoningEffortForAccount(account, reasoningEffort),
+				ReasoningEffort:        effectiveReasoningEffortForAccount(account, reasoningEffort, c.Request.Context()),
 				InboundEndpoint:        "/v1/responses/compact",
 				UpstreamEndpoint:       upstreamEndpointLabel,
 				ServiceTier:            usageTiers.ServiceTier,
@@ -6688,7 +6690,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 			OutputTokens:         completionTokens,
 			ReasoningTokens:      reasoningTokens,
 			CachedTokens:         cachedTokens,
-			ReasoningEffort:      effectiveReasoningEffortForAccount(account, reasoningEffort),
+			ReasoningEffort:      effectiveReasoningEffortForAccount(account, reasoningEffort, c.Request.Context()),
 			InboundEndpoint:      "/v1/responses/compact",
 			UpstreamEndpoint:     upstreamEndpointLabel,
 			ServiceTier:          usageTiers.ServiceTier,
@@ -6802,7 +6804,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 	// /v1/chat/completions 同时允许官方 Codex OAuth 账号与中转（OpenAI Responses API）账号：
 	// 翻译后的请求体本身就是 Responses 形态，中转账号直接以 HTTP 转发（issue #181）。
 	accountFilter := accountFilterForResponsesModelWithOriginal(logModel, effectiveModel, modelIDInList(effectiveModel, SupportedModelIDs(c.Request.Context(), h.db)))
-	accountFilter = h.withModelCooldownFilter(effectiveModel, accountFilter)
+	accountFilter = h.withCodexRouteFilter(c, model, effectiveModel, codexBody, accountFilter)
 	accountFilter = h.applyUpstreamChannelFilter(c, effectiveModel, accountFilter)
 	accountFilter = excludeClaudeAccountsFilter(accountFilter)
 	accountFilter = h.applyScopeBudgetFilter(c, accountFilter)
@@ -7125,7 +7127,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 				EffectiveModel:         attemptLogEffectiveModel,
 				StatusCode:             resp.StatusCode,
 				DurationMs:             durationMs,
-				ReasoningEffort:        effectiveReasoningEffortForAccount(account, reasoningEffort),
+				ReasoningEffort:        effectiveReasoningEffortForAccount(account, reasoningEffort, c.Request.Context()),
 				InboundEndpoint:        "/v1/chat/completions",
 				UpstreamEndpoint:       upstreamEndpoint,
 				Stream:                 isStream,
@@ -7166,7 +7168,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			Inbound: GrokProtocolChatCompletions, IsStream: isStream,
 			Endpoint: "/v1/chat/completions", UpstreamPath: upstreamEndpoint,
 			LogModel: logModel, EffectiveModel: attemptLogEffectiveModel,
-			GateModel: attemptEffectiveModel, ReasoningEffort: effectiveReasoningEffortForAccount(account, reasoningEffort),
+			GateModel: attemptEffectiveModel, ReasoningEffort: effectiveReasoningEffortForAccount(account, reasoningEffort, c.Request.Context()),
 			RawBody: rawBody, ResponsesBody: codexBody,
 			Start: start, Attempt: attempt, Attempts: &grokQualityAttempts,
 		}) {
@@ -7232,7 +7234,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			logInput := &database.UsageLogInput{
 				AccountID: account.ID(), Endpoint: "/v1/chat/completions", Model: logModel,
 				EffectiveModel: attemptLogEffectiveModel, StatusCode: outcome.logStatusCode,
-				DurationMs: totalDuration, FirstTokenMs: firstTokenMs, ReasoningEffort: effectiveReasoningEffortForAccount(account, reasoningEffort),
+				DurationMs: totalDuration, FirstTokenMs: firstTokenMs, ReasoningEffort: effectiveReasoningEffortForAccount(account, reasoningEffort, c.Request.Context()),
 				InboundEndpoint: "/v1/chat/completions", UpstreamEndpoint: upstreamEndpoint,
 				Stream: isStream, ViaWebsocket: false, AttemptIndex: attempt + 1,
 			}
@@ -7602,7 +7604,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			clearNewAPIUpstreamCyberPolicyDecision(c)
 			h.logPromptPolicyRetryUsage(c, database.UsageLogInput{
 				AccountID: account.ID(), Endpoint: "/v1/chat/completions", Model: logModel, EffectiveModel: attemptLogEffectiveModel,
-				StatusCode: outcome.logStatusCode, DurationMs: totalDuration, FirstTokenMs: firstTokenMs, ReasoningEffort: effectiveReasoningEffortForAccount(account, reasoningEffort),
+				StatusCode: outcome.logStatusCode, DurationMs: totalDuration, FirstTokenMs: firstTokenMs, ReasoningEffort: effectiveReasoningEffortForAccount(account, reasoningEffort, c.Request.Context()),
 				InboundEndpoint: "/v1/chat/completions", UpstreamEndpoint: upstreamEndpoint, Stream: isStream, ViaWebsocket: useWebsocket,
 				AttemptIndex: attempt + 1, UpstreamErrorKind: outcome.failureKind,
 				ErrorMessage: usageLogFailureMessage(outcome.logStatusCode, outcome.failureMessage),
@@ -7714,7 +7716,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			StatusCode:             logStatusCode,
 			DurationMs:             totalDuration,
 			FirstTokenMs:           firstTokenMs,
-			ReasoningEffort:        effectiveReasoningEffortForAccount(account, reasoningEffort),
+			ReasoningEffort:        effectiveReasoningEffortForAccount(account, reasoningEffort, c.Request.Context()),
 			InboundEndpoint:        "/v1/chat/completions",
 			UpstreamEndpoint:       upstreamEndpoint,
 			Stream:                 isStream,

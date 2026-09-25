@@ -746,6 +746,10 @@ func shouldAutoInjectResponsesImageGenerationTool(body map[string]any) bool {
 	if basispointsActiveForModel(firstNonEmptyAnyString(body["model"])) {
 		return false
 	}
+	return shouldAutoInjectNativeResponsesImageGenerationTool(body)
+}
+
+func shouldAutoInjectNativeResponsesImageGenerationTool(body map[string]any) bool {
 	if len(body) == 0 || hasResponsesImageGenerationTool(body) {
 		return false
 	}

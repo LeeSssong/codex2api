@@ -68,13 +68,16 @@ jobs:
             sleep 1
           done
           node tests/state-management.browser.test.mjs
+          node tests/codex-routes.browser.test.mjs
 
       - name: Upload State interface screenshots
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: state-interface
-          path: .dev/state-ui/
+          path: |
+            .dev/state-ui/
+            .dev/codex-routes-ui/
           include-hidden-files: true
           if-no-files-found: ignore
 
@@ -143,10 +146,10 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-      - name: Test PostgreSQL trace, indexes, capabilities and legacy daily usage
+      - name: Test PostgreSQL trace, capabilities, Codex routes and legacy daily usage
         env:
           CODEX2API_TEST_POSTGRES_DSN: postgres://codex2api_test:test-only@localhost:5432/codex2api_test?sslmode=disable
-        run: go test -race -count=1 ./database -run '^TestPostgresTraceAndCapabilities$'
+        run: go test -race -count=1 ./database -run '^TestPostgres(TraceAndCapabilities|CodexRoutes)$'
 
   test-race:
     name: test-race (${{ matrix.name }})

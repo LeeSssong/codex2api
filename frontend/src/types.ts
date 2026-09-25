@@ -270,7 +270,22 @@ export interface SubscriptionRefreshResponse {
 export type { AccountStateModel } from './lib/accountStateModels'
 import type { AccountStateModel } from './lib/accountStateModels'
 
+export type CodexRoutePolicy = 'inherit' | 'codex_only' | 'basispoints_only' | 'basispoints_prefer' | 'codex_prefer'
+export type CodexCapabilityFilter = 'any' | 'supported' | 'dual_supported' | 'codex_supported' | 'basispoints_supported'
+export interface CodexPathSnapshot {
+  upstream: 'codex' | 'basispoints'
+  model: string
+  allowed: boolean
+  capability: 'unknown' | 'supported' | 'unsupported'
+  source?: string
+  reason?: string
+  observed_at?: number
+  health: 'ready' | 'cooldown' | 'recovering' | 'probe_ready' | 'unavailable'
+  cooldown_until?: string
+  health_reason?: string
+}
 export interface AccountRow {
+  codex_paths?: CodexPathSnapshot[]
   state_models?: AccountStateModel[]
   codex_last_refresh_at?: string
   codex_refresh_error?: string
@@ -563,6 +578,8 @@ export const SUBSCRIPTION_FILTER_OPTIONS: SubscriptionFilter[] = [
 ]
 
 export interface AccountsPageParams {
+  capability?: string
+  capabilityModel?: string
   state?: 'all' | 'valid' | 'available' | 'missing'
   stateModel?: string
   channel?: UpstreamChannel
@@ -655,6 +672,8 @@ export interface AccountAnalysisResponse {
 }
 
 export interface AccountOperationSelector {
+  capability?: string
+  capability_model?: string
   state?: 'valid' | 'available' | 'missing'
   state_model?: string
   channel: UpstreamChannel
@@ -3714,6 +3733,8 @@ export interface APIKeyModelRequestUsage {
 }
 
 export interface APIKeyLimits {
+  codex_route_policy?: CodexRoutePolicy
+  codex_capability_filter?: CodexCapabilityFilter
   model_allow?: string[]
   model_deny?: string[]
   plan_allow?: string[]

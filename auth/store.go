@@ -126,6 +126,7 @@ func NormalizeTestContent(content string) string {
 
 // Account 运行时账号状态
 type Account struct {
+	codexRoutes               codexAccountRoutes
 	stateAdmissionMu          sync.Mutex
 	stateBusinessLimit        int64
 	stateCaptureRequests      int64
@@ -5771,6 +5772,7 @@ func (s *Store) buildAccountFromRow(ctx context.Context, row *database.AccountRo
 	}
 	// 恢复积分余额快照：积分只有 wham 探针能刷，不恢复的话重启后账号会被判成
 	// 「没积分」——积分顶替限流失效，还会被「清理限流账号」当成真限流删掉。
+	account.attachCodexRouteDB(s.db)
 	account.RestoreCreditBalanceFromJSON(row.GetCredential("codex_credits"))
 	if threshold, ok := row.GetCredentialFloat64("auto_pause_5h_threshold"); ok {
 		account.AutoPause5hThreshold = normalizeQuotaAutoPauseThreshold(threshold)
@@ -8969,6 +8971,7 @@ func (s *Store) AddAccounts(accounts []*Account) {
 		}
 		acc.mu.Lock()
 		acc.grokRuntimeSink = s
+		acc.attachCodexRouteDB(s.db)
 		acc.recomputeEffectiveIgnoreUsageLimitStatus(ignoreUsageLimit)
 		acc.recomputeEffectiveGroupBaseConcurrency(s)
 		acc.recomputeSchedulerLocked(maxConcurrency)

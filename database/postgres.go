@@ -460,6 +460,9 @@ func New(driver string, dsn string, schema ...string) (*DB, error) {
 		if err := db.ensureStatePoolSchema(ctx); err != nil {
 			return nil, err
 		}
+		if err := db.ensureCodexRoutesSchema(ctx); err != nil {
+			return nil, err
+		}
 		grokStateCtx, grokStateCancel := grokStateStartupContext(ctx)
 		grokStateErr := db.ensureGrokStateSchema(grokStateCtx)
 		grokStateCancel()
@@ -1781,10 +1784,12 @@ type APIKeyRow struct {
 //   - PlanAllow: 账号套餐白名单(plus/pro/team/...)。非空时该 Key 仅调度命中其一的账号,
 //     语义与 AllowedGroupIDs 类似,均在账号选择阶段过滤。空表示不限套餐。
 type APIKeyLimits struct {
-	ModelRequestLimits []APIKeyModelRequestLimit `json:"model_request_limits,omitempty"`
-	ModelAllow         []string                  `json:"model_allow,omitempty"`
-	ModelDeny          []string                  `json:"model_deny,omitempty"`
-	PlanAllow          []string                  `json:"plan_allow,omitempty"`
+	CodexRoutePolicy      string                    `json:"codex_route_policy,omitempty"`
+	CodexCapabilityFilter string                    `json:"codex_capability_filter,omitempty"`
+	ModelRequestLimits    []APIKeyModelRequestLimit `json:"model_request_limits,omitempty"`
+	ModelAllow            []string                  `json:"model_allow,omitempty"`
+	ModelDeny             []string                  `json:"model_deny,omitempty"`
+	PlanAllow             []string                  `json:"plan_allow,omitempty"`
 	// NoAffinityGroupIDs 指定未携带 Codex 引擎指纹或 X-Codex2API-Affinity-Key 的请求使用的账号分组。
 	// 空表示不启用分流，继续沿用 AllowedGroupIDs 的现有行为。
 	NoAffinityGroupIDs []int64 `json:"no_affinity_group_ids,omitempty"`
@@ -1898,7 +1903,7 @@ func (l APIKeyLimits) ResolveImageGenerationPolicy() string {
 
 // IsZero 判断是否为空 limits(全部字段都未配置)
 func (l APIKeyLimits) IsZero() bool {
-	return len(l.ModelAllow) == 0 && len(l.ModelDeny) == 0 && len(l.PlanAllow) == 0 &&
+	return l.CodexRoutePolicy == "" && l.CodexCapabilityFilter == "" && len(l.ModelAllow) == 0 && len(l.ModelDeny) == 0 && len(l.PlanAllow) == 0 &&
 		len(l.NoAffinityGroupIDs) == 0 &&
 		l.RPM == 0 && l.RPD == 0 && l.MaxConcurrency == 0 &&
 		l.CostLimit5h == 0 && l.CostLimit7d == 0 && l.CostLimit30d == 0 && l.CostLimitDaily == 0 &&

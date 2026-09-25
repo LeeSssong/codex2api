@@ -1115,6 +1115,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.GET("/accounts/page-stats", h.GetAccountPageStats)
 	api.GET("/accounts/live", h.GetAccountLiveState)
 	api.GET("/accounts/:id", h.GetAccount)
+	api.GET("/accounts/:id/codex-routes", h.GetCodexRoutes)
+	api.POST("/accounts/codex/routes", h.UpdateCodexRoutes)
 	api.POST("/accounts", h.AddAccount)
 	api.POST("/accounts/at", h.AddATAccount)
 	api.POST("/accounts/codex/agent-identity", h.ImportCodexAgentIdentity)
@@ -1630,21 +1632,22 @@ func isDashboardRateLimitedAccount(status string, cooldownReason string) bool {
 // ==================== Accounts ====================
 
 type accountResponse struct {
-	StateModels             []accountStateModel `json:"state_models,omitempty"`
-	CodexLastRefreshAt      string              `json:"codex_last_refresh_at,omitempty"`
-	CodexRefreshError       string              `json:"codex_refresh_error,omitempty"`
-	UpstreamRequestIDHeader string              `json:"upstream_request_id_header"`
-	DetailLoaded            bool                `json:"detail_loaded,omitempty"`
-	ID                      int64               `json:"id"`
-	Name                    string              `json:"name"`
-	Email                   string              `json:"email"`
-	EmailDomain             string              `json:"email_domain,omitempty"`
-	ChatGPTAccountID        string              `json:"chatgpt_account_id,omitempty"`
-	TokenWorkspaceID        string              `json:"token_workspace_id,omitempty"`
-	WorkspaceIDOverride     string              `json:"workspace_id_override,omitempty"`
-	EffectiveWorkspaceID    string              `json:"effective_workspace_id,omitempty"`
-	PlanType                string              `json:"plan_type"`
-	SubscriptionExpiresAt   string              `json:"subscription_expires_at,omitempty"`
+	CodexPaths              []auth.CodexPathSnapshot `json:"codex_paths,omitempty"`
+	StateModels             []accountStateModel      `json:"state_models,omitempty"`
+	CodexLastRefreshAt      string                   `json:"codex_last_refresh_at,omitempty"`
+	CodexRefreshError       string                   `json:"codex_refresh_error,omitempty"`
+	UpstreamRequestIDHeader string                   `json:"upstream_request_id_header"`
+	DetailLoaded            bool                     `json:"detail_loaded,omitempty"`
+	ID                      int64                    `json:"id"`
+	Name                    string                   `json:"name"`
+	Email                   string                   `json:"email"`
+	EmailDomain             string                   `json:"email_domain,omitempty"`
+	ChatGPTAccountID        string                   `json:"chatgpt_account_id,omitempty"`
+	TokenWorkspaceID        string                   `json:"token_workspace_id,omitempty"`
+	WorkspaceIDOverride     string                   `json:"workspace_id_override,omitempty"`
+	EffectiveWorkspaceID    string                   `json:"effective_workspace_id,omitempty"`
+	PlanType                string                   `json:"plan_type"`
+	SubscriptionExpiresAt   string                   `json:"subscription_expires_at,omitempty"`
 	// Subscription 服务端计算的订阅状态对象（业务状态 + 同步状态）；不跟踪订阅的
 	// 套餐（api/无到期时间的 free）为空。
 	Subscription          *auth.SubscriptionStatusView `json:"subscription,omitempty"`
@@ -8652,6 +8655,10 @@ func (h *Handler) CreateAPIKey(c *gin.Context) {
 
 	var limits database.APIKeyLimits
 	if req.Limits != nil {
+		if err := req.Limits.ValidateCodexRouting(); err != nil {
+			writeError(c, http.StatusBadRequest, err.Error())
+			return
+		}
 		limits = sanitizeAPIKeyLimits(*req.Limits)
 		limits.ModelRequestLimits, err = normalizeAdminAPIKeyModelRequestLimits(req.Limits.ModelRequestLimits, nil)
 		if err != nil {
@@ -8821,6 +8828,10 @@ func (h *Handler) UpdateAPIKey(c *gin.Context) {
 		update.EnabledSet = true
 	}
 	if req.Limits != nil {
+		if err := req.Limits.ValidateCodexRouting(); err != nil {
+			writeError(c, http.StatusBadRequest, err.Error())
+			return
+		}
 		update.Limits = sanitizeAPIKeyLimits(*req.Limits)
 		update.Limits.ModelRequestLimits, err = normalizeAdminAPIKeyModelRequestLimits(req.Limits.ModelRequestLimits, row.Limits.ModelRequestLimits)
 		if err != nil {
@@ -8883,6 +8894,8 @@ func sanitizeAPIKeyLimits(in database.APIKeyLimits) database.APIKeyLimits {
 		return out
 	}
 	out := database.APIKeyLimits{
+		CodexRoutePolicy:       in.CodexRoutePolicy,
+		CodexCapabilityFilter:  in.CodexCapabilityFilter,
 		ModelAllow:             clean(in.ModelAllow),
 		ModelDeny:              clean(in.ModelDeny),
 		PlanAllow:              cleanPlanAllow(in.PlanAllow),

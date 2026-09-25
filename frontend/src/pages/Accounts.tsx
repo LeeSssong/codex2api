@@ -1,3 +1,4 @@
+import { CodexRouteBadges, CodexRouteManager } from "../components/CodexRoutes";
 import type { ChangeEvent, DragEvent, ReactNode } from "react";
 import { memo, useCallback, useEffect, useRef, useState, useMemo } from "react";
 import "./accounts-cards.css";
@@ -1442,7 +1443,7 @@ const AccountTableRow = memo(function AccountTableRow({
                                 />
                               </TableCell>
                             )}
-                            {visibleColumns.state && <TableCell><AccountStateModels states={account.state_models} accountID={account.id} /></TableCell>}
+                            {visibleColumns.state && <TableCell><AccountStateModels states={account.state_models} accountID={account.id} /><CodexRouteBadges paths={account.codex_paths} /></TableCell>}
                             {visibleColumns.status && (
                               <TableCell data-account-state-cell="status">
                                 {tableOverlay ?? (
@@ -1781,6 +1782,8 @@ export default function Accounts() {
     pageSizeOptions,
   );
   const { state: stateFilter, model: stateModelFilter, update: updateStateFilters } = useStateFilters();
+  const [capabilityFilter, setCapabilityFilter] = useState("all");
+  const [capabilityModel, setCapabilityModel] = useState("");
   const [stateSummary, setStateSummary] = useState<StateSummary>();
   const stateRevision = useRef('');
   useEffect(() => {
@@ -2726,6 +2729,8 @@ export default function Accounts() {
       status: statusFilter,
       state: stateFilter,
       stateModel: stateModelFilter,
+      capability: capabilityFilter,
+      capabilityModel,
       plan: planFilter,
       subscription: subscriptionFilter,
       authKind: authFilter,
@@ -2755,7 +2760,7 @@ export default function Accounts() {
       statsState: accountsResponse.stats_state,
       disabledSorts: accountsResponse.disabled_sorts ?? [],
     };
-  }, [authFilter, debouncedSearchQuery, domainFilter, groupFilter.exclude, groupFilter.include, groupFilter.ungrouped, page, pageSize, planFilter, sortDir, sortKey, statusFilter, subscriptionFilter, tagFilter, stateFilter, stateModelFilter]);
+  }, [authFilter, debouncedSearchQuery, domainFilter, groupFilter.exclude, groupFilter.include, groupFilter.ungrouped, page, pageSize, planFilter, sortDir, sortKey, statusFilter, subscriptionFilter, tagFilter, stateFilter, stateModelFilter, capabilityFilter, capabilityModel]);
 
   const loadAccountAnalysis = useCallback(async (opts?: { silent?: boolean }) => {
     accountAnalysisAbortRef.current?.abort();
@@ -3269,6 +3274,8 @@ export default function Accounts() {
     status: statusFilter === "all" ? undefined : statusFilter,
     state: stateFilter === 'all' ? undefined : stateFilter,
     state_model: stateModelFilter || undefined,
+    capability: capabilityFilter === 'all' ? undefined : capabilityFilter,
+    capability_model: capabilityModel || undefined,
     plan: planFilter === "all" ? undefined : planFilter,
     subscription: subscriptionFilter === "all" ? undefined : subscriptionFilter,
     auth_kind: authFilter === "all" ? undefined : authFilter,
@@ -3277,7 +3284,7 @@ export default function Accounts() {
     group_include: groupFilter.include.length > 0 ? groupFilter.include : undefined,
     group_exclude: groupFilter.exclude.length > 0 ? groupFilter.exclude : undefined,
     ungrouped: groupFilter.ungrouped || undefined,
-  }), [authFilter, debouncedSearchQuery, domainFilter, groupFilter.exclude, groupFilter.include, groupFilter.ungrouped, planFilter, statusFilter, subscriptionFilter, tagFilter, stateFilter, stateModelFilter]);
+  }), [authFilter, debouncedSearchQuery, domainFilter, groupFilter.exclude, groupFilter.include, groupFilter.ungrouped, planFilter, statusFilter, subscriptionFilter, tagFilter, stateFilter, stateModelFilter, capabilityFilter, capabilityModel]);
 
   // 服务端已完成全池筛选、排序和分页。
   const filteredAccounts = accounts;
@@ -6861,6 +6868,8 @@ export default function Accounts() {
               <div className="basis-full py-2"><StateCoverage summary={stateSummary} target="state-pool" includeSaved /></div>
               <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center sm:gap-2">
                 <Select className="w-full min-w-0 sm:w-44" compact aria-label={t('ipv6State.stateFilter')} value={stateFilter} onValueChange={value => { updateStateFilters({ state: value }); setPage(1); }} options={['all', 'valid', 'available', 'missing'].map(value => ({ value, label: t(`ipv6State.stateFilter_${value}`) }))} />
+                <Input className="w-full min-w-0 sm:w-44" aria-label={t('codexRoutes.model')} placeholder={t('codexRoutes.model')} value={capabilityModel} onChange={event => { setCapabilityModel(event.target.value); if (!event.target.value.trim()) setCapabilityFilter('all'); setPage(1); }} />
+                <Select className="w-full min-w-0 sm:w-48" compact aria-label={t('codexRoutes.capability')} disabled={!capabilityModel.trim()} value={capabilityFilter} onValueChange={value => { setCapabilityFilter(value); setPage(1); }} options={['all', 'bps_supported', 'bps_unsupported', 'bps_unknown', 'dual_supported', 'codex_only_supported', 'bps_only_supported', 'cooldown', 'admin_disabled'].map(value => ({ value, label: t(`codexRoutes.filters.${value}`) }))} />
                 <Select className="w-full min-w-0 sm:w-44" compact aria-label={t('ipv6State.modelFilter')} value={stateModelFilter || 'all'} onValueChange={value => { updateStateFilters({ model: value === 'all' ? '' : value, state: value !== 'all' && stateFilter === 'all' ? 'valid' : stateFilter }); setPage(1); }} options={[{ value: 'all', label: t('ipv6State.anyModel') }, ...(stateSummary?.models ?? []).map(({ model }) => ({ value: model, label: STATE_MODEL_LABELS[model] || model }))]} />
                 <Select
                   className="w-full min-w-0 sm:w-32"
@@ -7140,13 +7149,14 @@ export default function Accounts() {
 
             </div>
 
-            {(stateFilter !== 'all' || stateModelFilter !== '' || statusFilter !== "all" ||
+            {(capabilityFilter !== 'all' || stateFilter !== 'all' || stateModelFilter !== '' || statusFilter !== "all" ||
               planFilter !== "all" ||
               subscriptionFilter !== "all" ||
               Boolean(tagFilter) ||
               Boolean(domainFilter) ||
               !isAccountGroupFilterEmpty(groupFilter)) && (
               <div className="flex flex-wrap items-center gap-1.5 border-t border-border/60 pt-2">
+                {capabilityFilter !== 'all' && <Button type="button" variant="ghost" size="sm" onClick={() => { setCapabilityFilter('all'); setCapabilityModel(''); setPage(1); }}>{t(`codexRoutes.filters.${capabilityFilter}`)} · {capabilityModel}<X className="size-3" aria-hidden="true" /></Button>}
                 {statusFilter !== "all" && (
                   <button
                     type="button"
@@ -7249,6 +7259,8 @@ export default function Accounts() {
                   type="button"
                   onClick={() => {
                     setStatusFilter("all");
+                    setCapabilityFilter('all');
+                    setCapabilityModel('');
                     updateStateFilters({ state: 'all', model: '' });
                     setPlanFilter("all");
                     setSubscriptionFilter("all");
@@ -7265,6 +7277,8 @@ export default function Accounts() {
               </div>
             )}
           </div>
+
+          {selected.size > 0 && <div className="mb-3"><CodexRouteManager ids={[...selected]} onChanged={() => { void reloadSilently(); }} /></div>}
 
           {selected.size > 0 && (
             <div className="sticky top-2 z-20 mb-4 flex items-center justify-between gap-3 rounded-xl border border-primary/20 bg-card/95 px-3 py-2 text-sm shadow-lg backdrop-blur-sm max-lg:flex-col max-lg:items-stretch">
@@ -13859,7 +13873,7 @@ function AccountMobileCard({
         </div>
       </header>
 
-      {showColumn('state') ? <div className="px-4 py-2"><AccountStateModels states={account.state_models} accountID={account.id} /></div> : null}
+      {showColumn('state') ? <div className="px-4 py-2"><AccountStateModels states={account.state_models} accountID={account.id} /><CodexRouteBadges paths={account.codex_paths} /></div> : null}
       <div className="codex-account-card__notices">
         {overlayKind === "overload" && (
           <div className="codex-account-card__notice">

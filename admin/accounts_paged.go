@@ -204,6 +204,8 @@ func (e *accountPageQueryError) Error() string {
 // accountOperationSelector lets large-pool operations resolve their target set
 // on the server instead of transferring tens of thousands of IDs.
 type accountOperationSelector struct {
+	Capability           string  `json:"capability,omitempty"`
+	CapabilityModel      string  `json:"capability_model,omitempty"`
 	State                string  `json:"state,omitempty"`
 	StateModel           string  `json:"state_model,omitempty"`
 	Channel              string  `json:"channel"`
@@ -253,8 +255,12 @@ func (h *Handler) resolveAccountOperationSelector(ctx context.Context, selector 
 	if err != nil {
 		return nil, err
 	}
+	capabilityMatches, err := h.codexCapabilityPredicate(ctx, selector.Capability, selector.CapabilityModel)
+	if err != nil {
+		return nil, err
+	}
 	for _, item := range snapshot.Items {
-		if !accountListItemMatches(item, query, channel) || !stateMatches(item.ID) {
+		if !accountListItemMatches(item, query, channel) || !stateMatches(item.ID) || !capabilityMatches(item.ID) || !codexCapabilityRowEligible(item.Row, selector.Capability) {
 			continue
 		}
 		if selector.RefreshableOnly {
@@ -418,9 +424,13 @@ func (h *Handler) getAccountPageSelection(ctx context.Context, c *gin.Context, c
 	if err != nil {
 		return nil, &accountPageQueryError{err: err}
 	}
+	capabilityMatches, err := h.codexCapabilityPredicate(ctx, c.Query("capability"), c.Query("capability_model"))
+	if err != nil {
+		return nil, &accountPageQueryError{err: err}
+	}
 	filtered := make([]*accountListSnapshotItem, 0, len(snapshot.Items))
 	for _, item := range snapshot.Items {
-		if accountListItemMatches(item, query, channel) && stateMatches(item.ID) {
+		if accountListItemMatches(item, query, channel) && stateMatches(item.ID) && capabilityMatches(item.ID) && codexCapabilityRowEligible(item.Row, c.Query("capability")) {
 			filtered = append(filtered, item)
 		}
 	}
@@ -461,10 +471,14 @@ func (h *Handler) getAccountPageSelection(ctx context.Context, c *gin.Context, c
 			rows = append(rows, row)
 		}
 	}
+	summary := snapshot.Summary
+	if c.Query("capability") != "" && c.Query("capability") != "all" {
+		summary, _ = summarizeAccountList(filtered, channel)
+	}
 	return &accountPageSelection{
 		State: state,
 		Rows:  rows, Page: page, PageSize: query.PageSize, Total: total,
-		Summary: snapshot.Summary, Facets: snapshot.Facets,
+		Summary: summary, Facets: snapshot.Facets,
 		SnapshotAt: snapshot.BuiltAt, StatsState: snapshot.StatsState,
 		DisabledSorts: disabledSorts,
 	}, nil

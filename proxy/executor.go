@@ -516,31 +516,12 @@ func resolveUpstreamSessionID(apiKeyID int64, upstreamSeed, explicitSessionID st
 // sessionID 可选，用于 prompt cache 会话绑定
 // useWebsocket 可选：未传时遵循全局强制 WS；传 true/false 时由调用方显式控制。
 // headers 下游请求头，用于设备指纹学习
-func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []byte, sessionID string, proxyOverride string, apiKey string, deviceCfg *DeviceProfileConfig, headers http.Header, useWebsocket ...bool) (upstreamResponse *http.Response, upstreamErr error) {
+func executeNativeCodexRequest(ctx context.Context, account *auth.Account, requestBody []byte, sessionID string, proxyOverride string, apiKey string, deviceCfg *DeviceProfileConfig, headers http.Header, useWebsocket ...bool) (upstreamResponse *http.Response, upstreamErr error) {
 	// Defense in depth: this executor sends account.AccessToken to ChatGPT.
 	// Relay/Grok/Antigravity credentials must never cross that provider boundary,
 	// even if a future routing regression selects the wrong account type.
 	if account == nil || account.IsRelayStyle() {
 		return nil, ErrNoAvailableAccount()
-	}
-	if CurrentRuntimeSettings().CodexBasispointsEnabled {
-		if basispointsModelAllowed(gjson.GetBytes(requestBody, "model").String()) {
-			var nativeReason string
-			var routeErr error
-			ctx, requestBody, nativeReason, routeErr = basispointsNativeRoute(ctx, account, requestBody)
-			if routeErr != nil {
-				return nil, routeErr
-			}
-			if nativeReason == "" {
-				return executeBasispointsRequest(ctx, account, requestBody, sessionID, proxyOverride, apiKey, headers)
-			}
-			defer func() { markBasispointsNativeRoute(upstreamResponse, nativeReason) }()
-		} else {
-			// Switch on but this model is not served by Basispoints: use the
-			// original Codex channel and drop the routing-only web_search field
-			// ingress kept for the Basispoints decision.
-			requestBody = stripBasispointsRoutingFields(requestBody)
-		}
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -553,7 +534,7 @@ func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []by
 
 	// Payload 规则改写：在 WS/HTTP 分叉前统一应用，两条上游路径共享改写结果。
 	// 生图请求跳过——其 instructions/工具由网关自行构造，改写会破坏桥接协议。
-	if !responsesBodyRequestsImageGeneration(requestBody) {
+	if codexAttemptFromContext(ctx) == nil && !responsesBodyRequestsImageGeneration(requestBody) {
 		RecordObservedInstructions(requestBody, headers)
 		requestBody = ApplyPayloadRulesToBody(requestBody, gjson.GetBytes(requestBody, "model").String(), headers, PayloadRuleIdentityFromContext(ctx))
 		// 规则改写发生在各 handler 的 service_tier 净化之后，规则注入的 flex/auto 等
@@ -641,6 +622,9 @@ func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []by
 		}
 		recordTrace := beginUpstreamTrace(ctx, account, traceProxy, true)
 		resp, err := WebsocketExecuteFunc(ctx, account, requestBody, sessionID, proxyOverride, apiKey, deviceCfg, headers, poolRouteKey)
+		if a := codexAttemptFromContext(ctx); a != nil {
+			a.websocket = true
+		}
 		recordTrace(resp)
 		return resp, err
 	}
@@ -986,25 +970,9 @@ func ExecuteOpenAIResponsesCompactRequest(ctx context.Context, account *auth.Acc
 }
 
 // ExecuteCompactRequest 向 Codex 上游发送 /responses/compact 请求（非流式压缩接口）
-func ExecuteCompactRequest(ctx context.Context, account *auth.Account, requestBody []byte, sessionID string, proxyOverride string, apiKey string, deviceCfg *DeviceProfileConfig, headers http.Header) (upstreamResponse *http.Response, upstreamErr error) {
+func executeNativeCodexCompactRequest(ctx context.Context, account *auth.Account, requestBody []byte, sessionID string, proxyOverride string, apiKey string, deviceCfg *DeviceProfileConfig, headers http.Header) (upstreamResponse *http.Response, upstreamErr error) {
 	if account == nil || account.IsRelayStyle() {
 		return nil, ErrNoAvailableAccount()
-	}
-	if CurrentRuntimeSettings().CodexBasispointsEnabled {
-		if basispointsModelAllowed(gjson.GetBytes(requestBody, "model").String()) {
-			var nativeReason string
-			var routeErr error
-			ctx, requestBody, nativeReason, routeErr = basispointsNativeRoute(ctx, account, requestBody)
-			if routeErr != nil {
-				return nil, routeErr
-			}
-			if nativeReason == "" {
-				return executeBasispointsCompactRequest(ctx, account, requestBody, sessionID, proxyOverride, apiKey, headers)
-			}
-			defer func() { markBasispointsNativeRoute(upstreamResponse, nativeReason) }()
-		} else {
-			requestBody = stripBasispointsRoutingFields(requestBody)
-		}
 	}
 	if ctx == nil {
 		ctx = context.Background()

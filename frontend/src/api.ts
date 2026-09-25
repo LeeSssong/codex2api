@@ -1,3 +1,4 @@
+import type { CodexPathSnapshot } from "./types"
 import { qualityTestFilterQuery, type QualityTestJob, type QualityTestJobsFilter, type QualityTestJobsResponse, type QualityTestPrompt } from './lib/qualityTest.ts'
 import type { StateImportPreview, StatePackage, StatePoolData } from './lib/statePool.ts'
 import type { IPv6StateConfig, IPv6StateStatus, IPv6StatePackage } from './lib/ipv6State.ts'
@@ -618,6 +619,9 @@ export const api = {
     const qs = searchParams.toString()
     return request<AccountsResponse>(`/accounts${qs ? `?${qs}` : ''}`)
   },
+  getCodexRoutes: (id: number) => request<{ paths: CodexPathSnapshot[] }>(`/accounts/${id}/codex-routes`),
+  updateCodexRoutes: (data: { ids: number[]; upstream: string; allowed?: boolean; reset_observations?: boolean }) =>
+    request<{ updated: number }>('/accounts/codex/routes', { method: 'POST', body: JSON.stringify(data) }),
   getAccountsPage: (params: AccountsPageParams, signal?: AbortSignal) => {
     const searchParams = new URLSearchParams({
       view: 'page',
@@ -640,6 +644,8 @@ export const api = {
     if (params.subscription && params.subscription !== 'all') searchParams.set('subscription', params.subscription)
     if (params.state && params.state !== 'all') searchParams.set('state', params.state)
     if (params.stateModel) searchParams.set('state_model', params.stateModel)
+    if (params.capability && params.capability !== 'all') searchParams.set('capability', params.capability)
+    if (params.capabilityModel?.trim()) searchParams.set('capability_model', params.capabilityModel.trim())
     if (params.sort) searchParams.set('sort', params.sort)
     if (params.order) searchParams.set('order', params.order)
     return request<AccountsPageResponse>(`/accounts?${searchParams.toString()}`, { signal })

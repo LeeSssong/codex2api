@@ -37,7 +37,7 @@ func (h *Handler) logBasispointsPreparationFailure(c *gin.Context, account *auth
 	h.logUsageForRequest(c, &database.UsageLogInput{
 		AccountID: account.ID(), Endpoint: endpoint, InboundEndpoint: endpoint,
 		Model: model, StatusCode: http.StatusBadRequest, DurationMs: durationMs,
-		ReasoningEffort: effectiveReasoningEffortForAccount(account, effort),
+		ReasoningEffort: effectiveReasoningEffortForAccount(account, effort, c.Request.Context()),
 		Stream:          stream, AttemptIndex: attempt + 1,
 		UpstreamErrorKind: ErrorCodeBasispointsInvalidRequest,
 		ErrorMessage:      fmt.Sprintf("%s · stage=prepare · category=%s; request rejected locally before contacting Basispoints", ErrorCodeBasispointsInvalidRequest, basispointsPreparationCategory(failure)),

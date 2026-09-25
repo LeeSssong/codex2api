@@ -491,6 +491,9 @@ func (h *Handler) nextRetryAccountWithGuard(ctx context.Context, affinityKey str
 		return nil, "", auth.SessionAffinityGuard{}, nil
 	}
 	for {
+		if err := codexRouteBudgetError(ctx); err != nil {
+			return nil, "", auth.SessionAffinityGuard{}, err
+		}
 		exclude := exclusions.ForSelection()
 		var account *auth.Account
 		var stickyProxyURL string
@@ -505,7 +508,20 @@ func (h *Handler) nextRetryAccountWithGuard(ctx context.Context, affinityKey str
 				h.store.Release(account)
 				return nil, "", auth.SessionAffinityGuard{}, nil
 			}
+			if d := codexRouteFromContext(ctx); d != nil {
+				d.mu.Lock()
+				d.schedulerSelected = true
+				d.mu.Unlock()
+			}
 			return account, stickyProxyURL, guard, nil
+		}
+		if d := codexRouteFromContext(ctx); d != nil {
+			d.mu.Lock()
+			initial := !d.schedulerSelected && d.routeConstrained
+			d.mu.Unlock()
+			if initial && !h.codexRouteHasCandidates(ctx, apiKeyID, filter) {
+				return nil, "", auth.SessionAffinityGuard{}, routeLocalError("codex_route_no_candidates", "No account in this Key's authorized groups satisfies the route, capability, model and native State requirements")
+			}
 		}
 		h.store.TriggerDispatchStateReconcileAsync()
 		var admissionErr error
@@ -514,6 +530,11 @@ func (h *Handler) nextRetryAccountWithGuard(ctx context.Context, affinityKey str
 			if ctx.Err() != nil {
 				h.store.Release(account)
 				return nil, "", auth.SessionAffinityGuard{}, nil
+			}
+			if d := codexRouteFromContext(ctx); d != nil {
+				d.mu.Lock()
+				d.schedulerSelected = true
+				d.mu.Unlock()
 			}
 			return account, stickyProxyURL, guard, nil
 		}

@@ -7179,5 +7179,74 @@
       "6": "Saturday",
       "7": "Sunday"
     }
+  },
+  "codexRoutes": {
+    "title": "Codex upstream paths",
+    "keyHint": "Restricted to the existing account groups, plan, model and quota permissions. The global BPS switch and model list remain required. Native fallback must satisfy exact-model State.",
+    "policy": "Routing policy",
+    "capability": "Capability filter",
+    "model": "Exact capability model",
+    "path": "Upstream path",
+    "action": "Management action",
+    "policies": {
+      "inherit": "Inherit global default",
+      "codex_only": "Codex only",
+      "basispoints_only": "BPS only",
+      "basispoints_prefer": "Prefer BPS",
+      "codex_prefer": "Prefer Codex"
+    },
+    "keyFilters": {
+      "any": "Any, including unknown",
+      "supported": "Selected path confirmed",
+      "dual_supported": "Both paths confirmed",
+      "codex_supported": "Codex confirmed",
+      "basispoints_supported": "BPS confirmed"
+    },
+    "filters": {
+      "all": "All capabilities",
+      "bps_supported": "BPS supported",
+      "bps_unsupported": "BPS unsupported",
+      "bps_unknown": "BPS unknown",
+      "dual_supported": "Both supported",
+      "codex_only_supported": "Codex only confirmed",
+      "bps_only_supported": "BPS only confirmed",
+      "cooldown": "Path cooling down",
+      "admin_disabled": "Path disabled by admin"
+    },
+    "capabilities": {
+      "unknown": "Unknown",
+      "supported": "Supported",
+      "unsupported": "Unsupported"
+    },
+    "health": {
+      "ready": "Ready",
+      "cooldown": "Cooling down",
+      "recovering": "Checking recovery",
+      "probe_ready": "Recovery eligible",
+      "unavailable": "Configuration unavailable"
+    },
+    "disabled": "Admin disabled",
+    "never": "Not observed",
+    "observed": "Observed",
+    "until": "Until",
+    "accountWide": "Account-wide evidence",
+    "more": "+{{count}} observations in details",
+    "manage": "Manage paths ({{count}})",
+    "explanation": "Unknown means unverified, not unsupported. Evidence is model-specific; temporary cooldown and administrator permissions are separate. Both paths share credentials, quota and concurrency.",
+    "actions": {
+      "reset": "Clear observations",
+      "allow": "Allow path",
+      "disable": "Disable path"
+    },
+    "apply": "Apply",
+    "resetHint": "Reset clears evidence and cooldown only. It does not enable a disabled path or send a paid probe. A later eligible request provides new evidence; strict supported-only Keys need another permitted test request first.",
+    "batchLimit": "Select at most 100 accounts per batch.",
+    "saved": "Updated {{count}} accounts.",
+    "loadFailed": "Could not load path observations. Reopen to retry.",
+    "saveFailed": "Could not finish this update. Refresh accounts before retrying.",
+    "paths": {
+      "codex": "Codex",
+      "basispoints": "Basispoints"
+    }
   }
 }

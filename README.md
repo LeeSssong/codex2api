@@ -6,7 +6,7 @@ Maintained by [hlool](https://linux.do/u/hlool) for self-hosted account manageme
 
 ## hlool Docker Build
 
-Docker image: **`ghcr.io/hloolx/codex2api:basispoints`** (`latest` also includes this build). The Basispoints switch is off by default; enable it under **Settings → Codex → Transport** to route all Codex OAuth pool accounts through Basispoints. `max` is sent as `xhigh`, and the actual effort is reported. See the [deployment guide](docs/BASISPOINTS_DEPLOY_CN.md) for new installations, upgrades, and offline Docker packages.
+Docker image: **`ghcr.io/hloolx/codex2api:basispoints`** (`latest` also includes this build). The Basispoints switch is off by default; enable it under **Settings → Codex → Transport** to allow eligible Codex OAuth accounts to use Basispoints for allowlisted models. See the [dual upstream routing guide](docs/codex-dual-upstream.md) for per-Key policies, capability evidence and safe fallback. `max` is sent as `xhigh`, and the actual effort is reported. See the [deployment guide](docs/BASISPOINTS_DEPLOY_CN.md) for new installations, upgrades, and offline Docker packages.
 
 ---
 

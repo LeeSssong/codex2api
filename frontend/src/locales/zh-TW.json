@@ -2285,5 +2285,74 @@
       "6": "週六",
       "7": "週日"
     }
+  },
+  "codexRoutes": {
+    "title": "Codex 雙上游路徑",
+    "keyHint": "與現有帳號群組、方案、模型及額度權限取交集。全域 BPS 開關與模型清單仍為硬限制；原 Codex 回退須符合當前模型的 State 條件。",
+    "policy": "路由策略",
+    "capability": "能力篩選",
+    "model": "能力對應的精確模型",
+    "path": "上游路徑",
+    "action": "管理操作",
+    "policies": {
+      "inherit": "繼承全域預設",
+      "codex_only": "僅原 Codex",
+      "basispoints_only": "僅 BPS",
+      "basispoints_prefer": "優先 BPS",
+      "codex_prefer": "優先原 Codex"
+    },
+    "keyFilters": {
+      "any": "任意能力（含未知）",
+      "supported": "所選路徑已確認支援",
+      "dual_supported": "兩條路徑皆確認支援",
+      "codex_supported": "原 Codex 已確認支援",
+      "basispoints_supported": "BPS 已確認支援"
+    },
+    "filters": {
+      "all": "全部能力",
+      "bps_supported": "BPS 已支援",
+      "bps_unsupported": "BPS 已確認不支援",
+      "bps_unknown": "BPS 未知",
+      "dual_supported": "雙上游皆支援",
+      "codex_only_supported": "僅原 Codex 確認可用",
+      "bps_only_supported": "僅 BPS 確認可用",
+      "cooldown": "上游路徑冷卻中",
+      "admin_disabled": "管理員停用路徑"
+    },
+    "capabilities": {
+      "unknown": "未知",
+      "supported": "支援",
+      "unsupported": "不支援"
+    },
+    "health": {
+      "ready": "就緒",
+      "cooldown": "冷卻中",
+      "recovering": "恢復檢測中",
+      "probe_ready": "可嘗試恢復",
+      "unavailable": "設定無法使用"
+    },
+    "disabled": "管理員停用",
+    "never": "尚無觀察",
+    "observed": "觀察時間",
+    "until": "截至",
+    "accountWide": "帳號層級觀察",
+    "more": "詳細資料另有 {{count}} 筆觀察",
+    "manage": "管理上游路徑（{{count}} 個）",
+    "explanation": "未知表示尚未確認，不等於不支援。能力依模型記錄；暫時冷卻與管理員權限獨立。兩條路徑共用同一份憑證、額度及並行數。",
+    "actions": {
+      "reset": "清除能力觀察",
+      "allow": "允許此路徑",
+      "disable": "停用此路徑"
+    },
+    "apply": "套用",
+    "resetHint": "清除僅重設觀察與冷卻，不解除管理員停用，也不主動發送付費探測。後續合格請求重新累積證據；嚴格「已支援」篩選的 Key 需先透過其他獲准的測試請求確認。",
+    "batchLimit": "每批最多選擇 100 個帳號。",
+    "saved": "已更新 {{count}} 個帳號。",
+    "loadFailed": "無法載入路徑觀察，請重新展開重試。",
+    "saveFailed": "更新未全部完成，請重新整理帳號後重試。",
+    "paths": {
+      "codex": "Codex",
+      "basispoints": "Basispoints"
+    }
   }
 }
