@@ -2350,6 +2350,55 @@
     "saved": "已更新 {{count}} 個帳號。",
     "loadFailed": "無法載入路徑觀察，請重新展開重試。",
     "saveFailed": "更新未全部完成，請重新整理帳號後重試。",
+    "probe": {
+      "title": "BPS 強測試",
+      "explanation": "鎖定所選帳號、精確模型及 BPS 路徑。禁止換帳號、換模型或退回 Codex；完整回應通過後才記錄支援，不更改 State、分組或管理員停用設定。",
+      "model": "強測試的精確模型",
+      "modelPlaceholder": "例如 gpt-6-astra",
+      "modelRequired": "填寫精確模型後即可開始測試。",
+      "level": "測試級別",
+      "levels": {
+        "basic": "基礎測試",
+        "tools": "工具往返測試"
+      },
+      "levelHints": {
+        "basic": "基礎測試驗證最小文字請求完整成功，連線建立或 HTTP 200 均不算通過。",
+        "tools": "先驗收基礎請求，再使用無副作用的工具完成呼叫和結果回傳。用戶端子代理仍需在新工作階段中單獨驗收。"
+      },
+      "limits": "最多 100 個帳號，同時測試 3 個，同帳號依序執行；測試會產生實際用量。限流和網路錯誤保留已有能力證據。",
+      "run": "強測 BPS（{{count}} 個）",
+      "cancel": "取消測試",
+      "progress": "已完成 {{completed}} / {{total}} 個，正在測試…",
+      "done": "本批測試結束：{{completed}} / {{total}} 個。請查看各帳號結果。",
+      "canceled": "已取消測試。保留已收到的 {{completed}} 個結果；未完成帳號不判為不支援。",
+      "failed": "測試未完整結束，已保留收到的結果。請查看記錄後重試。",
+      "results": "BPS 強測試結果",
+      "account": "帳號 #{{id}}",
+      "capability": "已記錄的能力",
+      "reportedStatus": "上游回報狀態",
+      "duration": "{{duration}} 毫秒 · {{count}} 次請求",
+      "incomplete": "缺少完整成功的 BPS 結束證據，本次不計為通過。",
+      "history": "最近的基礎 / 工具測試",
+      "historyHint": "依帳號、精確模型和測試級別展示最近記錄。能力證據與目前路徑冷卻、帳號狀態分別判斷。",
+      "loading": "正在讀取測試記錄…",
+      "empty": "暫無該模型的測試記錄；未知不等於不支援。",
+      "historyFailed": "部分測試記錄未能載入。",
+      "retry": "重新載入",
+      "outcomes": {
+        "supported": "完整通過",
+        "blocked": "存取受阻",
+        "unsupported": "明確不支援",
+        "rate_limited": "目前限流",
+        "unauthorized": "認證失效",
+        "workspace_deactivated": "工作區停用",
+        "not_run": "尚未測試",
+        "network_error": "網路中斷",
+        "protocol_error": "回應或工具協定錯誤",
+        "canceled": "已取消",
+        "skipped": "已跳過",
+        "error": "測試失敗"
+      }
+    },
     "paths": {
       "codex": "Codex",
       "basispoints": "Basispoints"

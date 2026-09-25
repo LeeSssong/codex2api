@@ -1,4 +1,5 @@
 import type { CodexPathSnapshot } from "./types"
+import { readCodexProbeEvents, type CodexProbeBatch, type CodexProbeEvent, type CodexProbeLevel, type CodexProbeResult } from './lib/codexProbe.ts'
 import { qualityTestFilterQuery, type QualityTestJob, type QualityTestJobsFilter, type QualityTestJobsResponse, type QualityTestPrompt } from './lib/qualityTest.ts'
 import type { StateImportPreview, StatePackage, StatePoolData } from './lib/statePool.ts'
 import type { IPv6StateConfig, IPv6StateStatus, IPv6StatePackage } from './lib/ipv6State.ts'
@@ -619,7 +620,25 @@ export const api = {
     const qs = searchParams.toString()
     return request<AccountsResponse>(`/accounts${qs ? `?${qs}` : ''}`)
   },
-  getCodexRoutes: (id: number) => request<{ paths: CodexPathSnapshot[] }>(`/accounts/${id}/codex-routes`),
+  getCodexRoutes: (id: number, model?: string, signal?: AbortSignal) => request<{ paths: CodexPathSnapshot[]; probes?: CodexProbeResult[] }>(`/accounts/${id}/codex-routes${model ? `?model=${encodeURIComponent(model)}` : ''}`, { signal }),
+  probeCodexAccounts: async (data: { ids: number[]; model: string; level: CodexProbeLevel }, onEvent: (event: CodexProbeEvent) => void, signal: AbortSignal): Promise<CodexProbeBatch> => {
+    const adminKey = getAdminKey()
+    const response = await fetch(`${BASE}/accounts/codex/probe?stream=true`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream', ...(adminKey ? { 'X-Admin-Key': adminKey } : {}) },
+      body: JSON.stringify(data),
+      signal,
+    })
+    if (!response.ok) {
+      if (response.status === 401) resetAdminAuthState()
+      throw new AdminAPIError(response.status, extractAdminErrorMessage(await response.text(), response.status))
+    }
+    if (response.headers.get('content-type')?.includes('text/event-stream')) {
+      if (!response.body) throw new Error('Missing probe stream')
+      return readCodexProbeEvents(response.body, onEvent)
+    }
+    return response.json() as Promise<CodexProbeBatch>
+  },
   updateCodexRoutes: (data: { ids: number[]; upstream: string; allowed?: boolean; reset_observations?: boolean }) =>
     request<{ updated: number }>('/accounts/codex/routes', { method: 'POST', body: JSON.stringify(data) }),
   getAccountsPage: (params: AccountsPageParams, signal?: AbortSignal) => {

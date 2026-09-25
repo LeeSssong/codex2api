@@ -430,16 +430,23 @@ func TestCodexTelemetryDefaultOff(t *testing.T) {
 
 func TestCodexTelemetryJobRoutesThroughResin(t *testing.T) {
 	requests := make(chan *http.Request, 1)
+	const probeBody = `{"test_marker":"resin_route_probe"}`
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
-		_, _ = io.Copy(io.Discard, request.Body)
-		requests <- request.Clone(request.Context())
+		body, _ := io.ReadAll(request.Body)
+		// Other tests may leave queued telemetry; only capture this test's job.
+		if string(body) == probeBody {
+			select {
+			case requests <- request.Clone(request.Context()):
+			default:
+			}
+		}
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer server.Close()
 	SetResinConfig(&ResinConfig{BaseURL: server.URL + "/token", PlatformName: "test"})
 	defer SetResinConfig(nil)
 	profile := testCodexTelemetryProfile()
-	job := codexTelemetryJob{client: profile.client, url: "https://chatgpt.com/backend-api/codex/analytics-events/events", body: []byte(`{}`)}
+	job := codexTelemetryJob{client: profile.client, url: "https://chatgpt.com/backend-api/codex/analytics-events/events", body: []byte(probeBody)}
 	if err := sendCodexTelemetryJob(job); err != nil {
 		t.Fatalf("send telemetry via resin: %v", err)
 	}

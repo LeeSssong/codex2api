@@ -315,6 +315,12 @@ func (s *Store) publishCodexRefresh(ctx context.Context, acc *Account) error {
 	if !applyCodexCredentialValues(acc, row.Credentials, row.CredentialGeneration) {
 		return nil
 	}
+	// The refresh transaction may have migrated completed evidence to the new
+	// credential generation. Reload before publishing scheduler availability;
+	// the ordinary route cache TTL would temporarily hide that evidence.
+	if err := acc.ReloadCodexRoutes(ctx); err != nil {
+		return fmt.Errorf("新凭据已保存，路由能力重载失败: %w", err)
+	}
 	s.finishCodexRefresh(ctx, acc, row.GetCredential("codex_refresh_error"))
 	s.invalidateRoutingSchedulers()
 	return nil

@@ -65,15 +65,16 @@ type CodexRouteDecision struct {
 }
 
 type codexRouteAttemptState struct {
-	decision  *CodexRouteDecision
-	account   *auth.Account
-	path      string
-	model     string
-	started   time.Time
-	release   func()
-	failure   *codexRouteFailure
-	inspected bool
-	websocket bool
+	decision   *CodexRouteDecision
+	account    *auth.Account
+	path       string
+	model      string
+	started    time.Time
+	release    func()
+	failure    *codexRouteFailure
+	inspected  bool
+	websocket  bool
+	generation int64
 }
 
 func codexRouteFromContext(ctx context.Context) *CodexRouteDecision {
@@ -342,7 +343,7 @@ func executeCodexRoute(ctx context.Context, account *auth.Account, body []byte, 
 		if !ok {
 			return nil, routeLocalError("codex_route_recovery_busy", "The upstream path is cooling down or already being checked")
 		}
-		a := &codexRouteAttemptState{decision: d, account: account, path: selected, model: model, started: time.Now(), release: release}
+		a := &codexRouteAttemptState{decision: d, account: account, path: selected, model: model, started: time.Now(), release: release, generation: account.GetCredentialGeneration()}
 		attemptCtx := context.WithValue(ctx, codexAttemptKey{}, a)
 		attemptBody := append([]byte(nil), canonical...)
 		attemptHeaders := headers.Clone()
@@ -466,7 +467,7 @@ func (a *codexRouteAttemptState) recordFailure(f codexRouteFailure) {
 		a.account.SetCodexPathCooldown(a.path, a.model, f.Category, a.started, time.Now().Add(30*time.Second))
 	}
 	if f.Category == "model_access" {
-		a.account.ObserveCodexPath(d.client, database.CodexCapability{Upstream: a.path, Model: a.model, Capability: database.CapabilityUnsupported, Source: f.Source, Reason: f.Code, ObservedAt: a.started.UnixNano()})
+		a.account.ObserveCodexPath(d.client, database.CodexCapability{Upstream: a.path, Model: a.model, Capability: database.CapabilityUnsupported, Source: f.Source, Reason: f.Code, ObservedAt: a.started.UnixNano(), CredentialGeneration: a.generation})
 	}
 }
 

@@ -65,6 +65,11 @@ type Handler struct {
 	refreshAccount     func(context.Context, int64) error
 	probeUsage         func(context.Context, *auth.Account) error
 
+	codexCapabilityProbe func(context.Context, *auth.Account, proxy.CodexCapabilityProbeOptions) proxy.CodexProbeResult
+	codexProbeMu         sync.Mutex
+	codexProbeSlots      chan struct{}
+	codexProbeRunning    map[int64]bool
+
 	codexUsageRefreshRunning atomic.Bool
 
 	// executeClaudeUsageProbe is injectable for tests; production uses the
@@ -1116,6 +1121,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.GET("/accounts/live", h.GetAccountLiveState)
 	api.GET("/accounts/:id", h.GetAccount)
 	api.GET("/accounts/:id/codex-routes", h.GetCodexRoutes)
+	api.GET("/accounts/:id/codex-probes", h.GetCodexProbes)
+	api.POST("/accounts/codex/probe", h.ProbeCodexAccounts)
 	api.POST("/accounts/codex/routes", h.UpdateCodexRoutes)
 	api.POST("/accounts", h.AddAccount)
 	api.POST("/accounts/at", h.AddATAccount)

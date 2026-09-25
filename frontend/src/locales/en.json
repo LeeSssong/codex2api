@@ -7244,6 +7244,55 @@
     "saved": "Updated {{count}} accounts.",
     "loadFailed": "Could not load path observations. Reopen to retry.",
     "saveFailed": "Could not finish this update. Refresh accounts before retrying.",
+    "probe": {
+      "title": "Strict BPS test",
+      "explanation": "Pin the selected accounts, exact model and BPS path. No account or model substitution or Codex fallback. Support requires a complete response; State, groups and administrator restrictions stay in force.",
+      "model": "Exact model to test",
+      "modelPlaceholder": "For example, gpt-6-astra",
+      "modelRequired": "Enter an exact model to start testing.",
+      "level": "Test level",
+      "levels": {
+        "basic": "Basic test",
+        "tools": "Tool round trip"
+      },
+      "levelHints": {
+        "basic": "Verify that a minimal text request completes successfully. A connection or HTTP 200 alone is insufficient.",
+        "tools": "Verify a basic request, then complete a harmless tool call and return its result. Client subagents still need a separate check in a new session."
+      },
+      "limits": "Up to 100 accounts, 3 concurrently; requests for each account run in sequence. Tests consume usage. Rate limits and network failures preserve existing capability evidence.",
+      "run": "Test BPS ({{count}})",
+      "cancel": "Cancel test",
+      "progress": "{{completed}} / {{total}} completed. Testing…",
+      "done": "Batch finished: {{completed}} / {{total}}. Review each account’s result.",
+      "canceled": "Canceled. Kept {{completed}} received results; unfinished accounts are not marked unsupported.",
+      "failed": "The test did not finish completely. Received results are preserved. Review the history before retrying.",
+      "results": "Strict BPS test results",
+      "account": "Account #{{id}}",
+      "capability": "Recorded capability",
+      "reportedStatus": "Upstream-reported status",
+      "duration": "{{duration}} ms · {{count}} requests",
+      "incomplete": "Complete BPS success evidence is missing. This result does not count as a pass.",
+      "history": "Latest basic / tool tests",
+      "historyHint": "Latest records by account, exact model and test level. Capability evidence is separate from the current path cooldown and account status.",
+      "loading": "Loading test history…",
+      "empty": "No test history for this model. Unknown does not mean unsupported.",
+      "historyFailed": "Some test history could not be loaded.",
+      "retry": "Reload",
+      "outcomes": {
+        "supported": "Completed successfully",
+        "blocked": "Access blocked",
+        "unsupported": "Confirmed unsupported",
+        "rate_limited": "Rate limited now",
+        "unauthorized": "Authentication failed",
+        "workspace_deactivated": "Workspace deactivated",
+        "not_run": "Not tested",
+        "network_error": "Network interrupted",
+        "protocol_error": "Response or tool protocol error",
+        "canceled": "Canceled",
+        "skipped": "Skipped",
+        "error": "Test failed"
+      }
+    },
     "paths": {
       "codex": "Codex",
       "basispoints": "Basispoints"

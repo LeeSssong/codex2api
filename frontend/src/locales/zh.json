@@ -7241,6 +7241,55 @@
     "saved": "已更新 {{count}} 个账号。",
     "loadFailed": "无法加载路径观察，请重新展开重试。",
     "saveFailed": "更新未全部完成，请刷新账号后重试。",
+    "probe": {
+      "title": "BPS 强测试",
+      "explanation": "锁定所选账号、精确模型及 BPS 路径。禁止换账号、换模型或回退 Codex；完整响应通过后才记录支持，不更改 State、分组或管理员禁用设置。",
+      "model": "强测试的精确模型",
+      "modelPlaceholder": "例如 gpt-6-astra",
+      "modelRequired": "填写精确模型后即可开始测试。",
+      "level": "测试级别",
+      "levels": {
+        "basic": "基础测试",
+        "tools": "工具回环测试"
+      },
+      "levelHints": {
+        "basic": "基础测试验证最小文本请求完整成功，连接建立或 HTTP 200 均不算通过。",
+        "tools": "先验收基础请求，再使用无副作用的工具完成调用和结果回传。客户端子代理仍需在新会话中单独验收。"
+      },
+      "limits": "最多 100 个账号，并发 3 个，同账号串行；测试会产生实际用量。限流和网络错误保留已有能力证据。",
+      "run": "强测 BPS（{{count}} 个）",
+      "cancel": "取消测试",
+      "progress": "已完成 {{completed}} / {{total}} 个，正在测试…",
+      "done": "本批测试结束：{{completed}} / {{total}} 个。请查看各账号结果。",
+      "canceled": "已取消测试。保留已收到的 {{completed}} 个结果；未完成账号不判为不支持。",
+      "failed": "测试未完整结束，已保留收到的结果。请查看记录后重试。",
+      "results": "BPS 强测试结果",
+      "account": "账号 #{{id}}",
+      "capability": "已记录的能力",
+      "reportedStatus": "上游报告状态",
+      "duration": "{{duration}} 毫秒 · {{count}} 次请求",
+      "incomplete": "缺少完整成功的 BPS 结束证据，本次不计为通过。",
+      "history": "最近的基础 / 工具测试",
+      "historyHint": "按账号、精确模型和测试级别展示最近记录。能力证据与当前路径冷却、账号状态分别判断。",
+      "loading": "正在读取测试记录…",
+      "empty": "暂无该模型的测试记录；未知不等于不支持。",
+      "historyFailed": "部分测试记录未能加载。",
+      "retry": "重新加载",
+      "outcomes": {
+        "supported": "完整通过",
+        "blocked": "访问受阻",
+        "unsupported": "明确不支持",
+        "rate_limited": "当前限流",
+        "unauthorized": "认证失效",
+        "workspace_deactivated": "工作区停用",
+        "not_run": "尚未测试",
+        "network_error": "网络中断",
+        "protocol_error": "响应或工具协议错误",
+        "canceled": "已取消",
+        "skipped": "已跳过",
+        "error": "测试失败"
+      }
+    },
     "paths": {
       "codex": "Codex",
       "basispoints": "Basispoints"

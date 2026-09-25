@@ -122,8 +122,9 @@ even for native-only Keys; it does not claim native upstream WS parity.
 
 ## Persistence, recovery and administration
 
-Startup idempotently adds `account_codex_paths` and `account_codex_capabilities`
-plus an index. Old accounts default to allowed/unknown and old Key JSON to
+Startup idempotently adds `account_codex_paths`, `account_codex_capabilities`
+and `account_codex_probes`, with the capability index and credential generation
+column. Old accounts default to allowed/unknown and old Key JSON to
 inherit. Credentials, groups and existing account data are untouched.
 
 Terminal success, not HTTP 200, establishes support. Timestamp CAS prevents old
@@ -137,8 +138,10 @@ Cooldown is in-memory and expiring. After expiry one process-local request per
 account/path/model probes; inconclusive probes wait another 30 seconds. Gates
 are not distributed across replicas. No automatic paid pool sweep is added.
 Reset clears evidence and health without enabling a disabled path or making
-paid calls. Strict supported-only Keys need an otherwise authorized `any`
-request to establish initial evidence.
+paid calls. An explicit administrator BPS capability probe can establish initial
+evidence without relaxing a business Key's supported-only filter. Ordinary
+connection tests follow the configured route policy and can succeed through
+native Codex; their overall success alone does not establish BPS support.
 
 - `GET /api/admin/accounts/:id/codex-routes?model=<exact-model>` returns separate
   permission, capability, source/reason/time and health.
@@ -153,6 +156,63 @@ request to establish initial evidence.
   independent. Empty authorized intersections return explicit bounded errors.
 - Key editing reuses groups and adds route/filter fields. Account lists show
   both paths with evidence tooltips, detail and batch controls; EN/ZH/ZH-TW.
+
+## BPS strong tests
+
+In Accounts, open the Codex route controls for one account or a selected batch,
+enter the exact model, and choose **Basic** or **Tools** under **BPS Strong Test**.
+These are explicit administrator requests that may consume upstream quota.
+Basic sends one request; Tools sends up to three (basic, echo tool call, tool
+result). The echo runs locally and has no external side effect. No automatic
+account sweep is enabled.
+
+The probe pins the selected OAuth account, BPS path and exact model. It never
+uses native fallback, account rotation or model substitution. It may retest
+unknown/unsupported evidence and bypass a business Key's supported-only filter,
+but must pass the global BPS switch, model allowlist, account/path administration,
+current account and path health, and configured proxy availability. Native turn
+State is unnecessary for this BPS request. Before each subsequent tool step,
+the probe reloads path configuration and rechecks health and credentials.
+
+HTTP 200 alone cannot pass. Basic requires a valid successful `response.completed`
+and the generated nonce as text. Tools additionally requires exactly one
+correct nonce echo call with `encrypted_function_args: []`, then a completed
+response after returning the tool result. A failed/incomplete terminal event,
+missing terminal, wrong nonce or malformed tool declaration fails its stage.
+This validates the server's BPS tool roundtrip; it does not certify a particular
+client's multi-agent scheduling or end-to-end subagent behavior.
+
+The result reports the actual path/model, overall outcome, independent basic
+and tools outcomes, current evidence, actual HTTP status, separately reported
+upstream status, safe error code, times and dispatched request count. For example,
+an HTTP 200 stream reporting a 403 is blocked, not successful. A tool protocol
+failure can retain genuine basic support. A later explicit raw model denial
+overrides that support for the exact model. Ambiguous 403, authentication,
+workspace, rate-limit and network failures never establish permanent unsupported
+evidence and never mark the entire account bad from this test.
+
+- `POST /api/admin/accounts/codex/probe` takes
+  `{"ids":[123],"model":"gpt-6-astra","level":"tools"}` and returns
+  `{results,total,completed}`. Use `?stream=true` for SSE `start`, `testing`,
+  `result`, and `done` messages. An authenticated administrator is required.
+- Maximum 100 selected accounts, three concurrent probes per server handler,
+  and one active probe per account. Overlapping account probes are skipped.
+  Canceling the browser request cancels active calls and prevents new dispatches;
+  already received results remain visible. These concurrency guards are local
+  to each server process.
+- `GET /api/admin/accounts/:id/codex-probes?model=<exact-model>` returns saved
+  results. The existing `codex-routes` response also includes `probes`.
+- Additive `account_codex_probes` storage keeps the latest result per
+  account/path/exact-model/level, not an unbounded run log. Results survive restart.
+  Results and capability evidence use credential and timestamp fences; tests
+  started before a reset or credential replacement cannot publish new evidence.
+  Successful OAuth rotation carries completed evidence forward only when the
+  same user and workspace identity are confirmed; the credential fence still
+  advances and rejects in-flight results from the old token. Administrative
+  credential replacement or uncertain/changed identity requires new evidence.
+  Historical results describe their recorded test time, not present availability.
+  Business supported-only filtering still uses basic path/model capability;
+  passing the stronger tools level is displayed separately.
 
 ## Example A: BPS-only authorized accounts
 

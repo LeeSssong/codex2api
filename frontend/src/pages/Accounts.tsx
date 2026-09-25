@@ -3315,7 +3315,6 @@ export default function Accounts() {
   const openAccountDetail = useCallback((account: AccountRow) => {
     setDetailAccountData(account);
     setDetailAccountId(account.id);
-    setQuickConfigAccount(account);
   }, []);
   const closeAccountDetail = useCallback(() => {
     setDetailAccountId(null);

@@ -55,12 +55,13 @@ func (l APIKeyLimits) ValidateCodexRouting() error {
 // CodexCapability records evidence, never administrative permission or health.
 // Empty Model is reserved for explicit account/path-wide evidence.
 type CodexCapability struct {
-	Upstream   string `json:"upstream"`
-	Model      string `json:"model"`
-	Capability string `json:"capability"`
-	Source     string `json:"source"`
-	Reason     string `json:"reason"`
-	ObservedAt int64  `json:"observed_at"`
+	CredentialGeneration int64  `json:"-"`
+	Upstream             string `json:"upstream"`
+	Model                string `json:"model"`
+	Capability           string `json:"capability"`
+	Source               string `json:"source"`
+	Reason               string `json:"reason"`
+	ObservedAt           int64  `json:"observed_at"`
 }
 
 type CodexPathConfig struct {
@@ -74,12 +75,17 @@ func (db *DB) ensureCodexRoutesSchema(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS account_codex_paths (account_id BIGINT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE, upstream TEXT NOT NULL, allowed INTEGER NOT NULL DEFAULT 1, PRIMARY KEY(account_id, upstream))`,
 		`CREATE TABLE IF NOT EXISTS account_codex_capabilities (account_id BIGINT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE, upstream TEXT NOT NULL, model TEXT NOT NULL DEFAULT '', capability TEXT NOT NULL DEFAULT 'unknown', source TEXT NOT NULL DEFAULT '', reason TEXT NOT NULL DEFAULT '', observed_at BIGINT NOT NULL DEFAULT 0, PRIMARY KEY(account_id, upstream, model))`,
 		`CREATE INDEX IF NOT EXISTS idx_codex_capability_filter ON account_codex_capabilities(upstream, model, capability, account_id)`,
+		codexProbesSchema,
 	} {
 		if _, err := db.conn.ExecContext(ctx, query); err != nil {
 			return fmt.Errorf("initialize Codex routes: %w", err)
 		}
 	}
-	return nil
+	if db.isSQLite() {
+		return db.ensureSQLiteColumn(ctx, "account_codex_capabilities", "credential_generation", "BIGINT NOT NULL DEFAULT 0")
+	}
+	_, err := db.conn.ExecContext(ctx, `ALTER TABLE account_codex_capabilities ADD COLUMN IF NOT EXISTS credential_generation BIGINT NOT NULL DEFAULT 0`)
+	return err
 }
 
 func (db *DB) GetCodexRoutes(ctx context.Context, id int64) ([]CodexPathConfig, []CodexCapability, error) {
@@ -104,14 +110,14 @@ func (db *DB) GetCodexRoutes(ctx context.Context, id int64) ([]CodexPathConfig, 
 	if err != nil {
 		return nil, nil, err
 	}
-	rows, err = db.conn.QueryContext(ctx, `SELECT upstream, model, capability, source, reason, observed_at FROM account_codex_capabilities WHERE account_id=$1`, id)
+	rows, err = db.conn.QueryContext(ctx, `SELECT c.upstream, c.model, c.capability, c.source, c.reason, c.observed_at, c.credential_generation FROM account_codex_capabilities c JOIN accounts a ON a.id=c.account_id WHERE c.account_id=$1 AND (c.credential_generation=0 OR c.credential_generation=a.credential_generation)`, id)
 	if err != nil {
 		return nil, nil, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var f CodexCapability
-		if err := rows.Scan(&f.Upstream, &f.Model, &f.Capability, &f.Source, &f.Reason, &f.ObservedAt); err != nil {
+		if err := rows.Scan(&f.Upstream, &f.Model, &f.Capability, &f.Source, &f.Reason, &f.ObservedAt, &f.CredentialGeneration); err != nil {
 			return nil, nil, err
 		}
 		facts = append(facts, f)
@@ -143,7 +149,7 @@ func (db *DB) ObserveCodexCapability(ctx context.Context, id int64, f CodexCapab
 		if err := db.lockCodexRoutesAccount(ctx, tx, id); err != nil {
 			return err
 		}
-		result, err := tx.ExecContext(ctx, `INSERT INTO account_codex_capabilities(account_id,upstream,model,capability,source,reason,observed_at) SELECT $1,$2,$3,$4,$5,$6,$7 WHERE NOT EXISTS (SELECT 1 FROM account_codex_capabilities WHERE account_id=$1 AND upstream=$2 AND model='' AND source='admin_reset' AND observed_at >= $7) ON CONFLICT(account_id,upstream,model) DO UPDATE SET capability=excluded.capability,source=excluded.source,reason=excluded.reason,observed_at=excluded.observed_at WHERE account_codex_capabilities.observed_at < excluded.observed_at`, id, f.Upstream, f.Model, f.Capability, f.Source, f.Reason, f.ObservedAt)
+		result, err := tx.ExecContext(ctx, `INSERT INTO account_codex_capabilities(account_id,upstream,model,capability,source,reason,observed_at,credential_generation) SELECT $1,$2,$3,$4,$5,$6,$7,$8 WHERE ($8=0 OR EXISTS (SELECT 1 FROM accounts WHERE id=$1 AND credential_generation=$8)) AND NOT EXISTS (SELECT 1 FROM account_codex_capabilities WHERE account_id=$1 AND upstream=$2 AND model='' AND source='admin_reset' AND observed_at >= $7) ON CONFLICT(account_id,upstream,model) DO UPDATE SET capability=excluded.capability,source=excluded.source,reason=excluded.reason,observed_at=excluded.observed_at,credential_generation=excluded.credential_generation WHERE account_codex_capabilities.observed_at < excluded.observed_at`, id, f.Upstream, f.Model, f.Capability, f.Source, f.Reason, f.ObservedAt, f.CredentialGeneration)
 		if err != nil {
 			return err
 		}
@@ -206,7 +212,7 @@ func (db *DB) ListCodexRouteRecords(ctx context.Context) (map[int64]*CodexRouteR
 	if err != nil {
 		return nil, err
 	}
-	rows, err = db.conn.QueryContext(ctx, `SELECT account_id,upstream,model,capability,source,reason,observed_at FROM account_codex_capabilities`)
+	rows, err = db.conn.QueryContext(ctx, `SELECT c.account_id,c.upstream,c.model,c.capability,c.source,c.reason,c.observed_at,c.credential_generation FROM account_codex_capabilities c JOIN accounts a ON a.id=c.account_id WHERE c.credential_generation=0 OR c.credential_generation=a.credential_generation`)
 	if err != nil {
 		return nil, err
 	}
@@ -214,7 +220,7 @@ func (db *DB) ListCodexRouteRecords(ctx context.Context) (map[int64]*CodexRouteR
 	for rows.Next() {
 		var id int64
 		var f CodexCapability
-		if err := rows.Scan(&id, &f.Upstream, &f.Model, &f.Capability, &f.Source, &f.Reason, &f.ObservedAt); err != nil {
+		if err := rows.Scan(&id, &f.Upstream, &f.Model, &f.Capability, &f.Source, &f.Reason, &f.ObservedAt, &f.CredentialGeneration); err != nil {
 			return nil, err
 		}
 		get(id).Facts = append(get(id).Facts, f)

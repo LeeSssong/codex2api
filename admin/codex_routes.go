@@ -192,7 +192,13 @@ func (h *Handler) GetCodexRoutes(c *gin.Context) {
 		writeInternalError(c, err)
 		return
 	}
-	c.JSON(200, gin.H{"paths": codexViewsFromRecords(&database.CodexRouteRecords{Paths: configs, Facts: facts}, strings.ToLower(strings.TrimSpace(c.Query("model"))), h.store.FindByID(id), time.Now())})
+	model := strings.ToLower(strings.TrimSpace(c.Query("model")))
+	probes, err := h.codexProbeResults(c.Request.Context(), id, model)
+	if err != nil {
+		writeInternalError(c, err)
+		return
+	}
+	c.JSON(200, gin.H{"paths": codexViewsFromRecords(&database.CodexRouteRecords{Paths: configs, Facts: facts}, model, h.store.FindByID(id), time.Now()), "probes": probes})
 }
 
 func parseCodexRouteID(raw string) (int64, error) {

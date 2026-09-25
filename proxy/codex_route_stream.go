@@ -259,6 +259,7 @@ type codexObservedBody struct {
 	pending   []byte
 	json      bool
 	oversized bool
+	failed    bool
 	success   sync.Once
 }
 
@@ -268,13 +269,18 @@ func observeCodexRouteBody(body io.ReadCloser, a *codexRouteAttemptState, conten
 
 func (b *codexObservedBody) observe(payload []byte) {
 	kind := gjson.GetBytes(payload, "type").String()
+	response := gjson.GetBytes(payload, "response")
+	status := response.Get("status").String()
+	if kind == "response.failed" || kind == "response.incomplete" || kind == "error" || status != "" && status != "completed" && kind == "response.completed" || codexCompletedHasError(response) || codexCompletedHasError(gjson.ParseBytes(payload)) {
+		b.failed = true
+	}
 	if kind != "" && kind != "response.created" && kind != "response.in_progress" && kind != "response.failed" && kind != "error" {
 		b.attempt.decision.commit()
 	}
-	if kind == "response.completed" || b.json && gjson.GetBytes(payload, "object").String() == "response.compaction" {
+	if !b.failed && (kind == "response.completed" && response.IsObject() || b.json && gjson.GetBytes(payload, "object").String() == "response.compaction" && !codexCompletedHasError(gjson.ParseBytes(payload))) {
 		b.success.Do(func() {
 			a := b.attempt
-			a.account.ObserveCodexPath(a.decision.client, database.CodexCapability{Upstream: a.path, Model: a.model, Capability: database.CapabilitySupported, Source: "upstream_completed", Reason: "success", ObservedAt: a.started.UnixNano()})
+			a.account.ObserveCodexPath(a.decision.client, database.CodexCapability{Upstream: a.path, Model: a.model, Capability: database.CapabilitySupported, Source: "upstream_completed", Reason: "success", ObservedAt: a.started.UnixNano(), CredentialGeneration: a.generation})
 		})
 	}
 }

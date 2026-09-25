@@ -19,13 +19,15 @@ type codexPathHealth struct {
 }
 
 type codexAccountRoutes struct {
-	mu         sync.Mutex
-	db         *database.DB
-	loadedAt   time.Time
-	loadFailed bool
-	configs    map[string]bool
-	facts      map[string]database.CodexCapability
-	health     map[string]codexPathHealth
+	mu           sync.Mutex
+	db           *database.DB
+	loadedAt     time.Time
+	loadFailed   bool
+	configs      map[string]bool
+	facts        map[string]database.CodexCapability
+	health       map[string]codexPathHealth
+	probeRunning bool
+	probeResults map[string]codexProbeRecord
 }
 
 // CodexPathSnapshot keeps administration, evidence and temporary health separate.
@@ -79,7 +81,7 @@ func (a *Account) reloadCodexRoutesLocked(ctx context.Context, now time.Time) er
 	return nil
 }
 
-func (a *Account) codexPathSnapshotLocked(path, model string, now time.Time) CodexPathSnapshot {
+func (a *Account) codexPathSnapshotLocked(path, model string, now time.Time, generation int64) CodexPathSnapshot {
 	r := &a.codexRoutes
 	s := CodexPathSnapshot{Upstream: path, Model: model, Allowed: true, Capability: database.CapabilityUnknown, Health: "ready"}
 	if allowed, ok := r.configs[path]; ok {
@@ -91,7 +93,13 @@ func (a *Account) codexPathSnapshotLocked(path, model string, now time.Time) Cod
 		s.HealthReason = "configuration_unavailable"
 	}
 	f, exists := r.facts[codexFactKey(path, model)]
+	if f.CredentialGeneration != 0 && f.CredentialGeneration != generation {
+		f, exists = database.CodexCapability{}, false
+	}
 	global := r.facts[codexFactKey(path, "")]
+	if global.CredentialGeneration != 0 && global.CredentialGeneration != generation {
+		global = database.CodexCapability{}
+	}
 	if global.Capability == database.CapabilityUnsupported || !exists {
 		f = global
 	}
@@ -114,9 +122,10 @@ func (a *Account) codexPathSnapshotLocked(path, model string, now time.Time) Cod
 }
 
 func (a *Account) CodexPathSnapshot(path, model string, now time.Time) CodexPathSnapshot {
+	generation := a.GetCredentialGeneration()
 	a.codexRoutes.mu.Lock()
 	defer a.codexRoutes.mu.Unlock()
-	return a.codexPathSnapshotLocked(path, model, now)
+	return a.codexPathSnapshotLocked(path, model, now, generation)
 }
 
 // Refresh is bounded by a local cache. Control-plane updates explicitly reload.
@@ -131,11 +140,12 @@ func (a *Account) RefreshCodexRoutes(ctx context.Context, now time.Time) error {
 }
 
 func (a *Account) CodexPathViews(model string, now time.Time) []CodexPathSnapshot {
+	generation := a.GetCredentialGeneration()
 	a.codexRoutes.mu.Lock()
 	defer a.codexRoutes.mu.Unlock()
 	out := []CodexPathSnapshot{}
 	for _, path := range []string{database.CodexPathNative, database.CodexPathBasispoints} {
-		out = append(out, a.codexPathSnapshotLocked(path, model, now))
+		out = append(out, a.codexPathSnapshotLocked(path, model, now, generation))
 		if model != "" {
 			continue
 		}
@@ -154,7 +164,7 @@ func (a *Account) CodexPathViews(model string, now time.Time) []CodexPathSnapsho
 		}
 		sort.Strings(models)
 		for _, m := range models {
-			out = append(out, a.codexPathSnapshotLocked(path, m, now))
+			out = append(out, a.codexPathSnapshotLocked(path, m, now, generation))
 		}
 	}
 	return out
@@ -162,9 +172,10 @@ func (a *Account) CodexPathViews(model string, now time.Time) []CodexPathSnapsho
 
 // BeginCodexPath grants one recovery probe after expiry without a timer goroutine.
 func (a *Account) BeginCodexPath(path, model string, now time.Time) (func(), bool) {
+	generation := a.GetCredentialGeneration()
 	r := &a.codexRoutes
 	r.mu.Lock()
-	s := a.codexPathSnapshotLocked(path, model, now)
+	s := a.codexPathSnapshotLocked(path, model, now, generation)
 	if !s.Allowed || s.Capability == database.CapabilityUnsupported || s.Health == "cooldown" || s.Health == "recovering" {
 		r.mu.Unlock()
 		return nil, false
@@ -217,6 +228,11 @@ func (a *Account) SetCodexPathCooldown(path, model, reason string, started, unti
 }
 
 func (a *Account) ObserveCodexPath(ctx context.Context, f database.CodexCapability) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if f.CredentialGeneration != 0 && f.CredentialGeneration != a.CredentialGeneration {
+		return
+	}
 	f.Model = strings.ToLower(strings.TrimSpace(f.Model))
 	r := &a.codexRoutes
 	r.mu.Lock()
