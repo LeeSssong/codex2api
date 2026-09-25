@@ -197,7 +197,9 @@
     "images": "Images",
     "promptFilter": "Prompt Filter",
     "modelPricing": "Model Pricing",
-    "payloadRules": "Payload Rules"
+    "payloadRules": "Payload Rules",
+    "accountQuality": "Account quality operations",
+    "accountAlerts": "Account alerts"
   },
   "antigravity": {
     "pageTitle": "Antigravity Accounts",

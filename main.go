@@ -360,6 +360,7 @@ func main() {
 	defer store.Stop()
 	backgroundCtx, cancelBackground := context.WithCancel(context.Background())
 	adminHandler.StartQualityTests(backgroundCtx)
+	adminHandler.StartAccountOps(backgroundCtx)
 	adminHandler.StartTurnStateHarvester(backgroundCtx)
 	defer cancelBackground()
 	if !proxy.StartResponseCacheSettingsPoller(backgroundCtx, db) {
@@ -648,6 +649,7 @@ func main() {
 	adminHandler.WaitAutoResetCredits()
 	adminHandler.WaitAutoActivate5hWindow()
 	adminHandler.WaitQualityTests()
+	adminHandler.WaitAccountOps()
 	wsKeepalive.Stop()
 	wsrelay.ShutdownExecutor()
 	if !proxy.DrainResponseCacheBackendWrites(2 * time.Second) {

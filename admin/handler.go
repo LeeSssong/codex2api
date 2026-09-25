@@ -45,6 +45,7 @@ import (
 
 // Handler 管理后台 API 处理器
 type Handler struct {
+	accountOps               *accountOpsRuntime
 	qualityTestContext       context.Context
 	qualityTestWG            sync.WaitGroup
 	store                    *auth.Store
@@ -1199,6 +1200,17 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.GET("/accounts/:id/test", h.TestConnection)
 	api.GET("/accounts/:id/quality-test/options", h.QualityTestOptions)
 	api.POST("/accounts/:id/quality-test", h.CreateQualityTestJob)
+	api.GET("/account-ops/module", h.GetAccountOpsModule)
+	api.PUT("/account-ops/module", h.SaveAccountOpsModule)
+	api.GET("/account-ops/config", h.GetAccountOpsConfig)
+	api.PUT("/account-ops/config", h.SaveAccountOpsConfig)
+	api.GET("/account-ops/alerts", h.ListAccountOpsAlerts)
+	api.GET("/quality-ops/plans", h.ListAccountQualityPlans)
+	api.POST("/quality-ops/plans", h.SaveAccountQualityPlan)
+	api.DELETE("/quality-ops/plans/:id", h.DeleteAccountQualityPlan)
+	api.POST("/quality-ops/plans/:id/trigger", h.TriggerAccountQualityPlan)
+	api.GET("/quality-ops/history", h.ListAccountQualityHistory)
+	api.GET("/quality-ops/history/:id", h.GetAccountQualityRound)
 	api.GET("/quality-tests", h.ListQualityTests)
 	api.GET("/quality-tests/:id", h.GetQualityTest)
 	api.POST("/quality-tests/:id/cancel", h.CancelQualityTest)

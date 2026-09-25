@@ -1898,7 +1898,8 @@ func fetchGrokMinimumClientVersion(ctx context.Context, account *auth.Account, p
 // admin probes. inboundBody may be nil when the caller only has canonical
 // Responses. The returned body always speaks Responses SSE on successful
 // Chat/Messages routes, preserving the existing downstream projection boundary.
-func ExecuteGrokProtocolRequest(ctx context.Context, account *auth.Account, inbound GrokProtocol, inboundBody, responsesBody []byte, proxyOverride string, headers http.Header) (*http.Response, error) {
+func ExecuteGrokProtocolRequest(ctx context.Context, account *auth.Account, inbound GrokProtocol, inboundBody, responsesBody []byte, proxyOverride string, headers http.Header) (opsResponse *http.Response, opsErr error) {
+	defer func() { observeAccountOpsResponse(account, opsResponse) }()
 	resetUpstreamAttemptTrace(ctx)
 	if ctx == nil {
 		ctx = context.Background()
