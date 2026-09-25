@@ -1,0 +1,3 @@
+# Source and changes
+
+Adapted from Sub2API backend/internal/service/account_token_guard.go, account_token_guard_privacy.go and account_token_guard_safety.go under LGPL-3.0. Original source is retained in the adjacent Sub2API repository. This port preserves the full configuration, NDJSON protocol, request-header UUID substitution, strict auth-error classification, masks and direct Bark delivery. Native Codex2API persistence, explicit account-ID identity mapping, durable jobs and short OAuth-lock publication replace source-specific repositories and runtime leases. Bark is best-effort direct HTTP, without a durable retry queue. At-rest configuration encryption reuses optional CODEX_CRED_ENCRYPTION_KEY; it is not enabled by default.

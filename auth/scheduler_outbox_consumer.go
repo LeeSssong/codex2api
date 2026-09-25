@@ -505,6 +505,15 @@ func (s *Store) applyPersistentAccountSnapshot(dst, src *Account, enabled bool) 
 	dst.GrokOIDCIssuer = src.GrokOIDCIssuer
 	dst.GrokPrincipalType = src.GrokPrincipalType
 	dst.GrokPrincipalID = src.GrokPrincipalID
+	if identityChanged {
+		// Generation zero legacy facts must not survive a remote credential
+		// replacement in this process. Keep administrative routes and health.
+		dst.codexRoutes.mu.Lock()
+		dst.codexRoutes.facts = nil
+		dst.codexRoutes.probeResults = nil
+		dst.codexRoutes.loadedAt = time.Time{}
+		dst.codexRoutes.mu.Unlock()
+	}
 	dst.CredentialGeneration = src.CredentialGeneration
 	dst.CredentialFamilyID = src.CredentialFamilyID
 	dst.GrokLivePlan = src.GrokLivePlan

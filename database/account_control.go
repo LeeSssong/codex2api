@@ -47,12 +47,21 @@ func (db *DB) ensureAccountControlSchema(ctx context.Context) error {
 			"CREATE TRIGGER account_groups_control_revision AFTER UPDATE ON account_groups FOR EACH ROW EXECUTE FUNCTION bump_group_account_control_revision()",
 		}
 	}
-	for _, statement := range statements {
-		if _, err := db.conn.ExecContext(ctx, statement); err != nil {
-			return fmt.Errorf("account control revision: %w", err)
+	return db.execControlDDLTransaction(ctx, statements)
+}
+
+// PostgreSQL holds DDL locks until COMMIT. No existing worker may observe a
+// missing revision trigger between DROP and CREATE during another instance's
+// startup. A failed replacement restores the previous installed trigger.
+func (db *DB) execControlDDLTransaction(ctx context.Context, statements []string) error {
+	return db.withWriteTx(ctx, func(tx *sql.Tx) error {
+		for _, statement := range statements {
+			if _, err := tx.ExecContext(ctx, statement); err != nil {
+				return fmt.Errorf("account control revision: %w", err)
+			}
 		}
-	}
-	return nil
+		return nil
+	})
 }
 
 // WithAccountControlTx shares the native SQLite writer gate. All operations in
