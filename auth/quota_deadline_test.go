@@ -62,4 +62,18 @@ func TestAuthoritativeQuotaDeadlineCannotBeShortened(t *testing.T) {
 	if _, got := a.GetCooldownSnapshot(); !got.Equal(deadline) {
 		t.Fatal("snapshot shortened deadline")
 	}
+	a.SetUsagePercent7d(100)
+	a.SetReset7dAt(time.Now().Add(time.Minute))
+	if !store.MarkUsage7dRateLimited(a) {
+		t.Fatal("missing 7d observation")
+	}
+	if reason, until := a.GetCooldownSnapshot(); reason != ResponsesRateLimitedCooldownReason || !until.Equal(deadline) {
+		t.Fatal("7d metadata replaced authoritative cooldown")
+	}
+	if store.ClearUsageWindowCooldownSince(a, time.Now().Add(time.Second)) {
+		t.Fatal("metadata-only recovery cleared authoritative quota")
+	}
+	if !store.ClearUsageLimitCooldownSince(a, time.Now().Add(time.Second)) {
+		t.Fatal("a fresh successful Responses recovery did not clear quota")
+	}
 }

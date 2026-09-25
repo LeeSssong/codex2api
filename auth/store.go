@@ -9924,10 +9924,13 @@ func (s *Store) markCooldown(acc *Account, duration time.Duration, reason string
 		acc.ErrorMsg = errorMsg
 	}
 	until := now.Add(duration)
-	if reason == ResponsesRateLimitedCooldownReason && acc.Status == StatusCooldown &&
+	if isUsageLimitCooldownReason(reason) && acc.Status == StatusCooldown &&
 		acc.CooldownReason == ResponsesRateLimitedCooldownReason && !acc.isTransientRateLimitCooldownLocked() &&
-		acc.CooldownUtil.After(until) {
-		until = acc.CooldownUtil
+		acc.CooldownUtil.After(now) {
+		reason = ResponsesRateLimitedCooldownReason
+		if acc.CooldownUtil.After(until) {
+			until = acc.CooldownUtil
+		}
 	}
 	acc.setCooldownUntilLocked(until, reason)
 	acc.recomputeSchedulerLocked(atomic.LoadInt64(&s.maxConcurrency))
@@ -10341,6 +10344,16 @@ func (s *Store) ReleaseUsageWindowCooldownForCredits(acc *Account) bool {
 // was already present when observedAt was captured. Authentication failures,
 // generic errors, disabled states, and newer cooldowns are left untouched.
 func (s *Store) ClearUsageLimitCooldownSince(acc *Account, observedAt time.Time) bool {
+	return s.clearUsageLimitCooldownSince(acc, observedAt, true)
+}
+
+// ClearUsageWindowCooldownSince accepts metadata-only recovery evidence.
+// A healthy WHAM window does not prove a rejected Responses request is usable.
+func (s *Store) ClearUsageWindowCooldownSince(acc *Account, observedAt time.Time) bool {
+	return s.clearUsageLimitCooldownSince(acc, observedAt, false)
+}
+
+func (s *Store) clearUsageLimitCooldownSince(acc *Account, observedAt time.Time, responsesSuccess bool) bool {
 	if s == nil || acc == nil {
 		return false
 	}
@@ -10350,6 +10363,7 @@ func (s *Store) ClearUsageLimitCooldownSince(acc *Account, observedAt time.Time)
 
 	acc.mu.Lock()
 	if acc.Status != StatusCooldown || !isUsageLimitCooldownReason(acc.CooldownReason) ||
+		(!responsesSuccess && acc.CooldownReason == ResponsesRateLimitedCooldownReason) ||
 		(!acc.LastRateLimitedAt.IsZero() && acc.LastRateLimitedAt.After(observedAt)) {
 		acc.mu.Unlock()
 		return false
