@@ -8192,7 +8192,7 @@ func classify429RateLimit(account *auth.Account, body []byte, resp *http.Respons
 	if IsUsageLimitReachedError(body) {
 		if resetAt, ok := parseUsageLimitResetAt(body, now); ok {
 			reason := "usage_limit"
-			if account != nil && account.IsPremium5hPlan() && responseHasCodex5hHeaders(resp) {
+			if isCodexUsageWindowError(body) && account != nil && account.IsPremium5hPlan() && responseHasCodex5hHeaders(resp) {
 				reason = "rate_limited_5h"
 			}
 			return codex429Decision{
@@ -8218,6 +8218,11 @@ func classify429RateLimit(account *auth.Account, body []byte, resp *http.Respons
 		}
 
 		cooldown := usageLimitFallbackCooldown(account, body)
+		if resp != nil {
+			if retryAfter := parseRetryAfterHeader(resp.Header.Get("Retry-After")); retryAfter > 0 {
+				cooldown = retryAfter
+			}
+		}
 		resetAt = now.Add(cooldown)
 		return codex429Decision{Scope: rateLimitScopeAccount, Reason: "usage_limit", ResetAt: resetAt, Cooldown: cooldown}
 	}
@@ -8344,7 +8349,7 @@ func Apply429Cooldown(store *auth.Store, account *auth.Account, body []byte, res
 	// Spark has an independent quota window. Its usage_limit metadata must not
 	// rewrite the account plan or the main 5h/7d snapshots before the model-level
 	// decision below is applied.
-	if details, ok := parseUsageLimitDetails(body); ok && !(decision.Scope == rateLimitScopeModel && isProOnlyModel(model)) {
+	if details, ok := parseUsageLimitDetails(body); ok && isCodexUsageWindowError(body) && !(decision.Scope == rateLimitScopeModel && isProOnlyModel(model)) {
 		store.ApplyUsageLimitMetadata(account, details.planType, decision.ResetAt)
 	}
 	if decision.Scope == rateLimitScopeModel {

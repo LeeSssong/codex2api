@@ -97,3 +97,29 @@ func TestBillingQuotaOnSparkBlocksAccountWhileSparkWindowStaysLocal(t *testing.T
 		}
 	}
 }
+
+func TestGenericQuotaDoesNotFabricateSubscriptionUsage(t *testing.T) {
+	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1})
+	t.Cleanup(store.Stop)
+	a := &auth.Account{DBID: 98731, AccessToken: "token", PlanType: "plus", Status: auth.StatusReady}
+	store.AddAccount(a)
+	resp := &http.Response{Header: make(http.Header)}
+	resp.Header.Set("X-Codex-Primary-Used-Percent", "12")
+	resp.Header.Set("X-Codex-Primary-Window-Minutes", "300")
+	body := []byte(`{"error":{"code":"insufficient_quota","plan_type":"free","resets_in_seconds":300}}`)
+	d := Apply429Cooldown(store, a, body, resp, "gpt-6-astra")
+	if d.Reason != "usage_limit" || a.GetPlanType() != "plus" {
+		t.Fatalf("invented plan/window metadata: %+v plan=%s", d, a.GetPlanType())
+	}
+	if _, valid := a.GetUsagePercent5h(); valid {
+		t.Fatal("billing rejection fabricated 5h percentage")
+	}
+	if _, valid := a.GetUsagePercent7d(); valid {
+		t.Fatal("billing rejection fabricated 7d percentage")
+	}
+	resp.Header.Set("Retry-After", "90")
+	d = classify429RateLimit(a, []byte(`{"error":{"code":"insufficient_quota"}}`), resp, time.Now(), "gpt-6-astra")
+	if d.Cooldown != 90*time.Second {
+		t.Fatalf("quota Retry-After ignored: %+v", d)
+	}
+}
