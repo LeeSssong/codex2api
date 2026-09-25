@@ -10,6 +10,7 @@ import { Link } from "react-router-dom";
 import { api } from "../api";
 import type { AccountRow, AccountGroup } from "../types";
 import { Button } from "../components/ui/button";
+import { Select } from "../components/ui/select";
 import {
   Dialog,
   DialogContent,
@@ -356,17 +357,18 @@ export default function AccountQuality() {
           </header>
           <div className="ops-toolbar">
             <span>{selected === null ? "全部账号" : `规则 ${selected}`}</span>
-            <select
+            <Select
               aria-label="筛选记录"
               value={filter}
-              onChange={(e) => setFilter(e.target.value)}
-            >
-              <option value="all">全部结果</option>
-              <option value="passed">全部通过</option>
-              <option value="failed">未通过</option>
-              <option value="inconclusive">不确定</option>
-              <option value="attention">需要关注</option>
-            </select>
+              options={[
+                { value: "all", label: "全部结果" },
+                { value: "passed", label: "全部通过" },
+                { value: "failed", label: "未通过" },
+                { value: "inconclusive", label: "不确定" },
+                { value: "attention", label: "需要关注" },
+              ]}
+              onValueChange={setFilter}
+            />
           </div>
           <div className="ops-table-scroll">
             <table>
@@ -531,21 +533,14 @@ export default function AccountQuality() {
                   </label>
                   <label>
                     推理强度
-                    <select
+                    <Select
                       aria-label="推理强度"
                       value={form.reasoning_effort}
-                      onChange={(e) =>
-                        patch({ reasoning_effort: e.target.value })
-                      }
-                    >
-                      {[
+                      options={[
                         ...new Set(["", form.reasoning_effort, ...efforts]),
-                      ].map((m) => (
-                        <option key={m} value={m}>
-                          {m || "模型默认"}
-                        </option>
-                      ))}
-                    </select>
+                      ].map((m) => ({ value: m, label: m || "模型默认" }))}
+                      onValueChange={(value) => patch({ reasoning_effort: value })}
+                    />
                   </label>
                   <label>
                     每轮并行次数
@@ -597,23 +592,16 @@ export default function AccountQuality() {
                   >
                     使用糖果题
                   </Button>
-                  <select
+                  <Select
                     aria-label="使用已保存题目"
                     value=""
-                    onChange={(e) => {
-                      const preset = presets.find(
-                        (p) => p.id === Number(e.target.value),
-                      );
+                    options={presets.map((p) => ({ value: String(p.id), label: p.name }))}
+                    placeholder="使用已保存题目"
+                    onValueChange={(value) => {
+                      const preset = presets.find((p) => p.id === Number(value));
                       if (preset) patch({ prompt: preset.prompt });
                     }}
-                  >
-                    <option value="">使用已保存题目</option>
-                    {presets.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.name}
-                      </option>
-                    ))}
-                  </select>
+                  />
                 </div>
                 <label>
                   参考答案
@@ -631,26 +619,20 @@ export default function AccountQuality() {
                   <div className="ops-grid">
                     <label>
                       判题分组
-                      <select
-                        required
+                      <Select
                         aria-label="判题分组"
-                        value={form.judge?.group_id || ""}
-                        onChange={(e) =>
+                        value={form.judge?.group_id ? String(form.judge.group_id) : ""}
+                        options={groups.map((g) => ({ value: String(g.id), label: `${g.name} #${g.id}` }))}
+                        placeholder="请选择分组"
+                        onValueChange={(value) =>
                           patch({
                             judge: {
                               ...(form.judge || newQualityPlan().judge!),
-                              group_id: Number(e.target.value),
+                              group_id: Number(value),
                             },
                           })
                         }
-                      >
-                        <option value="">请选择分组</option>
-                        {groups.map((g) => (
-                          <option key={g.id} value={g.id}>
-                            {g.name} #{g.id}
-                          </option>
-                        ))}
-                      </select>
+                      />
                     </label>
                     <label>
                       判题模型

@@ -164,7 +164,8 @@ test("source account quality and alert pages save, trigger, inspect and paginate
       .getByRole("checkbox", { name: "Test account #1", exact: true })
       .check();
     await page.getByLabel("测试模型", { exact: true }).fill("test-model");
-    await page.getByLabel("判题分组", { exact: true }).selectOption("1");
+    await page.getByLabel("判题分组", { exact: true }).click();
+    await page.getByRole("option", { name: "Judges #1", exact: true }).click();
     await page.getByLabel("判题模型", { exact: true }).fill("judge-model");
     await page.getByLabel("每轮并行次数").fill("2");
     await page.getByRole("checkbox", { name: "Judges", exact: true }).check();

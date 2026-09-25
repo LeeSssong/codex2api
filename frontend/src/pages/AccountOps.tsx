@@ -8,6 +8,7 @@ import {
 import { Link } from "react-router-dom";
 import { api } from "../api";
 import { Button } from "../components/ui/button";
+import { Select } from "../components/ui/select";
 import {
   date,
   type AccountOpsSettings,
@@ -259,18 +260,17 @@ export default function AccountOps() {
                     </label>
                     <label>
                       传输加密
-                      <select
+                      <Select
                         aria-label="SMTP 传输加密"
                         value={draft.smtp.tls_mode}
-                        onChange={(e) =>
-                          smtp({
-                            tls_mode: e.target.value as "tls" | "starttls",
-                          })
+                        options={[
+                          { value: "starttls", label: "STARTTLS" },
+                          { value: "tls", label: "TLS" },
+                        ]}
+                        onValueChange={(value) =>
+                          smtp({ tls_mode: value as "tls" | "starttls" })
                         }
-                      >
-                        <option value="starttls">STARTTLS</option>
-                        <option value="tls">TLS</option>
-                      </select>
+                      />
                     </label>
                   </div>
                   <label>
@@ -332,17 +332,18 @@ export default function AccountOps() {
               value={search}
               onChange={(e) => setSearch(e.target.value)}
             />
-            <select
+            <Select
               aria-label="告警类型"
               value={kind}
-              onChange={(e) => setKind(e.target.value)}
-            >
-              <option value="all">全部类型</option>
-              <option value="balance_low">余额不足</option>
-              <option value="weekly_quota">周额度已用尽</option>
-              <option value="quality_degraded">降智处置</option>
-              <option value="quality_restored">自动恢复</option>
-            </select>
+              options={[
+                { value: "all", label: "全部类型" },
+                { value: "balance_low", label: "余额不足" },
+                { value: "weekly_quota", label: "周额度已用尽" },
+                { value: "quality_degraded", label: "降智处置" },
+                { value: "quality_restored", label: "自动恢复" },
+              ]}
+              onValueChange={setKind}
+            />
           </div>
           {!!(remote?.dropped || remote?.failures) && (
             <p role="alert" className="ops-error">
