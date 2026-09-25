@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1
+# Use the bundled BuildKit Dockerfile frontend to avoid an extra registry dependency.
 
 # ============================================================
 # Stage 1: 构建前端 (React + Vite)
