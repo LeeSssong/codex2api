@@ -41,12 +41,14 @@ import (
 	"github.com/codex2api/security"
 	"github.com/codex2api/security/promptfilter"
 	"github.com/codex2api/statepool"
+	"github.com/codex2api/tokenguard"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 )
 
 // Handler 管理后台 API 处理器
 type Handler struct {
+	tokenGuard         *tokenguard.Service
 	accountOps         *accountOpsRuntime
 	ipv6State          *ipv6state.Manager
 	statePool          *statepool.Manager
@@ -1210,6 +1212,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.GET("/accounts/:id/quality-test/options", h.QualityTestOptions)
 	api.POST("/accounts/:id/quality-test", h.CreateQualityTestJob)
 	api.GET("/account-ops/module", h.GetAccountOpsModule)
+	h.RegisterTokenGuardRoutes(api)
 	api.PUT("/account-ops/module", h.SaveAccountOpsModule)
 	api.GET("/account-ops/config", h.GetAccountOpsConfig)
 	api.PUT("/account-ops/config", h.SaveAccountOpsConfig)

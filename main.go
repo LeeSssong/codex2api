@@ -361,6 +361,7 @@ func main() {
 	backgroundCtx, cancelBackground := context.WithCancel(context.Background())
 	adminHandler.StartQualityTests(backgroundCtx)
 	adminHandler.StartAccountOps(backgroundCtx)
+	adminHandler.StartTokenGuard(backgroundCtx)
 	if err := adminHandler.StartStatePool(backgroundCtx); err != nil {
 		log.Printf("State pool startup failed: %v", err)
 		return
@@ -649,6 +650,7 @@ func main() {
 	log.Println("正在关闭...")
 	// 先停止会产生新副作用的后台任务，再等待现有 HTTP 请求排空。
 	cancelBackground()
+	adminHandler.StopTokenGuard()
 	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancelShutdown()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
