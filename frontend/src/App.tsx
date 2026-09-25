@@ -24,6 +24,9 @@ const ImageStudioPortal = lazy(() => import('./pages/ImageStudioPortal'))
 const AccountPortal = lazy(() => import('./pages/AccountPortal'))
 const Usage = lazy(() => import('./pages/Usage'))
 const ImageStudio = lazy(() => import('./pages/ImageStudio'))
+const AccountQuality = lazy(() => import('./pages/AccountQuality'))
+const AccountOps = lazy(() => import('./pages/AccountOps'))
+const TokenGuard = lazy(() => import('./pages/TokenGuard'))
 const QualityTest = lazy(() => import('./pages/QualityTest'))
 const StatePool = lazy(() => import('./pages/StatePool'))
 const PromptFilter = lazy(() => import('./pages/PromptFilter'))
@@ -71,6 +74,13 @@ function AdminApp() {
           <Route path="/proxies" element={<Proxies />} />
           <Route path="/images" element={<Navigate to="/images/studio" replace />} />
           <Route path="/images/:view" element={<ImageStudio />} />
+          <Route path="/smart-ops" element={<Navigate to="/smart-ops/quality" replace />} />
+          <Route path="/smart-ops/quality" element={<AccountQuality />} />
+          <Route path="/smart-ops/alerts" element={<AccountOps />} />
+          <Route path="/smart-ops/tokens" element={<TokenGuard />} />
+          <Route path="/quality-ops" element={<Navigate to="/smart-ops/quality" replace />} />
+          <Route path="/account-ops" element={<Navigate to="/smart-ops/alerts" replace />} />
+          <Route path="/token-guard" element={<Navigate to="/smart-ops/tokens" replace />} />
           <Route path="/quality-test" element={<QualityTest />} />
           <Route path="/state-pool" element={<StatePool />} />
           <Route path="/prompt-filter" element={<Navigate to="/prompt-filter/overview" replace />} />

@@ -1722,6 +1722,12 @@ export interface MessageResponse {
 }
 
 export interface SystemUpdateInfo {
+  source_repository?: string
+  source_revision?: string
+  source_tree?: string
+  upstream_revision?: string
+  latest_revision?: string
+  check_status?: 'checked' | 'unknown'
   current_version: string
   latest_version: string
   has_update: boolean

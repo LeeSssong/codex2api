@@ -29,6 +29,7 @@ const navDefs: NavDef[] = [
   { to: '/proxies', labelKey: 'nav.proxies', icon: <Globe className="size-[18px]" /> },
   { to: '/images/studio', labelKey: 'nav.images', icon: <ImageIcon className="size-[18px]" />, activePrefix: '/images' },
   { to: '/quality-test', labelKey: 'nav.qualityTest', icon: <FlaskConical className="size-[18px]" /> },
+  { to: '/smart-ops/quality', labelKey: 'smartOps.title', icon: <ShieldAlert className="size-[18px]" />, activePrefix: '/smart-ops' },
   { to: '/state-pool', labelKey: 'statePool.title', icon: <Braces className="size-[18px]" /> },
   { to: '/prompt-filter/overview', labelKey: 'nav.promptFilter', icon: <ShieldAlert className="size-[18px]" />, activePrefix: '/prompt-filter' },
   { to: '/ops/overview', labelKey: 'nav.ops', icon: <Server className="size-[18px]" />, activePrefix: '/ops' },
@@ -87,9 +88,9 @@ export default function Layout({ children }: PropsWithChildren) {
   const versionPopoverRef = useRef<HTMLDivElement | null>(null)
   const versionButtonRef = useRef<HTMLButtonElement | null>(null)
   const [versionPopoverPos, setVersionPopoverPos] = useState<{ top: number; left: number } | null>(null)
-  const releaseURL = updateInfo?.release_url || (latestVersion
-    ? `https://github.com/james-6-23/codex2api/releases/tag/${encodeURIComponent(latestVersion)}`
-    : undefined)
+  const managedUpdate = updateInfo?.mode === 'source_image'
+  const versionUnknown = updateInfo?.check_status === 'unknown' || (!updateInfo && Boolean(latestVersion))
+  const releaseURL = updateInfo?.release_url || 'https://github.com/hloolx/codex2api/commits/main'
   const canApplyUpdate = hasUpdate && Boolean(updateInfo) && updateInfo?.supported !== false
   const updateUnavailableReason = updateInfo?.unsupported_reason
 
@@ -157,7 +158,7 @@ export default function Layout({ children }: PropsWithChildren) {
   }
 
   useEffect(() => {
-    if (showVersionPopover && hasUpdate && !updateInfo) {
+    if (showVersionPopover && !updateInfo) {
       void refreshVersion(true)
     }
   }, [showVersionPopover, hasUpdate, updateInfo, refreshVersion])
@@ -396,7 +397,9 @@ export default function Layout({ children }: PropsWithChildren) {
                           className="z-[100] w-[240px] rounded-lg border border-border bg-popover p-3 text-left shadow-xl"
                         >
                           <div className="text-[13px] font-semibold text-foreground">
-                            {latestVersion
+                            {versionUnknown
+                              ? t('managedVersion.unknown')
+                              : latestVersion
                               ? hasUpdate
                                 ? t('common.newVersionAvailable', { version: latestVersion })
                                 : t('common.versionLatest')
@@ -405,14 +408,21 @@ export default function Layout({ children }: PropsWithChildren) {
                           <div className="mt-1 text-[11px] text-muted-foreground">
                             {t('common.currentVersion', { version: __APP_VERSION__ })}
                           </div>
-                          {latestVersion && (
+                          {latestVersion && !versionUnknown && (
                             <div className="mt-1 text-[11px] text-muted-foreground">
                               {t('common.latestVersion', { version: latestVersion })}
                             </div>
                           )}
-                          {hasUpdate && updateUnavailableReason && (
+                          {managedUpdate && (
+                            <div className="mt-2 space-y-1 break-all text-[11px] text-muted-foreground">
+                              <p>{t('managedVersion.source', {repository:updateInfo?.source_repository || 'hloolx/codex2api'})}</p>
+                              <p>{t('managedVersion.local', {revision:updateInfo?.source_revision?.slice(0,12) || '—'})}</p>
+                              <p>{t('managedVersion.upstream', {revision:(updateInfo?.latest_revision || updateInfo?.upstream_revision)?.slice(0,12) || '—'})}</p>
+                            </div>
+                          )}
+                          {(hasUpdate || managedUpdate) && (updateUnavailableReason || managedUpdate) && (
                             <div className="mt-3 rounded-md border border-amber-500/25 bg-amber-500/10 px-2.5 py-2 text-[11px] font-medium leading-relaxed text-amber-700 dark:text-amber-300">
-                              {updateUnavailableReason}
+                              {updateUnavailableReason || t('managedVersion.managed')}
                             </div>
                           )}
                           {hasUpdate && updateInfo?.warning && (
@@ -450,7 +460,7 @@ export default function Layout({ children }: PropsWithChildren) {
                               className="mt-3 inline-flex w-full items-center justify-center gap-1.5 rounded-md border border-primary/20 bg-primary/10 px-2.5 py-1.5 text-[12px] font-semibold text-primary transition-colors hover:bg-primary/15"
                               onClick={() => setShowVersionPopover(false)}
                             >
-                              {t('common.viewReleaseNotes')}
+                              {t(managedUpdate ? 'managedVersion.history' : 'common.viewReleaseNotes')}
                               <ExternalLink className="size-3.5" />
                             </a>
                           )}
