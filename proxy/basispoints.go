@@ -39,9 +39,10 @@ func newBasispointsPreparationError(err error) *Error {
 }
 
 // basispointsNativeFallbackEnabled reports whether requests Basispoints cannot
-// serve (explicit web search, hosted image tools, embedded images, structured
-// output, forced tool choice) use the original Codex channel instead of failing.
-// BASISPOINTS_NATIVE_FALLBACK=off keeps the pool strictly on Basispoints.
+// serve (explicit web search, hosted image tools, structured output, forced tool
+// choice, embedded images without an image host) use the original Codex channel
+// instead of failing. BASISPOINTS_NATIVE_FALLBACK=off keeps the pool strictly on
+// Basispoints.
 func basispointsNativeFallbackEnabled() bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv(basispointsNativeFallbackEnv))) {
 	case "0", "off", "false", "no", "disabled":
@@ -52,21 +53,36 @@ func basispointsNativeFallbackEnabled() bool {
 }
 
 // basispointsNativeRoute decides whether a request under the Basispoints switch
-// must use the original Codex channel. Account selection in Basispoints mode
+// must use the original Codex channel and otherwise rehosts embedded images as
+// HTTPS links so Basispoints can fetch them. This is the last step before the
+// bridge, after ingress has inlined the full history, so it covers images from
+// every turn including tool results. Account selection in Basispoints mode
 // ignores State eligibility, so the native attempt skips the State pool too.
-func basispointsNativeRoute(ctx context.Context, account *auth.Account, requestBody []byte) (context.Context, []byte, string) {
-	if !basispointsNativeFallbackEnabled() {
-		return ctx, requestBody, ""
-	}
-	reason := basispoints.NativeCodexReason(requestBody)
-	if reason == "" {
-		return ctx, requestBody, ""
-	}
+func basispointsNativeRoute(ctx context.Context, account *auth.Account, requestBody []byte) (context.Context, []byte, string, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	log.Printf("[Basispoints] stage=route result=native_codex reason=%s account=%d", reason, account.ID())
-	return WithoutStatePool(ctx), stripBasispointsRoutingFields(requestBody), reason
+	fallback := basispointsNativeFallbackEnabled()
+	if fallback {
+		if reason := basispoints.NativeCodexReason(requestBody, basispointsImageHostAvailable()); reason != "" {
+			log.Printf("[Basispoints] stage=route result=native_codex reason=%s account=%d", reason, account.ID())
+			return WithoutStatePool(ctx), stripBasispointsRoutingFields(requestBody), reason, nil
+		}
+	}
+	converted, images, err := rewriteBasispointsImages(ctx, requestBody)
+	if err != nil {
+		category := basispoints.Category(err)
+		if fallback {
+			log.Printf("[Basispoints] stage=images result=native_codex category=%s account=%d", category, account.ID())
+			return WithoutStatePool(ctx), stripBasispointsRoutingFields(requestBody), basispoints.RouteImageInput, nil
+		}
+		log.Printf("[Basispoints] stage=images result=rejected code=%s category=%s account=%d", ErrorCodeBasispointsInvalidRequest, category, account.ID())
+		return ctx, requestBody, "", newBasispointsPreparationError(err)
+	}
+	if images.converted+images.reused > 0 {
+		log.Printf("[Basispoints] stage=images result=hosted converted=%d reused=%d account=%d", images.converted, images.reused, account.ID())
+	}
+	return ctx, converted, "", nil
 }
 
 // stripBasispointsRoutingFields restores the Codex wire shape: ingress keeps

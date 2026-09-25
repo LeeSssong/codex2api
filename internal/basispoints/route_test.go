@@ -36,9 +36,36 @@ func TestNativeCodexReasonRoutesOnlyExplicitCapabilities(t *testing.T) {
 		{"invalid json", `{"model":`, ""},
 	}
 	for _, tc := range cases {
-		if got := NativeCodexReason([]byte(tc.body)); got != tc.want {
+		if got := NativeCodexReason([]byte(tc.body), false); got != tc.want {
 			t.Errorf("%s: reason=%q want %q", tc.name, got, tc.want)
 		}
+	}
+}
+
+// With an image host, embedded data-URL images stay on Basispoints because the
+// proxy rehosts them as HTTPS links; every other unsupported image form still
+// routes, and a data URL is judged by the shape it will have after conversion.
+func TestNativeCodexReasonKeepsConvertibleImagesOnBasispoints(t *testing.T) {
+	image := `{"type":"input_image","image_url":"data:image/png;base64,AAAA","detail":"high"}`
+	cases := []struct {
+		name, body, want string
+	}{
+		{"data image in message", `{"model":"gpt-6-astra","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"look"},` + image + `]}]}`, ""},
+		{"data image in tool output", `{"model":"gpt-6-astra","input":[{"type":"function_call_output","call_id":"c1","output":[` + image + `]}]}`, ""},
+		{"data image with file id is converted and file id dropped", `{"model":"gpt-6-astra","input":[{"type":"message","role":"user","content":[{"type":"input_image","image_url":"data:image/png;base64,AAAA","file_id":"file_1"}]}]}`, ""},
+		{"data image with unsupported detail", `{"model":"gpt-6-astra","input":[{"type":"message","role":"user","content":[{"type":"input_image","image_url":"data:image/png;base64,AAAA","detail":"original"}]}]}`, RouteImageInput},
+		{"file id image", `{"model":"gpt-6-astra","input":[{"type":"message","role":"user","content":[{"type":"input_image","file_id":"file_1"}]}]}`, RouteImageInput},
+		{"http image", `{"model":"gpt-6-astra","input":[{"type":"message","role":"user","content":[{"type":"input_image","image_url":"http://example.com/a.png"}]}]}`, RouteImageInput},
+		{"https image stays", `{"model":"gpt-6-astra","input":[{"type":"message","role":"user","content":[{"type":"input_image","image_url":"https://example.com/a.png"}]}]}`, ""},
+		{"live web search still routes", `{"model":"gpt-6-astra","input":[{"type":"message","role":"user","content":[` + image + `]}],"tools":[{"type":"web_search","external_web_access":true}]}`, RouteWebSearch},
+	}
+	for _, tc := range cases {
+		if got := NativeCodexReason([]byte(tc.body), true); got != tc.want {
+			t.Errorf("%s: reason=%q want %q", tc.name, got, tc.want)
+		}
+	}
+	if IsDataURL(" DATA:image/png;base64,AAAA") != true || IsDataURL("https://example.com/a.png") {
+		t.Fatal("data URL detection must be case-insensitive and reject links")
 	}
 }
 

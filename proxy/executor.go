@@ -525,7 +525,11 @@ func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []by
 	}
 	if CurrentRuntimeSettings().CodexBasispointsEnabled {
 		var nativeReason string
-		ctx, requestBody, nativeReason = basispointsNativeRoute(ctx, account, requestBody)
+		var routeErr error
+		ctx, requestBody, nativeReason, routeErr = basispointsNativeRoute(ctx, account, requestBody)
+		if routeErr != nil {
+			return nil, routeErr
+		}
 		if nativeReason == "" {
 			return executeBasispointsRequest(ctx, account, requestBody, sessionID, proxyOverride, apiKey, headers)
 		}
@@ -981,7 +985,11 @@ func ExecuteCompactRequest(ctx context.Context, account *auth.Account, requestBo
 	}
 	if CurrentRuntimeSettings().CodexBasispointsEnabled {
 		var nativeReason string
-		ctx, requestBody, nativeReason = basispointsNativeRoute(ctx, account, requestBody)
+		var routeErr error
+		ctx, requestBody, nativeReason, routeErr = basispointsNativeRoute(ctx, account, requestBody)
+		if routeErr != nil {
+			return nil, routeErr
+		}
 		if nativeReason == "" {
 			return executeBasispointsCompactRequest(ctx, account, requestBody, sessionID, proxyOverride, apiKey, headers)
 		}

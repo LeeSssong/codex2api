@@ -253,16 +253,24 @@ func TestBasispointsNativeFallbackCanBeDisabled(t *testing.T) {
 		t.Fatal("embedded images must fail locally when the fallback is off")
 		return nil, nil
 	})
+	// Without an image host, an embedded image cannot become an HTTPS link, so the
+	// rejection explains the hosting prerequisite instead of the image format.
+	SetBasispointsImageHost(nil)
 	_, err := ExecuteRequest(context.Background(), account, []byte(`{"model":"gpt-6-astra","input":[{"type":"message","role":"user","content":[{"type":"input_image","image_url":"data:image/png;base64,AAAA"}]}]}`), "", "", "client-key", nil, nil, false)
 	var typed *Error
 	if !errors.As(err, &typed) || typed.Code != ErrorCodeBasispointsInvalidRequest || typed.HTTPStatus != 400 {
 		t.Fatalf("expected a local Basispoints rejection: %v", err)
 	}
-	if !strings.Contains(typed.Message, "Basispoints 渠道无法使用这种图片") || !strings.Contains(typed.Message, "HTTPS image URL") {
+	if !strings.Contains(typed.Message, "图片托管不可用") || !strings.Contains(typed.Message, "IMAGE_ASSET_PUBLIC_BASE_URL") || !strings.Contains(typed.Message, "image host is not configured") {
 		t.Fatalf("image rejection lacks the Chinese explanation: %s", typed.Message)
 	}
-	if got := basispointsPreparationCategory(typed); got != "image_input" {
+	if got := basispointsPreparationCategory(typed); got != "image_hosting" {
 		t.Fatalf("category = %s", got)
+	}
+	// Images the proxy cannot host (a file ID) still fail as unsupported image input.
+	_, err = ExecuteRequest(context.Background(), account, []byte(`{"model":"gpt-6-astra","input":[{"type":"message","role":"user","content":[{"type":"input_image","file_id":"file_1"}]}]}`), "", "", "client-key", nil, nil, false)
+	if !errors.As(err, &typed) || basispointsPreparationCategory(typed) != "image_input" || !strings.Contains(typed.Message, "Basispoints 渠道无法使用这种图片") {
+		t.Fatalf("file ID rejection changed: %v", err)
 	}
 }
 

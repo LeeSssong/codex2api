@@ -21,9 +21,12 @@ const (
 // channel, or "" when Basispoints can serve it. Hosted web search counts only when
 // the client asked for it explicitly: Codex CLI declares web_search on every
 // request in its default cached mode (external_web_access=false), which carries no
-// search intent and must stay on Basispoints. Malformed JSON returns "" so the
-// bridge reports the JSON error itself.
-func NativeCodexReason(body []byte) string {
+// search intent and must stay on Basispoints. Embedded data-URL images stay on
+// Basispoints when convertImages is true, because the proxy then rehosts them as
+// HTTPS links before the request leaves; other unsupported image forms (file IDs,
+// plain-HTTP links) always route. Malformed JSON returns "" so the bridge reports
+// the JSON error itself.
+func NativeCodexReason(body []byte, convertImages bool) string {
 	if !gjson.ValidBytes(body) {
 		return ""
 	}
@@ -41,7 +44,7 @@ func NativeCodexReason(body []byte) string {
 				}
 			}
 			for _, field := range []string{"content", "output"} {
-				if reason := contentRoute(item.Get(field)); reason != "" {
+				if reason := contentRoute(item.Get(field), convertImages); reason != "" {
 					return reason
 				}
 			}
@@ -96,8 +99,9 @@ func declaredToolsRoute(tools gjson.Result) string {
 }
 
 // contentRoute mirrors validateHistoryContent: anything the bridge would reject is
-// routed instead, so callers keep the Codex channel's native handling.
-func contentRoute(content gjson.Result) string {
+// routed instead, so callers keep the Codex channel's native handling. With
+// convertImages, a data-URL image is judged as the HTTPS link it will become.
+func contentRoute(content gjson.Result, convertImages bool) string {
 	if !content.IsArray() {
 		return ""
 	}
@@ -106,6 +110,9 @@ func contentRoute(content gjson.Result) string {
 		case "input_text", "output_text", "text", "refusal":
 		case "input_image":
 			image, ok := part.Value().(object)
+			if ok && convertImages && IsDataURL(text(image["image_url"])) {
+				image = convertedImageShape(image)
+			}
 			if !ok || validateImage(image) != nil {
 				return RouteImageInput
 			}
@@ -114,4 +121,21 @@ func contentRoute(content gjson.Result) string {
 		}
 	}
 	return ""
+}
+
+// IsDataURL reports whether an image reference embeds its bytes inline.
+func IsDataURL(raw string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(raw)), "data:")
+}
+
+// convertedImageShape is the part as the image rewrite will emit it: a hosted
+// HTTPS link with any file_id dropped, keeping detail for validation.
+func convertedImageShape(image object) object {
+	converted := make(object, len(image))
+	for key, value := range image {
+		converted[key] = value
+	}
+	converted["image_url"] = "https://hosted.invalid/converted"
+	delete(converted, "file_id")
+	return converted
 }

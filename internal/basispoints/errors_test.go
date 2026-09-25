@@ -47,6 +47,20 @@ func TestPreparationFailuresExplainThemselvesInChinese(t *testing.T) {
 	if Category(nil) != "" || UserMessage(nil) != "" || ProtocolFailureMessage(nil) != "" {
 		t.Fatal("nil errors must map to empty strings")
 	}
+	// Image hosting failures come from the proxy's rewrite step, not Prepare, and
+	// must point operators at the hosting prerequisites rather than the image format.
+	for _, detail := range []string{
+		"Basispoints image host is not configured; embedded images cannot become HTTPS links",
+		"Basispoints image host could not store an image: disk full",
+	} {
+		err := errors.New(detail)
+		if Category(err) != "image_hosting" || !strings.Contains(UserMessage(err), "IMAGE_ASSET_PUBLIC_BASE_URL") || !strings.Contains(UserMessage(err), detail) {
+			t.Fatalf("image hosting failure misclassified: %s → %s", Category(err), UserMessage(err))
+		}
+	}
+	if err := errors.New("Basispoints embedded image payload is not a recognized image format"); Category(err) != "image_input" || !strings.Contains(UserMessage(err), "base64 内嵌图片") {
+		t.Fatalf("undecodable embedded image must stay an image_input rejection: %s", UserMessage(err))
+	}
 }
 
 func TestProtocolFailureMessageKeepsDiagnostics(t *testing.T) {
