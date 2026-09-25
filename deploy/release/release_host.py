@@ -3,7 +3,7 @@
 Only the codex app is stopped/recreated. PostgreSQL, Redis and Sub stay running.
 An image built from verified/pushed clean main is mandatory. No credentials print.
 """
-import argparse, copy, fcntl, json, os, pathlib, re, shutil, subprocess, time, urllib.request
+import argparse, copy, fcntl, ipaddress, json, os, pathlib, re, shutil, subprocess, time, urllib.request
 
 def codex_route(config):
  matches=[]
@@ -33,7 +33,7 @@ class Release:
  def __init__(self,args):
   self.args=args; self.root=pathlib.Path('/opt/codex2api'); self.compose=self.root/'docker-compose.yml'
   self.dir=self.root/'backups'/args.release_id; self.dir.mkdir(mode=0o700,parents=True,exist_ok=False)
-  self.events=[]; self.started=time.monotonic(); self.maintenance=False; self.stopped=False; self.migrated=False; self.opened=False
+  self.events=[]; self.started=time.monotonic(); self.maintenance=False; self.stopped=False; self.migrated=False; self.opened=False; self.app_started=False; self.gated=False
   self.report={'revision':args.revision,'tree':args.tree,'image':args.image,'digest':args.digest,'release_id':args.release_id,'events':self.events}
   self.before=self.compose.read_text(); (self.dir/'compose.before.yml').write_text(self.before)
   self.old=self.inspect('codex2api'); self.env=dict(v.split('=',1) for v in self.old['Config']['Env']); self.port=int(self.env.get('CODEX_PORT','18080'))
@@ -62,6 +62,11 @@ class Release:
  def caddy(self):return json.loads(self.run(['docker','exec','sub2api-caddy-1','wget','-qO-','http://127.0.0.1:2019/config/']))
  def load_caddy(self,config):
   self.run(['docker','exec','-i','sub2api-caddy-1','wget','-qO-','--header=Content-Type:application/json','--post-file=/dev/stdin','http://127.0.0.1:2019/load'],json.dumps(config).encode())
+ def network_gate(self,enable):
+  if self.gated==enable:return
+  rule=["-d",self.subnet,"-p","tcp","--dport",str(self.port),"-m","conntrack","--ctstate","NEW","-m","comment","--comment","codex-release-"+self.args.release_id,"-j","REJECT"]
+  command=["iptables","-w","10"]+(["-I","DOCKER-USER","1"] if enable else ["-D","DOCKER-USER"])+rule
+  self.run(command,timeout=20);self.gated=enable
  def restore_route(self):
   current=self.caddy();codex_route(current)['handle']=self.route_before;self.load_caddy(current);self.maintenance=False
  def write_compose(self,text):
@@ -89,6 +94,11 @@ class Release:
   if image['Id']!=self.args.digest:raise ValueError('image digest mismatch')
   check_source(image['Config'].get('Labels') or {},self.args.revision,self.args.tree)
   if image['Architecture']!='amd64':raise ValueError('expected amd64 image')
+  self.run(['iptables','-S','DOCKER-USER'])
+  network=json.loads(self.run(['docker','network','inspect','codex2api-net']))[0]
+  subnets=[item['Subnet'] for item in network['IPAM']['Config'] if ipaddress.ip_network(item['Subnet']).version==4]
+  if len(subnets)!=1:raise ValueError('expected one Codex IPv4 subnet')
+  self.subnet=subnets[0]
   self.dc('config','--quiet');self.request('/health');self.request('/api/admin/settings',True)
   self.original_settings=json.loads(self.request('/api/admin/settings',True)[2])
   self.route_before=copy.deepcopy(codex_route(self.caddy())['handle'])
@@ -111,6 +121,7 @@ class Release:
   self.stop_migrator()
   if not self.stopped:return
   if preserve_database:
+   self.network_gate(True)
    self.load_caddy(maintenance_config(self.caddy()));self.maintenance=True
   exists=self.run(['docker','ps','-aq','--filter','name=^codex2api$']).strip()
   if exists and self.inspect('codex2api')['State']['Running']:self.dc('stop','-t','300','codex2api',timeout=330)
@@ -119,17 +130,20 @@ class Release:
    self.run(['docker','exec','codex2api-postgres','sh','-c','dropdb --force -U "$POSTGRES_USER" "$POSTGRES_DB" && createdb -U "$POSTGRES_USER" -O "$POSTGRES_USER" "$POSTGRES_DB"'])
    self.run(['docker','exec','-i','codex2api-postgres','sh','-c','exec pg_restore --exit-on-error --no-owner -U "$POSTGRES_USER" -d "$POSTGRES_DB"'],(self.dir/'stopped.dump').read_bytes())
   self.dc('up','-d','--no-deps','codex2api');self.ready()
+  self.network_gate(False)
   if self.maintenance:self.restore_route()
   self.report['rolled_back']=True;self.report['database_restored']=self.migrated and not preserve_database;self.event('rollback-completed')
  def execute(self):
   self.preflight()
   try:
+   self.network_gate(True)
    self.maintenance=True;self.load_caddy(maintenance_config(self.caddy()));self.event('maintenance-on')
    self.stopped=True;self.dc('stop','-t','300','codex2api',timeout=330);self.event('app-stopped')
    self.dump(self.dir/'stopped.dump');self.event('consistent-backup-completed')
    self.write_compose(replace_image(self.before,self.args.image));self.dc('config','--quiet')
    self.migrated=True
    self.dc('run','--rm','--name','codex2api-migrate-'+self.args.release_id,'--no-deps','-e','CODEX_MIGRATE_ONLY=1','codex2api',timeout=180);self.event('migration-completed')
+   self.app_started=True
    self.dc('up','-d','--no-deps','codex2api');self.ready()
    if self.inspect('codex2api')['Image']!=self.args.digest:raise RuntimeError('running image mismatch')
    for endpoint in ['/api/admin/account-ops/module','/api/admin/account-ops/config','/api/admin/quality-ops/plans','/api/admin/quality-ops/history','/api/admin/account-ops/alerts']:
@@ -142,17 +156,20 @@ class Release:
    for path in ['/admin/quality-ops','/admin/account-ops']:
     if b'<html' not in self.request(path)[2].lower():raise RuntimeError('admin UI shell missing')
    self.event('internal-feature-smoke-passed')
-   self.opened=True;self.restore_route();self.event('traffic-restored')
+   self.opened=True;self.network_gate(False);self.restore_route();self.event('traffic-restored')
    self.request('/health',public=True)
    for path in ['/api/admin/account-ops/module','/api/admin/quality-ops/plans']:
     self.request(path,True,public=True)
    self.report['result']='success';self.report['rolled_back']=False;self.event('public-feature-smoke-passed')
   except BaseException:
    self.report['result']='failed';self.save()
-   if not self.opened:
+   if not self.opened and not self.app_started:
     try:self.rollback()
     finally:
-     if self.maintenance and not self.stopped:self.restore_route()
+     if not self.stopped:
+      try:
+       if self.maintenance:self.restore_route()
+      finally:self.network_gate(False)
    else:
     # Additive migration: restore old app/config only, preserving all resumed writes.
     self.rollback(preserve_database=True)

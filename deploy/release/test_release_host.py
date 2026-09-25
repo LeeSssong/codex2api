@@ -24,17 +24,19 @@ class RollbackDecisionTests(unittest.TestCase):
   from release_host import Release
   class Fake(Release):
    def __init__(self):
-    self.args=types.SimpleNamespace(image='new',digest='digest',release_id='test');self.before='services:\n  codex2api:\n    image: old\n';self.dir=pathlib.Path('/unused');self.report={};self.maintenance=False;self.stopped=False;self.opened=False;self.migrated=False;self.calls=[]
+    self.args=types.SimpleNamespace(image='new',digest='digest',release_id='test');self.before='services:\n  codex2api:\n    image: old\n';self.dir=pathlib.Path('/unused');self.report={};self.maintenance=False;self.stopped=False;self.opened=False;self.migrated=False;self.app_started=False;self.gated=False;self.calls=[]
    def preflight(self):self.original_settings={'codex_basispoints_enabled':False}
    def event(self,n):self.calls.append(n)
    def save(self):pass
    def caddy(self):return {'apps':{'http':{'servers':{'s':{'routes':[{'match':[{'host':['codex.xingqiaolab.top']}],'handle':[]}]}}}}}
    def load_caddy(self,c):pass
+   def network_gate(self,v):self.gated=v
    def dc(self,*args,**kw):
     if args[0]=='run' and failure=='migration':raise RuntimeError('migration failed')
    def dump(self,p):pass
    def write_compose(self,c):pass
-   def ready(self):pass
+   def ready(self):
+    if failure=='startup':raise RuntimeError('startup failed')
    def inspect(self,n):return {'Image':'digest'}
    def request(self,p,auth=False,public=False):
     if public and failure=='public':raise RuntimeError('public failed')
@@ -66,4 +68,17 @@ class MigratorCleanupTests(unittest.TestCase):
   from release_host import Release
   r=Release.__new__(Release);r.args=types.SimpleNamespace(release_id='test');r.run=lambda *a,**k:b'still-running'
   with self.assertRaises(RuntimeError):r.stop_migrator()
+
+class NetworkGateTests(unittest.TestCase):
+ def test_gate_is_scoped_to_new_codex_connections(self):
+  import types
+  from release_host import Release
+  r=Release.__new__(Release);r.gated=False;r.subnet='172.19.0.0/16';r.port=18080;r.args=types.SimpleNamespace(release_id='test');calls=[]
+  r.run=lambda cmd,**kw:calls.append(cmd)
+  r.network_gate(True);r.network_gate(True);r.network_gate(False)
+  self.assertEqual(len(calls),2);self.assertIn('172.19.0.0/16',calls[0]);self.assertIn('NEW',calls[0]);self.assertIn('18080',calls[0]);self.assertIn('-D',calls[1])
+ def test_startup_failure_preserves_background_writes(self):
+  r=RollbackDecisionTests().fake('startup')
+  with self.assertRaises(RuntimeError):r.execute()
+  self.assertIn(('rollback',True),r.calls)
 if __name__=='__main__':unittest.main()
