@@ -55,6 +55,8 @@ export interface AccountOpsConfig {
   recipient: string;
   balance_low: boolean;
   weekly_quota: boolean;
+  quality_degraded: boolean;
+  quality_restored: boolean;
   cooldown_minutes: number;
 }
 export interface SMTPConfig {

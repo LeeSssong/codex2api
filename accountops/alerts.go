@@ -22,6 +22,8 @@ type AccountOpsConfig struct {
 	Recipient       string `json:"recipient"`
 	BalanceLow      bool   `json:"balance_low"`
 	WeeklyQuota     bool   `json:"weekly_quota"`
+	QualityDegraded bool   `json:"quality_degraded"`
+	QualityRestored bool   `json:"quality_restored"`
 	CooldownMinutes int    `json:"cooldown_minutes"`
 }
 
@@ -38,13 +40,13 @@ func ValidateAccountOpsConfig(c AccountOpsConfig) error {
 			return errors.New("recipient must be one email address")
 		}
 	}
-	if c.Enabled && (c.Recipient == "" || (!c.BalanceLow && !c.WeeklyQuota)) {
+	if c.Enabled && (c.Recipient == "" || (!c.BalanceLow && !c.WeeklyQuota && !c.QualityDegraded && !c.QualityRestored)) {
 		return errors.New("select an alert type and configure a recipient before enabling")
 	}
 	return nil
 }
 func (c AccountOpsConfig) Allows(kind string) bool {
-	return c.Enabled && c.Recipient != "" && ((kind == "balance_low" && c.BalanceLow) || (kind == "weekly_quota" && c.WeeklyQuota))
+	return c.Enabled && c.Recipient != "" && ((kind == "balance_low" && c.BalanceLow) || (kind == "weekly_quota" && c.WeeklyQuota) || (kind == "quality_degraded" && c.QualityDegraded) || (kind == "quality_restored" && c.QualityRestored))
 }
 
 type AccountOpsEvent struct {
@@ -156,6 +158,30 @@ func (s *AccountOpsService) Observe(account *Account, status int, headers http.H
 		s.dropped.Add(1)
 	}
 }
+func (s *AccountOpsService) ObserveQuality(accountID int64, accountName, action string) {
+	if s == nil || accountID <= 0 {
+		return
+	}
+	kind := ""
+	switch action {
+	case "groups_removed", "scheduling_disabled":
+		kind = "quality_degraded"
+	case "restored":
+		kind = "quality_restored"
+	}
+	if kind == "" || !s.currentConfig().Allows(kind) {
+		return
+	}
+	name := []rune(accountName)
+	if len(name) > 120 {
+		name = name[:120]
+	}
+	select {
+	case s.queue <- AccountOpsEvent{AccountID: accountID, AccountName: string(name), Kind: kind, Signal: action}:
+	default:
+		s.dropped.Add(1)
+	}
+}
 func (s *AccountOpsService) Start() {
 	s.lifecycle.Lock()
 	defer s.lifecycle.Unlock()
@@ -247,11 +273,19 @@ func (s *AccountOpsService) deliverEvent(ctx context.Context, event *AccountOpsE
 		state = "failed"
 	} else if c.Allows(event.Kind) {
 		label := "上游余额不足"
-		if event.Kind == "weekly_quota" {
+		switch event.Kind {
+		case "weekly_quota":
 			label = "上游周额度已用尽"
+		case "quality_degraded":
+			label = "降智检测已执行处置"
+		case "quality_restored":
+			label = "降智检测已自动恢复"
 		}
 		subject := "Codex2API 账号运维：" + label
 		body := fmt.Sprintf("<h2>%s</h2><p>账号：%s（#%d）</p><p>上游返回 HTTP %d，匹配信号：%s。</p><p>最近触发：%s；累计匹配 %d 次。</p><p>请在账号管理中检查该账号的上游账单或周额度。此提醒基于失败响应，不代表已查询到准确余额，也不会自动修改账号。</p>", label, html.EscapeString(event.AccountName), event.AccountID, event.HTTPStatus, html.EscapeString(accountOpsSignalLabel(event.Signal)), event.LastSeen.UTC().Format(time.RFC3339), event.Occurrences)
+		if event.Kind == "quality_degraded" || event.Kind == "quality_restored" {
+			body = fmt.Sprintf("<h2>%s</h2><p>账号：%s（#%d）</p><p>执行结果：%s。</p><p>最近触发：%s；累计匹配 %d 次。</p><p>请在降智运维的检测详情中核对判题和账号状态。</p>", label, html.EscapeString(event.AccountName), event.AccountID, html.EscapeString(qualityActionLabel(event.Signal)), event.LastSeen.UTC().Format(time.RFC3339), event.Occurrences)
+		}
 		send, stop := context.WithTimeout(ctx, 30*time.Second)
 		if s.email == nil {
 			err = errors.New("email unavailable")
@@ -271,6 +305,18 @@ func (s *AccountOpsService) deliverEvent(ctx context.Context, event *AccountOpsE
 	defer stop()
 	if err = s.repo.Complete(finish, event, state, delay); err != nil {
 		s.failures.Add(1)
+	}
+}
+func qualityActionLabel(action string) string {
+	switch action {
+	case "groups_removed":
+		return "已移出配置的分组"
+	case "scheduling_disabled":
+		return "已停用账号调度"
+	case "restored":
+		return "已自动恢复账号"
+	default:
+		return "已执行账号质量操作"
 	}
 }
 func (s *AccountOpsService) List(ctx context.Context, offset, limit int) ([]AccountOpsEvent, error) {

@@ -133,7 +133,7 @@ func (r *AccountOpsRepository) Complete(ctx context.Context, e *accountops.Accou
 }
 func (r *AccountOpsRepository) SuppressDisabled(ctx context.Context, c accountops.AccountOpsConfig) error {
 	return r.db.withSQLiteWriteLock(ctx, func() error {
-		_, err := r.db.conn.ExecContext(ctx, `UPDATE account_ops_alerts SET state='suppressed',lease='',lease_until=NULL WHERE state IN ('pending','failed') AND (NOT $1 OR (kind='balance_low' AND NOT $2) OR (kind='weekly_quota' AND NOT $3))`, c.Enabled, c.BalanceLow, c.WeeklyQuota)
+		_, err := r.db.conn.ExecContext(ctx, `UPDATE account_ops_alerts SET state='suppressed',lease='',lease_until=NULL WHERE state IN ('pending','failed') AND (NOT $1 OR (kind='balance_low' AND NOT $2) OR (kind='weekly_quota' AND NOT $3) OR (kind='quality_degraded' AND NOT $4) OR (kind='quality_restored' AND NOT $5))`, c.Enabled, c.BalanceLow, c.WeeklyQuota, c.QualityDegraded, c.QualityRestored)
 		return err
 	})
 }

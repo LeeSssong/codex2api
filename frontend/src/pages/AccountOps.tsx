@@ -22,6 +22,7 @@ export function AccountOpsModule({
   onChange: (v: boolean) => void;
 }) {
   const [busy, setBusy] = useState(false),
+    [pendingValue, setPendingValue] = useState<boolean | null>(null),
     [error, setError] = useState("");
   return (
     <section className="ops-module">
@@ -30,17 +31,21 @@ export function AccountOpsModule({
           type="checkbox"
           role="switch"
           aria-label="启用账号运维内置模块"
-          checked={enabled}
+          checked={pendingValue ?? enabled}
           disabled={busy}
           onChange={(e) => {
             const value = e.target.checked;
+            setPendingValue(value);
             setBusy(true);
             setError("");
             void api
               .saveAccountOpsModule(value)
               .then((r) => onChange(r.enabled))
               .catch((e) => setError(e.message))
-              .finally(() => setBusy(false));
+              .finally(() => {
+                setPendingValue(null);
+                setBusy(false);
+              });
           }}
         />
         <span>
@@ -117,6 +122,12 @@ export default function AccountOps() {
     failed: "发送失败",
     suppressed: "已抑制",
   };
+  const kinds: Record<string, string> = {
+    balance_low: "余额不足",
+    weekly_quota: "周额度已用尽",
+    quality_degraded: "降智处置",
+    quality_restored: "自动恢复",
+  };
   return (
     <div className="account-ops-workspace">
       <nav className="ops-tabs">
@@ -128,7 +139,7 @@ export default function AccountOps() {
       <header className="ops-heading">
         <div>
           <h1>账号告警</h1>
-          <p>观察上游失败响应，提醒余额不足或周额度已用尽。</p>
+          <p>观察上游失败与降智检测的账号处置。</p>
         </div>
         <Button variant="outline" onClick={() => void load()}>
           刷新
@@ -197,6 +208,14 @@ export default function AccountOps() {
                     onChange={(e) => patch({ weekly_quota: e.target.checked })}
                   />
                   周额度已用尽
+                </label>
+                <label className="ops-check">
+                  <input type="checkbox" checked={draft.config.quality_degraded} onChange={(e) => patch({ quality_degraded: e.target.checked })} />
+                  降智处置
+                </label>
+                <label className="ops-check">
+                  <input type="checkbox" checked={draft.config.quality_restored} onChange={(e) => patch({ quality_restored: e.target.checked })} />
+                  自动恢复
                 </label>
                 <label>
                   冷却时间（分钟）
@@ -321,6 +340,8 @@ export default function AccountOps() {
               <option value="all">全部类型</option>
               <option value="balance_low">余额不足</option>
               <option value="weekly_quota">周额度已用尽</option>
+              <option value="quality_degraded">降智处置</option>
+              <option value="quality_restored">自动恢复</option>
             </select>
           </div>
           {!!(remote?.dropped || remote?.failures) && (
@@ -334,7 +355,7 @@ export default function AccountOps() {
               <thead>
                 <tr>
                   <th>账号</th>
-                  <th>失败类型</th>
+                  <th>告警类型</th>
                   <th>最近触发</th>
                   <th>邮件状态</th>
                 </tr>
@@ -357,8 +378,8 @@ export default function AccountOps() {
                         </small>
                       </td>
                       <td>
-                        {e.kind === "balance_low" ? "余额不足" : "周额度已用尽"}
-                        <small>HTTP {e.http_status}</small>
+                        {kinds[e.kind] || e.kind}
+                        <small>{e.kind.startsWith("quality_") ? (e.signal === "groups_removed" ? "已移出分组" : e.signal === "scheduling_disabled" ? "已停用调度" : "已恢复") : `HTTP ${e.http_status}`}</small>
                       </td>
                       <td>
                         {date(e.last_seen)}

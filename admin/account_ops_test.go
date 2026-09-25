@@ -9,6 +9,7 @@ import (
 	"github.com/codex2api/auth"
 	"github.com/codex2api/database"
 	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/require"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -70,6 +71,14 @@ func TestAccountOpsParallelRoundAndCancellation(t *testing.T) {
 			defer store.Stop()
 			h := &Handler{db: db, store: store, accountOps: &accountOpsRuntime{}}
 			h.accountOps.enabled.Store(true)
+			h.accountOps.alerts = accountops.NewAccountOpsService(database.NewAccountOpsSettings(db), database.NewAccountOpsRepository(db), nil)
+			cfg := accountops.DefaultConfig()
+			cfg.Enabled, cfg.Recipient, cfg.QualityDegraded = true, "ops@example.com", true
+			if e := h.accountOps.alerts.SaveConfig(ctx, cfg); e != nil {
+				t.Fatal(e)
+			}
+			h.accountOps.alerts.Start()
+			defer h.accountOps.alerts.Stop()
 			arrived := make(chan struct{}, 4)
 			release := make(chan struct{})
 			var judgeCalls atomic.Int32
@@ -179,10 +188,18 @@ func TestAccountOpsParallelRoundAndCancellation(t *testing.T) {
 				if !row.Enabled || rounds[0].Action != "cancelled" || jobs.Jobs[0].Status != "stopped" || judgeCalls.Load() != 0 {
 					t.Fatalf("cancel action %+v job %+v enabled %v calls %d", rounds[0], jobs.Jobs[0], row.Enabled, judgeCalls.Load())
 				}
+				alerts, e := database.NewAccountOpsRepository(db).List(ctx, 0, 10)
+				if e != nil || len(alerts) != 0 {
+					t.Fatal("cancelled round queued a quality alert")
+				}
 			} else {
 				if row.Enabled || rounds[0].Action != "scheduling_disabled" || judgeCalls.Load() != 2 {
 					t.Fatalf("wrong answer not applied %+v enabled=%v calls=%d", rounds[0], row.Enabled, judgeCalls.Load())
 				}
+				require.Eventually(t, func() bool {
+					alerts, e := database.NewAccountOpsRepository(db).List(ctx, 0, 10)
+					return e == nil && len(alerts) == 1 && alerts[0].Kind == "quality_degraded"
+				}, time.Second*2, time.Millisecond*20)
 			}
 		})
 	}

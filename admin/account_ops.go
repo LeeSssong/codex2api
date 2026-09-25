@@ -396,6 +396,7 @@ func (h *Handler) runAccountQualityRound(parent context.Context, p accountops.Pl
 		log.Printf("[account-ops] apply plan=%d: %v", p.ID, e)
 		return
 	}
+	h.accountOps.alerts.ObserveQuality(p.AccountID, round.AccountName, round.Action)
 	if h.store != nil {
 		row, e = h.db.GetAccountByID(ctx, p.AccountID)
 		if e == nil && row != nil {

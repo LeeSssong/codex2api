@@ -185,3 +185,43 @@ func TestAccountOpsNestedStructuredBalanceOnly(t *testing.T) {
 		}
 	}
 }
+
+func TestAccountOpsQualityActionAlerts(t *testing.T) {
+	repo := &accountOpsRepoStub{}
+	sender := &accountOpsSenderStub{}
+	svc := NewAccountOpsService(&accountOpsSettingsStub{}, repo, sender)
+	cfg := defaultAccountOpsConfig()
+	cfg.Enabled = true
+	cfg.Recipient = "ops@example.com"
+	cfg.QualityDegraded = true
+	cfg.QualityRestored = true
+	require.NoError(t, svc.SaveConfig(context.Background(), cfg))
+	for _, action := range []string{"failed", "passed", "inconclusive", "cancelled", "already_quarantined", "no_change", "restore_conflict"} {
+		svc.ObserveQuality(7, "account", action)
+	}
+	require.Empty(t, svc.queue)
+	svc.ObserveQuality(7, "account", "groups_removed")
+	svc.ObserveQuality(7, "account", "scheduling_disabled")
+	svc.ObserveQuality(7, "account", "restored")
+	require.Len(t, svc.queue, 3)
+	for i, kind := range []string{"quality_degraded", "quality_degraded", "quality_restored"} {
+		event := <-svc.queue
+		require.Equal(t, kind, event.Kind, "event %d", i)
+		event.LastSeen = time.Now()
+		svc.deliverEvent(context.Background(), &event)
+		require.Equal(t, i+1, sender.calls)
+		require.Contains(t, sender.body, "账号")
+		require.NotContains(t, sender.body, "上游返回 HTTP")
+	}
+	cfg.QualityRestored = false
+	require.NoError(t, svc.SaveConfig(context.Background(), cfg))
+	svc.ObserveQuality(7, "account", "restored")
+	require.Empty(t, svc.queue)
+}
+
+func TestAccountOpsAllowsQualityOnlyAlerts(t *testing.T) {
+	cfg := AccountOpsConfig{Enabled: true, Recipient: "ops@example.com", CooldownMinutes: 60, QualityDegraded: true}
+	require.NoError(t, ValidateAccountOpsConfig(cfg))
+	require.True(t, cfg.Allows("quality_degraded"))
+	require.False(t, cfg.Allows("quality_restored"))
+}
