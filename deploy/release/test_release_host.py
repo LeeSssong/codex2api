@@ -81,4 +81,16 @@ class NetworkGateTests(unittest.TestCase):
   r=RollbackDecisionTests().fake('startup')
   with self.assertRaises(RuntimeError):r.execute()
   self.assertIn(('rollback',True),r.calls)
+
+class ProbeIdentityTests(unittest.TestCase):
+ def test_probe_identifies_itself_before_cloudflare_checks(self):
+  from unittest.mock import patch, MagicMock
+  from release_host import Release
+  r=Release.__new__(Release);r.port=18080;r.env={'ADMIN_SECRET':'test-only'}
+  response=MagicMock();response.status=200;response.headers={};response.read.return_value=b'{}';response.__enter__.return_value=response
+  with patch('release_host.urllib.request.urlopen',return_value=response) as opened:
+   r.request('/health',public=True)
+   req=opened.call_args.args[0]
+   self.assertEqual(req.get_header('User-agent'),'Codex2API-ReleaseCheck/1.0')
+   self.assertIsNone(req.get_header('X-admin-key'))
 if __name__=='__main__':unittest.main()

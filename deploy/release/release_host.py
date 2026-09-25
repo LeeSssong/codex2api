@@ -73,7 +73,7 @@ class Release:
   temp=self.compose.with_suffix('.release-tmp');temp.write_text(text);shutil.copymode(self.compose,temp);os.replace(temp,self.compose)
  def request(self,path,auth=False,public=False):
   base='https://codex.xingqiaolab.top' if public else 'http://127.0.0.1:'+str(self.port)
-  headers={}
+  headers={"User-Agent":"Codex2API-ReleaseCheck/1.0"}
   if auth:
    secret=self.env.get('ADMIN_SECRET','')
    if not secret:raise RuntimeError('environment-backed admin credential required for release smoke')
@@ -100,6 +100,7 @@ class Release:
   if len(subnets)!=1:raise ValueError('expected one Codex IPv4 subnet')
   self.subnet=subnets[0]
   self.dc('config','--quiet');self.request('/health');self.request('/api/admin/settings',True)
+  self.request('/health',public=True);self.request('/api/admin/settings',True,public=True)
   self.original_settings=json.loads(self.request('/api/admin/settings',True)[2])
   self.route_before=copy.deepcopy(codex_route(self.caddy())['handle'])
   (self.dir/'caddy-handle.before.json').write_text(json.dumps(self.route_before))
