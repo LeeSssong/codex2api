@@ -1,31 +1,27 @@
 import { useEffect, useMemo } from 'react'
 import { api } from '../api'
-import type { AccountLiveStateResponse, CodexTurnStateStatus } from '../types'
+import type { AccountLiveStateResponse, AccountStateModel } from '../types'
+import { subscribeStateChange } from '../lib/stateSync'
+import { syncStateClock } from './useStateClock'
 
 // Merge a live poll response into an account list. Rows whose live concurrency
 // counters did not change keep their object identity, and a no-op poll returns the
 // original array, so the 1s polling cadence cannot defeat row-level memoization.
-export function mergeAccountLiveState<T extends {
-  id: number
-  codex_turn_state_status?: CodexTurnStateStatus
-  active_requests?: number
-  occupied_requests?: number
-  session_slot_buffer_enabled?: boolean
-}>(
+export function mergeAccountLiveState<T extends { id: number; active_requests?: number; occupied_requests?: number; session_slot_buffer_enabled?: boolean; state_models?: AccountStateModel[] }>(
   current: T[],
   response: AccountLiveStateResponse,
 ): T[] {
   let changed = false
   const next = current.map((account) => {
-    const live = response.accounts[String(account.id)]
     const activeRequests = response.accounts[String(account.id)]?.active_requests ?? 0
     const occupiedRequests = response.accounts[String(account.id)]?.occupied_requests ?? activeRequests
     const slotBufferEnabled = response.session_slot_buffer_enabled === true
+    const stateModels = response.accounts[String(account.id)]?.state_models
     if (
       (account.active_requests ?? 0) === activeRequests &&
       (account.occupied_requests ?? account.active_requests ?? 0) === occupiedRequests &&
       (account.session_slot_buffer_enabled ?? false) === slotBufferEnabled &&
-      (!live || JSON.stringify(account.codex_turn_state_status) === JSON.stringify(live.codex_turn_state_status))
+      JSON.stringify(account.state_models) === JSON.stringify(stateModels)
     ) return account
     changed = true
     return {
@@ -33,7 +29,7 @@ export function mergeAccountLiveState<T extends {
       active_requests: activeRequests,
       occupied_requests: occupiedRequests,
       session_slot_buffer_enabled: slotBufferEnabled,
-      ...(live ? { codex_turn_state_status: live.codex_turn_state_status } : {}),
+      state_models: stateModels,
     }
   })
   return changed ? next : current
@@ -47,34 +43,45 @@ export function useAccountLiveState(
   const idsKey = useMemo(() => ids.join(','), [ids])
 
   useEffect(() => {
-    if (!enabled || !idsKey) return undefined
+    if (!enabled) return undefined
     let stopped = false
     let timer: number | undefined
     let controller: AbortController | undefined
+    let generation = 0
 
     const poll = async () => {
       if (stopped) return
+      if (timer !== undefined) window.clearTimeout(timer)
+      const version = ++generation
       if (document.hidden) {
-        timer = window.setTimeout(poll, 1000)
+        timer = window.setTimeout(poll, 30000)
         return
       }
       controller?.abort()
       controller = new AbortController()
       try {
         const response = await api.getAccountLiveState(
-          idsKey.split(',').map(Number),
+          idsKey ? idsKey.split(',').map(Number) : [],
           controller.signal,
         )
-        if (!stopped && !controller.signal.aborted) apply(response)
+        if (!stopped && version === generation && !controller.signal.aborted) {
+          syncStateClock(response.server_time)
+          apply(response)
+        }
       } catch {
         // The next tick retries; live counters must never disrupt the page.
       }
-      if (!stopped) timer = window.setTimeout(poll, 1000)
+      if (!stopped && version === generation) timer = window.setTimeout(poll, 1000)
     }
 
+    const refresh = () => { if (!document.hidden) void poll() }
+    const unsubscribe = subscribeStateChange(refresh)
+    document.addEventListener('visibilitychange', refresh)
     void poll()
     return () => {
       stopped = true
+      unsubscribe()
+      document.removeEventListener('visibilitychange', refresh)
       controller?.abort()
       if (timer !== undefined) window.clearTimeout(timer)
     }

@@ -70,12 +70,6 @@ func (h *Handler) officialPricingModelIDs(ctx context.Context) []string {
 }
 
 func (h *Handler) runOfficialPricingSync(ctx context.Context, includeOpenAI, includeGrok, includeClaude bool) (*proxy.OfficialPricingSyncResult, error) {
-	return h.runOfficialPricingSyncWithWarnings(ctx, proxy.OfficialPricingSyncOptions{
-		IncludeOpenAI: includeOpenAI, IncludeGrok: includeGrok, IncludeClaude: includeClaude,
-	}, nil)
-}
-
-func (h *Handler) runOfficialPricingSyncWithWarnings(ctx context.Context, options proxy.OfficialPricingSyncOptions, warnings []string) (*proxy.OfficialPricingSyncResult, error) {
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -88,15 +82,16 @@ func (h *Handler) runOfficialPricingSyncWithWarnings(ctx context.Context, option
 		proxyURL = h.store.GetProxyURL()
 	}
 	attemptedAt := time.Now().UTC()
-	options.Models = h.officialPricingModelIDs(ctx)
-	result, syncErr := proxy.SyncOfficialModelPricing(ctx, h.db, proxyURL, options)
+	result, syncErr := proxy.SyncOfficialModelPricing(ctx, h.db, proxyURL, proxy.OfficialPricingSyncOptions{
+		Models:        h.officialPricingModelIDs(ctx),
+		IncludeOpenAI: includeOpenAI,
+		IncludeGrok:   includeGrok,
+		IncludeClaude: includeClaude,
+	})
 	recordCtx, recordCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer recordCancel()
+	warnings := []string(nil)
 	if result != nil {
-		result.Warnings = append(result.Warnings, warnings...)
-		if len(result.Missing) > 0 {
-			result.Warnings = append(result.Warnings, "未找到以下模型的官方价格，保留现有价格或兜底价: "+strings.Join(result.Missing, ", "))
-		}
 		warnings = result.Warnings
 	}
 	if recordErr := h.db.RecordOfficialPricingSyncResult(recordCtx, attemptedAt, syncErr, warnings); recordErr != nil {
@@ -206,8 +201,8 @@ func (h *Handler) StartOfficialPricingSync(ctx context.Context) {
 				return
 			}
 
-			syncCtx, syncCancel := context.WithTimeout(ctx, automaticModelDiscoveryTimeout+90*time.Second)
-			result, syncErr := h.runAutomaticModelPricingSync(syncCtx, cfg)
+			syncCtx, syncCancel := context.WithTimeout(ctx, 90*time.Second)
+			result, syncErr := h.runOfficialPricingSync(syncCtx, cfg.IncludeOpenAI, cfg.IncludeGrok, cfg.IncludeClaude)
 			syncCancel()
 			if syncErr != nil {
 				log.Printf("官方模型价格自动同步失败: %v", syncErr)

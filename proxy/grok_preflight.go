@@ -43,15 +43,15 @@ var grokDroppedTopLevelFields = map[string]struct{}{
 // 钳制、无工具时撤掉 tool_choice，并顺带算出轮次序号与模型名。
 // 请求体非法 JSON 或顶层不是对象时原样返回，交由上游报错。
 func prepareGrokUpstreamBody(body []byte) grokPreflightResult {
-	return prepareGrokUpstreamBodyWithCompaction(body, nil, nil)
+	return prepareGrokUpstreamBodyWithCompaction(body, nil)
 }
 
-func prepareGrokUpstreamBodyWithCompaction(body []byte, preservedCompaction compactionProvenanceDigests, reasoningMenu []string) grokPreflightResult {
+func prepareGrokUpstreamBodyWithCompaction(body []byte, preservedCompaction compactionProvenanceDigests) grokPreflightResult {
 	if lifted, changed := liftGrokAdditionalTools(body); changed {
-		return prepareGrokUpstreamBodyWithCompaction(lifted, preservedCompaction, reasoningMenu)
+		return prepareGrokUpstreamBodyWithCompaction(lifted, preservedCompaction)
 	}
 	if guarded, changed := addGrokGiantToolInstructions(body); changed {
-		return prepareGrokUpstreamBodyWithCompaction(guarded, preservedCompaction, reasoningMenu)
+		return prepareGrokUpstreamBodyWithCompaction(guarded, preservedCompaction)
 	}
 	result := grokPreflightResult{Body: body, TurnIndex: 1}
 	if !gjson.ValidBytes(body) {
@@ -127,14 +127,14 @@ func prepareGrokUpstreamBodyWithCompaction(body []byte, preservedCompaction comp
 				return true
 			}
 		case "reasoning":
-			if patched, ok := grokClampReasoningObjectRaw(value, result.Model, reasoningMenu); ok {
+			if patched, ok := grokClampReasoningObjectRaw(value, result.Model); ok {
 				grokWriteObjectKey(&out, &first, key)
 				out.Write(patched)
 				changed = true
 				return true
 			}
 		case "reasoning_effort":
-			if mapped, ok := mapGrokReasoningEffort(value.String(), result.Model, reasoningMenu); ok {
+			if mapped, ok := mapGrokReasoningEffort(value.String(), result.Model); ok {
 				if encoded, err := json.Marshal(mapped); err == nil {
 					grokWriteObjectKey(&out, &first, key)
 					out.Write(encoded)
@@ -716,8 +716,7 @@ func grokDecodedItemIsUserMessage(item map[string]any) bool {
 }
 
 // grokClampReasoningObjectRaw 钳制 reasoning.effort，返回 (新对象 JSON, 是否改写)。
-// reasoningMenu 非空时按该账号目录折叠；空菜单保持版本启发式。
-func grokClampReasoningObjectRaw(reasoning gjson.Result, model string, reasoningMenu []string) ([]byte, bool) {
+func grokClampReasoningObjectRaw(reasoning gjson.Result, model string) ([]byte, bool) {
 	if !reasoning.IsObject() {
 		return nil, false
 	}
@@ -725,7 +724,7 @@ func grokClampReasoningObjectRaw(reasoning gjson.Result, model string, reasoning
 	if !effort.Exists() {
 		return nil, false
 	}
-	mapped, ok := mapGrokReasoningEffort(effort.String(), model, reasoningMenu)
+	mapped, ok := mapGrokReasoningEffort(effort.String(), model)
 	if !ok {
 		return nil, false
 	}

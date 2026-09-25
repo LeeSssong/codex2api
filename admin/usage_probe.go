@@ -449,8 +449,9 @@ func (h *Handler) probeUsageViaWham(ctx context.Context, account *auth.Account, 
 		// 则主动解除限流冷却，无需等待冷却到期或用户手动测试连接。
 		// 仍不调用 ReportRequestSuccess，避免把一次零成本额度查询计入健康成功样本。
 		if !applyUsageLimitedAccountState(h.store, account, state) {
-			h.store.ClearUsageLimitCooldownSince(account, probeStartedAt)
-			log.Printf("[账号 %d] wham 显示限流窗口已重置，自动解除限流冷却", account.DBID)
+			if h.store.ClearUsageWindowCooldownSince(account, probeStartedAt) {
+				log.Printf("[账号 %d] wham 显示限流窗口已重置，自动解除限流冷却", account.DBID)
+			}
 		}
 		return nil
 	}
@@ -458,7 +459,7 @@ func (h *Handler) probeUsageViaWham(ctx context.Context, account *auth.Account, 
 	// 用量未耗尽时重置冷却
 	if !applyUsageLimitedAccountState(h.store, account, state) {
 		if state.HasUsage5h || state.HasUsage7d || state.Cleared5h {
-			h.store.ClearUsageLimitCooldownSince(account, probeStartedAt)
+			h.store.ClearUsageWindowCooldownSince(account, probeStartedAt)
 		}
 	}
 	return nil

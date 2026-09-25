@@ -1,7 +1,6 @@
 package proxy
 
 import (
-	"context"
 	"net/http"
 	"net/url"
 	"strings"
@@ -21,7 +20,6 @@ import (
 // 优先级固定为 Resin > 代理 > 直连,且 Resin 是整层覆盖:一旦启用,Codex 渠道
 // 所有携带账号身份的出站(/responses、compact、WS、wham 用量、订阅查询、遥测、
 // 令牌刷新)全部改经 Resin,第 2 层选出的代理只保留在日志/审计里、不参与拨号。
-// 显式模板刷新可通过 ResolveCodexRequestEgress 使用专属签发代理,不改变以上默认链路。
 // Claude / Grok / Antigravity 等中继型账号不经 Resin,继续走第 2 层。
 //
 // 所有 Codex 出站选客户端的地方都必须经过本文件的解析器,禁止各自再写
@@ -57,6 +55,9 @@ type CodexEgress struct {
 // proxyURL 是第 2 层已经解析好的代理(可为空);Resin 启用时被整层覆盖。
 // account 为 nil 时不可能走 Resin(Resin 按账号粘性,无身份无从粘),退回代理/直连。
 func ResolveCodexEgress(account *auth.Account, targetURL, proxyURL string) CodexEgress {
+	if proxyURL == ipv6StateDirectRoute {
+		return CodexEgress{Kind: CodexEgressDirect, URL: targetURL, account: account}
+	}
 	proxyURL = strings.TrimSpace(proxyURL)
 	if resinCarriesEgress(account) {
 		return CodexEgress{
@@ -118,6 +119,9 @@ func (e CodexEgress) ApplyHeaders(h http.Header) {
 // 拨号用代理。Resin 模式下 WS 地址改写为 Resin 的 ws:// 反代路径、拨号不走代理;
 // 账号身份头由调用方用 ApplyHeaders 注入。
 func ResolveCodexWebsocketEgress(account *auth.Account, wsURL, proxyURL string) CodexEgress {
+	if proxyURL == ipv6StateDirectRoute {
+		return CodexEgress{Kind: CodexEgressDirect, URL: wsURL, account: account}
+	}
 	proxyURL = strings.TrimSpace(proxyURL)
 	if resinCarriesEgress(account) {
 		return CodexEgress{
@@ -144,6 +148,9 @@ func ResolveCodexWebsocketEgress(account *auth.Account, wsURL, proxyURL string) 
 // 路径,再套代理只会把 Resin 本身推到代理后面)。供只需要"拨号走不走代理"、
 // 手里 URL 已经改写过的调用方(WS 连接建立)使用,避免对改写后的地址二次改写。
 func CodexDialProxyURL(account *auth.Account, proxyURL string) string {
+	if proxyURL == ipv6StateDirectRoute {
+		return ""
+	}
 	if resinCarriesEgress(account) {
 		return ""
 	}
@@ -194,16 +201,4 @@ func MaskResinBaseURL(raw string) string {
 		masked += "/***"
 	}
 	return masked
-}
-
-// ResolveCodexRequestEgress allows an explicit template refresh to use its own
-// exit, including when Resin is enabled. All other requests keep normal routing.
-func ResolveCodexRequestEgress(ctx context.Context, account *auth.Account, targetURL, proxyURL string, websocket bool) CodexEgress {
-	if dedicated := CodexTurnStateRefreshProxy(ctx, account); dedicated != "" {
-		return CodexEgress{Kind: CodexEgressProxy, URL: targetURL, ProxyURL: dedicated, DialProxyURL: dedicated, account: account}
-	}
-	if websocket {
-		return ResolveCodexWebsocketEgress(account, targetURL, proxyURL)
-	}
-	return ResolveCodexEgress(account, targetURL, proxyURL)
 }

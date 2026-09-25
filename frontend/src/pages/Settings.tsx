@@ -5,9 +5,10 @@ import { api, resetAdminAuthState, setAdminKey } from '../api'
 import { formatBeijingTime, getTimezone, setTimezone } from '../utils/time'
 import PageHeader from '../components/PageHeader'
 import StateShell from '../components/StateShell'
+import StatePolicySettings from '../components/StatePolicySettings'
 import { useDataLoader } from '../hooks/useDataLoader'
 import { useToast } from '../hooks/useToast'
-import type { AccountGroup, AntigravityOAuthClientSetting, AntigravitySettingsResponse, ChannelTestSettings, CodexUserAgentCatalog, CodexUserAgentPreview, HealthResponse, ModelInfo, SiteBranding, SystemSettings, TurnStateReuseAccountStatus, TurnStateReuseSettings, UpstreamChannel } from '../types'
+import type { AntigravityOAuthClientSetting, AntigravitySettingsResponse, ChannelTestSettings, CodexUserAgentCatalog, CodexUserAgentPreview, HealthResponse, ModelInfo, SiteBranding, SystemSettings, UpstreamChannel } from '../types'
 import { ANTIGRAVITY_DEFAULT_MODELS } from '../lib/antigravityModels'
 import { countPayloadRules } from './PayloadRules'
 import { getErrorMessage } from '../utils/error'
@@ -198,6 +199,7 @@ const isSettingsTabKey = (value: string | null): value is SettingsTabKey =>
   value !== null && (SETTINGS_TAB_KEYS as readonly string[]).includes(value)
 // 旧版单页锚点 → Tab 映射，保证外部深链不失效。
 const LEGACY_SECTION_TABS: Record<string, SettingsTabKey> = {
+  'settings-codex-state': 'codex',
   'settings-overview': 'general',
   'settings-traffic': 'general',
   'settings-runtime': 'general',
@@ -206,7 +208,6 @@ const LEGACY_SECTION_TABS: Record<string, SettingsTabKey> = {
   'settings-reference': 'general',
   'settings-models': 'codex',
   'settings-codex-quota': 'codex',
-  'settings-codex-turn-state': 'codex',
   'settings-codex-transport': 'codex',
   'settings-codex-client': 'codex',
   'settings-codex-images': 'codex',
@@ -219,7 +220,7 @@ const LEGACY_SECTION_TABS: Record<string, SettingsTabKey> = {
 // icon 与对应 SettingsSection 的图标保持一致，目录项和分区标题才能互相对上。
 const SETTINGS_TAB_SECTION_INDEX: Record<SettingsTabKey, ReadonlyArray<{ id: string; labelKey: string; icon: ReactNode }>> = {
   codex: [
-    { id: 'settings-codex-turn-state', labelKey: 'settings.turnStateReuse', icon: <RefreshCw /> },
+    { id: 'settings-codex-state', labelKey: 'ipv6State.accountColumn', icon: <Layers /> },
     { id: 'settings-codex-quota', labelKey: 'settings.nav.codexQuota', icon: <Gauge /> },
     { id: 'settings-codex-transport', labelKey: 'settings.nav.codexTransport', icon: <Wifi /> },
     { id: 'settings-codex-client', labelKey: 'settings.nav.codexClient', icon: <Terminal /> },
@@ -2089,7 +2090,6 @@ export default function Settings() {
     { label: t('accounts.codexFingerprintModeOff'), value: 'off' },
     { label: t('accounts.codexFingerprintModeDevice'), value: 'device' },
     { label: t('accounts.codexFingerprintModeSession'), value: 'session' },
-    { label: t('accounts.codexFingerprintModeSessionIdentity'), value: 'single_machine_multi_window' },
     { label: t('accounts.codexFingerprintModeFull'), value: 'full' },
   ]
   const modelCooldownModeOptions = [
@@ -2126,11 +2126,6 @@ export default function Settings() {
     { label: t('settings.clientCompatAuto'), value: 'auto' },
     { label: t('settings.clientCompatForce'), value: 'force' },
   ]
-  const codexTurnStateAccountModeOptions = [
-    { label: t('settings.codexTurnStateAccountModeAuto'), value: 'auto' },
-    { label: t('settings.codexTurnStateAccountModePersonal'), value: 'personal' },
-    { label: t('settings.codexTurnStateAccountModeTeam'), value: 'team' },
-  ]
   const usageLogModeOptions = [
     { label: t('settings.usageLogFull'), value: 'full' },
     { label: t('settings.usageLogErrors'), value: 'errors' },
@@ -2154,8 +2149,6 @@ export default function Settings() {
       ...cacheNormalized,
       codex_images_main_model: cacheNormalized.codex_images_main_model ?? '',
       codex_telemetry_enabled: cacheNormalized.codex_telemetry_enabled ?? false,
-      codex_turn_state_template_cache_enabled: cacheNormalized.codex_turn_state_template_cache_enabled ?? false,
-      codex_turn_state_account_mode: (cacheNormalized.codex_turn_state_account_mode as SystemSettings['codex_turn_state_account_mode']) || 'auto',
       codex_telemetry_timing_debug: cacheNormalized.codex_telemetry_timing_debug ?? false,
       billing_tier_policy: normalizeBillingTierPolicyValue(cacheNormalized.billing_tier_policy),
       first_token_mode: 'loose',
@@ -2210,8 +2203,6 @@ export default function Settings() {
     codex_basispoints_enabled: false,
     codex_force_websocket: false,
     codex_telemetry_enabled: false,
-    codex_turn_state_template_cache_enabled: false,
-    codex_turn_state_account_mode: 'auto',
     codex_telemetry_timing_debug: false,
     codex_request_compression: true,
     codex_ws_weak_network_mode: false,
@@ -2388,30 +2379,11 @@ export default function Settings() {
   // 表单——那条 UPSERT 的占位符已经排到 $119,每加一列都要整体顺移。
   // null 表示还没加载出来,此时开关不渲染,避免先闪一个错误的默认态。
   const [inviteGuideEnabled, setInviteGuideEnabled] = useState<boolean | null>(null)
-  const [turnStateSettings, setTurnStateSettings] = useState<TurnStateReuseSettings | null>(null)
-  const [turnStateStatuses, setTurnStateStatuses] = useState<TurnStateReuseAccountStatus[]>([])
-  const [turnStateGroups, setTurnStateGroups] = useState<AccountGroup[]>([])
-  const [turnStateProxyDraft, setTurnStateProxyDraft] = useState('')
-  const [turnStateSaving, setTurnStateSaving] = useState(false)
 
   useEffect(() => {
     let cancelled = false
     void api.getInviteGuideSettings()
       .then((res) => { if (!cancelled) setInviteGuideEnabled(res.enabled) })
-      .catch(() => undefined)
-    return () => { cancelled = true }
-  }, [])
-
-  useEffect(() => {
-    let cancelled = false
-    void Promise.all([api.getTurnStateReuseSettings(), api.getTurnStateReuseStatus(), api.listAccountGroups()])
-      .then(([settings, status, groups]) => {
-        if (cancelled) return
-        setTurnStateSettings(settings)
-        setTurnStateProxyDraft((settings.harvest_proxy_urls ?? []).join('\n'))
-        setTurnStateStatuses(status.accounts ?? [])
-        setTurnStateGroups(groups.groups.filter((group) => group.channel === 'codex'))
-      })
       .catch(() => undefined)
     return () => { cancelled = true }
   }, [])
@@ -2427,27 +2399,6 @@ export default function Settings() {
     } catch (error) {
       setInviteGuideEnabled(previous)
       showToast(getErrorMessage(error), 'error')
-    }
-  }
-
-  const saveTurnStateSettings = async (patch: Partial<TurnStateReuseSettings>) => {
-    if (!turnStateSettings) return
-    const previous = turnStateSettings
-    const next: TurnStateReuseSettings = { ...previous, ...patch, harvest_model: 'gpt-6-astra', inject_compact: false }
-    setTurnStateSettings(next)
-    setTurnStateSaving(true)
-    try {
-      const saved = await api.updateTurnStateReuseSettings(next)
-      setTurnStateSettings(saved)
-      setTurnStateProxyDraft((saved.harvest_proxy_urls ?? []).join('\n'))
-      const status = await api.getTurnStateReuseStatus()
-      setTurnStateStatuses(status.accounts ?? [])
-      showToast(t('settings.autoSaved'), 'success', AUTO_SAVE_TOAST_MS)
-    } catch (error) {
-      setTurnStateSettings(previous)
-      showToast(getErrorMessage(error), 'error')
-    } finally {
-      setTurnStateSaving(false)
     }
   }
 
@@ -2934,7 +2885,7 @@ export default function Settings() {
       category: id.includes('image') ? 'image' : 'codex',
       source: 'builtin',
       pro_only: id === 'gpt-5.3-codex-spark',
-      api_key_auth_available: !['gpt-5.5', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna'].includes(id),
+      api_key_auth_available: !['gpt-5.5', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-6-astra'].includes(id),
     }))
   }, [modelItems, modelList])
   const codexModelOptions = visibleModelItems
@@ -3306,77 +3257,9 @@ export default function Settings() {
           <div className="min-w-0 space-y-7">
           {activeTab === 'codex' ? (
             <>
-              {turnStateSettings ? (
-                <SettingsSection id="settings-codex-turn-state" title={t('settings.turnStateReuse')} description={t('settings.turnStateReuseDesc')} icon={<RefreshCw className="size-4" />}>
-                  <SettingsCard title={t('settings.turnStateReuse')} description={t('settings.turnStateReuseDesc')} icon={<RefreshCw className="size-4" />}>
-                    <div className="space-y-4">
-                      <div className={SETTINGS_SWITCH_GRID}>
-                        <SettingField label={t('settings.turnStateEnabled')} description={t('settings.turnStateEnabledDesc')} layout="switch">
-                          <Switch checked={turnStateSettings.enabled} disabled={turnStateSaving} onCheckedChange={(enabled) => void saveTurnStateSettings({ enabled })} />
-                        </SettingField>
-                        <SettingField label={t('settings.turnStateUseProxyPool')} description={t('settings.turnStateUseProxyPoolDesc')} layout="switch">
-                          <Switch checked={turnStateSettings.harvest_use_proxy_pool} disabled={turnStateSaving || turnStateProxyDraft.trim() !== ''} onCheckedChange={(harvest_use_proxy_pool) => void saveTurnStateSettings({ harvest_use_proxy_pool })} />
-                        </SettingField>
-                      </div>
-                      <div className={SETTINGS_FIELD_GRID}>
-                        <SettingField label={t('settings.turnStateModel')} description={t('settings.turnStateModelDesc')}>
-                          <Input value={turnStateSettings.harvest_model} disabled />
-                        </SettingField>
-                        <SettingField className="sm:col-span-2" label={t('settings.turnStateProxyUrls')} description={t('settings.turnStateProxyUrlsDesc')}>
-                          <textarea
-                            className="min-h-20 w-full resize-y rounded-md border border-input bg-background px-3 py-2 font-mono text-xs"
-                            value={turnStateProxyDraft}
-                            onChange={(event) => setTurnStateProxyDraft(event.target.value)}
-                            onBlur={() => void saveTurnStateSettings({ harvest_proxy_urls: turnStateProxyDraft.split(/[\n,]/).map((value) => value.trim()).filter(Boolean) })}
-                          />
-                        </SettingField>
-                        <SettingField label={t('settings.turnStateMissAction')} description={t('settings.turnStateMissActionDesc')}>
-                          <Select
-                            value={turnStateSettings.miss_action}
-                            onValueChange={(miss_action) => void saveTurnStateSettings({ miss_action: miss_action as TurnStateReuseSettings['miss_action'], miss_target_group_id: miss_action === 'rebind_group' ? (turnStateSettings.miss_target_group_id ?? turnStateGroups[0]?.id) : undefined })}
-                            options={['none', 'rebind_group', 'unbind_groups', 'unschedulable'].map((value) => ({ value, label: t(`settings.turnStateAction_${value}`), disabled: value === 'rebind_group' && turnStateGroups.length === 0 }))}
-                          />
-                        </SettingField>
-                        {turnStateSettings.miss_action === 'rebind_group' ? (
-                          <SettingField label={t('settings.turnStateTargetGroup')}>
-                            <Select value={String(turnStateSettings.miss_target_group_id ?? '')} onValueChange={(value) => void saveTurnStateSettings({ miss_target_group_id: Number(value) })} options={turnStateGroups.map((group) => ({ value: String(group.id), label: group.name }))} />
-                          </SettingField>
-                        ) : null}
-                        <SettingField label={t('settings.turnStateRecoveredAction')} description={t('settings.turnStateRecoveredActionDesc')}>
-                          <Select
-                            value={turnStateSettings.recovered_action}
-                            onValueChange={(recovered_action) => void saveTurnStateSettings({ recovered_action: recovered_action as TurnStateReuseSettings['recovered_action'], recovered_target_group_id: recovered_action === 'rebind_group' ? (turnStateSettings.recovered_target_group_id ?? turnStateGroups[0]?.id) : undefined })}
-                            options={['none', 'rebind_group', 'restore_schedulable'].map((value) => ({ value, label: t(`settings.turnStateAction_${value}`), disabled: value === 'rebind_group' && turnStateGroups.length === 0 }))}
-                          />
-                        </SettingField>
-                        {turnStateSettings.recovered_action === 'rebind_group' ? (
-                          <SettingField label={t('settings.turnStateTargetGroup')}>
-                            <Select value={String(turnStateSettings.recovered_target_group_id ?? '')} onValueChange={(value) => void saveTurnStateSettings({ recovered_target_group_id: Number(value) })} options={turnStateGroups.map((group) => ({ value: String(group.id), label: group.name }))} />
-                          </SettingField>
-                        ) : null}
-                      </div>
-                      <div className="overflow-x-auto rounded-md border border-border">
-                        <table className="w-full min-w-[720px] text-left text-xs">
-                          <thead className="bg-muted/50 text-muted-foreground">
-                            <tr><th className="px-3 py-2">{t('settings.turnStateAccount')}</th><th className="px-3 py-2">{t('settings.turnStateStatus')}</th><th className="px-3 py-2">{t('settings.turnStateExpiry')}</th><th className="px-3 py-2">HTTP</th><th className="px-3 py-2">{t('settings.turnStateRoute')}</th></tr>
-                          </thead>
-                          <tbody>
-                            {turnStateStatuses.map((item) => (
-                              <tr key={item.account_id} className="border-t border-border">
-                                <td className="px-3 py-2 font-mono">#{item.account_id}</td>
-                                <td className="px-3 py-2">{t(`settings.turnStateStatus_${item.status}`)}</td>
-                                <td className="px-3 py-2 tabular-nums">{item.remaining_seconds ?? 0}s</td>
-                                <td className="px-3 py-2 tabular-nums">{item.last_http_status || '-'}</td>
-                                <td className="max-w-[240px] truncate px-3 py-2 font-mono" title={item.last_route}>{item.last_route || '-'}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    </div>
-                  </SettingsCard>
-                </SettingsSection>
-              ) : null}
+              <SettingsSection id="settings-codex-state" title={t('ipv6State.accountColumn')} description={t('ipv6State.systemSettingsHint')} icon={<Layers className="size-4" />}>
+                <SettingsCard title={t('ipv6State.callPolicy')} icon={<Layers className="size-4" />}><StatePolicySettings /></SettingsCard>
+              </SettingsSection>
               <SettingsSection id="settings-codex-quota" title={t('settings.nav.codexQuota')} description={t('settings.nav.codexQuotaDesc')} icon={<Gauge className="size-4" />}>
               <div className={SETTINGS_CARD_GRID_2}>
                 <SettingsCard title={t('settings.probeScheduling')} icon={<RefreshCw className="size-4" />}>
@@ -4188,25 +4071,6 @@ export default function Settings() {
                           <span className="font-mono text-xs text-muted-foreground">{syncedCliVersion}</span>
                         )}
                       </div>
-                    </SettingField>
-                    <SettingField
-                      label={t('settings.codexTurnStateTemplateCache')}
-                      description={t('settings.codexTurnStateTemplateCacheDesc')}
-                    >
-                      <Switch
-                        checked={settingsForm.codex_turn_state_template_cache_enabled}
-                        onCheckedChange={(checked) => autoSaveBooleanField('codex_turn_state_template_cache_enabled', checked)}
-                      />
-                    </SettingField>
-                    <SettingField
-                      label={t('settings.codexTurnStateAccountMode')}
-                      description={t('settings.codexTurnStateAccountModeDesc')}
-                    >
-                      <SegmentedPillGroup
-                        value={settingsForm.codex_turn_state_account_mode || 'auto'}
-                        onChange={(value) => autoSaveStringField('codex_turn_state_account_mode', value)}
-                        options={codexTurnStateAccountModeOptions}
-                      />
                     </SettingField>
                     <SettingField
                       label={t('settings.codexTelemetry')}

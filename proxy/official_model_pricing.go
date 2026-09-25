@@ -57,7 +57,7 @@ func SyncOfficialModelPricing(ctx context.Context, db *database.DB, proxyURL str
 	allowed := make(map[string]struct{})
 	var grokModels []string
 	for _, model := range options.Models {
-		key := database.PricingManagementModelKey(model)
+		key := database.CanonicalBillingModelKey(model)
 		if key == "" {
 			continue
 		}
@@ -390,7 +390,7 @@ func normalizeOfficialPricingModel(value string) string {
 	if idx := strings.Index(value, " ("); idx >= 0 {
 		value = value[:idx]
 	}
-	return database.PricingManagementModelKey(value)
+	return database.CanonicalBillingModelKey(value)
 }
 
 // projectClaudeOfficialPricing maps account-advertised Claude models onto the

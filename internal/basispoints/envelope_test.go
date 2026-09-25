@@ -165,15 +165,10 @@ func TestNestedAndCustomAliasesRejectAmbiguity(t *testing.T) {
 		{"name": "patch", "arguments": object{}, "input": "one"},
 		{"name": "patch", "args": object{}},
 		{"name": "patch", "input": 42},
+		{"name": "patch", "args": object{"text": "do not stringify"}},
 	} {
 		if _, err := bridge.translateCall(nativeCall(envelope)); err == nil {
 			t.Fatal("ambiguous, empty or non-text custom input accepted")
 		}
-	}
-	// Custom input under a single object key is unwrapped rather than rejected;
-	// recovery_test.go covers the accepted argument forms in full.
-	call, err := bridge.translateCall(nativeCall(object{"name": "patch", "args": object{"text": "do not stringify"}}))
-	if err != nil || call["input"] != "do not stringify" {
-		t.Fatalf("single-key custom input was not unwrapped: %+v, %v", call, err)
 	}
 }

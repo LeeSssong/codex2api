@@ -1,3 +1,15 @@
+# hlool · Self-hosted AI Account Pool
+
+**学 AI，上 L 站。** [Linux.do · hlool](https://linux.do/u/hlool)
+
+Maintained by [hlool](https://linux.do/u/hlool) for self-hosted account management and compatible API access. Based on [Codex2API](https://github.com/james-6-23/codex2api), with a visual account pool, State management, and an optional Basispoints upstream.
+
+## hlool Docker Build
+
+Docker image: **`ghcr.io/hloolx/codex2api:basispoints`** (`latest` also includes this build). The Basispoints switch is off by default; enable it under **Settings → Codex → Transport** to allow eligible Codex OAuth accounts to use Basispoints for allowlisted models. See the [dual upstream routing guide](docs/codex-dual-upstream.md) for per-Key policies, capability evidence and safe fallback. `max` is sent as `xhigh`, and the actual effort is reported. See the [deployment guide](docs/BASISPOINTS_DEPLOY_CN.md) for new installations, upgrades, and offline Docker packages.
+
+---
+
 <p align="center">
   <img src="assets/banner.svg" alt="Codex2API" width="100%">
 </p>
@@ -31,6 +43,10 @@ Run it as a full **PostgreSQL + Redis** production stack or as a single-containe
 </table>
 
 ---
+
+## State Pool Build
+
+This fork includes per-account state capture and verified cross-host import for Sol, Terra, Luna, and Astra. Use `ghcr.io/hloolx/codex2api:latest` with [`compose.state.yml`](compose.state.yml). See the [deployment and three-step state transfer guide](docs/DOCKER_STATE_QUICKSTART_CN.md) and [state pool reference](docs/STATE_POOL_CN.md).
 
 ## Live Demo
 
@@ -112,7 +128,7 @@ Run it as a full **PostgreSQL + Redis** production stack or as a single-containe
 Standard image mode:
 
 ```bash
-git clone https://github.com/james-6-23/codex2api.git
+git clone https://github.com/hloolx/codex2api.git
 cd codex2api
 cp .env.example .env
 docker compose pull
@@ -303,7 +319,7 @@ Each successful budget change receives a read-only generation and is polled by e
 | `POST /v1/videos/edits` / `POST /v1/videos/extensions` | Grok Imagine video edit / extension                                                                                                   |
 | `GET /v1/videos/:id`                                   | Poll video task status (`video.url` rewritten to the gateway content proxy)                                                           |
 | `GET /v1/videos/:id/content`                           | Download the generated video through the gateway (Range supported)                                                                    |
-| `GET /v1/models`                                       | List available models (includes gpt-6-astra/sol/luna, gpt-5.6-sol/terra/luna, gpt-5.5, gpt-5.3-codex-spark, gpt-image-2, grok-imagine-*, etc.) |
+| `GET /v1/models`                                       | List available models (includes gpt-6-astra, gpt-5.6-sol/terra/luna, gpt-5.5, gpt-5.3-codex-spark, gpt-image-2, grok-imagine-*, etc.) |
 | `GET /health`                                          | Health check                                                                                                                          |
 
 > **Pricing**: gpt-5.5 is billed at $5.00/M input and $30.00/M output (standard tier). Priority tier: $12.50/M input, $75.00/M output. Other models follow pricing rules in the billing engine.

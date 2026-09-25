@@ -176,8 +176,7 @@ func ExecuteClaudeMessagesRequest(ctx context.Context, account *auth.Account, re
 // ExecuteClaudeMessagesRequestWithPolicy performs client platform/version
 // preflight before touching the Anthropic transport. The legacy function above
 // intentionally keeps the any/passthrough default for non-handler callers.
-func ExecuteClaudeMessagesRequestWithPolicy(ctx context.Context, account *auth.Account, requestBody []byte, proxyOverride string, headers http.Header, fingerprintMode string, clientPolicy auth.ClaudeClientPolicy, securityConfigs ...auth.ClaudeSecurityConfig) (opsResponse *http.Response, opsErr error) {
-	defer func() { observeAccountOpsResponse(account, opsResponse) }()
+func ExecuteClaudeMessagesRequestWithPolicy(ctx context.Context, account *auth.Account, requestBody []byte, proxyOverride string, headers http.Header, fingerprintMode string, clientPolicy auth.ClaudeClientPolicy, securityConfigs ...auth.ClaudeSecurityConfig) (*http.Response, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}

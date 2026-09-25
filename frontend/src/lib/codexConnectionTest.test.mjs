@@ -3,11 +3,25 @@ import { test } from "node:test";
 import {
   clampCodexTestPercent,
   codexTestTokenMetrics,
+  codexTestTurnState,
   codexTestWindowKind,
   formatCodexTestMS,
   formatCodexTestReset,
   isFinalCodexTestDiagnostics,
 } from "./codexConnectionTest.ts";
+
+test("turn state distinguishes exact length, absent headers, and unknown transport failures", () => {
+  assert.equal(codexTestTurnState({ turn_state_length: 292 }).status, "matched");
+  assert.deepEqual(codexTestTurnState({ turn_state_length: 312 }), { status: "different", length: 312 });
+  assert.equal(codexTestTurnState({ turn_state_length: 0, transport: "http" }, true).status, "missing");
+  assert.equal(codexTestTurnState({ turn_state_length: 0, transport: "websocket" }, true).status, "pending");
+  assert.equal(codexTestTurnState({ turn_state_length: 0, transport: "websocket" }, false).status, "missing");
+  assert.equal(codexTestTurnState(null, true).status, "pending");
+  assert.equal(codexTestTurnState(null, false).status, "unknown");
+  for (const value of [-1, 292.5, Infinity, "292"]) {
+    assert.equal(codexTestTurnState({ turn_state_length: value }).status, "unknown");
+  }
+});
 
 test("window kind follows the backend minute thresholds", () => {
   assert.equal(codexTestWindowKind({ window_minutes: 300 }), "5h");

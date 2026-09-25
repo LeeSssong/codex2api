@@ -14,6 +14,7 @@ import (
 	"github.com/codex2api/auth"
 	"github.com/codex2api/database"
 	"github.com/codex2api/proxy"
+	"github.com/google/uuid"
 )
 
 const (
@@ -21,8 +22,9 @@ const (
 	grokProbeRunGuard           = 15 * time.Minute
 	grokMaintenancePollInterval = time.Second
 	grokMaintenanceLease        = 20 * time.Minute
-	// Control-plane work has its own capacity; generation probes use another queue.
-	grokMaintenanceBatchSize = 64
+	// 批量与探测信号量(4)对齐:领 100 个但一次只能跑 4 个,队尾任务会在
+	// 20 分钟租约内跑不到而被其它副本重复领取。
+	grokMaintenanceBatchSize = 8
 )
 
 var errGrokMaintenanceProjectionIncomplete = errors.New("grok maintenance projection remains incomplete")
@@ -59,10 +61,18 @@ func (h *Handler) StartGrokStatusProbe(ctx context.Context) {
 		if err := h.db.SeedGrokMaintenanceJobs(ctx, time.Now()); err != nil {
 			log.Printf("[grok-maintenance] 初始化到期任务失败: %v", err)
 		}
-		h.runGrokMaintenanceQueue(ctx, database.MaintenanceJobGrokFreshness, grokMaintenanceBatchSize)
-	})
-	h.startDBBackgroundTaskWithParent(ctx, func(ctx context.Context) {
-		h.runGrokMaintenanceQueue(ctx, database.MaintenanceJobGrokCapability, 4)
+		owner := "grok-" + uuid.NewString()
+		h.runDueGrokMaintenanceJobs(ctx, owner)
+		ticker := time.NewTicker(grokMaintenancePollInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				h.runDueGrokMaintenanceJobs(ctx, owner)
+			}
+		}
 	})
 
 	// Generation/connectivity remains optional and retains the coarser settings
@@ -115,7 +125,10 @@ func (h *Handler) runDueGrokMaintenanceJobs(ctx context.Context, owner string) {
 		go func() {
 			defer wg.Done()
 			if err := h.runOneGrokMaintenanceJob(ctx, owner, job); err != nil {
-				retryDelay := grokMaintenanceRetryDelay(job.Attempts)
+				retryDelay := time.Minute
+				if job.Attempts > 1 {
+					retryDelay = time.Duration(min(job.Attempts, 5)) * time.Minute
+				}
 				failCtx, failCancel := context.WithTimeout(context.Background(), 10*time.Second)
 				if failErr := h.db.FailMaintenanceJob(failCtx, job.EntityID, job.JobKind, owner, time.Now().Add(retryDelay), err); failErr != nil {
 					log.Printf("[grok-maintenance] 记录任务失败状态出错 (账号 %d): %v", job.EntityID, failErr)
@@ -162,6 +175,13 @@ func (h *Handler) runOneGrokMaintenanceJob(ctx context.Context, owner string, jo
 		}
 		return nil
 	}
+	select {
+	case grokImportProbeSlots <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	defer func() { <-grokImportProbeSlots }()
+
 	jobCtx, cancel := context.WithTimeout(ctx, grokProbeRunGuard)
 	defer cancel()
 	state, err := h.db.GetGrokAccountState(jobCtx, job.EntityID)
@@ -169,35 +189,30 @@ func (h *Handler) runOneGrokMaintenanceJob(ctx context.Context, owner string, jo
 		return err
 	}
 	selection := grokPersistedStateRefreshSelection(account, state, time.Now())
-	var partialErr error
 	if !selection.empty() {
 		result, syncErr := h.syncGrokAccountStateSelected(jobCtx, job.EntityID, selection)
 		if syncErr != nil {
 			return syncErr
 		}
 		state = result.State
-		if len(result.Errors) > 0 {
-			partialErr = grokSyncErrors(result.Errors)
-		}
 	}
 	generation := account.GetCredentialGeneration()
 	if generation <= 0 {
 		generation = 1
 	}
 	if grokGenerationNeedsCapabilityProbe(account, state, generation, time.Now()) {
-		if err := h.db.EnqueueGrokCapabilityMaintenance(jobCtx, job.EntityID, time.Now()); err != nil {
-			return err
+		result, probeErr := h.runGrokCapabilityProbe(jobCtx, job.EntityID, false)
+		if probeErr != nil {
+			return probeErr
 		}
-	}
-	if partialErr != nil {
-		return partialErr
+		state = result.State
 	}
 	nextDue, err := grokNextMaintenanceDue(account, state, time.Now())
 	if err != nil {
 		// Persisted upstream failures deliberately expire immediately. Treating
 		// that state as a successful one-second reschedule would create a tight
 		// retry loop during an outage. Returning an error keeps the generic job's
-		// attempt count and activates the bounded exponential backoff.
+		// attempt count and activates the bounded 1..5 minute backoff above.
 		return err
 	}
 	return h.db.CompleteMaintenanceJob(jobCtx, job.EntityID, job.JobKind, owner, nextDue)
@@ -228,7 +243,7 @@ func grokNextMaintenanceDue(account *auth.Account, state *database.GrokAccountSt
 		for _, kind := range []string{database.GrokFactUser, database.GrokFactSettings, database.GrokFactBilling, database.GrokFactAutoTopup} {
 			fact, ok := state.Facts[kind]
 			if !ok || fact.CredentialGeneration != generation || !consider(fact.ExpiresAt) {
-				return time.Time{}, fmt.Errorf("%w: %s status=%s http=%d generation=%d", errGrokMaintenanceProjectionIncomplete, kind, fact.Status, fact.HTTPStatus, fact.CredentialGeneration)
+				return time.Time{}, errGrokMaintenanceProjectionIncomplete
 			}
 		}
 	}
@@ -239,32 +254,13 @@ func grokNextMaintenanceDue(account *auth.Account, state *database.GrokAccountSt
 		if catalog.Snapshot.CredentialGeneration == generation && strings.EqualFold(strings.TrimRight(strings.TrimSpace(catalog.Snapshot.Origin), "/"), origin) && catalog.Snapshot.Status == "ok" {
 			catalogFound = true
 			if !consider(catalog.Snapshot.ExpiresAt) {
-				return time.Time{}, fmt.Errorf("%w: models expired or invalidated", errGrokMaintenanceProjectionIncomplete)
+				return time.Time{}, errGrokMaintenanceProjectionIncomplete
 			}
 			break
 		}
 	}
 	if !catalogFound {
 		return time.Time{}, errGrokMaintenanceProjectionIncomplete
-	}
-	return next, nil
-}
-
-// Capability expiry must never block successful control-plane maintenance.
-func grokNextCapabilityDue(account *auth.Account, state *database.GrokAccountState, now time.Time) (time.Time, error) {
-	generation := account.GetCredentialGeneration()
-	if state == nil || state.CredentialGeneration != generation {
-		return time.Time{}, errGrokCredentialChanged
-	}
-	next := now.Add(24 * time.Hour)
-	consider := func(value time.Time) bool {
-		if value.IsZero() || !value.After(now) {
-			return false
-		}
-		if value.Before(next) {
-			next = value
-		}
-		return true
 	}
 	targets, _ := grokCapabilityProbeTargets(account, state, generation)
 	capabilities := make(map[string]database.GrokModelCapability, len(state.Capabilities))
@@ -311,8 +307,8 @@ func (h *Handler) triggerGrokUsageProbe(accountID int64) {
 			return
 		}
 		cancel()
-		if err := h.db.EnqueueGrokCapabilityMaintenance(parent, accountID, time.Now()); err != nil {
-			log.Printf("[账号 %d] 入队 Grok 协议能力探针失败: %v", accountID, err)
+		if _, err := h.runGrokCapabilityProbe(parent, accountID, false); err != nil {
+			log.Printf("[账号 %d] 导入后 Grok 协议能力探针失败: %v", accountID, err)
 		}
 	})
 }

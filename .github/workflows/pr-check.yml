@@ -57,6 +57,30 @@ jobs:
         working-directory: frontend
         run: npm run test:svg
 
+      - name: Test State management in the browser with synthetic accounts
+        working-directory: frontend
+        run: |
+          npm run dev -- --host 127.0.0.1 --port 5179 --strictPort > /tmp/state-ui-vite.log 2>&1 &
+          vite_pid=$!
+          trap 'kill "$vite_pid"' EXIT
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:5179/admin/ > /dev/null; then break; fi
+            sleep 1
+          done
+          node tests/state-management.browser.test.mjs
+          node tests/codex-routes.browser.test.mjs
+
+      - name: Upload State interface screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: state-interface
+          path: |
+            .dev/state-ui/
+            .dev/codex-routes-ui/
+          include-hidden-files: true
+          if-no-files-found: ignore
+
       - name: Build frontend
         working-directory: frontend
         env:
@@ -122,10 +146,31 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-      - name: Test PostgreSQL trace, indexes, capabilities and legacy daily usage
+      - name: Test PostgreSQL trace, capabilities, Codex routes and legacy daily usage
         env:
           CODEX2API_TEST_POSTGRES_DSN: postgres://codex2api_test:test-only@localhost:5432/codex2api_test?sslmode=disable
-        run: go test -race -count=1 ./database -run '^TestPostgresTraceAndCapabilities$'
+        run: go test -race -count=1 ./database -run '^Test(Postgres(TraceAndCapabilities|CodexRoutes|CodexProbePersistenceAndGeneration)|CodexRefreshPreservesEvidenceAndProbeFence)$'
+
+  redis-route-cache:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Verify history batch persistence with Redis and the race detector
+        env:
+          CODEX2API_TEST_REDIS_ADDR: localhost:6379
+        run: go test -race -count=1 ./cache -run '^Test(RuntimeBatch|RedisRuntimeCounterBatch)'
 
   test-race:
     name: test-race (${{ matrix.name }})

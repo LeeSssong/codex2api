@@ -1,5 +1,9 @@
-import { turnStateHistoryQuery, type TurnStateHistoryFilter, type TurnStateHistoryPage } from './lib/turnStateHistory.ts'
+import type { CodexPathSnapshot } from "./types"
+import { readCodexProbeEvents, type CodexProbeBatch, type CodexProbeEvent, type CodexProbeLevel, type CodexProbeResult } from './lib/codexProbe.ts'
 import { qualityTestFilterQuery, type QualityTestJob, type QualityTestJobsFilter, type QualityTestJobsResponse, type QualityTestPrompt } from './lib/qualityTest.ts'
+import type { StateImportPreview, StatePackage, StatePoolData } from './lib/statePool.ts'
+import type { IPv6StateConfig, IPv6StateStatus, IPv6StatePackage } from './lib/ipv6State.ts'
+import { notifyStateChange } from './lib/stateSync.ts'
 import type {
   AccountEventTrendPoint,
   AccountPortalAuthURLResponse,
@@ -498,7 +502,6 @@ export type UsageLogQueryParams = {
   accountId?: string
   fast?: string
   ultra?: string
-  upstreamModelMismatch?: string
   stream?: string
   compact?: string
   hasCompactionHistory?: string
@@ -523,7 +526,6 @@ export function buildUsageLogSearchParams(params: UsageLogQueryParams) {
   if (params.accountId) search.set('account_id', params.accountId)
   if (params.fast) search.set('fast', params.fast)
   if (params.ultra) search.set('ultra', params.ultra)
-  if (params.upstreamModelMismatch) search.set('upstream_model_mismatch', params.upstreamModelMismatch)
   if (params.stream) search.set('stream', params.stream)
   if (params.compact) search.set('compact', params.compact)
   if (params.hasCompactionHistory) search.set('has_compaction_history', params.hasCompactionHistory)
@@ -538,6 +540,21 @@ export function buildUsageLogSearchParams(params: UsageLogQueryParams) {
 }
 
 export const api = {
+  getIPv6State: (signal?: AbortSignal) => request<IPv6StateStatus>('/state-pool/ipv6', { signal }),
+  configureIPv6State: (body: IPv6StateConfig) => request<IPv6StateStatus>('/state-pool/ipv6', { method: 'PUT', body: JSON.stringify(body) }).then(notifyStateChange),
+  configureStatePolicy: (require_valid_state: boolean) => request<IPv6StateStatus>('/state-pool/ipv6/policy', { method: 'PATCH', body: JSON.stringify({ require_valid_state }) }).then(notifyStateChange),
+  exportIPv6State: (account_id: number, model: string) => request<IPv6StatePackage>('/state-pool/ipv6/export', { method: 'POST', body: JSON.stringify({ account_id, model }) }),
+  importIPv6State: (body: IPv6StatePackage) => request<IPv6StateStatus>('/state-pool/ipv6/import', { method: 'POST', body: JSON.stringify(body) }).then(notifyStateChange),
+  getStatePool: (signal?: AbortSignal) => request<StatePoolData>('/state-pool', { signal }),
+  setStatePoolLimits: (body: StatePoolData['limits']) => request('/state-pool/limits', { method: 'PUT', body: JSON.stringify(body) }),
+  captureStates: (body: { account_ids: number[]; models: string[]; enable: boolean; strict: boolean; proxy_ids: number[]; candidates: number; strategy: string; distinct_ips: boolean; new_session: boolean; forward_proxy_id: number }) => request<{ job_ids: string[] }>('/state-pool/capture', { method: 'POST', body: JSON.stringify(body) }),
+  previewStateImport: (body: StatePackage, signal?: AbortSignal) => request<{ items: StateImportPreview[] }>('/state-pool/import/preview', { method: 'POST', body: JSON.stringify(body), signal }),
+  importStates: (body: { package?: StatePackage; account_id?: number; model?: string; value?: string; captured_at?: number; enable: boolean; strict: boolean; allow_partial?: boolean }) => request<{ job_ids: string[]; items?: StateImportPreview[] }>('/state-pool/import', { method: 'POST', body: JSON.stringify(body) }),
+  exportStates: (ids: string[]) => request<StatePackage>('/state-pool/export', { method: 'POST', body: JSON.stringify({ ids }) }),
+  configureState: (id: string, body: { enabled: boolean; strict: boolean }) => request(`/state-pool/entries/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  deleteState: (id: string) => request(`/state-pool/entries/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  cancelStateJob: (id: string) => request(`/state-pool/jobs/${encodeURIComponent(id)}/cancel`, { method: 'POST' }),
+  cancelStateGroup: (id: string) => request(`/state-pool/groups/${encodeURIComponent(id)}/cancel`, { method: 'POST' }),
   getBranding: () => requestPublic<SiteBranding>('/api/branding'),
   // 公开账号自助门户:生成 OpenAI 授权链接(无鉴权)。
   generateAccountPortalAuthURL: (data: { contact_email: string }) =>
@@ -565,14 +582,13 @@ export const api = {
   createPortalImageEditJob: (apiKey: string, data: CreateImageJobPayload) =>
     requestImageStudioPortal<ImageJobResponse>('/edit-jobs', apiKey, { method: 'POST', body: JSON.stringify(data) }),
   getPortalImageJobs: (apiKey: string, params: { page?: number; pageSize?: number } = {}) => {
-    const sp = new URLSearchParams({ summary: '1' })
+    const sp = new URLSearchParams()
     if (params.page) sp.set('page', String(params.page))
     if (params.pageSize) sp.set('page_size', String(params.pageSize))
     return requestImageStudioPortal<ImageJobsResponse>(`/jobs?${sp.toString()}`, apiKey)
   },
-  getPortalImageJob: (apiKey: string, id: number, params: { includeCache?: boolean; summary?: boolean } = {}) => {
+  getPortalImageJob: (apiKey: string, id: number, params: { includeCache?: boolean } = {}) => {
     const sp = new URLSearchParams()
-    if (params.summary === true || (params.summary !== false && !params.includeCache)) sp.set('summary', '1')
     if (params.includeCache) sp.set('include_cache', '1')
     const query = sp.toString()
     return requestImageStudioPortal<ImageJobResponse>(`/jobs/${id}${query ? `?${query}` : ''}`, apiKey)
@@ -604,6 +620,27 @@ export const api = {
     const qs = searchParams.toString()
     return request<AccountsResponse>(`/accounts${qs ? `?${qs}` : ''}`)
   },
+  getCodexRoutes: (id: number, model?: string, signal?: AbortSignal) => request<{ paths: CodexPathSnapshot[]; probes?: CodexProbeResult[] }>(`/accounts/${id}/codex-routes${model ? `?model=${encodeURIComponent(model)}` : ''}`, { signal }),
+  probeCodexAccounts: async (data: { ids: number[]; model: string; level: CodexProbeLevel }, onEvent: (event: CodexProbeEvent) => void, signal: AbortSignal): Promise<CodexProbeBatch> => {
+    const adminKey = getAdminKey()
+    const response = await fetch(`${BASE}/accounts/codex/probe?stream=true`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream', ...(adminKey ? { 'X-Admin-Key': adminKey } : {}) },
+      body: JSON.stringify(data),
+      signal,
+    })
+    if (!response.ok) {
+      if (response.status === 401) resetAdminAuthState()
+      throw new AdminAPIError(response.status, extractAdminErrorMessage(await response.text(), response.status))
+    }
+    if (response.headers.get('content-type')?.includes('text/event-stream')) {
+      if (!response.body) throw new Error('Missing probe stream')
+      return readCodexProbeEvents(response.body, onEvent)
+    }
+    return response.json() as Promise<CodexProbeBatch>
+  },
+  updateCodexRoutes: (data: { ids: number[]; upstream: string; allowed?: boolean; reset_observations?: boolean }) =>
+    request<{ updated: number }>('/accounts/codex/routes', { method: 'POST', body: JSON.stringify(data) }),
   getAccountsPage: (params: AccountsPageParams, signal?: AbortSignal) => {
     const searchParams = new URLSearchParams({
       view: 'page',
@@ -624,6 +661,10 @@ export const api = {
     if (params.proxyUrl) searchParams.set('proxy_url', params.proxyUrl)
     if (params.proxyFilter && params.proxyFilter !== 'all') searchParams.set('proxy_filter', params.proxyFilter)
     if (params.subscription && params.subscription !== 'all') searchParams.set('subscription', params.subscription)
+    if (params.state && params.state !== 'all') searchParams.set('state', params.state)
+    if (params.stateModel) searchParams.set('state_model', params.stateModel)
+    if (params.capability && params.capability !== 'all') searchParams.set('capability', params.capability)
+    if (params.capabilityModel?.trim()) searchParams.set('capability_model', params.capabilityModel.trim())
     if (params.sort) searchParams.set('sort', params.sort)
     if (params.order) searchParams.set('order', params.order)
     return request<AccountsPageResponse>(`/accounts?${searchParams.toString()}`, { signal })
@@ -903,12 +944,6 @@ export const api = {
     request<MessageResponse>(`/account-groups/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
   deleteAccountGroup: (id: number, force = false) =>
     request<MessageResponse>(`/account-groups/${id}${force ? '?force=true' : ''}`, { method: 'DELETE' }),
-  getTurnStateReuseSettings: () =>
-    request<import('./types').TurnStateReuseSettings>('/turn-state/settings'),
-  updateTurnStateReuseSettings: (data: import('./types').TurnStateReuseSettings) =>
-    request<import('./types').TurnStateReuseSettings>('/turn-state/settings', { method: 'PUT', body: JSON.stringify(data) }),
-  getTurnStateReuseStatus: () =>
-    request<import('./types').TurnStateReuseStatusResponse>('/turn-state/status'),
   toggleAccountEnabled: (id: number, enabled: boolean) =>
     request<MessageResponse>(`/accounts/${id}/enable`, { method: 'POST', body: JSON.stringify({ enabled }) }),
   toggleAccountLock: (id: number, locked: boolean) =>
@@ -1252,14 +1287,13 @@ export const api = {
   createImageEditJob: (data: CreateImageJobPayload) =>
     request<ImageJobResponse>('/images/edit-jobs', { method: 'POST', body: JSON.stringify(data) }),
   getImageJobs: (params: { page?: number; pageSize?: number } = {}) => {
-    const sp = new URLSearchParams({ summary: '1' })
+    const sp = new URLSearchParams()
     if (params.page) sp.set('page', String(params.page))
     if (params.pageSize) sp.set('page_size', String(params.pageSize))
     return request<ImageJobsResponse>(`/images/jobs?${sp.toString()}`)
   },
-  getImageJob: (id: number, params: { includeCache?: boolean; summary?: boolean } = {}) => {
+  getImageJob: (id: number, params: { includeCache?: boolean } = {}) => {
     const sp = new URLSearchParams()
-    if (params.summary === true || (params.summary !== false && !params.includeCache)) sp.set('summary', '1')
     if (params.includeCache) sp.set('include_cache', '1')
     const query = sp.toString()
     return request<ImageJobResponse>(`/images/jobs/${id}${query ? `?${query}` : ''}`)
@@ -1476,17 +1510,6 @@ export const api = {
   dismissPromptIntelligenceCandidate: (id: number) =>
     request<import('./types').PromptIntelligenceCandidate>(`/prompt-filter/intelligence/candidates/${id}/dismiss`, { method: 'POST' }),
   getModels: () => request<ModelsResponse>('/models'),
-  getAccountOpsModule: () => request<{enabled:boolean}>('/account-ops/module'),
-  saveAccountOpsModule: (enabled:boolean) => request<{enabled:boolean}>('/account-ops/module',{method:'PUT',body:JSON.stringify({enabled})}),
-  getAccountOpsSettings: () => request<import('./lib/accountOps').AccountOpsSettings>('/account-ops/config'),
-  saveAccountOpsSettings: (body:Pick<import('./lib/accountOps').AccountOpsSettings,'config'|'smtp'>) => request<import('./lib/accountOps').AccountOpsSettings>('/account-ops/config',{method:'PUT',body:JSON.stringify(body)}),
-  getAccountOpsAlerts: (offset=0) => request<{items:import('./lib/accountOps').AccountOpsEvent[]}>(`/account-ops/alerts?offset=${offset}`),
-  getAccountQualityPlans: () => request<{items:import('./lib/accountOps').AccountQualityPlan[]}>('/quality-ops/plans'),
-  saveAccountQualityPlan: (body:import('./lib/accountOps').AccountQualityPlan) => request<import('./lib/accountOps').AccountQualityPlan>('/quality-ops/plans',{method:'POST',body:JSON.stringify(body)}),
-  deleteAccountQualityPlan: (id:number) => request(`/quality-ops/plans/${id}`,{method:'DELETE'}),
-  triggerAccountQualityPlan: (id:number) => request(`/quality-ops/plans/${id}/trigger`,{method:'POST'}),
-  getAccountQualityHistory: (before=0) => request<{items:import('./lib/accountOps').AccountQualityRound[];next_cursor:number}>(`/quality-ops/history?before=${before}`),
-  getAccountQualityRound: (id:number) => request<import('./lib/accountOps').AccountQualityRound>(`/quality-ops/history/${id}`),
   getQualityTestOptions: (id: number, signal?: AbortSignal) =>
     request<{ models: string[]; reasoning_efforts: string[] }>(`/accounts/${id}/quality-test/options`, { signal }),
   getQualityTestPrompts: (signal?: AbortSignal) =>
@@ -1499,8 +1522,6 @@ export const api = {
     request<{ message: string }>(`/quality-test-prompts/${id}`, { method: 'DELETE' }),
   createQualityTest: (accountId: number, body: { model: string; reasoning_effort: string; prompt: string; prompt_id?: number; preset_key?: string; preset_name?: string }) =>
     request<{ job: QualityTestJob }>(`/accounts/${accountId}/quality-test`, { method: 'POST', body: JSON.stringify(body) }),
-  getTurnStateHistory: (page: number, filter: TurnStateHistoryFilter = {}, signal?: AbortSignal) =>
-    request<TurnStateHistoryPage>(`/codex-turn-state/renewals?${turnStateHistoryQuery(page, filter)}`, { signal }),
   getQualityTests: (page = 1, filter: QualityTestJobsFilter = {}, signal?: AbortSignal) =>
     request<QualityTestJobsResponse>(`/quality-tests?${qualityTestFilterQuery(page, filter)}`, { signal }),
   getQualityTest: (id: number, signal?: AbortSignal) =>
@@ -1635,7 +1656,7 @@ export const api = {
     request<{ message: string; deleted: number }>('/proxies/batch-delete', { method: 'POST', body: JSON.stringify({ ids }) }),
   cleanErrorProxies: () =>
     request<{ message: string; cleaned: number; unbound: number }>('/proxies/clean-error', { method: 'POST' }),
-  autoBalanceProxies: (data: { channel?: UpstreamChannel; mode?: 'unbound' | 'all'; max_per_proxy?: number; proxy_ids?: number[] }) =>
+  autoBalanceProxies: (data: { channel?: 'codex' | 'grok' | 'claude'; mode?: 'unbound' | 'all'; max_per_proxy?: number; proxy_ids?: number[] }) =>
     request<AutoBalanceProxiesResult>('/proxies/auto-balance', { method: 'POST', body: JSON.stringify(data) }),
   listProxyRiskScoringProfiles: () =>
     request<{ profiles: ProxyRiskScoringProfile[] }>('/proxy-risk-scoring/profiles'),

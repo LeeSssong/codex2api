@@ -12,6 +12,7 @@ import (
 
 	"github.com/codex2api/auth"
 	"github.com/codex2api/database"
+	"github.com/codex2api/ipv6state"
 	"github.com/gin-gonic/gin"
 )
 
@@ -146,6 +147,7 @@ type accountListFacets struct {
 }
 
 type accountsPageResponse struct {
+	StateSummary  ipv6state.Summary  `json:"state_summary"`
 	Accounts      []accountResponse  `json:"accounts"`
 	Page          int                `json:"page"`
 	PageSize      int                `json:"page_size"`
@@ -158,6 +160,7 @@ type accountsPageResponse struct {
 }
 
 type accountPageSelection struct {
+	State         ipv6state.Snapshot
 	Rows          []*database.AccountRow
 	Page          int
 	PageSize      int
@@ -201,6 +204,10 @@ func (e *accountPageQueryError) Error() string {
 // accountOperationSelector lets large-pool operations resolve their target set
 // on the server instead of transferring tens of thousands of IDs.
 type accountOperationSelector struct {
+	Capability           string  `json:"capability,omitempty"`
+	CapabilityModel      string  `json:"capability_model,omitempty"`
+	State                string  `json:"state,omitempty"`
+	StateModel           string  `json:"state_model,omitempty"`
 	Channel              string  `json:"channel"`
 	Search               string  `json:"search,omitempty"`
 	Status               string  `json:"status,omitempty"`
@@ -244,8 +251,16 @@ func (h *Handler) resolveAccountOperationSelector(ctx context.Context, selector 
 		return nil, err
 	}
 	ids := make([]int64, 0)
+	stateMatches, err := h.accountStatePredicate(selector.State, selector.StateModel)
+	if err != nil {
+		return nil, err
+	}
+	capabilityMatches, err := h.codexCapabilityPredicate(ctx, selector.Capability, selector.CapabilityModel)
+	if err != nil {
+		return nil, err
+	}
 	for _, item := range snapshot.Items {
-		if !accountListItemMatches(item, query, channel) {
+		if !accountListItemMatches(item, query, channel) || !stateMatches(item.ID) || !capabilityMatches(item.ID) || !codexCapabilityRowEligible(item.Row, selector.Capability) {
 			continue
 		}
 		if selector.RefreshableOnly {
@@ -404,9 +419,18 @@ func (h *Handler) getAccountPageSelection(ctx context.Context, c *gin.Context, c
 	if err != nil {
 		return nil, err
 	}
+	state := h.stateSnapshot()
+	stateMatches, err := statePredicate(state, c.Query("state"), c.Query("state_model"))
+	if err != nil {
+		return nil, &accountPageQueryError{err: err}
+	}
+	capabilityMatches, err := h.codexCapabilityPredicate(ctx, c.Query("capability"), c.Query("capability_model"))
+	if err != nil {
+		return nil, &accountPageQueryError{err: err}
+	}
 	filtered := make([]*accountListSnapshotItem, 0, len(snapshot.Items))
 	for _, item := range snapshot.Items {
-		if accountListItemMatches(item, query, channel) {
+		if accountListItemMatches(item, query, channel) && stateMatches(item.ID) && capabilityMatches(item.ID) && codexCapabilityRowEligible(item.Row, c.Query("capability")) {
 			filtered = append(filtered, item)
 		}
 	}
@@ -447,9 +471,14 @@ func (h *Handler) getAccountPageSelection(ctx context.Context, c *gin.Context, c
 			rows = append(rows, row)
 		}
 	}
+	summary := snapshot.Summary
+	if c.Query("capability") != "" && c.Query("capability") != "all" {
+		summary, _ = summarizeAccountList(filtered, channel)
+	}
 	return &accountPageSelection{
-		Rows: rows, Page: page, PageSize: query.PageSize, Total: total,
-		Summary: snapshot.Summary, Facets: snapshot.Facets,
+		State: state,
+		Rows:  rows, Page: page, PageSize: query.PageSize, Total: total,
+		Summary: summary, Facets: snapshot.Facets,
 		SnapshotAt: snapshot.BuiltAt, StatsState: snapshot.StatsState,
 		DisabledSorts: disabledSorts,
 	}, nil
@@ -785,13 +814,6 @@ func (h *Handler) buildAccountListSnapshotItem(row *database.AccountRow, request
 			}
 		}
 	}
-	if isGrok && row.GrokPlanDisplay != nil {
-		item.PlanType = row.GrokPlanDisplay.Plan
-		item.GrokPlanCategory = "other"
-		if resolved, ok := auth.ResolveGrokPlan(item.PlanType); ok {
-			item.GrokPlanCategory = resolved.Key
-		}
-	}
 	if counts := requestCounts[row.ID]; counts != nil {
 		item.RequestCount = counts.SuccessCount + counts.ErrorCount
 	}
@@ -814,9 +836,6 @@ func (h *Handler) buildAccountListSnapshotItem(row *database.AccountRow, request
 	item.GroupSortKey = strings.Join(groupKeys, "\x00")
 	searchParts := []string{row.Name, email, strconv.FormatInt(row.ID, 10), item.EmailDomain}
 	if isGrok {
-		if row.GrokModels != nil {
-			searchParts = append(searchParts, strings.Join(row.GrokModels.Models, " "))
-		}
 		searchParts = append(searchParts,
 			strings.Join(row.GetCredentialStringSlice("models"), " "), row.GetCredential("base_url"),
 			item.PlanType, item.GrokPlanCategory, row.ErrorMessage, row.ProxyURL, strings.Join(groupLabels, " "))
@@ -1205,7 +1224,7 @@ func accountListStatusMatches(item *accountListSnapshotItem, status, channel str
 	}
 	switch status {
 	case "normal":
-		// 过载暂停、禁用都归入「正常」；真正可调度的账号走 scheduling/active。
+		// Normal describes account health; scheduling also excludes dispatch pauses.
 		return accountListNormal(item)
 	case "active", "scheduling":
 		return accountListSchedulable(item)
@@ -1251,7 +1270,9 @@ func accountListUnsampled(item *accountListSnapshotItem) bool {
 }
 
 func accountListNormal(item *accountListSnapshotItem) bool {
-	if item.Status == "unauthorized" || item.Status == "error" || accountListUnsampled(item) {
+	// Codex usage sampling is independent of health and dispatch eligibility.
+	// Keep the existing native Claude probe classification unchanged.
+	if item.Status == "unauthorized" || item.Status == "error" || item.Claude && accountListUnsampled(item) {
 		return false
 	}
 	if !item.Enabled || accountListOverloadPaused(item) {
@@ -1264,7 +1285,7 @@ func accountListSchedulable(item *accountListSnapshotItem) bool {
 	return item.Enabled &&
 		item.Status != "unauthorized" &&
 		item.Status != "error" &&
-		!accountListUnsampled(item) &&
+		!(item.Claude && accountListUnsampled(item)) &&
 		!accountListRateLimited(item) &&
 		!accountListOverloadPaused(item)
 }

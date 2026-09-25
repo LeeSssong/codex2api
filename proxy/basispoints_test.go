@@ -70,6 +70,20 @@ func TestBasispointsRoutesEveryPoolAccountAndOverridesWebsocket(t *testing.T) {
 	}
 }
 
+func TestBasispointsDoesNotRequireCodexTurnState(t *testing.T) {
+	enableBasispointsForTest(t)
+	previous := ipv6StateProvider.Load()
+	t.Cleanup(func() { SetIPv6StateProvider(previous) })
+	SetIPv6StateProvider(&IPv6StateProvider{EligibleAccounts: func(string) (bool, map[int64]bool) {
+		t.Fatal("Basispoints must not require a Codex-only state capture")
+		return true, nil
+	}})
+	filter := withRequiredStateFilter("gpt-5.6-sol", func(account *auth.Account) bool { return account.ID() == 7 })
+	if !filter(&auth.Account{DBID: 7}) || filter(&auth.Account{DBID: 8}) {
+		t.Fatal("Basispoints must preserve the caller's account filter")
+	}
+}
+
 func TestBasispointsIgnoresRotatingNativeSessionIdentity(t *testing.T) {
 	enableBasispointsForTest(t)
 	account := &auth.Account{DBID: 91236, AccountID: "workspace", AccessToken: "test-token"}
@@ -383,13 +397,14 @@ func TestBasispointsTransportIsIsolatedAndHonorsProxy(t *testing.T) {
 func TestBasispointsRejectsOtherCredentialTypes(t *testing.T) {
 	enableBasispointsForTest(t)
 	account := &auth.Account{UpstreamType: auth.UpstreamOpenAIResponses, BaseURL: "https://relay.example", APIKey: "sk-test"}
-	if _, err := ExecuteRequest(context.Background(), account, []byte(`{}`), "", "", "", nil, nil); err == nil {
+	if _, err := ExecuteRequest(context.Background(), account, []byte(`{"model":"gpt-6-astra"}`), "", "", "", nil, nil); err == nil {
 		t.Fatal("relay credentials must not reach Basispoints")
 	}
 	if effectiveReasoningEffortForAccount(account, "max") != "max" {
 		t.Fatal("relay reasoning effort changed")
 	}
-	if _, err := ExecuteRequest(context.Background(), &auth.Account{AccessToken: "token"}, []byte(`{}`), "", "", "", nil, nil); err == nil {
+	// A Basispoints-served model still requires a ChatGPT account ID.
+	if _, err := ExecuteRequest(context.Background(), &auth.Account{AccessToken: "token"}, []byte(`{"model":"gpt-6-astra"}`), "", "", "", nil, nil); err == nil {
 		t.Fatal("missing ChatGPT account ID must be rejected")
 	}
 }

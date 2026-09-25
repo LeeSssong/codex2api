@@ -38,7 +38,6 @@ addEventListener('message', function receive(event) {
 }
 
 type qualityTestRequest struct {
-	TextOnly        bool   `json:"-"`
 	Model           string `json:"model"`
 	Prompt          string `json:"prompt"`
 	ReasoningEffort string `json:"reasoning_effort"`
@@ -138,12 +137,9 @@ func (h *Handler) qualityTestOptionsForAccount(ctx context.Context, account *aut
 		}
 	}
 	for _, model := range candidates {
-		if !account.IsRelayStyle() && !proxy.CodexTurnStateModelAllowed(account, model) {
-			continue
-		}
 		model = strings.TrimSpace(model)
 		// Effort aliases are proxy routing shortcuts, not upstream model IDs.
-		if strings.EqualFold(model, "codex-auto-review") || !isTextConnectionModel(model) || strings.ContainsAny(model, "()") || slices.Contains(options.Models, model) {
+		if !isTextConnectionModel(model) || strings.ContainsAny(model, "()") || slices.Contains(options.Models, model) {
 			continue
 		}
 		options.Models = append(options.Models, model)
@@ -163,10 +159,7 @@ func (h *Handler) validateQualityTestForAccount(ctx context.Context, account *au
 }
 
 func buildQualityTestPayload(account *auth.Account, model string, req qualityTestRequest, securityCfg auth.ClaudeSecurityConfig) ([]byte, error) {
-	instructions := "Return a complete, self-contained HTML document for the user's request. Include all SVG, CSS and JavaScript inline. Do not use external resources. Return only HTML, without Markdown fences or explanations."
-	if req.TextOnly {
-		instructions = "Answer the user question directly as text."
-	}
+	const instructions = "Return a complete, self-contained HTML document for the user's request. Include all SVG, CSS and JavaScript inline. Do not use external resources. Return only HTML, without Markdown fences or explanations."
 	body := map[string]any{"model": model, "stream": true}
 	if account.IsClaudeOAuth() {
 		maxTokens := int64(32768)

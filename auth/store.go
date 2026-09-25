@@ -107,36 +107,6 @@ func IsValidCodexPassthroughMode(value string) bool {
 }
 
 const (
-	OpenAIResponsesTransportHTTP      = "http"
-	OpenAIResponsesTransportWebsocket = "websocket"
-	// OpenAIResponsesUpstreamTransportCredentialKey 存在 OpenAI Responses 中转账号凭据里。
-	// 缺省和 http 保持原有 HTTP POST；websocket 才拨该账号自己的 Responses WebSocket。
-	OpenAIResponsesUpstreamTransportCredentialKey = "responses_upstream_transport"
-)
-
-// NormalizeOpenAIResponsesUpstreamTransport 把传输档位归一成 http 或 websocket。
-// 空值和无法识别的存量值都回落到 http，升级后行为不变。
-func NormalizeOpenAIResponsesUpstreamTransport(value string) string {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case OpenAIResponsesTransportWebsocket:
-		return OpenAIResponsesTransportWebsocket
-	default:
-		return OpenAIResponsesTransportHTTP
-	}
-}
-
-// IsValidOpenAIResponsesUpstreamTransport 校验管理接口写入的传输档位。
-// 空串按 http 接受，由调用方归一。
-func IsValidOpenAIResponsesUpstreamTransport(value string) bool {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "", OpenAIResponsesTransportHTTP, OpenAIResponsesTransportWebsocket:
-		return true
-	default:
-		return false
-	}
-}
-
-const (
 	DefaultTestContent = "hi"
 	// DefaultTestModel 是连通性测试的出厂默认模型;须是当前上游仍在线、free/plus/pro
 	// 三档都可用的模型(gpt-5.4 已于 2026-09 下线)。
@@ -156,6 +126,10 @@ func NormalizeTestContent(content string) string {
 
 // Account 运行时账号状态
 type Account struct {
+	codexRoutes               codexAccountRoutes
+	stateAdmissionMu          sync.Mutex
+	stateBusinessLimit        int64
+	stateCaptureRequests      int64
 	codexLiteSupport          map[string]bool
 	codexCapabilityGeneration int64
 	codexCapabilityObservedAt int64
@@ -199,10 +173,6 @@ type Account struct {
 	// CodexPassthroughMode 是 OpenAI Responses 中转账号的 Codex 身份透传档位
 	// （off / auto / always），见 codex passthrough 常量定义。
 	CodexPassthroughMode string
-	// ResponsesUpstreamTransport 是 OpenAI Responses 中转账号的上游传输
-	// （http / websocket）。空值和 http 都走 HTTP；websocket 只在该账号上拨
-	// Responses WebSocket，与全局 codex_force_websocket 无关。
-	ResponsesUpstreamTransport string
 	// CodexFingerprintMode 见 codex_fingerprint_mode.go：Codex 官方出站请求的
 	// 设备指纹收敛档位（off / device / session / full），默认 off。
 	CodexFingerprintMode string
@@ -212,11 +182,9 @@ type Account struct {
 	Timezone string
 	// CodexTurnState* 见 codex_turn_state.go：凭据级 X-Codex-Turn-State 强制注入的值、
 	// 模型名单与设置时刻。空值 = 不注入。
-	CodexTurnStateProxyURL string
-	CodexTurnStateDisabled bool
-	CodexTurnState         string
-	CodexTurnStateModels   string
-	CodexTurnStateSetAt    time.Time
+	CodexTurnState       string
+	CodexTurnStateModels string
+	CodexTurnStateSetAt  time.Time
 	// ClaudeFingerprintMode 见 claude_fingerprint_mode.go:Claude Code 出站身份头
 	// 收敛模式(preserve/force;空=跟随全局默认)。
 	ClaudeFingerprintMode string
@@ -695,22 +663,6 @@ func (a *Account) OpenAIResponsesCodexPassthroughMode() string {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return NormalizeCodexPassthroughMode(a.CodexPassthroughMode)
-}
-
-// OpenAIResponsesUpstreamTransport 返回中转账号的上游传输档位。非此类账号返回空串。
-func (a *Account) OpenAIResponsesUpstreamTransport() string {
-	if a == nil || !a.IsOpenAIResponsesAPI() {
-		return ""
-	}
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	return NormalizeOpenAIResponsesUpstreamTransport(a.ResponsesUpstreamTransport)
-}
-
-// OpenAIResponsesUsesUpstreamWebsocket 判断该中转账号是否要拨 Responses WebSocket。
-// 只对 OpenAI Responses 中转账号为真，Grok / Antigravity / Claude 恒为假。
-func (a *Account) OpenAIResponsesUsesUpstreamWebsocket() bool {
-	return a.OpenAIResponsesUpstreamTransport() == OpenAIResponsesTransportWebsocket
 }
 
 func (a *Account) OpenAIResponsesCredentials() (baseURL, apiKey string) {
@@ -4008,27 +3960,21 @@ func (s *Store) setCachedModelCooldown(accountID int64, cooldown ModelCooldown) 
 }
 
 func (s *Store) getCachedModelCooldown(accountID int64, model string) (runtimeCooldownRecord, bool) {
-	return s.getCachedModelCooldownContext(context.Background(), accountID, model)
-}
-
-func (s *Store) getCachedModelCooldownContext(parent context.Context, accountID int64, model string) (runtimeCooldownRecord, bool) {
-	if s == nil || s.tokenCache == nil || accountID == 0 || parent.Err() != nil {
+	if s == nil || s.tokenCache == nil || accountID == 0 {
 		return runtimeCooldownRecord{}, false
 	}
 	key := normalizeModelCooldownKey(model)
 	if key == "" {
 		return runtimeCooldownRecord{}, false
 	}
-	ctx, cancel := context.WithTimeout(parent, runtimeCooldownCacheTimeout)
+	ctx, cancel := cooldownRuntimeContext()
 	defer cancel()
 	if s.schedulerMetrics != nil {
 		s.schedulerMetrics.modelCooldownCacheReads.Add(1)
 	}
 	payload, ok, err := s.tokenCache.GetRuntime(ctx, modelCooldownCacheNamespace, modelCooldownRuntimeKey(accountID, key))
 	if err != nil {
-		if parent.Err() == nil {
-			log.Printf("[账号 %d] 读取模型冷却缓存失败 model=%s: %v", accountID, key, err)
-		}
+		log.Printf("[账号 %d] 读取模型冷却缓存失败 model=%s: %v", accountID, key, err)
 		return runtimeCooldownRecord{}, false
 	}
 	if !ok || len(payload) == 0 {
@@ -4037,11 +3983,11 @@ func (s *Store) getCachedModelCooldownContext(parent context.Context, accountID 
 	var record runtimeCooldownRecord
 	if err := json.Unmarshal(payload, &record); err != nil {
 		log.Printf("[账号 %d] 解析模型冷却缓存失败 model=%s: %v", accountID, key, err)
-		s.deleteCachedModelCooldownContext(parent, accountID, key)
+		s.deleteCachedModelCooldown(accountID, key)
 		return runtimeCooldownRecord{}, false
 	}
 	if !record.ResetAt.After(time.Now()) {
-		s.deleteCachedModelCooldownContext(parent, accountID, key)
+		s.deleteCachedModelCooldown(accountID, key)
 		return runtimeCooldownRecord{}, false
 	}
 	record.Model = key
@@ -4050,23 +3996,17 @@ func (s *Store) getCachedModelCooldownContext(parent context.Context, accountID 
 }
 
 func (s *Store) deleteCachedModelCooldown(accountID int64, model string) {
-	s.deleteCachedModelCooldownContext(context.Background(), accountID, model)
-}
-
-func (s *Store) deleteCachedModelCooldownContext(parent context.Context, accountID int64, model string) {
-	if s == nil || s.tokenCache == nil || accountID == 0 || parent.Err() != nil {
+	if s == nil || s.tokenCache == nil || accountID == 0 {
 		return
 	}
 	key := normalizeModelCooldownKey(model)
 	if key == "" {
 		return
 	}
-	ctx, cancel := context.WithTimeout(parent, runtimeCooldownCacheTimeout)
+	ctx, cancel := cooldownRuntimeContext()
 	defer cancel()
 	if err := s.tokenCache.DeleteRuntime(ctx, modelCooldownCacheNamespace, modelCooldownRuntimeKey(accountID, key)); err != nil {
-		if parent.Err() == nil {
-			log.Printf("[账号 %d] 删除模型冷却缓存失败 model=%s: %v", accountID, key, err)
-		}
+		log.Printf("[账号 %d] 删除模型冷却缓存失败 model=%s: %v", accountID, key, err)
 	}
 }
 
@@ -4100,10 +4040,6 @@ func (s *Store) applyCachedModelCooldown(acc *Account, model string, record runt
 }
 
 func (s *Store) accountHasCachedModelCooldown(acc *Account, model string) bool {
-	return s.accountHasCachedModelCooldownContext(context.Background(), acc, model)
-}
-
-func (s *Store) accountHasCachedModelCooldownContext(ctx context.Context, acc *Account, model string) bool {
 	if acc == nil {
 		return false
 	}
@@ -4114,7 +4050,7 @@ func (s *Store) accountHasCachedModelCooldownContext(ctx context.Context, acc *A
 	if acc.IsModelRateLimited(key) {
 		return true
 	}
-	record, ok := s.getCachedModelCooldownContext(ctx, acc.DBID, key)
+	record, ok := s.getCachedModelCooldown(acc.DBID, key)
 	if !ok {
 		return false
 	}
@@ -4124,35 +4060,18 @@ func (s *Store) accountHasCachedModelCooldownContext(ctx context.Context, acc *A
 
 // WithModelCooldownFilter wraps a request model filter with Redis-backed model cooldown checks.
 func (s *Store) WithModelCooldownFilter(model string, filter AccountFilter) AccountFilter {
-	if s == nil || normalizeModelCooldownKey(model) == "" {
+	key := normalizeModelCooldownKey(model)
+	if s == nil || key == "" {
 		return filter
 	}
-	return s.WithModelCooldownFilterContext(context.Background(), model, filter)
-}
-
-// WithModelCooldownFilterContext stops Redis reads when the downstream request
-// is canceled. A canceled read must reject the candidate, not fail open into a
-// fresh upstream request after the client has already disconnected.
-func (s *Store) WithModelCooldownFilterContext(ctx context.Context, model string, filter AccountFilter) AccountFilter {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	key := normalizeModelCooldownKey(model)
 	return func(acc *Account) bool {
-		if acc == nil || ctx.Err() != nil {
+		if acc == nil {
 			return false
 		}
 		if filter != nil && !filter(acc) {
 			return false
 		}
-		if ctx.Err() != nil {
-			return false
-		}
-		if s == nil || key == "" {
-			return true
-		}
-		blocked := s.accountHasCachedModelCooldownContext(ctx, acc, key)
-		return ctx.Err() == nil && !blocked
+		return !s.accountHasCachedModelCooldown(acc, key)
 	}
 }
 
@@ -5558,10 +5477,6 @@ func (s *Store) buildAccountFromRow(ctx context.Context, row *database.AccountRo
 		claudeAuthKind = InferClaudeAuthKind(row.GetCredential(ClaudeAuthKindCredentialKey), at, rt)
 	}
 	isOpenAIResponsesAccount := strings.EqualFold(strings.TrimSpace(upstreamType), UpstreamOpenAIResponses) && strings.TrimSpace(baseURL) != "" && strings.TrimSpace(apiKey) != ""
-	responsesUpstreamTransport := ""
-	if isOpenAIResponsesAccount {
-		responsesUpstreamTransport = NormalizeOpenAIResponsesUpstreamTransport(row.GetCredential(OpenAIResponsesUpstreamTransportCredentialKey))
-	}
 	isGrokAccount := strings.EqualFold(strings.TrimSpace(upstreamType), UpstreamGrok) && (strings.TrimSpace(apiKey) != "" || rt != "" || at != "")
 	isAntigravityAccount := strings.EqualFold(strings.TrimSpace(upstreamType), UpstreamAntigravity) && (strings.TrimSpace(apiKey) != "" || rt != "" || at != "")
 	// Agent Identity：无 AT/RT，凭 agent_private_key 动态签名，不能被下面的空凭据 guard 拒绝。
@@ -5592,11 +5507,8 @@ func (s *Store) buildAccountFromRow(ctx context.Context, row *database.AccountRo
 		ModelMapping:                 modelMapping,
 		CodexClientMetadataMode:      codexClientMetadataMode,
 		CodexPassthroughMode:         codexPassthroughMode,
-		ResponsesUpstreamTransport:   responsesUpstreamTransport,
 		CodexFingerprintMode:         codexFingerprintMode,
 		Timezone:                     accountTimezone,
-		CodexTurnStateProxyURL:       strings.TrimSpace(row.GetCredential(CodexTurnStateProxyURLCredentialKey)),
-		CodexTurnStateDisabled:       row.GetCredentialBool(CodexTurnStateDisabledCredentialKey),
 		CodexTurnState:               strings.TrimSpace(row.GetCredential(CodexTurnStateCredentialKey)),
 		CodexTurnStateModels:         NormalizeCodexTurnStateModels(row.GetCredential(CodexTurnStateModelsCredentialKey)),
 		CodexTurnStateSetAt:          ParseCodexTurnStateSetAt(row.GetCredential(CodexTurnStateSetAtCredentialKey)),
@@ -5860,6 +5772,7 @@ func (s *Store) buildAccountFromRow(ctx context.Context, row *database.AccountRo
 	}
 	// 恢复积分余额快照：积分只有 wham 探针能刷，不恢复的话重启后账号会被判成
 	// 「没积分」——积分顶替限流失效，还会被「清理限流账号」当成真限流删掉。
+	account.attachCodexRouteDB(s.db)
 	account.RestoreCreditBalanceFromJSON(row.GetCredential("codex_credits"))
 	if threshold, ok := row.GetCredentialFloat64("auto_pause_5h_threshold"); ok {
 		account.AutoPause5hThreshold = normalizeQuotaAutoPauseThreshold(threshold)
@@ -5949,7 +5862,6 @@ func openAIResponsesRuntimeConfigDiffers(acc *Account, row *database.AccountRow)
 		!stringSliceEqual(acc.Models, normalizeModelList(row.GetCredentialStringSlice("models"))) ||
 		strings.TrimSpace(acc.ModelMapping) != strings.TrimSpace(row.GetCredential("model_mapping")) ||
 		NormalizeCodexClientMetadataMode(acc.CodexClientMetadataMode) != NormalizeCodexClientMetadataMode(row.GetCredential("codex_client_metadata_mode")) ||
-		NormalizeOpenAIResponsesUpstreamTransport(acc.ResponsesUpstreamTransport) != NormalizeOpenAIResponsesUpstreamTransport(row.GetCredential(OpenAIResponsesUpstreamTransportCredentialKey)) ||
 		strings.TrimSpace(acc.ProxyURL) != strings.TrimSpace(row.ProxyURL) ||
 		!stringMapEqual(acc.CustomHeaders, row.GetCredentialStringMap("custom_headers"))
 }
@@ -6458,14 +6370,14 @@ const (
 	accountAcquireFailureUnavailable
 )
 
-func (s *Store) tryAcquireAccountWithFailure(acc *Account, limit int64, updateSchedulerOnLimit bool) (bool, accountAcquireFailure) {
+func (s *Store) tryAcquireAccountWithFailure(acc *Account, limit int64, updateSchedulerOnLimit bool, capture ...bool) (bool, accountAcquireFailure) {
 	if acc == nil || limit <= 0 {
 		return false, accountAcquireFailureDispatchLimit
 	}
 	if accountDispatchBlocked(acc) {
 		return false, accountAcquireFailureUnavailable
 	}
-	if !reserveOccupiedAccountSlot(acc, limit) {
+	if !reserveOccupiedAccountSlot(acc, limit, capture...) {
 		if accountDispatchBlocked(acc) {
 			return false, accountAcquireFailureUnavailable
 		}
@@ -6474,7 +6386,11 @@ func (s *Store) tryAcquireAccountWithFailure(acc *Account, limit int64, updateSc
 	now := time.Now()
 	reservation := acc.reserveDispatchCount(now)
 	if !reservation.Allowed {
-		releaseOccupiedAccountSlot(acc)
+		if len(capture) > 0 && capture[0] {
+			releaseStateCaptureSlot(acc)
+		} else {
+			releaseOccupiedAccountSlot(acc)
+		}
 		s.markDispatchCountLimitCooldown(acc, reservation.ResetAt, updateSchedulerOnLimit)
 		return false, accountAcquireFailureDispatchLimit
 	}
@@ -6512,8 +6428,14 @@ func accountDispatchBlocked(acc *Account) bool {
 	return acc == nil || atomic.LoadInt32(&acc.Disabled) != 0 || atomic.LoadInt32(&acc.DispatchPaused) != 0
 }
 
-func reserveOccupiedAccountSlot(acc *Account, limit int64) bool {
+func reserveOccupiedAccountSlot(acc *Account, limit int64, capture ...bool) bool {
 	if limit <= 0 || accountDispatchBlocked(acc) {
+		return false
+	}
+	acc.stateAdmissionMu.Lock()
+	defer acc.stateAdmissionMu.Unlock()
+	isCapture := len(capture) > 0 && capture[0]
+	if !isCapture && acc.stateBusinessLimit > 0 && atomic.LoadInt64(&acc.ActiveRequests)-acc.stateCaptureRequests >= acc.stateBusinessLimit {
 		return false
 	}
 	for {
@@ -6526,6 +6448,9 @@ func reserveOccupiedAccountSlot(acc *Account, limit int64) bool {
 			if accountDispatchBlocked(acc) {
 				releaseOccupiedAccountSlot(acc)
 				return false
+			}
+			if isCapture {
+				acc.stateCaptureRequests++
 			}
 			return true
 		}
@@ -7467,7 +7392,7 @@ func (s *Store) takeByIDMode(id int64, apiKeyID int64, exclude map[int64]bool, f
 // takeByIDModeWithCapacity distinguishes a pure concurrency miss from every
 // other reason a bound account cannot be selected. Only the former is safe to
 // treat as a one-request spillover without migrating the durable binding.
-func (s *Store) takeByIDModeWithCapacity(id int64, apiKeyID int64, exclude map[int64]bool, filter AccountFilter, continuation bool, sessionKey string, policy DispatchPolicy) (*Account, bool) {
+func (s *Store) takeByIDModeWithCapacity(id int64, apiKeyID int64, exclude map[int64]bool, filter AccountFilter, continuation bool, sessionKey string, policy DispatchPolicy, capture ...bool) (*Account, bool) {
 	if s == nil || id == 0 {
 		return nil, false
 	}
@@ -7518,7 +7443,7 @@ func (s *Store) takeByIDModeWithCapacity(id int64, apiKeyID int64, exclude map[i
 		if limit <= 0 {
 			return nil, false
 		}
-		acquired, failure := s.tryAcquireAccountWithFailure(target, limit, true)
+		acquired, failure := s.tryAcquireAccountWithFailure(target, limit, true, capture...)
 		if !acquired {
 			return nil, failure == accountAcquireFailureCapacity
 		}
@@ -7538,7 +7463,7 @@ func (s *Store) takeByIDModeWithCapacity(id int64, apiKeyID int64, exclude map[i
 	if s.tryReclaimSessionSlot(target, sessionKey, true) {
 		return target, false
 	}
-	acquired, failure := s.tryAcquireAccountWithFailure(target, limit, true)
+	acquired, failure := s.tryAcquireAccountWithFailure(target, limit, true, capture...)
 	if !acquired {
 		return nil, failure == accountAcquireFailureCapacity
 	}
@@ -7672,55 +7597,6 @@ func (s *Store) UsageLimitedCandidateSummary(apiKeyID int64, exclude map[int64]b
 	} else {
 		summary.RetryAfter = 0
 	}
-	return summary
-}
-
-// CapacitySaturatedCandidateSummary reports a pool that still has matching
-// accounts, but every one of them is already at its concurrency limit.
-// Disabled, cooling, filtered-out and zero-limit accounts are ignored, so a
-// genuinely empty pool stays a no-available-account failure.
-type CapacitySaturatedCandidateSummary struct {
-	Found bool
-}
-
-func (s *Store) CapacitySaturatedCandidateSummary(apiKeyID int64, exclude map[int64]bool, filter AccountFilter, policy DispatchPolicy) CapacitySaturatedCandidateSummary {
-	var summary CapacitySaturatedCandidateSummary
-	if s == nil {
-		return summary
-	}
-	filter = s.withUsableEgressFilter(filter)
-	maxConcurrency := atomic.LoadInt64(&s.maxConcurrency)
-	saturated := 0
-	for _, acc := range s.accountSnapshotAccounts() {
-		if acc == nil || (exclude != nil && exclude[acc.DBID]) {
-			continue
-		}
-		if !acc.dispatchableForPolicy(policy) {
-			continue
-		}
-		if policy == DispatchPolicyStandard && s.GetLazyMode() && !s.accountLazySelectable(acc) {
-			continue
-		}
-		if s.accountHasBlockingCachedCooldown(acc, policy) {
-			continue
-		}
-		if !s.accountAllowedForAPIKey(acc, apiKeyID) {
-			continue
-		}
-		if filter != nil && !filter(acc) {
-			continue
-		}
-		_, _, _, limit := acc.schedulerSnapshotForPolicy(maxConcurrency, policy)
-		if limit <= 0 {
-			continue
-		}
-		// A free slot means selection failed for some other reason.
-		if accountOccupiedRequests(acc) < limit {
-			return summary
-		}
-		saturated++
-	}
-	summary.Found = saturated > 0
 	return summary
 }
 
@@ -8119,6 +7995,11 @@ func (s *Store) tryReclaimSessionSlot(acc *Account, sessionKey string, updateSch
 		return false
 	}
 	sessionKey = strings.TrimSpace(sessionKey)
+	acc.stateAdmissionMu.Lock()
+	if acc.stateBusinessLimit > 0 && atomic.LoadInt64(&acc.ActiveRequests)-acc.stateCaptureRequests >= acc.stateBusinessLimit {
+		acc.stateAdmissionMu.Unlock()
+		return false
+	}
 
 	reclaimed := false
 	s.sessionMu.Lock()
@@ -8139,6 +8020,7 @@ func (s *Store) tryReclaimSessionSlot(acc *Account, sessionKey string, updateSch
 		}
 	}
 	s.sessionMu.Unlock()
+	acc.stateAdmissionMu.Unlock()
 	if !reclaimed {
 		return false
 	}
@@ -9089,6 +8971,7 @@ func (s *Store) AddAccounts(accounts []*Account) {
 		}
 		acc.mu.Lock()
 		acc.grokRuntimeSink = s
+		acc.attachCodexRouteDB(s.db)
 		acc.recomputeEffectiveIgnoreUsageLimitStatus(ignoreUsageLimit)
 		acc.recomputeEffectiveGroupBaseConcurrency(s)
 		acc.recomputeSchedulerLocked(maxConcurrency)
@@ -9747,9 +9630,6 @@ func (s *Store) applyOpenAIResponsesConfig(ctx context.Context, row *database.Ac
 	acc.ModelMapping = strings.TrimSpace(modelMapping)
 	acc.CodexClientMetadataMode = NormalizeCodexClientMetadataMode(codexClientMetadataMode)
 	acc.CodexPassthroughMode = NormalizeCodexPassthroughMode(codexPassthroughMode)
-	if loadedPersistedConfig {
-		acc.ResponsesUpstreamTransport = NormalizeOpenAIResponsesUpstreamTransport(row.GetCredential(OpenAIResponsesUpstreamTransportCredentialKey))
-	}
 	acc.ProxyURL = strings.TrimSpace(proxyURL)
 	acc.Email = acc.BaseURL
 	acc.PlanType = "api"
@@ -9905,14 +9785,18 @@ func (s *Store) MarkResponsesRateLimited(acc *Account, duration time.Duration) {
 		return
 	}
 	now := time.Now()
-	acc.mu.RLock()
-	alreadyLimited := acc.Status == StatusCooldown &&
-		acc.CooldownReason == ResponsesRateLimitedCooldownReason &&
-		(acc.CooldownUtil.IsZero() || now.Before(acc.CooldownUtil))
-	acc.mu.RUnlock()
-
-	s.MarkCooldown(acc, duration, ResponsesRateLimitedCooldownReason)
-	if !alreadyLimited {
+	probe := false
+	_ = acc.ApplyUsageObservation(now, func() {
+		acc.mu.RLock()
+		alreadyLimited := acc.Status == StatusCooldown &&
+			acc.CooldownReason == ResponsesRateLimitedCooldownReason &&
+			!acc.isTransientRateLimitCooldownLocked() &&
+			(acc.CooldownUtil.IsZero() || now.Before(acc.CooldownUtil))
+		acc.mu.RUnlock()
+		s.MarkCooldown(acc, duration, ResponsesRateLimitedCooldownReason)
+		probe = !alreadyLimited
+	})
+	if probe {
 		s.TriggerUsageProbeForAccountAsync(acc)
 	}
 }
@@ -10039,9 +9923,17 @@ func (s *Store) markCooldown(acc *Account, duration time.Duration, reason string
 	if errorMsg != "" {
 		acc.ErrorMsg = errorMsg
 	}
-	acc.recomputeSchedulerLocked(atomic.LoadInt64(&s.maxConcurrency))
 	until := now.Add(duration)
+	if isUsageLimitCooldownReason(reason) && acc.Status == StatusCooldown &&
+		acc.CooldownReason == ResponsesRateLimitedCooldownReason && !acc.isTransientRateLimitCooldownLocked() &&
+		acc.CooldownUtil.After(now) {
+		reason = ResponsesRateLimitedCooldownReason
+		if acc.CooldownUtil.After(until) {
+			until = acc.CooldownUtil
+		}
+	}
 	acc.setCooldownUntilLocked(until, reason)
+	acc.recomputeSchedulerLocked(atomic.LoadInt64(&s.maxConcurrency))
 	acc.mu.Unlock()
 	s.fastSchedulerUpdate(acc)
 	s.setCachedAccountCooldown(acc.DBID, reason, until)
@@ -10424,35 +10316,6 @@ func (s *Store) ClearCooldown(acc *Account) {
 	}
 }
 
-// ClearCooldownIfReason clears a durable and in-memory cooldown only when the
-// current durable reason still matches. This prevents a delayed recovery task
-// from erasing a newer unauthorized or rate-limit cooldown.
-func (s *Store) ClearCooldownIfReason(ctx context.Context, acc *Account, reason string) (bool, error) {
-	if s == nil || acc == nil || strings.TrimSpace(reason) == "" {
-		return false, nil
-	}
-	acc.mu.Lock()
-	if acc.CooldownReason != reason {
-		acc.mu.Unlock()
-		return false, nil
-	}
-	if s.db != nil {
-		cleared, err := s.db.ClearCooldownIfReason(ctx, acc.DBID, reason)
-		if err != nil || !cleared {
-			acc.mu.Unlock()
-			return cleared, err
-		}
-	}
-	acc.Status = StatusReady
-	acc.CooldownReason = ""
-	acc.CooldownUtil = time.Time{}
-	acc.recomputeSchedulerLocked(atomic.LoadInt64(&s.maxConcurrency))
-	acc.mu.Unlock()
-	s.fastSchedulerUpdate(acc)
-	s.invalidateRoutingSchedulers()
-	return true, nil
-}
-
 // ReleaseUsageWindowCooldownForCredits 在积分门打开后释放由本地用量窗口判罚产生的 cooldown。
 //
 // 为什么需要：信用开关此前只阻止「进入」用量窗口 cooldown（MarkUsage7dRateLimited 早退），
@@ -10481,6 +10344,16 @@ func (s *Store) ReleaseUsageWindowCooldownForCredits(acc *Account) bool {
 // was already present when observedAt was captured. Authentication failures,
 // generic errors, disabled states, and newer cooldowns are left untouched.
 func (s *Store) ClearUsageLimitCooldownSince(acc *Account, observedAt time.Time) bool {
+	return s.clearUsageLimitCooldownSince(acc, observedAt, true)
+}
+
+// ClearUsageWindowCooldownSince accepts metadata-only recovery evidence.
+// A healthy WHAM window does not prove a rejected Responses request is usable.
+func (s *Store) ClearUsageWindowCooldownSince(acc *Account, observedAt time.Time) bool {
+	return s.clearUsageLimitCooldownSince(acc, observedAt, false)
+}
+
+func (s *Store) clearUsageLimitCooldownSince(acc *Account, observedAt time.Time, responsesSuccess bool) bool {
 	if s == nil || acc == nil {
 		return false
 	}
@@ -10490,6 +10363,7 @@ func (s *Store) ClearUsageLimitCooldownSince(acc *Account, observedAt time.Time)
 
 	acc.mu.Lock()
 	if acc.Status != StatusCooldown || !isUsageLimitCooldownReason(acc.CooldownReason) ||
+		(!responsesSuccess && acc.CooldownReason == ResponsesRateLimitedCooldownReason) ||
 		(!acc.LastRateLimitedAt.IsZero() && acc.LastRateLimitedAt.After(observedAt)) {
 		acc.mu.Unlock()
 		return false

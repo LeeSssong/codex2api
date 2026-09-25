@@ -92,14 +92,7 @@ func (db *DB) ListAccountListProjection(ctx context.Context, channel string) ([]
 		}
 		result = append(result, row)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	rows.Close()
-	if err := db.HydrateGrokDisplay(ctx, result); err != nil {
-		return nil, err
-	}
-	return result, nil
+	return result, rows.Err()
 }
 
 type accountProjectionScanner interface {

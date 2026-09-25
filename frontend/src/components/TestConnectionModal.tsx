@@ -1,6 +1,5 @@
-// 账号测连弹窗:Codex、Claude(经 Codex 诊断帧)、Grok/Responses、Antigravity 共用。
-// 消费 GET /api/admin/accounts/:id/test 的 SSE:test_start → content* → diagnostics /
-// test_complete / error;codex_diagnostics 可能挂在任意事件上,读到 SSE 关闭再刷新列表。
+// Shared connection test dialog for Codex, Claude, Grok/Responses, and Antigravity.
+// Diagnostics can accompany any SSE event; refresh accounts after the stream closes.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
@@ -20,6 +19,7 @@ import type { CodexTestDiagnostics, CodexTestWindow } from "../lib/codexConnecti
 import {
   clampCodexTestPercent,
   codexTestTokenMetrics,
+  codexTestTurnState,
   codexTestWindowKind,
   formatCodexTestMS,
   formatCodexTestReset,
@@ -73,8 +73,7 @@ interface TestEvent {
   model?: string;
   success?: boolean;
   error?: string;
-  // Codex/Responses 测连诊断:首帧只有响应头信息,流结束后的最终帧带 duration_ms,
-  // 且可能出现在 test_complete/error 之后,因此要读到 SSE 关闭再刷新列表。
+  // Final diagnostics include duration_ms and can follow a terminal event.
   codex_diagnostics?: CodexTestDiagnostics;
 }
 
@@ -120,11 +119,10 @@ export default function TestConnectionModal({
   }, []);
 
   const isClaudeAccount = Boolean(account.claude_api);
-  // Antigravity 账号行携带的 models 已是对外发布的固定档位 ID,默认模型取系统设置里
-  // 该渠道的测试模型,否则取版本最新的 flash 低档(目录里会残留已下线旧版)。
+  // Antigravity models already use public tier IDs. Prefer the channel setting,
+  // falling back to the newest Flash model rather than obsolete catalog entries.
   const isAntigravityAccount = Boolean(account.antigravity_api);
-  // Grok 与 openai_responses 同属"账号自带模型清单"的 relay 风格账号，
-  // Claude 也使用账号级原生 Messages 模型清单，但走独立分支。
+  // Relay accounts provide their own model catalog; Claude uses a separate branch.
   const isOpenAIResponsesAccount = Boolean(
     account.openai_responses_api || account.grok_api,
   );
@@ -149,7 +147,7 @@ export default function TestConnectionModal({
           try {
             preferred = (await api.getChannelTestSettings()).antigravity.test_model ?? "";
           } catch {
-            /* 渠道测试设置读不到就按目录自动选 */
+            /* Fall back to the catalog when channel settings are unavailable. */
           }
           if (!active) return;
           const ordered = orderAntigravityTestModels(account.models ?? [], preferred);
@@ -270,7 +268,7 @@ export default function TestConnectionModal({
   useEffect(() => {
     if (!modelOptionsReady || !selectedModel) return;
 
-    // 重置状态（StrictMode 二次 mount 时清理上一次的残留）
+    // Reset previous results, including StrictMode remounts.
     setOutput([]);
     setStatus("connecting");
     setErrorMsg("");
@@ -331,8 +329,7 @@ export default function TestConnectionModal({
 
             try {
               const event: TestEvent = JSON.parse(trimmed.slice(6));
-              // 请求阶段失败时后端不单发 diagnostics 帧,而是把诊断挂在 error 事件上,
-              // 因此不分事件类型,带了就收。
+              // Transport errors attach diagnostics directly to the error event.
               if (event.codex_diagnostics) {
                 setDiagnostics(event.codex_diagnostics);
               }
@@ -383,8 +380,7 @@ export default function TestConnectionModal({
         }
 
         if (receivedTerminalEvent) {
-          // 等服务端关闭 SSE 后再刷新列表：后端会在连接结束时提交状态并失效
-          // 账号快照，提前刷新会重新读到“未采样”的旧缓存。
+          // Wait for SSE closure so committed account state replaces cached snapshots.
           markSettled();
         } else {
           setStatus("error");
@@ -401,7 +397,7 @@ export default function TestConnectionModal({
       }
     };
 
-    // 延迟 50ms 启动，确保 StrictMode cleanup 有足够时间执行 abort
+    // Allow StrictMode cleanup to abort before starting the request.
     const timer = window.setTimeout(() => {
       void run();
     }, 50);
@@ -455,6 +451,8 @@ export default function TestConnectionModal({
   };
   const running = status === "connecting" || status === "streaming";
   const diagnosticsFinal = isFinalCodexTestDiagnostics(diagnostics);
+  const turnState = codexTestTurnState(diagnostics, running);
+  const showTurnState = !isClaudeAccount && !isAntigravityAccount && !account.grok_api;
   const handleCopyDiagnostics = async () => {
     try {
       await copyTextToClipboard(
@@ -510,8 +508,7 @@ export default function TestConnectionModal({
       percent: clampCodexTestPercent(window.used_percent),
       reset: formatCodexTestReset(window.reset_after_seconds),
     }));
-  // 安全缓冲单独成行:x-codex-safety-buffering-faster-model 只是官方 CLI 的备用切换
-  // 目标,混在响应头表里容易被误读成"实际回答模型"。
+  // Keep the CLI fallback model separate from the actual response model.
   const safetyBuffering = (() => {
     if (!diagnostics) return undefined;
     const enabled = diagnostics.safety_buffering_enabled;
@@ -633,6 +630,19 @@ export default function TestConnectionModal({
                 </div>
               </div>
             ))}
+          </div>
+        )}
+
+        {showTurnState && (
+          <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 rounded-lg border border-border px-3 py-2.5 text-xs" role="status" aria-live="polite" data-testid="connection-turn-state">
+            <div className="min-w-0">
+              <div className="font-medium">{t("accounts.testDiagTurnState")}</div>
+              <div className="mt-1 text-muted-foreground">{t("accounts.testDiagTurnStateHint")}</div>
+              {diagnostics?.turn_state_source === 'ws_handshake' && turnState.length ? <div className="mt-1 text-amber-700 dark:text-amber-300">{t("accounts.testDiagTurnStateHandshake")}</div> : null}
+            </div>
+            <span className={cn("shrink-0 font-semibold tabular-nums", turnState.status === 'matched' ? "text-emerald-700 dark:text-emerald-300" : turnState.status === 'different' ? "text-amber-700 dark:text-amber-300" : "text-muted-foreground")}>
+              {t(`accounts.testDiagTurnState_${turnState.status}`, { count: turnState.length })}
+            </span>
           </div>
         )}
 

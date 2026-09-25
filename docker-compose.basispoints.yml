@@ -1,0 +1,30 @@
+name: codex2api-basispoints
+
+services:
+  codex2api:
+    image: ${CODEX_IMAGE:-ghcr.io/hloolx/codex2api:basispoints}
+    container_name: codex2api-basispoints
+    ports:
+      - "${BIND_HOST:-0.0.0.0}:${CODEX_PORT:-8080}:8080"
+    environment:
+      CODEX_BIND: 0.0.0.0
+      CODEX_PORT: "8080"
+      ADMIN_SECRET: ${ADMIN_SECRET:?Set ADMIN_SECRET in .env before starting}
+      DATABASE_DRIVER: sqlite
+      DATABASE_PATH: /data/codex2api.db
+      CACHE_DRIVER: memory
+      CODEX_ROUTE_POLICY: ${CODEX_ROUTE_POLICY:-inherit}
+      BASISPOINTS_MODELS: ${BASISPOINTS_MODELS:-gpt-5.6-sol,gpt-6-astra}
+      BASISPOINTS_NATIVE_FALLBACK: ${BASISPOINTS_NATIVE_FALLBACK:-true}
+      TZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      - ./data:/data
+      - ./logs:/app/logs
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8080/health >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 60s
+    stop_grace_period: 60s
+    restart: unless-stopped

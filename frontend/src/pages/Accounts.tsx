@@ -1,3 +1,4 @@
+import { CodexRouteBadges, CodexRouteManager } from "../components/CodexRoutes";
 import type { ChangeEvent, DragEvent, ReactNode } from "react";
 import { memo, useCallback, useEffect, useRef, useState, useMemo } from "react";
 import "./accounts-cards.css";
@@ -6,8 +7,12 @@ import { api, getAdminKey, resetAdminAuthState } from "../api";
 import type { ProxyRow } from "../api";
 import { ProxyField } from "../components/ProxyField";
 import AccountProxyBadge from "../components/AccountProxyBadge";
+import AccountStateModels from "../components/AccountStateModels";
+import StateCoverage from "../components/StateCoverage";
+import type { StateSummary } from "../lib/accountStateModels";
+import { useStateFilters } from "../hooks/useStateFilters";
+import { STATE_MODEL_LABELS } from "../lib/statePool";
 import AccountProxyQuickEditor from "../components/AccountProxyQuickEditor";
-import CodexTurnStateBadge, { isCodexTurnStateAccount } from "../components/CodexTurnStateBadge";
 import SubscriptionBadge from "../components/SubscriptionBadge";
 import {
   buildProxyBindingContext,
@@ -61,7 +66,6 @@ import type {
   AddOpenAIResponsesAccountRequest,
   CodexClientMetadataMode,
   CodexPassthroughMode,
-  ResponsesUpstreamTransport,
   CodexFingerprintMode,
   UpdateOpenAIResponsesAccountRequest,
   APIKeyRow,
@@ -78,7 +82,6 @@ import type {
   UpstreamChannel,
   OpenAIResponsesBalanceResponse,
   SubscriptionFilter,
-  TurnStateReuseAccountStatus,
 } from "../types";
 import { SUBSCRIPTION_FILTER_OPTIONS } from "../types";
 import { getErrorMessage } from "../utils/error";
@@ -371,6 +374,7 @@ const ACCOUNT_TABLE_COLUMNS = [
   "priority",
   "plan",
   "subscription",
+  "state",
   "status",
   "today",
   "requests",
@@ -684,7 +688,6 @@ function codexFingerprintModeOptions(
     { value: "off", label: t("accounts.codexFingerprintModeOff") },
     { value: "device", label: t("accounts.codexFingerprintModeDevice") },
     { value: "session", label: t("accounts.codexFingerprintModeSession") },
-    { value: "single_machine_multi_window", label: t("accounts.codexFingerprintModeSessionIdentity") },
     { value: "full", label: t("accounts.codexFingerprintModeFull") },
   ];
 }
@@ -696,8 +699,6 @@ function codexFingerprintModeDetail(
   switch (mode) {
     case "device":
       return t("accounts.codexFingerprintModeDeviceDetail");
-    case "single_machine_multi_window":
-      return t("accounts.codexFingerprintModeSessionIdentityDetail");
     case "session":
       return t("accounts.codexFingerprintModeSessionDetail");
     case "full":
@@ -1147,7 +1148,6 @@ const AccountTableRow = memo(function AccountTableRow({
   authJsonExporting,
   t,
   actions,
-  turnStateStatus,
 }: {
   account: AccountRow;
   sequence: number;
@@ -1163,7 +1163,6 @@ const AccountTableRow = memo(function AccountTableRow({
   authJsonExporting: boolean;
   t: ReturnType<typeof useTranslation>["t"];
   actions: AccountRowActions;
-  turnStateStatus?: TurnStateReuseAccountStatus;
 }) {
   const tableOverlayKind = resolveAccountOverlayKind(account);
   const tableOverlay = renderAccountStateOverlay(account, t, {
@@ -1288,7 +1287,7 @@ const AccountTableRow = memo(function AccountTableRow({
                                       t={t}
                                     />
                                   )}
-                                  {(isCodexTurnStateAccount(account) || account.at_only ||
+                                  {(account.at_only ||
                                     account.openai_responses_api ||
                                     account.grok_api ||
                                     account.agent_identity ||
@@ -1345,7 +1344,6 @@ const AccountTableRow = memo(function AccountTableRow({
                                           {account.rate_limit_reset_credits ?? 0}
                                         </button>
                                       )}
-                                      <CodexTurnStateBadge account={account} />
                                       {getCreditBalanceDisplay(account) !==
                                         null && (
                                         <button
@@ -1445,6 +1443,7 @@ const AccountTableRow = memo(function AccountTableRow({
                                 />
                               </TableCell>
                             )}
+                            {visibleColumns.state && <TableCell><AccountStateModels states={account.state_models} accountID={account.id} /><CodexRouteBadges paths={account.codex_paths} /></TableCell>}
                             {visibleColumns.status && (
                               <TableCell data-account-state-cell="status">
                                 {tableOverlay ?? (
@@ -1485,14 +1484,6 @@ const AccountTableRow = memo(function AccountTableRow({
                                         errorMessage={account.error_message}
                                       />
                                       <UsingCreditsBadge account={account} />
-                                      {turnStateStatus ? (
-                                        <span
-                                          className="inline-flex items-center rounded-md border border-border bg-muted/50 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground"
-                                          title={[turnStateStatus.last_error, turnStateStatus.last_route].filter(Boolean).join(" · ")}
-                                        >
-                                          TS · {t(`settings.turnStateStatus_${turnStateStatus.status}`)}
-                                        </span>
-                                      ) : null}
                                       {account.status !== "overload_paused" && (
                                         <AccountStatusCountdown account={account} />
                                       )}
@@ -1715,18 +1706,6 @@ const AccountCardItem = memo(function AccountCardItem({
 
 export default function Accounts() {
   const { t } = useTranslation();
-  const [turnStateStatusByAccount, setTurnStateStatusByAccount] = useState<Record<number, TurnStateReuseAccountStatus>>({});
-
-  useEffect(() => {
-    let cancelled = false;
-    const load = () => void api.getTurnStateReuseStatus().then((response) => {
-      if (cancelled) return;
-      setTurnStateStatusByAccount(Object.fromEntries((response.accounts ?? []).map((item) => [item.account_id, item])));
-    }).catch(() => undefined);
-    load();
-    const timer = window.setInterval(load, 30_000);
-    return () => { cancelled = true; window.clearInterval(timer); };
-  }, []);
   const pageSizeOptions = DEFAULT_PAGE_SIZE_OPTIONS;
   const [showAdd, setShowAdd] = useState(false);
   // providerView 由路由驱动，刷新浏览器后停留在当前上游视图。
@@ -1802,6 +1781,17 @@ export default function Accounts() {
     20,
     pageSizeOptions,
   );
+  const { state: stateFilter, model: stateModelFilter, update: updateStateFilters } = useStateFilters();
+  const [capabilityFilter, setCapabilityFilter] = useState("all");
+  const [capabilityModel, setCapabilityModel] = useState("");
+  const [stateSummary, setStateSummary] = useState<StateSummary>();
+  const stateRevision = useRef('');
+  useEffect(() => {
+    if (stateSummary && stateModelFilter && !stateSummary.models.some(item => item.model === stateModelFilter)) {
+      updateStateFilters({ model: '' });
+      setPage(1);
+    }
+  }, [stateSummary, stateModelFilter, updateStateFilters]);
   const [statusFilter, setStatusFilter] = useState<
     | "all"
     | "normal"
@@ -1933,8 +1923,6 @@ export default function Accounts() {
   const [editTimezone, setEditTimezone] = useState("");
   const [editTimezoneCustom, setEditTimezoneCustom] = useState(false);
   // Turn State 强制注入:注入值 + 限定模型(逗号分隔)。仅 Codex 官方账号下发。
-  const [editCodexTurnStateProxyUrl, setEditCodexTurnStateProxyUrl] = useState("");
-  const [editCodexTurnStateDisabled, setEditCodexTurnStateDisabled] = useState(false);
   const [editCodexTurnState, setEditCodexTurnState] = useState("");
   const [editCodexTurnStateModels, setEditCodexTurnStateModels] = useState("");
   // 时效倒计时的时钟源:编辑弹窗打开期间每秒推进一次,关闭即停。
@@ -1966,7 +1954,6 @@ export default function Accounts() {
       models: [],
       codex_client_metadata_mode: "auto",
       codex_passthrough_mode: "off",
-      responses_upstream_transport: "http",
       proxy_url: "",
     });
   const [openAIModelDraft, setOpenAIModelDraft] = useState("");
@@ -2066,7 +2053,6 @@ export default function Accounts() {
       models: [],
       codex_client_metadata_mode: "auto",
       codex_passthrough_mode: "off",
-      responses_upstream_transport: "http",
       proxy_url: "",
     });
   const [openAIModelMappingText, setOpenAIModelMappingText] = useState("");
@@ -2741,6 +2727,10 @@ export default function Accounts() {
       pageSize,
       search: debouncedSearchQuery,
       status: statusFilter,
+      state: stateFilter,
+      stateModel: stateModelFilter,
+      capability: capabilityFilter,
+      capabilityModel,
       plan: planFilter,
       subscription: subscriptionFilter,
       authKind: authFilter,
@@ -2756,6 +2746,10 @@ export default function Accounts() {
           : sortKey ?? undefined,
       order: sortDir,
     }, controller.signal);
+    if (!controller.signal.aborted && accountsResponse.state_summary) {
+      setStateSummary(accountsResponse.state_summary);
+      stateRevision.current = accountsResponse.state_summary.revision;
+    }
     return {
       accounts: accountsResponse.accounts ?? [],
       total: accountsResponse.total,
@@ -2766,7 +2760,7 @@ export default function Accounts() {
       statsState: accountsResponse.stats_state,
       disabledSorts: accountsResponse.disabled_sorts ?? [],
     };
-  }, [authFilter, debouncedSearchQuery, domainFilter, groupFilter.exclude, groupFilter.include, groupFilter.ungrouped, page, pageSize, planFilter, sortDir, sortKey, statusFilter, subscriptionFilter, tagFilter]);
+  }, [authFilter, debouncedSearchQuery, domainFilter, groupFilter.exclude, groupFilter.include, groupFilter.ungrouped, page, pageSize, planFilter, sortDir, sortKey, statusFilter, subscriptionFilter, tagFilter, stateFilter, stateModelFilter, capabilityFilter, capabilityModel]);
 
   const loadAccountAnalysis = useCallback(async (opts?: { silent?: boolean }) => {
     accountAnalysisAbortRef.current?.abort();
@@ -2931,11 +2925,17 @@ export default function Accounts() {
     [data.accounts],
   );
   const applyAccountLiveState = useCallback((response: AccountLiveStateResponse) => {
+    if (response.state_summary) {
+      const summary = response.state_summary;
+      setStateSummary(current => current?.revision === summary.revision ? current : summary);
+      if (stateRevision.current && stateRevision.current !== summary.revision) void reloadSilently();
+      stateRevision.current = summary.revision;
+    }
     setData((current) => {
       const accounts = mergeAccountLiveState(current.accounts, response);
       return accounts === current.accounts ? current : { ...current, accounts };
     });
-  }, [setData]);
+  }, [setData, reloadSilently]);
   useAccountLiveState(visibleAccountIDs, applyAccountLiveState, providerView === "codex");
   const loadAccountDetail = useCallback(
     (account: AccountRow) =>
@@ -3272,6 +3272,10 @@ export default function Accounts() {
     channel: "codex",
     search: debouncedSearchQuery || undefined,
     status: statusFilter === "all" ? undefined : statusFilter,
+    state: stateFilter === 'all' ? undefined : stateFilter,
+    state_model: stateModelFilter || undefined,
+    capability: capabilityFilter === 'all' ? undefined : capabilityFilter,
+    capability_model: capabilityModel || undefined,
     plan: planFilter === "all" ? undefined : planFilter,
     subscription: subscriptionFilter === "all" ? undefined : subscriptionFilter,
     auth_kind: authFilter === "all" ? undefined : authFilter,
@@ -3280,7 +3284,7 @@ export default function Accounts() {
     group_include: groupFilter.include.length > 0 ? groupFilter.include : undefined,
     group_exclude: groupFilter.exclude.length > 0 ? groupFilter.exclude : undefined,
     ungrouped: groupFilter.ungrouped || undefined,
-  }), [authFilter, debouncedSearchQuery, domainFilter, groupFilter.exclude, groupFilter.include, groupFilter.ungrouped, planFilter, statusFilter, subscriptionFilter, tagFilter]);
+  }), [authFilter, debouncedSearchQuery, domainFilter, groupFilter.exclude, groupFilter.include, groupFilter.ungrouped, planFilter, statusFilter, subscriptionFilter, tagFilter, stateFilter, stateModelFilter, capabilityFilter, capabilityModel]);
 
   // 服务端已完成全池筛选、排序和分页。
   const filteredAccounts = accounts;
@@ -3311,7 +3315,6 @@ export default function Accounts() {
   const openAccountDetail = useCallback((account: AccountRow) => {
     setDetailAccountData(account);
     setDetailAccountId(account.id);
-    setQuickConfigAccount(account);
   }, []);
   const closeAccountDetail = useCallback(() => {
     setDetailAccountId(null);
@@ -3741,7 +3744,6 @@ export default function Accounts() {
         models: [],
         codex_client_metadata_mode: "auto",
         codex_passthrough_mode: "off",
-        responses_upstream_transport: "http",
         proxy_url: "",
       });
       setOpenAIModelDraft("");
@@ -5673,8 +5675,6 @@ export default function Accounts() {
       Boolean(account.timezone && !findClaudeTimezoneOption(account.timezone)),
     );
     setEditCodexTurnState(account.codex_turn_state ?? "");
-    setEditCodexTurnStateProxyUrl(account.codex_turn_state_proxy_url ?? "");
-    setEditCodexTurnStateDisabled(account.codex_turn_state_disabled ?? false);
     setEditCodexTurnStateModels(account.codex_turn_state_models ?? "");
     setEditTags(account.tags ?? []);
     setEditGroupIds(account.group_ids ?? []);
@@ -5688,8 +5688,6 @@ export default function Accounts() {
         account.codex_client_metadata_mode ?? "auto",
       codex_passthrough_mode:
         account.codex_passthrough_mode ?? "off",
-      responses_upstream_transport:
-        account.responses_upstream_transport ?? "http",
       proxy_url: account.proxy_url ?? "",
     });
     setEditOpenAIModelDraft("");
@@ -5749,7 +5747,6 @@ export default function Accounts() {
       models: [],
       codex_client_metadata_mode: "auto",
       codex_passthrough_mode: "off",
-      responses_upstream_transport: "http",
       proxy_url: "",
     });
     setEditOpenAIModelDraft("");
@@ -5901,8 +5898,6 @@ export default function Accounts() {
           ? {
               codex_fingerprint_mode: editCodexFingerprintMode,
               timezone: editTimezone.trim(),
-              codex_turn_state_proxy_url: editCodexTurnStateProxyUrl.trim() || null,
-              codex_turn_state_disabled: editCodexTurnStateDisabled,
               codex_turn_state: editCodexTurnState.trim(),
               codex_turn_state_models: editCodexTurnStateModels.trim(),
             }
@@ -6607,15 +6602,16 @@ export default function Accounts() {
               {loading ? t("common.loading") : t("accounts.statsWarming")}
             </div>
           ) : null}
-          <div className="mb-4 grid grid-cols-2 gap-2 sm:gap-3 xl:grid-cols-5">
+          <div className="mb-4 grid grid-cols-2 gap-2 sm:gap-3 md:grid-cols-3 xl:grid-cols-6">
             <CompactStat
               label={t("accounts.totalAccounts")}
               chipLabel={t("accounts.filterAll")}
               value={totalAccounts}
               tone="neutral"
-              active={statusFilter === "all"}
+              active={statusFilter === "all" && stateFilter === "all"}
               onClick={() => {
                 setStatusFilter("all");
+                updateStateFilters({ state: "all", model: "" });
                 setPage(1);
               }}
             />
@@ -6631,13 +6627,26 @@ export default function Accounts() {
               }}
             />
             <CompactStat
-              label={t("accounts.schedulingAccounts")}
-              chipLabel={t("accounts.filterScheduling")}
+              label={t("accounts.schedulableAccounts")}
+              chipLabel={t("accounts.filterSchedulable")}
               value={schedulingAccounts}
               tone="warning"
               active={statusFilter === "scheduling"}
               onClick={() => {
                 setStatusFilter("scheduling");
+                setPage(1);
+              }}
+            />
+            <CompactStat
+              label={t("ipv6State.reuseAccounts")}
+              chipLabel={null}
+              value={stateSummary?.reuse_accounts ?? 0}
+              description={t(stateSummary?.enabled === false ? "ipv6State.statDetailOff" : "ipv6State.statDetail", { available: stateSummary?.available_accounts ?? 0, pairs: stateSummary?.valid_combinations ?? 0 })}
+              tone="success"
+              active={stateFilter === "valid" && !stateModelFilter}
+              onClick={() => {
+                setStatusFilter("all");
+                updateStateFilters({ state: "valid", model: "" });
                 setPage(1);
               }}
             />
@@ -6672,6 +6681,8 @@ export default function Accounts() {
               }}
             />
           </div>
+
+          {unsampledAccounts > 0 ? <p className="mb-4 text-xs leading-relaxed text-muted-foreground">{t("accounts.usageSamplingIndependent", { count: unsampledAccounts })}</p> : null}
 
           {showAnalysisCharts && accountAnalysis ? (
             <div className="mb-4 grid items-stretch gap-4 xl:grid-cols-2">
@@ -6726,7 +6737,7 @@ export default function Accounts() {
                   ["normal", t("accounts.filterNormal"), normalAccounts],
                   [
                     "scheduling",
-                    t("accounts.filterScheduling"),
+                    t("accounts.filterSchedulable"),
                     schedulingAccounts,
                   ],
                   [
@@ -6853,7 +6864,12 @@ export default function Accounts() {
                 ))}
               </div>
 
+              <div className="basis-full py-2"><StateCoverage summary={stateSummary} target="state-pool" includeSaved /></div>
               <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center sm:gap-2">
+                <Select className="w-full min-w-0 sm:w-44" compact aria-label={t('ipv6State.stateFilter')} value={stateFilter} onValueChange={value => { updateStateFilters({ state: value }); setPage(1); }} options={['all', 'valid', 'available', 'missing'].map(value => ({ value, label: t(`ipv6State.stateFilter_${value}`) }))} />
+                <Input className="w-full min-w-0 sm:w-44" aria-label={t('codexRoutes.model')} placeholder={t('codexRoutes.model')} value={capabilityModel} onChange={event => { setCapabilityModel(event.target.value); if (!event.target.value.trim()) setCapabilityFilter('all'); setPage(1); }} />
+                <Select className="w-full min-w-0 sm:w-48" compact aria-label={t('codexRoutes.capability')} disabled={!capabilityModel.trim()} value={capabilityFilter} onValueChange={value => { setCapabilityFilter(value); setPage(1); }} options={['all', 'bps_supported', 'bps_unsupported', 'bps_unknown', 'dual_supported', 'codex_only_supported', 'bps_only_supported', 'cooldown', 'admin_disabled'].map(value => ({ value, label: t(`codexRoutes.filters.${value}`) }))} />
+                <Select className="w-full min-w-0 sm:w-44" compact aria-label={t('ipv6State.modelFilter')} value={stateModelFilter || 'all'} onValueChange={value => { updateStateFilters({ model: value === 'all' ? '' : value, state: value !== 'all' && stateFilter === 'all' ? 'valid' : stateFilter }); setPage(1); }} options={[{ value: 'all', label: t('ipv6State.anyModel') }, ...(stateSummary?.models ?? []).map(({ model }) => ({ value: model, label: STATE_MODEL_LABELS[model] || model }))]} />
                 <Select
                   className="w-full min-w-0 sm:w-32"
                   compact
@@ -7115,6 +7131,7 @@ export default function Accounts() {
                         proxy: t("accounts.proxyColumn"),
                         priority: t("accounts.schedulerPriorityColumn"),
                         status: t("accounts.status"),
+                        state: t("ipv6State.accountColumn"),
                         today: t("accounts.todayStats"),
                         requests: t("accounts.requests"),
                         usage: t("accounts.usage"),
@@ -7131,13 +7148,14 @@ export default function Accounts() {
 
             </div>
 
-            {(statusFilter !== "all" ||
+            {(capabilityFilter !== 'all' || stateFilter !== 'all' || stateModelFilter !== '' || statusFilter !== "all" ||
               planFilter !== "all" ||
               subscriptionFilter !== "all" ||
               Boolean(tagFilter) ||
               Boolean(domainFilter) ||
               !isAccountGroupFilterEmpty(groupFilter)) && (
               <div className="flex flex-wrap items-center gap-1.5 border-t border-border/60 pt-2">
+                {capabilityFilter !== 'all' && <Button type="button" variant="ghost" size="sm" onClick={() => { setCapabilityFilter('all'); setCapabilityModel(''); setPage(1); }}>{t(`codexRoutes.filters.${capabilityFilter}`)} · {capabilityModel}<X className="size-3" aria-hidden="true" /></Button>}
                 {statusFilter !== "all" && (
                   <button
                     type="button"
@@ -7150,7 +7168,7 @@ export default function Accounts() {
                     {statusFilter === "normal"
                       ? t("accounts.filterNormal")
                       : statusFilter === "scheduling"
-                        ? t("accounts.filterScheduling")
+                        ? t("accounts.filterSchedulable")
                       : statusFilter === "rate_limited"
                         ? t("accounts.filterRateLimited")
                         : statusFilter === "abnormal"
@@ -7240,6 +7258,9 @@ export default function Accounts() {
                   type="button"
                   onClick={() => {
                     setStatusFilter("all");
+                    setCapabilityFilter('all');
+                    setCapabilityModel('');
+                    updateStateFilters({ state: 'all', model: '' });
                     setPlanFilter("all");
                     setSubscriptionFilter("all");
                     setTagFilter("");
@@ -7255,6 +7276,8 @@ export default function Accounts() {
               </div>
             )}
           </div>
+
+          {selected.size > 0 && <div className="mb-3"><CodexRouteManager ids={[...selected]} onChanged={() => { void reloadSilently(); }} /></div>}
 
           {selected.size > 0 && (
             <div className="sticky top-2 z-20 mb-4 flex items-center justify-between gap-3 rounded-xl border border-primary/20 bg-card/95 px-3 py-2 text-sm shadow-lg backdrop-blur-sm max-lg:flex-col max-lg:items-stretch">
@@ -7542,6 +7565,7 @@ export default function Accounts() {
                             {t("accounts.subscriptionColumn")}
                           </TableHead>
                         )}
+                        {visibleColumns.state && <TableHead>{t('ipv6State.accountColumn')}</TableHead>}
                         {visibleColumns.status && (
                           <TableHead className="text-[13px] font-semibold">
                             {t("accounts.status")}
@@ -7694,7 +7718,6 @@ export default function Accounts() {
                           authJsonExporting={authJsonExportingIds.has(account.id)}
                           t={t}
                           actions={rowActions}
-                          turnStateStatus={turnStateStatusByAccount[account.id]}
                         />
                       ))}
                     </TableBody>
@@ -8209,34 +8232,6 @@ export default function Accounts() {
                   />
                   <p className="mt-1.5 text-xs text-muted-foreground">
                     {t("accounts.codexPassthroughHint")}
-                  </p>
-                </div>
-                <div>
-                  <label className="block mb-2 text-sm font-semibold text-muted-foreground">
-                    {t("accounts.responsesUpstreamTransport")}
-                  </label>
-                  <Select
-                    value={openAIForm.responses_upstream_transport ?? "http"}
-                    onValueChange={(value) =>
-                      setOpenAIForm((form) => ({
-                        ...form,
-                        responses_upstream_transport:
-                          value as ResponsesUpstreamTransport,
-                      }))
-                    }
-                    options={[
-                      {
-                        value: "http",
-                        label: t("accounts.responsesUpstreamHTTP"),
-                      },
-                      {
-                        value: "websocket",
-                        label: t("accounts.responsesUpstreamWebsocket"),
-                      },
-                    ]}
-                  />
-                  <p className="mt-1.5 text-xs text-muted-foreground">
-                    {t("accounts.responsesUpstreamTransportHint")}
                   </p>
                 </div>
                 <div>
@@ -9402,34 +9397,6 @@ export default function Accounts() {
                         {t("accounts.codexPassthroughHint")}
                       </p>
                     </div>
-                    <div>
-                      <label className="block mb-2 text-xs font-semibold text-muted-foreground">
-                        {t("accounts.responsesUpstreamTransport")}
-                      </label>
-                      <Select
-                        value={editOpenAIForm.responses_upstream_transport ?? "http"}
-                        onValueChange={(value) =>
-                          setEditOpenAIForm((form) => ({
-                            ...form,
-                            responses_upstream_transport:
-                              value as ResponsesUpstreamTransport,
-                          }))
-                        }
-                        options={[
-                          {
-                            value: "http",
-                            label: t("accounts.responsesUpstreamHTTP"),
-                          },
-                          {
-                            value: "websocket",
-                            label: t("accounts.responsesUpstreamWebsocket"),
-                          },
-                        ]}
-                      />
-                      <p className="mt-1.5 text-xs text-muted-foreground">
-                        {t("accounts.responsesUpstreamTransportHint")}
-                      </p>
-                    </div>
 
                     <div className="rounded-xl border border-border/70 bg-card p-4.5 shadow-2xs space-y-4">
                       <div>
@@ -10050,36 +10017,6 @@ export default function Accounts() {
                             <p className="mt-1 text-xs text-muted-foreground leading-relaxed">
                               {t("accounts.codexTurnStateHint")}
                             </p>
-                            <div className="mt-3">
-                              <label className="block text-sm font-semibold text-muted-foreground mb-2">
-                                {t("accounts.codexTurnStateSwitchLabel")}
-                              </label>
-                              <Select
-                                value={editCodexTurnStateDisabled ? "off" : "follow"}
-                                onValueChange={(value) => setEditCodexTurnStateDisabled(value === "off")}
-                                options={[
-                                  { value: "follow", label: t("accounts.codexTurnStateFollowGlobal") },
-                                  { value: "off", label: t("accounts.codexTurnStateOff") },
-                                ]}
-                              />
-                              <p className="mt-1.5 text-xs text-muted-foreground">
-                                {t("accounts.codexTurnStateSwitchHint")}
-                              </p>
-                            </div>
-                            <div className="mt-3">
-                              <ProxyField
-                                value={editCodexTurnStateProxyUrl}
-                                onChange={setEditCodexTurnStateProxyUrl}
-                                proxies={proxyPool}
-                                label={t("accounts.codexTurnStateProxyLabel")}
-                                labelClassName="text-sm"
-                                linkedHint={t("accounts.codexTurnStateProxyPoolHint")}
-                                placeholder={t("accounts.proxyUrlPlaceholder")}
-                              />
-                              <p className="mt-1.5 text-xs text-muted-foreground">
-                                {t("accounts.codexTurnStateProxyHint")}
-                              </p>
-                            </div>
                             <div className="mt-3">
                               <div className="flex items-center justify-between mb-2">
                                 <label className="block text-sm font-semibold text-muted-foreground">
@@ -13171,7 +13108,6 @@ function formatPlanLabel(planType?: string): string {
   const lower = raw.toLowerCase();
   if (lower === "prolite" || lower === "pro_lite" || lower === "pro-lite")
     return "ProLite";
-  if (lower === "self_serve_business_prolite") return "team5x";
   return raw;
 }
 
@@ -13214,11 +13150,7 @@ function PlanBadge({
 
   const normalized = normalizePlanType(planType);
   const key =
-    normalized === "pro" && label === "ProLite"
-      ? "prolite"
-      : label === "team5x"
-        ? "team"
-        : normalized;
+    normalized === "pro" && label === "ProLite" ? "prolite" : normalized;
   const cls =
     style[key] ||
     "bg-slate-100 text-slate-600 ring-slate-400/20 dark:bg-slate-500/15 dark:text-slate-300 dark:ring-slate-400/20";
@@ -13867,7 +13799,6 @@ function AccountMobileCard({
               </span>
             )}
             <div className="codex-account-card__flags">
-              <CodexTurnStateBadge account={account} />
               <SubscriptionBadge
                 accountId={account.id}
                 subscription={account.subscription}
@@ -13941,6 +13872,7 @@ function AccountMobileCard({
         </div>
       </header>
 
+      {showColumn('state') ? <div className="px-4 py-2"><AccountStateModels states={account.state_models} accountID={account.id} /><CodexRouteBadges paths={account.codex_paths} /></div> : null}
       <div className="codex-account-card__notices">
         {overlayKind === "overload" && (
           <div className="codex-account-card__notice">

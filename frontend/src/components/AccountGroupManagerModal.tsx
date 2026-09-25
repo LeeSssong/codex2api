@@ -7,7 +7,6 @@ import type { AccountGroup, UpstreamChannel } from "../types";
 import Modal from "./Modal";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import { useToast } from "../hooks/useToast";
 import { useConfirmDialog } from "../hooks/useConfirmDialog";
@@ -38,11 +37,10 @@ type GroupDraft = {
   autoPause5h: string;
   autoPause7d: string;
   proxyUrls: string;
-  turnStateInjectEnabled: boolean;
 };
 
 function emptyDraft(color: string): GroupDraft {
-  return { id: null, name: "", description: "", color, baseConcurrency: "", autoPause5h: "", autoPause7d: "", proxyUrls: "", turnStateInjectEnabled: false };
+  return { id: null, name: "", description: "", color, baseConcurrency: "", autoPause5h: "", autoPause7d: "", proxyUrls: "" };
 }
 
 // AccountGroupManagerModal 是各渠道通用的「管理分组」弹窗:创建/编辑/删除分组,
@@ -94,7 +92,6 @@ export function AccountGroupManagerModal({
       autoPause5h: g.auto_pause_5h_threshold ? String(g.auto_pause_5h_threshold) : "",
       autoPause7d: g.auto_pause_7d_threshold ? String(g.auto_pause_7d_threshold) : "",
       proxyUrls: (g.proxy_urls ?? []).join("\n"),
-      turnStateInjectEnabled: Boolean(g.turn_state_inject_enabled),
     });
   };
 
@@ -116,7 +113,6 @@ export function AccountGroupManagerModal({
         .split(/[\n,]/)
         .map((s) => s.trim())
         .filter(Boolean),
-      ...(channel === "codex" ? { turn_state_inject_enabled: draft.turnStateInjectEnabled } : {}),
     };
     try {
       if (draft.id === null) {
@@ -179,15 +175,6 @@ export function AccountGroupManagerModal({
             <span className={fieldLabel}>{t("accountGroups.name")}</span>
             <Input value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} placeholder={t("accountGroups.namePlaceholder")} />
           </div>
-          {channel === "codex" ? (
-            <div className="flex min-h-12 items-center justify-between gap-4 rounded-md border border-border px-3 py-2">
-              <div className="min-w-0">
-                <div className="text-sm font-medium">{t("accountGroups.turnStateInject")}</div>
-                <div className="text-xs text-muted-foreground">{t("accountGroups.turnStateInjectDesc")}</div>
-              </div>
-              <Switch checked={draft.turnStateInjectEnabled} onCheckedChange={(checked) => setDraft({ ...draft, turnStateInjectEnabled: checked })} />
-            </div>
-          ) : null}
           <div className="space-y-1">
             <span className={fieldLabel}>{t("accountGroups.color")}</span>
             <div className="flex flex-wrap gap-1.5">

@@ -11,7 +11,6 @@ import { useTheme } from '../hooks/useTheme'
 import { useToast } from '../hooks/useToast'
 import { getErrorMessage } from '../utils/error'
 import SecurityBanner from './SecurityBanner'
-import GrokImportProgressHost from './GrokImportProgressHost'
 import { cn } from '@/lib/utils'
 import { CinematicThemeSwitcher } from '@/components/ui/cinematic-theme-switcher'
 
@@ -30,8 +29,7 @@ const navDefs: NavDef[] = [
   { to: '/proxies', labelKey: 'nav.proxies', icon: <Globe className="size-[18px]" /> },
   { to: '/images/studio', labelKey: 'nav.images', icon: <ImageIcon className="size-[18px]" />, activePrefix: '/images' },
   { to: '/quality-test', labelKey: 'nav.qualityTest', icon: <FlaskConical className="size-[18px]" /> },
-  { to: '/quality-ops', labelKey: 'nav.accountQuality', icon: <Activity className="size-[18px]" /> },
-  { to: '/account-ops', labelKey: 'nav.accountAlerts', icon: <ShieldAlert className="size-[18px]" /> },
+  { to: '/state-pool', labelKey: 'statePool.title', icon: <Braces className="size-[18px]" /> },
   { to: '/prompt-filter/overview', labelKey: 'nav.promptFilter', icon: <ShieldAlert className="size-[18px]" />, activePrefix: '/prompt-filter' },
   { to: '/ops/overview', labelKey: 'nav.ops', icon: <Server className="size-[18px]" />, activePrefix: '/ops' },
   { to: '/usage', labelKey: 'nav.usage', icon: <Activity className="size-[18px]" /> },
@@ -330,7 +328,6 @@ export default function Layout({ children }: PropsWithChildren) {
 
   return (
     <div className="relative min-h-dvh">
-      <GrokImportProgressHost />
       {backgroundImage ? (
         <div aria-hidden="true" className="pointer-events-none fixed inset-0 z-0 overflow-hidden">
           {isBackgroundVideo ? (

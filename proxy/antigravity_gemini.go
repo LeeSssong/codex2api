@@ -17,8 +17,7 @@ import (
 // ExecuteAntigravityGeminiRequest forwards a native Gemini generateContent request
 // through the Cloud Code v1internal Antigravity adapter and unwraps the upstream
 // envelope back into Gemini API shape.
-func ExecuteAntigravityGeminiRequest(ctx context.Context, account *auth.Account, model string, body []byte, stream bool, proxyURL string) (opsResponse *http.Response, opsErr error) {
-	defer func() { observeAccountOpsResponse(account, opsResponse) }()
+func ExecuteAntigravityGeminiRequest(ctx context.Context, account *auth.Account, model string, body []byte, stream bool, proxyURL string) (*http.Response, error) {
 	resetUpstreamAttemptTrace(ctx)
 	if account == nil {
 		return nil, fmt.Errorf("antigravity account is nil")
@@ -52,8 +51,7 @@ func ExecuteAntigravityGeminiRequest(ctx context.Context, account *auth.Account,
 
 // ExecuteAntigravityGeminiCountTokensRequest forwards a native Gemini countTokens
 // request through Cloud Code v1internal:countTokens.
-func ExecuteAntigravityGeminiCountTokensRequest(ctx context.Context, account *auth.Account, model string, body []byte, proxyURL string) (opsResponse *http.Response, opsErr error) {
-	defer func() { observeAccountOpsResponse(account, opsResponse) }()
+func ExecuteAntigravityGeminiCountTokensRequest(ctx context.Context, account *auth.Account, model string, body []byte, proxyURL string) (*http.Response, error) {
 	resetUpstreamAttemptTrace(ctx)
 	if account == nil {
 		return nil, fmt.Errorf("antigravity account is nil")

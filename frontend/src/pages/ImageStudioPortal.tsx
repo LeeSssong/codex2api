@@ -148,11 +148,7 @@ function hasServerImageURL(asset: ImageAsset): boolean {
 }
 
 function imageSrc(asset: ImageAsset, localURLs: Record<number, string>): string {
-  return asset.proxy_url || localURLs[asset.id] || asset.thumbnail_url || ''
-}
-
-function thumbnailSrc(asset: ImageAsset, localURLs: Record<number, string>): string {
-  return asset.thumbnail_url || imageSrc(asset, localURLs)
+  return asset.proxy_url || asset.thumbnail_url || localURLs[asset.id] || ''
 }
 
 function blobToDataURL(blob: Blob): Promise<string> {
@@ -443,10 +439,10 @@ export default function ImageStudioPortal() {
     let cancelled = false
     let polling = false
     const timer = window.setInterval(async () => {
-      if (polling || document.visibilityState !== 'visible') return
+      if (polling) return
       polling = true
       try {
-        const res = await api.getPortalImageJob(activeAPIKey, currentJob.id, { includeCache: false })
+        const res = await api.getPortalImageJob(activeAPIKey, currentJob.id, { includeCache: true })
         if (cancelled) return
         setCurrentJob(res.job)
         if (!['queued', 'running'].includes(res.job.status)) {
@@ -1327,9 +1323,9 @@ export default function ImageStudioPortal() {
                 <div className="portal-recent-grid">
                   {historyJobs.slice(0, RECENT_JOB_COUNT).map(job => {
                     const asset = job.assets?.[0]
-                    const src = asset ? thumbnailSrc(asset, assetURLs) : ''
+                    const src = asset ? imageSrc(asset, assetURLs) : ''
                     return <Button key={job.id} type="button" variant="ghost" className="portal-recent-item" onClick={() => { setCurrentJob(job); setInspirationOpen(false); selectMobilePanel('canvas') }}>
-                      <span className="portal-recent-thumb">{src ? <img loading="lazy" decoding="async" src={src} alt="" /> : <ImageIcon className="size-4" />}</span>
+                      <span className="portal-recent-thumb">{src ? <img src={src} alt="" loading="lazy" /> : <ImageIcon className="size-4" />}</span>
                       <span className="portal-recent-description"><span>{job.prompt}</span><small><span className={cn('portal-status-dot', `portal-status-${job.status}`)} />{statusLabel(job.status)}</small></span>
                     </Button>
                   })}
@@ -1375,7 +1371,7 @@ export default function ImageStudioPortal() {
                 <div className="space-y-2">
                   {historyJobs.map((job) => {
                     const thumb = job.assets?.[0]
-                    const thumbSrc = thumb ? thumbnailSrc(thumb, assetURLs) : ''
+                    const thumbSrc = thumb ? imageSrc(thumb, assetURLs) : ''
                     const canPreview = Boolean(thumb)
                     return (
                       <div
@@ -1393,7 +1389,7 @@ export default function ImageStudioPortal() {
                           title={canPreview ? t('imageStudioPortal.viewFullscreen') : undefined}
                         >
                           {thumbSrc ? (
-                            <img loading="lazy" decoding="async" src={thumbSrc} alt="" className="size-full object-cover" />
+                            <img src={thumbSrc} alt="" className="size-full object-cover" />
                           ) : (
                             <div className="flex size-full items-center justify-center text-muted-foreground/50">
                               <ImageIcon className="size-5" />
@@ -1500,7 +1496,7 @@ export default function ImageStudioPortal() {
               ) : (
                 <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
                   {assets.map((asset) => {
-                    const src = thumbnailSrc(asset, assetURLs)
+                    const src = imageSrc(asset, assetURLs)
                     return (
                       <div
                         key={asset.id}
@@ -1513,7 +1509,7 @@ export default function ImageStudioPortal() {
                           title={t('imageStudioPortal.viewFullscreen')}
                         >
                           {src ? (
-                            <img loading="lazy" decoding="async" src={src} alt={asset.filename} className="size-full object-cover" />
+                            <img src={src} alt={asset.filename} className="size-full object-cover" />
                           ) : (
                             <div className="flex size-full items-center justify-center text-muted-foreground">
                               <Loader2 className="size-5 animate-spin" />
@@ -1646,7 +1642,7 @@ export default function ImageStudioPortal() {
             ) : (
               <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
                 {assets.map((asset) => {
-                  const src = thumbnailSrc(asset, assetURLs)
+                  const src = imageSrc(asset, assetURLs)
                   const selected = galleryPickerSelected.has(asset.id)
                   return (
                     <button
@@ -1662,7 +1658,7 @@ export default function ImageStudioPortal() {
                     >
                       <div className="image-studio-checkerboard size-full">
                         {src ? (
-                          <img loading="lazy" decoding="async" src={src} alt={asset.filename} className="size-full object-cover" />
+                          <img src={src} alt={asset.filename} className="size-full object-cover" />
                         ) : (
                           <div className="flex size-full items-center justify-center text-muted-foreground">
                             <Loader2 className="size-4 animate-spin" />

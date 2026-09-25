@@ -146,10 +146,8 @@ export type AccountStatus = 'active' | 'ready' | 'cooldown' | 'error' | 'refresh
 export type CodexClientMetadataMode = 'auto' | 'always' | 'off'
 /** OpenAI Responses 中转账号的 Codex 身份透传档位，默认 off（不透传）。 */
 export type CodexPassthroughMode = 'off' | 'auto' | 'always'
-/** OpenAI Responses 中转账号的上游传输，默认 http。 */
-export type ResponsesUpstreamTransport = 'http' | 'websocket'
 /** Codex 官方出站请求的设备指纹收敛档位，默认 off（不收敛）。 */
-export type CodexFingerprintMode = 'off' | 'device' | 'session' | 'single_machine_multi_window' | 'full'
+export type CodexFingerprintMode = 'off' | 'device' | 'session' | 'full'
 export type ModelCooldownMode = 'off' | 'fixed' | 'adaptive'
 
 export type ResponseCacheWritePolicy = 'always' | 'on_demand'
@@ -163,6 +161,7 @@ export interface StatsChannelCounts {
 }
 
 export interface StatsResponse {
+  state_summary?: import('./lib/accountStateModels').StateSummary
   total: number
   available: number
   rate_limited: number
@@ -268,7 +267,26 @@ export interface SubscriptionRefreshResponse {
   subscription_expires_at?: ISODateString
 }
 
+export type { AccountStateModel } from './lib/accountStateModels'
+import type { AccountStateModel } from './lib/accountStateModels'
+
+export type CodexRoutePolicy = 'inherit' | 'codex_only' | 'basispoints_only' | 'basispoints_prefer' | 'codex_prefer' | 'basispoints_models_only'
+export type CodexCapabilityFilter = 'any' | 'supported' | 'dual_supported' | 'codex_supported' | 'basispoints_supported'
+export interface CodexPathSnapshot {
+  upstream: 'codex' | 'basispoints'
+  model: string
+  allowed: boolean
+  capability: 'unknown' | 'supported' | 'unsupported'
+  source?: string
+  reason?: string
+  observed_at?: number
+  health: 'ready' | 'cooldown' | 'recovering' | 'probe_ready' | 'unavailable'
+  cooldown_until?: string
+  health_reason?: string
+}
 export interface AccountRow {
+  codex_paths?: CodexPathSnapshot[]
+  state_models?: AccountStateModel[]
   codex_last_refresh_at?: string
   codex_refresh_error?: string
   upstream_request_id_header?: string | null
@@ -303,9 +321,6 @@ export interface AccountRow {
   /** Safe, allowlisted User-Agent observed/generated for Claude upstream calls. */
   claude_user_agent?: string
   grok_plan?: GrokPlanInfo
-  grok_plan_display?: { plan: string; source: string; status: "fresh" | "stale" | "unknown"; observed_at?: string; expires_at?: string }
-  /** Upstream directory, separate from the editable models whitelist. */
-  grok_models?: { models: string[]; status: "fresh" | "stale" | "unknown"; updated_at?: string }
   grok_billing?: GrokBillingDetail
   // 上游逐请求返回的配额余量(x-ratelimit-* 头),运行时快照
   grok_rate_limit?: GrokRateLimitSnapshot
@@ -325,7 +340,6 @@ export interface AccountRow {
   model_mapping?: string
   codex_client_metadata_mode?: CodexClientMetadataMode
   codex_passthrough_mode?: CodexPassthroughMode
-  responses_upstream_transport?: ResponsesUpstreamTransport
   codex_fingerprint_mode?: CodexFingerprintMode
   claude_fingerprint_mode?: 'preserve' | 'force' | ''
   claude_client_platform?: 'any' | 'claude_code_cli_only'
@@ -341,9 +355,6 @@ export interface AccountRow {
   claude_usage_windows_probed?: boolean
   timezone?: string
   custom_headers?: Record<string, string> | null
-  codex_turn_state_status?: CodexTurnStateStatus
-  codex_turn_state_proxy_url?: string
-  codex_turn_state_disabled?: boolean
   /** Forced X-Codex-Turn-State injected on every outbound Codex request; empty = off. */
   codex_turn_state?: string
   /** Comma-separated model scope for the injection; empty = all models. */
@@ -505,6 +516,7 @@ export interface AccountEmailDomainFacet {
 }
 
 export interface AccountsPageResponse extends AccountsResponse {
+  state_summary?: import('./lib/accountStateModels').StateSummary
   page: number
   page_size: number
   total: number
@@ -533,31 +545,10 @@ export interface AccountPageStatsResponse {
   stats: Record<string, AccountPageStatsItem>
 }
 
-export type CodexTurnStatePhase = 'unknown' | 'ready' | 'healthy' | 'recovering' | 'degraded'
-
-export interface CodexTurnStateStatus {
-  injection_enabled?: boolean
-  state: CodexTurnStatePhase
-  mode: 'personal' | 'team'
-  template_length: number
-  replace_length: number
-  models: {
-    model: string
-    state: CodexTurnStatePhase
-    length: number
-    consecutive: number
-    observed_at: string
-    template_cached: boolean
-    template_expires_at?: string
-  }[]
-}
-
 export interface AccountLiveStateResponse {
-  accounts: Record<string, {
-    codex_turn_state_status?: CodexTurnStateStatus
-    active_requests: number
-    occupied_requests: number
-  }>
+  state_summary?: import('./lib/accountStateModels').StateSummary
+  server_time?: number
+  accounts: Record<string, { active_requests: number; occupied_requests: number; state_models?: AccountStateModel[] }>
   session_slot_buffer_enabled: boolean
 }
 
@@ -587,6 +578,10 @@ export const SUBSCRIPTION_FILTER_OPTIONS: SubscriptionFilter[] = [
 ]
 
 export interface AccountsPageParams {
+  capability?: string
+  capabilityModel?: string
+  state?: 'all' | 'valid' | 'available' | 'missing'
+  stateModel?: string
   channel?: UpstreamChannel
   page: number
   pageSize: number
@@ -668,7 +663,6 @@ export interface AccountPressureForecastAnalysis {
 
 export interface AccountAnalysisResponse {
   channel: UpstreamChannel
-  turn_state_inject_enabled: boolean
   quota: Record<'5h' | '7d', AccountQuotaAnalysis>
   recovery: Record<'5h' | '7d', AccountRecoveryAnalysis>
   reset: AccountResetAnalysis
@@ -678,6 +672,10 @@ export interface AccountAnalysisResponse {
 }
 
 export interface AccountOperationSelector {
+  capability?: string
+  capability_model?: string
+  state?: 'valid' | 'available' | 'missing'
+  state_model?: string
   channel: UpstreamChannel
   search?: string
   status?: string
@@ -981,7 +979,6 @@ export interface AddOpenAIResponsesAccountRequest {
   model_mapping?: string
   codex_client_metadata_mode?: CodexClientMetadataMode
   codex_passthrough_mode?: CodexPassthroughMode
-  responses_upstream_transport?: ResponsesUpstreamTransport
   proxy_url: string
   custom_headers?: Record<string, string> | null
 }
@@ -995,7 +992,6 @@ export interface UpdateOpenAIResponsesAccountRequest {
   model_mapping?: string
   codex_client_metadata_mode?: CodexClientMetadataMode
   codex_passthrough_mode?: CodexPassthroughMode
-  responses_upstream_transport?: ResponsesUpstreamTransport
   proxy_url: string
   custom_headers?: Record<string, string> | null
 }
@@ -1497,8 +1493,6 @@ export interface UpdateAccountSchedulerRequest {
   claude_version_policy?: 'passthrough' | 'fixed' | 'minimum' | null
   claude_client_version?: string | null
   timezone?: string | null
-  codex_turn_state_proxy_url?: string | null
-  codex_turn_state_disabled?: boolean | null
   codex_turn_state?: string | null
   codex_turn_state_models?: string | null
 }
@@ -1522,43 +1516,8 @@ export interface AccountGroup {
   auto_pause_7d_threshold: number
   proxy_urls: string[]
   channel: UpstreamChannel
-  turn_state_inject_enabled: boolean
   created_at: ISODateString
   updated_at: ISODateString
-}
-
-export type TurnStateMissAction = 'none' | 'rebind_group' | 'unbind_groups' | 'unschedulable'
-export type TurnStateRecoveredAction = 'none' | 'rebind_group' | 'restore_schedulable'
-
-export interface TurnStateReuseSettings {
-  enabled: boolean
-  harvest_model: string
-  harvest_proxy_urls: string[]
-  harvest_use_proxy_pool: boolean
-  miss_action: TurnStateMissAction
-  miss_target_group_id?: number
-  recovered_action: TurnStateRecoveredAction
-  recovered_target_group_id?: number
-  inject_compact: boolean
-}
-
-export interface TurnStateReuseAccountStatus {
-  account_id: number
-  account_name?: string
-  status: 'out_of_scope' | 'missing' | 'fresh' | 'renew_due' | 'paused_auth' | 'paused_429'
-  encoded_length?: number
-  decoded_length?: number
-  issued_at?: ISODateString
-  expires_at?: ISODateString
-  remaining_seconds?: number
-  last_http_status?: number
-  last_error?: string
-  last_route?: string
-  turn_state_miss_suspended: boolean
-}
-
-export interface TurnStateReuseStatusResponse {
-  accounts: TurnStateReuseAccountStatus[]
 }
 
 export interface AccountGroupsResponse {
@@ -1575,7 +1534,6 @@ export interface CreateAccountGroupRequest {
   auto_pause_7d_threshold?: number
   proxy_urls?: string[]
   channel?: UpstreamChannel
-  turn_state_inject_enabled?: boolean
 }
 
 export interface UpdateAccountGroupRequest {
@@ -1588,7 +1546,6 @@ export interface UpdateAccountGroupRequest {
   auto_pause_7d_threshold?: number
   proxy_urls?: string[]
   channel?: UpstreamChannel
-  turn_state_inject_enabled?: boolean
 }
 
 export interface AccountModelStat {
@@ -2127,8 +2084,6 @@ export interface SystemSettings {
   codex_basispoints_enabled: boolean
   codex_force_websocket: boolean
   codex_telemetry_enabled: boolean
-  codex_turn_state_template_cache_enabled: boolean
-  codex_turn_state_account_mode: 'personal' | 'team' | 'auto' 
   codex_telemetry_timing_debug: boolean
   codex_request_compression: boolean
   codex_ws_weak_network_mode: boolean
@@ -3513,17 +3468,11 @@ export interface UsageLog {
   client_user_agent: string
   upstream_user_agent: string
   user_agent_overridden: boolean
-  turn_state_overridden?: boolean
-  turn_state_rewrite_note?: string
   internal_reason: string
   parent_request_id: string
   endpoint: string
   model: string
   effective_model: string
-  /** 上游响应自报的模型名（未自报/历史行为空）。 */
-  upstream_response_model?: string
-  /** 三态：undefined/null=上游未自报无法比对；true/false=自报与实发是否一致。 */
-  upstream_model_mismatch?: boolean | null
   prompt_tokens: number
   completion_tokens: number
   total_tokens: number
@@ -3784,6 +3733,8 @@ export interface APIKeyModelRequestUsage {
 }
 
 export interface APIKeyLimits {
+  codex_route_policy?: CodexRoutePolicy
+  codex_capability_filter?: CodexCapabilityFilter
   model_allow?: string[]
   model_deny?: string[]
   plan_allow?: string[]

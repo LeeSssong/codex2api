@@ -74,8 +74,6 @@ var builtinModelInfos = []ModelInfo{
 	// 官方文档同步与 manifest 学习都能发现它，但内置一行保证冷启动 / 未同步的
 	// 部署也能直接调用，不必等一次同步或一次带清单的请求。
 	modelInfoForID("gpt-6-astra", ModelSourceBuiltin),
-	modelInfoForID("gpt-6-sol", ModelSourceBuiltin),
-	modelInfoForID("gpt-6-luna", ModelSourceBuiltin),
 	// gpt-5.6 系列（Sol/Terra/Luna）：官网已出现的新模型，先内置兜底，
 	// 官方文档页同步（SyncOfficialCodexModels）上线后会以同步结果为准。
 	modelInfoForID("gpt-5.6-sol", ModelSourceBuiltin),
@@ -135,7 +133,7 @@ func modelInfoForID(id string, source string) ModelInfo {
 	switch strings.ToLower(id) {
 	case "gpt-5.3-codex-spark":
 		info.ProOnly = true
-	case "gpt-5.5", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna":
+	case "gpt-5.5", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-astra":
 		info.APIKeyAuthAvailable = false
 	case "gpt-image-2":
 		info.Category = ModelCategoryImage

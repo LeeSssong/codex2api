@@ -24,15 +24,15 @@ import (
 var batchTestAccountTimeout = 30 * time.Second
 var batchTestWhamTimeout = 5 * time.Second
 
-// testEvent SSE 测试事件
+// testEvent represents an SSE test event.
 type testEvent struct {
 	Type    string `json:"type"`              // test_start | content | diagnostics | test_complete | error
-	Text    string `json:"text,omitempty"`    // 内容文本
-	Model   string `json:"model,omitempty"`   // 测试模型
-	Success bool   `json:"success,omitempty"` // 是否成功
-	Error   string `json:"error,omitempty"`   // 错误信息
-	// diagnostics 事件按渠道携带各自形态的诊断对象:Claude 原生 Messages 测连用
-	// diagnostics,Codex/Responses 测连用 codex_diagnostics,两者不会同时出现。
+	Text    string `json:"text,omitempty"`    // Content text
+	Model   string `json:"model,omitempty"`   // Test model
+	Success bool   `json:"success,omitempty"` // Whether the test succeeded
+	Error   string `json:"error,omitempty"`   // Error message
+	// Diagnostics use channel-specific payloads: native Claude Messages tests use
+	// diagnostics; Codex/Responses tests use codex_diagnostics. They are mutually exclusive.
 	Diagnostics      *claudeTestDiagnostics `json:"diagnostics,omitempty"`
 	CodexDiagnostics *codexTestDiagnostics  `json:"codex_diagnostics,omitempty"`
 }
@@ -76,7 +76,7 @@ func (h *Handler) applyResponsesUsageLimitFailure(account *auth.Account, resp *h
 	return true
 }
 
-// TestConnection 测试账号连接（SSE 流式返回）
+// TestConnection tests account connectivity and streams SSE results.
 // GET /api/admin/accounts/:id/test
 func (h *Handler) TestConnection(c *gin.Context) {
 	h.testConnection(c, nil)
@@ -90,8 +90,8 @@ func (h *Handler) testConnection(c *gin.Context, quality *qualityTestRequest) {
 		return
 	}
 
-	// 查找运行时账号；回收站中的账号不在运行时池，构建临时账号做连通性
-	// 测试（不参与调度，测试结果不回写账号状态）。
+	// Find the runtime account, or create a temporary account for a recycle-bin test.
+	// Temporary accounts do not participate in scheduling or persist account status.
 	account := h.store.FindByID(id)
 	isTransient := false
 	if account == nil {
@@ -107,24 +107,24 @@ func (h *Handler) testConnection(c *gin.Context, quality *qualityTestRequest) {
 		account = transient
 		isTransient = true
 	}
-	// 连接测试虽是 SSE GET，却会写入未授权、错误、限流或恢复状态。等流结束后
-	// 再失效列表/分析快照，避免账号页继续把已判定的 401 账号显示为“未采样”。
+	// Although this SSE endpoint uses GET, it can update authorization, errors, cooldowns,
+	// and recovery. Invalidate snapshots after streaming so confirmed 401s are not shown as unsampled.
 	if !isTransient {
 		defer h.invalidateAccountSnapshotCaches()
 	}
 
 	isClaudeAccount := account.IsClaudeOAuth()
-	// Antigravity 也归在 relay 风格里，但上游是 Cloud Code v1internal 信封，
-	// 须走专属执行器（内含多端点回退与 429/503 配额语义），不能落到通用 relay 路径。
+	// Antigravity uses relay-style identities but requires Cloud Code v1internal payloads.
+	// Use its dedicated executor for endpoint fallback and 429/503 quota handling.
 	isAntigravityAccount := account.IsAntigravityAPI()
 	isOpenAIResponsesAccount := account.IsRelayStyle() && !isClaudeAccount && !isAntigravityAccount
-	// Agent Identity 无 AT，凭私钥动态签名，跳过 AT 预检（请求走 Codex 执行器动态签名）。
+	// Agent Identity signs requests with its private key and does not require an access token.
 	if !isOpenAIResponsesAccount && !isAntigravityAccount && !account.IsCodexAgentIdentity() && account.GetAccessToken() == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "账号没有可用的 Access Token，请先刷新"})
 		return
 	}
-	// Antigravity OAuth 号的 AT 会过期；测连前若已无 AT，先用 RT 换一次，
-	// 让操作者看到的是推理结果而不是必然的 401。回收站里的临时账号不回写凭据。
+	// Refresh missing Antigravity OAuth access tokens before testing to avoid inevitable 401s.
+	// Temporary recycle-bin accounts must not persist credential changes.
 	if isAntigravityAccount && !isTransient && account.AntigravityAuthKind() == auth.AntigravityAuthKindOAuth {
 		if _, bearer := account.AntigravityCredentials(); bearer == "" {
 			if refreshErr := h.store.RefreshAntigravityAccount(c.Request.Context(), account); refreshErr != nil {
@@ -157,22 +157,22 @@ func (h *Handler) testConnection(c *gin.Context, quality *qualityTestRequest) {
 		}
 	}
 
-	// 探针本身也进用量记录:测连 / 降智检测各有独立内部原因,用量页据此打标。
+	// Log probes with separate internal reasons for connectivity and quality tests.
 	usageReason := connectionTestReason(quality)
 	usageEndpoint := connectionTestEndpoint(account)
 	usageEffort := connectionTestReasoningEffort(payload)
 
-	// 设置 SSE 响应头
+	// Set SSE response headers.
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
 	c.Header("X-Accel-Buffering", "no")
 	c.Writer.Flush()
 
-	// 发送 test_start
+	// Send test_start.
 	sendTestEvent(c, testEvent{Type: "test_start", Model: testModel})
 
-	// 回收站账号：记录最近测试结果；restore_on_success=true 时测试通过自动恢复。
+	// Record recycle-bin test results; restore_on_success restores successful accounts.
 	restoreOnSuccess := isTransient && strings.EqualFold(strings.TrimSpace(c.Query("restore_on_success")), "true")
 	transientOutcome := "failed"
 	if isTransient {
@@ -181,13 +181,13 @@ func (h *Handler) testConnection(c *gin.Context, quality *qualityTestRequest) {
 		}()
 	}
 
-	// 构建最小测试请求体（参考 sub2api createOpenAITestPayload）
+	// Build a minimal request based on sub2api createOpenAITestPayload.
 	claudeFingerprintMode := ""
 	if isClaudeAccount {
 		claudeFingerprintMode = account.EffectiveClaudeFingerprintMode(h.store.ClaudeFingerprintModeDefault())
 	}
 
-	// 发送请求
+	// Send the request.
 	start := time.Now()
 	var resp *http.Response
 	var reqErr error
@@ -198,10 +198,13 @@ func (h *Handler) testConnection(c *gin.Context, quality *qualityTestRequest) {
 	} else if isOpenAIResponsesAccount {
 		resp, reqErr = proxy.ExecuteRelayStyleRequest(c.Request.Context(), account, payload, h.store.ResolveProxyForAccount(account), nil)
 	} else {
-		c.Request = c.Request.WithContext(proxy.WithCodexTurnStateAdminProbe(c.Request.Context()))
 		resp, reqErr = proxy.ExecuteRequest(c.Request.Context(), account, payload, "", h.store.ResolveProxyForAccount(account), "", nil, nil)
 	}
 	if reqErr != nil {
+		if message, blocked := statePolicyTestFailure(reqErr, testModel); blocked {
+			sendTestEvent(c, testEvent{Type: "error", Error: message})
+			return
+		}
 		h.logConnectionTestTransportFailure(c, account, usageReason, usageEndpoint, testModel, usageEffort, start, reqErr)
 		event := testEvent{Type: "error", Error: fmt.Sprintf("请求失败: %s", reqErr.Error())}
 		if isClaudeAccount {
@@ -221,9 +224,9 @@ func (h *Handler) testConnection(c *gin.Context, quality *qualityTestRequest) {
 		return
 	}
 
-	// Codex/Responses 测连诊断:拿到响应头即先推一帧(状态码、用量窗口头),流结束后
-	// 再补最终帧(耗时、终态、usage、正文预览)。最终帧在终止事件之后,客户端要读到
-	// SSE 关闭再刷新账号快照。
+	// Send initial Codex/Responses diagnostics as soon as headers arrive, then final timing,
+	// terminal status, usage, and output previews after the stream ends. Clients refresh
+	// account snapshots after SSE closes, because final diagnostics follow the terminal event.
 	recorder := newCodexTestRecorder(resp, testModel, account, start)
 	defer func() {
 		diagnostics := recorder.finish()
@@ -246,7 +249,7 @@ func (h *Handler) testConnection(c *gin.Context, quality *qualityTestRequest) {
 			case http.StatusUnauthorized:
 				h.store.MarkCooldownWithError(account, 24*time.Hour, "unauthorized", errMsg)
 			case http.StatusPaymentRequired:
-				// 测连 402 是账号侧计费/工作区拒绝，标成错误，避免继续显示成「未采样」。
+				// A 402 indicates an account billing/workspace rejection, not an unsampled account.
 				if proxy.IsDeactivatedWorkspaceError(errBody) {
 					h.store.MarkDeactivatedWorkspace(account, errMsg)
 				} else {
@@ -259,9 +262,9 @@ func (h *Handler) testConnection(c *gin.Context, quality *qualityTestRequest) {
 					h.store.MarkDeactivatedWorkspace(account, errMsg)
 				}
 			case http.StatusTooManyRequests:
-				// Grok 虽是 relay 风格，但有自己的免费额度语义（free-usage-exhausted → 24h），
-				// 不能并入"relay 一律 1 分钟 rate_limited"，否则耗尽会被标成短冷却、1 分钟即恢复。
-				// Antigravity 的 429 带 Google 结构化配额状态，按（账号,模型）冷却并取上游重试提示。
+				// Grok has its own free-usage-exhausted semantics, including a 24-hour cooldown.
+				// Do not reduce exhausted quota to the generic one-minute relay cooldown.
+				// Antigravity 429s use structured Google quota metadata and account/model retry hints.
 				if isAntigravityAccount {
 					proxy.ApplyAntigravityCooldown(h.store, account, resp.StatusCode, errBody, resp, testModel)
 				} else if isOpenAIResponsesAccount && !account.IsGrokAPI() {
@@ -270,13 +273,13 @@ func (h *Handler) testConnection(c *gin.Context, quality *qualityTestRequest) {
 					proxy.Apply429Cooldown(h.store, account, errBody, resp, testModel)
 				}
 			case http.StatusServiceUnavailable:
-				// Cloud Code 用 503 表达共享容量耗尽（MODEL_CAPACITY_EXHAUSTED），只做模型级短冷却。
+				// Cloud Code 503 signals shared model capacity exhaustion and only warrants a short model cooldown.
 				if isAntigravityAccount {
 					proxy.ApplyAntigravityCooldown(h.store, account, resp.StatusCode, errBody, resp, testModel)
 				}
 			}
 		}
-		// 429 限流代表账号有效、只是被限流，不计为失败。
+		// Count 429 as rate limiting rather than an account failure.
 		if isTransient && resp.StatusCode == http.StatusTooManyRequests {
 			transientOutcome = "rate_limited"
 		}
@@ -285,18 +288,18 @@ func (h *Handler) testConnection(c *gin.Context, quality *qualityTestRequest) {
 	}
 
 	var usageState proxy.CodexUsageSyncResult
-	// Antigravity 没有 x-codex-* 用量头，跳过 Codex 用量同步。
+	// Antigravity does not provide x-codex-* usage headers.
 	if !isOpenAIResponsesAccount && !isAntigravityAccount {
 		usageStore := h.store
 		if isTransient {
-			usageStore = nil // 临时账号只读取用量头用于展示，不写入存储
+			usageStore = nil // Display temporary-account usage without persisting it.
 		}
 		usageState = proxy.SyncCodexUsageState(usageStore, account, resp)
 		if !isTransient {
 			applyUsageLimitedTestState(h.store, account, usageState)
 		}
 		if msg, limited := formatUsageLimitedTestError(usageState); limited {
-			// 用量耗尽属于限流类，不计为失败。
+			// Count exhausted quota as rate limiting rather than a failure.
 			if isTransient {
 				transientOutcome = "rate_limited"
 			}
@@ -305,7 +308,7 @@ func (h *Handler) testConnection(c *gin.Context, quality *qualityTestRequest) {
 		}
 	}
 
-	// 解析 SSE 流
+	// Parse the SSE stream.
 	hasContent := false
 	gotTerminal := false
 	sentTerminal := false
@@ -371,8 +374,8 @@ func (h *Handler) testConnection(c *gin.Context, quality *qualityTestRequest) {
 				sendTestEvent(c, testEvent{Type: "error", Error: formatNoOutputUpstreamError(data)})
 				return false
 			}
-			// 测试成功即重置失败/冷却状态，用量限制由调度器自行判断；
-			// 临时账号（回收站）不回写任何调度状态。
+			// Successful tests reset failure/cooldown state; the scheduler still enforces usage limits.
+			// Temporary recycle-bin accounts must not update scheduling state.
 			if !isTransient && (isOpenAIResponsesAccount || usageState.UsageWindowLimitsIgnored || (!usageState.Premium5hRateLimited && (!usageState.HasUsage7d || usageState.UsagePct7d < 100))) {
 				h.store.RecordManualTestSuccess(account, time.Since(start))
 			}
@@ -437,8 +440,8 @@ func buildConnectionTestPayload(store *auth.Store, model string) []byte {
 	if store != nil {
 		content = store.GetTestContent()
 	}
-	// 多行内容按行随机抽取 + 变量展开（issue #320），减少批量账号
-	// 共用同一句测活内容的指纹特征。单行配置行为不变。
+	// Randomly select a configured line and expand variables (issue #320) to avoid identical
+	// probe content across accounts. Single-line configuration keeps its existing behavior.
 	return buildTestPayloadWithContent(model, auth.RenderTestContent(content))
 }
 
@@ -454,8 +457,8 @@ func buildClaudeConnectionTestPayload(store *auth.Store, model string, securityC
 	return buildClaudeConnectionTestPayloadWithContent(model, auth.RenderTestContent(content), securityCfg)
 }
 
-// buildAccountConnectionTestPayload 按账号渠道构造测连请求体：Claude 走原生 Messages
-// 形状，其余走 Responses 形状；用户输入取渠道自定义测活内容，留空沿用全局。
+// buildAccountConnectionTestPayload uses native Claude Messages or Responses payloads.
+// Channel-specific test content takes precedence over the global default.
 func (h *Handler) buildAccountConnectionTestPayload(ctx context.Context, account *auth.Account, model string, securityCfg auth.ClaudeSecurityConfig) []byte {
 	content := h.connectionTestContentForAccount(ctx, account)
 	if account != nil && account.IsClaudeOAuth() {
@@ -608,8 +611,8 @@ func (h *Handler) handleClaudeConnectionTest(
 	} else {
 		h.store.RecordManualTestSuccess(account, time.Since(start))
 	}
-	// 显式复探成功:该模型此前的模型级冷却(如 credits_required)已不成立,立即解除,
-	// 调度器无需等 30 分钟窗口自然到期。
+	// A successful explicit model probe invalidates the prior model cooldown immediately,
+	// rather than waiting for the original 30-minute window to expire.
 	if err := h.store.RestoreClaudeAccountModel(c.Request.Context(), account, testModel); err != nil {
 		sendTestEvent(c, testEvent{Type: "error", Error: "模型复探成功，但恢复模型清单失败"})
 		return
@@ -714,12 +717,12 @@ func claudeConnectionTestShouldPreserveUsageCooldown(account *auth.Account, resp
 	return true
 }
 
-// buildTestPayload 构建默认最小测试请求体
+// buildTestPayload builds the default minimal test request.
 func buildTestPayload(model string) []byte {
 	return buildTestPayloadWithContent(model, auth.DefaultTestContent)
 }
 
-// buildTestPayloadWithContent 构建带自定义用户输入内容的最小测试请求体
+// buildTestPayloadWithContent builds a minimal request with custom user input.
 func buildTestPayloadWithContent(model string, content string) []byte {
 	content = auth.NormalizeTestContent(content)
 	payload := []byte(`{}`)
@@ -778,7 +781,7 @@ func applyUsageLimitedTestState(store *auth.Store, account *auth.Account, state 
 	applyUsageLimitedAccountState(store, account, state)
 }
 
-// sendTestEvent 发送 SSE 事件
+// sendTestEvent emits an SSE event.
 func sendTestEvent(c *gin.Context, event testEvent) {
 	rememberConnectionTestError(c, event)
 	data, err := json.Marshal(event)
@@ -793,7 +796,7 @@ func sendTestEvent(c *gin.Context, event testEvent) {
 	c.Writer.Flush()
 }
 
-// truncate 截断字符串
+// truncate limits string length.
 func truncate(s string, maxLen int) string {
 	if len(s) <= maxLen {
 		return s
@@ -937,9 +940,9 @@ func (h *Handler) connectionTestModel(ctx context.Context) string {
 	return auth.DefaultTestModel
 }
 
-// defaultGrokConnectionTestModels：账号未声明 models 时的 Grok 连通性测试回落列表
-// （与 /v1/models 的默认 Grok 模型集共用同一真相，仅文本模型）。
-// 默认集按凭据类型区分（OAuth 走 CLI 通道、API Key 走公开 API），故需要账号上下文。
+// defaultGrokConnectionTestModels supplies text models when an account has no catalog.
+// It shares the default catalog used by /v1/models.
+// OAuth uses the CLI channel and API keys use the public API, so account context is required.
 func defaultGrokConnectionTestModels(account *auth.Account) []string {
 	return proxy.DefaultGrokModelIDsForAccount(account)
 }
@@ -970,9 +973,9 @@ func (h *Handler) connectionTestModelForAccount(ctx context.Context, account *au
 					}
 				}
 			}
-			// 显式指定的模型不受模型级冷却(含 credits_required)阻拦:手工测试本身就是
-			// 操作者在主动复探(例如刚买了 credits / 想确认套餐),上游若仍拒绝会重新标记
-			// 冷却;若成功则由调用方清掉该模型的冷却。只有自动选模时才跳过冷却中的模型。
+			// Explicit model probes may bypass model cooldowns, including credits_required, so
+			// operators can verify newly purchased credits or plan changes. Rejected probes restore
+			// the cooldown; successful callers clear it. Only automatic selection skips cooled models.
 			for _, model := range models {
 				if strings.EqualFold(strings.TrimSpace(model), requested) {
 					return strings.TrimSpace(model), nil
@@ -983,8 +986,8 @@ func (h *Handler) connectionTestModelForAccount(ctx context.Context, account *au
 		if len(models) == 0 {
 			return "", fmt.Errorf("该 Claude 账号没有可用于测试的文本模型")
 		}
-		// 系统设置里为 Claude 配置的默认测试模型优先；不在该账号目录或正处于
-		// 模型级冷却时退回自动选模，不因配置了一个不合适的模型就让测连失败。
+		// Prefer the configured Claude test model when it is listed and not cooling down.
+		// Otherwise select automatically instead of failing due to an unsuitable configuration.
 		if configured := h.channelTestSettingsForAccount(ctx, account).TestModel; configured != "" {
 			for _, candidate := range models {
 				if strings.EqualFold(strings.TrimSpace(candidate), configured) && !account.IsModelRateLimited(candidate) {
@@ -1012,20 +1015,6 @@ func (h *Handler) connectionTestModelForAccount(ctx context.Context, account *au
 		return antigravityConnectionTestModel(account, requested, defaults...)
 	}
 	if account == nil || !account.IsRelayStyle() {
-		if account != nil {
-			_, scope, _ := account.CodexTurnStateConfig()
-			if strings.TrimSpace(scope) != "" {
-				if requested != "" && !proxy.CodexTurnStateModelAllowed(account, requested) {
-					return "", fmt.Errorf("测试模型不在账号限定模型范围内: %s", requested)
-				}
-				if requested == "" {
-					for _, candidate := range h.codexTurnStateRefreshModels(ctx, account) {
-						return candidate, nil
-					}
-					return "", fmt.Errorf("账号限定范围内没有可用的测试模型")
-				}
-			}
-		}
 		if requested == "" {
 			return h.connectionTestModel(ctx), nil
 		}
@@ -1042,7 +1031,7 @@ func (h *Handler) connectionTestModelForAccount(ctx context.Context, account *au
 			textModels = append(textModels, strings.TrimSpace(model))
 		}
 	}
-	// Grok 账号常不预声明 models（依赖上游 /v1/models），回落到常见文本模型。
+	// Grok may have no declared models until /v1/models is queried; use common text models.
 	if len(textModels) == 0 && account.IsGrokAPI() {
 		textModels = append(textModels, defaultGrokConnectionTestModels(account)...)
 	}
@@ -1079,9 +1068,9 @@ func isTextConnectionModel(model string) bool {
 	return model != "" && !strings.Contains(model, "image")
 }
 
-// antigravityConnectionTestModels 是 Antigravity 账号可用于测连的文本模型：
-// 把账号同步到的 wire 目录（或安全默认集）投影成对外发布的固定档位 ID，
-// 与账号页下拉、/v1/models 暴露的是同一份真相。
+// antigravityConnectionTestModels returns text models eligible for connection testing.
+// Project the synchronized wire catalog or safe defaults onto published fixed-tier IDs,
+// matching the account selector and /v1/models.
 func antigravityConnectionTestModels(account *auth.Account) []string {
 	if account == nil {
 		return nil
@@ -1096,10 +1085,10 @@ func antigravityConnectionTestModels(account *auth.Account) []string {
 	return models
 }
 
-// antigravityConnectionTestModel 选定 Antigravity 测连模型。显式指定的模型
-// 不受模型级冷却阻拦（手工测试本身就是操作者在主动复探）；自动选模时依次尝试
-// 各级默认（渠道设置、全局测试模型），再偏向版本最新的 flash 低档，最后才落到
-// 第一个未冷却的模型。
+// antigravityConnectionTestModel selects a model for a connection test. Explicit probes
+// may bypass model cooldowns. Automatic selection tries channel and global defaults,
+// then prefers the newest low-tier flash model before falling back to the first
+// model without a cooldown.
 func antigravityConnectionTestModel(account *auth.Account, requested string, defaultModels ...string) (string, error) {
 	models := antigravityConnectionTestModels(account)
 	if len(models) == 0 {
@@ -1136,9 +1125,9 @@ func antigravityConnectionTestModel(account *auth.Account, requested string, def
 	return models[0], nil
 }
 
-// preferredAntigravityFlashLowModel 在 flash 低档里挑版本号最高的那个。账号同步到的
-// 目录会长期保留已下线的旧版（如 gemini-3.5-flash 上游只回一句下线提示就断流），
-// 老版本排在前面，按目录顺序取首个会把测连默认打到死模型上。
+// preferredAntigravityFlashLowModel selects the highest-version low-tier flash model.
+// Synchronized catalogs can retain retired versions that only return retirement notices.
+// Taking the first catalog entry could therefore select an unusable model.
 func preferredAntigravityFlashLowModel(models []string, rateLimited func(string) bool) string {
 	best := ""
 	bestVersion := -1.0
@@ -1158,7 +1147,7 @@ func preferredAntigravityFlashLowModel(models []string, rateLimited func(string)
 	return best
 }
 
-// antigravityModelVersion 取 gemini-<major>.<minor>-… 里的数字版本；解析不出返回 0。
+// antigravityModelVersion extracts gemini-<major>.<minor> and returns zero on failure.
 func antigravityModelVersion(model string) float64 {
 	rest := strings.TrimPrefix(model, "gemini-")
 	if rest == model {
@@ -1178,10 +1167,10 @@ func antigravityModelVersion(model string) float64 {
 	return version
 }
 
-// executeAntigravityConnectionTest 用 Antigravity 专属执行器跑测连请求，
-// 返回的是已归一化成 Responses SSE 的响应，后续可复用 Codex 路径的流解析。
-// 与调度路径一致：OAuth 号收到 401 先用 RT 换一次 AT 再重试一次，避免仅因
-// AT 过期就把号标成未授权；allowRefresh=false（回收站临时账号）不回写凭据。
+// executeAntigravityConnectionTest uses the dedicated Antigravity executor and returns
+// normalized Responses SSE for the shared Codex stream parser.
+// As in regular scheduling, OAuth 401s trigger one token refresh and retry.
+// allowRefresh=false keeps temporary recycle-bin credentials unchanged.
 func (h *Handler) executeAntigravityConnectionTest(ctx context.Context, account *auth.Account, model string, payload []byte, proxyURL string, allowRefresh bool) (*http.Response, error) {
 	execute := h.antigravityProbeExecutor()
 	resp, err := execute(ctx, account, model, payload, true, proxyURL)
@@ -1193,7 +1182,7 @@ func (h *Handler) executeAntigravityConnectionTest(ctx context.Context, account 
 		return resp, nil
 	}
 	if refreshErr := h.store.RefreshAntigravityAccount(ctx, account); refreshErr != nil {
-		// 刷新也失败：把原始 401 交给调用方按未授权处理。
+		// If refresh fails, return the original 401 for authorization handling.
 		return resp, nil
 	}
 	if resp.Body != nil {
@@ -1205,11 +1194,11 @@ func (h *Handler) executeAntigravityConnectionTest(ctx context.Context, account 
 type batchTestRequest struct {
 	IDs      *[]int64                  `json:"ids"`
 	Selector *accountOperationSelector `json:"selector,omitempty"`
-	// RestoreOnSuccess 仅回收站批量测试使用：测试通过的账号自动恢复到账号池。
+	// RestoreOnSuccess restores successful recycle-bin batch tests to the account pool.
 	RestoreOnSuccess bool `json:"restore_on_success"`
 }
 
-// persistRecycleBinTestResult 将回收站测试结果写入账号 credentials，供列表展示。
+// persistRecycleBinTestResult stores recycle-bin test results in account credentials.
 func (h *Handler) persistRecycleBinTestResult(id int64, status string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -1315,7 +1304,7 @@ func resolveBatchTestAccounts(store *auth.Store, ids *[]int64) ([]*auth.Account,
 	return accounts, missing
 }
 
-// BatchTest 批量测试账号连接；未传 ids 时测试所有账号，传 ids 时仅测试指定账号。
+// BatchTest tests the specified account IDs, or all accounts when IDs are omitted.
 // POST /api/admin/accounts/batch-test
 func (h *Handler) BatchTest(c *gin.Context) {
 	var req batchTestRequest
@@ -1348,8 +1337,8 @@ func (h *Handler) BatchTest(c *gin.Context) {
 	h.serveBatchTest(c, accounts, missingCount, h.runSingleBatchTest)
 }
 
-// RecycleBinBatchTest 批量测试回收站账号连接；未传 ids 时测试回收站全部账号。
-// 账号以临时对象构建，不参与调度，测试结果不回写任何账号状态。
+// RecycleBinBatchTest tests specified recycle-bin IDs, or all recycle-bin accounts.
+// Temporary accounts do not participate in scheduling or update account status.
 // POST /api/admin/accounts/recycle-bin/batch-test
 func (h *Handler) RecycleBinBatchTest(c *gin.Context) {
 	var req batchTestRequest
@@ -1432,7 +1421,7 @@ func (h *Handler) RecycleBinBatchTest(c *gin.Context) {
 	h.serveBatchTest(c, accounts, missing, testFn)
 }
 
-// serveBatchTest 统一处理批量测试的流式/非流式响应；testFn 决定单账号测试行为。
+// serveBatchTest handles streamed and non-streamed batch results using testFn.
 func (h *Handler) serveBatchTest(c *gin.Context, accounts []*auth.Account, missingCount int, testFn func(context.Context, *auth.Account) (string, string)) {
 	if strings.EqualFold(c.Query("stream"), "true") {
 		h.streamBatchTest(c, accounts, missingCount, testFn)
@@ -1641,10 +1630,12 @@ func (h *Handler) runSingleBatchTest(ctx context.Context, acc *auth.Account) (st
 	} else if acc.IsRelayStyle() {
 		resp, err = proxy.ExecuteRelayStyleRequest(testCtx, acc, payload, h.store.ResolveProxyForAccount(acc), nil)
 	} else {
-		testCtx = proxy.WithCodexTurnStateAdminProbe(testCtx)
 		resp, err = proxy.ExecuteRequest(testCtx, acc, payload, "", h.store.ResolveProxyForAccount(acc), "", nil, nil)
 	}
 	if err != nil {
+		if message, blocked := statePolicyTestFailure(err, testModel); blocked {
+			return "failed", message
+		}
 		if msg, ok := batchTestContextFailure(testCtx, err); ok {
 			if errors.Is(testCtx.Err(), context.DeadlineExceeded) {
 				h.store.ReportRequestFailure(acc, "timeout", batchTestAccountTimeout)
@@ -1688,7 +1679,7 @@ func (h *Handler) runSingleBatchTest(ctx context.Context, acc *auth.Account) (st
 		if acc.IsClaudeOAuth() && claudeConnectionTestShouldPreserveUsageCooldown(acc, resp) {
 			return "rate_limited", "Claude 上游返回了有效响应，但账号仍处于配额/限流状态"
 		}
-		// 测试成功即重置失败/冷却状态，用量限制由调度器自行判断
+		// Successful tests reset failure/cooldown state; usage limits remain scheduler-controlled.
 		h.store.RecordManualTestSuccess(acc, time.Since(start))
 		return "success", msg
 	case http.StatusUnauthorized:
@@ -1708,8 +1699,8 @@ func (h *Handler) runSingleBatchTest(ctx context.Context, acc *auth.Account) (st
 		if readErr != nil {
 			return h.handleBatchTestReadError(testCtx, acc, readErr)
 		}
-		// Grok 走 relay 但有 free-usage-exhausted 语义，须交给 Apply429Cooldown 识别耗尽
-		// （→ 24h usage_limited + 落权威用量快照），不能并入 relay 的 1 分钟 rate_limited。
+		// Grok free-usage-exhausted must go through Apply429Cooldown for its quota snapshot
+		// and 24-hour usage_limited state, rather than the generic one-minute relay cooldown.
 		if acc.IsClaudeOAuth() {
 			if proxy.HandleClaudeModelBillingRejection(h.store, acc, testModel, resp.StatusCode, body) {
 				return "rate_limited", fmt.Sprintf("上游模型 %s 需要 usage credits，当前账号套餐不可用", testModel)
@@ -1736,7 +1727,7 @@ func (h *Handler) runSingleBatchTest(ctx context.Context, acc *auth.Account) (st
 			h.store.MarkCooldownWithErrorExactDuration(acc, 24*time.Hour, "unauthorized", msg)
 			return "banned", msg
 		}
-		// Cloud Code 503 是共享容量耗尽，号本身有效：记模型级冷却并按限流归类。
+		// Cloud Code 503 indicates shared capacity exhaustion; apply a model cooldown.
 		if acc.IsAntigravityAPI() && resp.StatusCode == http.StatusServiceUnavailable &&
 			proxy.ApplyAntigravityCooldown(h.store, acc, resp.StatusCode, body, resp, testModel) {
 			return "rate_limited", msg
@@ -1752,9 +1743,9 @@ func (h *Handler) runSingleBatchTest(ctx context.Context, acc *auth.Account) (st
 	}
 }
 
-// runRecycleBinSingleTest 测试单个回收站账号的连通性。账号是临时对象，
-// 全程不调用任何会回写账号/调度状态的方法（MarkError/MarkCooldown/
-// RecordManualTestSuccess 等），测试结果仅用于展示。
+// runRecycleBinSingleTest tests a temporary account without modifying account state.
+// It never calls MarkError, MarkCooldown, or RecordManualTestSuccess;
+// results are for display only.
 func (h *Handler) runRecycleBinSingleTest(ctx context.Context, acc *auth.Account) (string, string) {
 	testCtx, cancel := context.WithTimeout(ctx, batchTestAccountTimeout)
 	defer cancel()
@@ -1781,12 +1772,11 @@ func (h *Handler) runRecycleBinSingleTest(ctx context.Context, acc *auth.Account
 	if acc.IsClaudeOAuth() {
 		resp, err = proxy.ExecuteClaudeMessagesRequest(testCtx, acc, payload, h.store.ResolveProxyForAccount(acc), nil, acc.EffectiveClaudeFingerprintMode(h.store.ClaudeFingerprintModeDefault()), claudeSecurityCfg)
 	} else if acc.IsAntigravityAPI() {
-		// 回收站账号是临时对象：401 不做凭据刷新，只展示结果。
+		// Temporary recycle-bin accounts do not refresh credentials on 401.
 		resp, err = h.executeAntigravityConnectionTest(testCtx, acc, testModel, payload, h.store.ResolveProxyForAccount(acc), false)
 	} else if acc.IsRelayStyle() {
 		resp, err = proxy.ExecuteRelayStyleRequest(testCtx, acc, payload, h.store.ResolveProxyForAccount(acc), nil)
 	} else {
-		testCtx = proxy.WithCodexTurnStateAdminProbe(testCtx)
 		resp, err = proxy.ExecuteRequest(testCtx, acc, payload, "", h.store.ResolveProxyForAccount(acc), "", nil, nil)
 	}
 	if err != nil {
@@ -1808,7 +1798,7 @@ func (h *Handler) runRecycleBinSingleTest(ctx context.Context, acc *auth.Account
 			}
 			return status, msg
 		} else if !acc.IsRelayStyle() {
-			// store 传 nil：只解析用量头用于结果展示，不持久化、不改限流状态。
+			// A nil store parses usage for display without persistence or cooldown updates.
 			usageState := proxy.SyncCodexUsageState(nil, acc, resp)
 			if msg, limited := formatUsageLimitedTestError(usageState); limited {
 				return "rate_limited", msg
@@ -1833,8 +1823,8 @@ func (h *Handler) runRecycleBinSingleTest(ctx context.Context, acc *auth.Account
 	}
 }
 
-// readRecycleBinTestStream 读取测试 SSE 流并判定结果；与
-// readBatchTestStreamResult 等价，但不回写任何账号状态。
+// readRecycleBinTestStream evaluates SSE like readBatchTestStreamResult
+// but does not update account state.
 func readRecycleBinTestStream(ctx context.Context, resp *http.Response) (string, string) {
 	hasContent := false
 	gotTerminal := false
@@ -1962,7 +1952,7 @@ func (h *Handler) batchTestWhamPreflight(ctx context.Context, acc *auth.Account)
 	}
 
 	usageState := proxy.ApplyWhamUsage(h.store, acc, usage)
-	// wham 不含订阅到期字段，按需从网页端 /subscriptions 补权威到期时间。(issue #360)
+	// WHAM lacks subscription expiry; supplement it from /subscriptions when needed (issue #360).
 	proxy.MaybeSyncSubscriptionExpiry(ctx, h.store, acc, h.store.ResolveProxyForAccount(acc))
 	applyUsageLimitedTestState(h.store, acc, usageState)
 	if msg, limited := formatUsageLimitedTestError(usageState); limited {

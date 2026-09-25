@@ -403,10 +403,10 @@ func (b *Bridge) translateCall(native object) (object, error) {
 	if !marked && err == nil {
 		envelope, err = decodeTransportEnvelope(arguments["code"])
 		if err != nil {
-			// Strict decoding failed; accept only an unambiguous envelope the
-			// model embedded in other text, or raw custom input it forgot to mark.
-			if recovered, raw, ok := b.recoverTransportEnvelope(arguments); ok {
-				envelope, marked, err = recovered, raw, nil
+			// Recover only one complete declared invocation. Never extract a
+			// tool envelope from arbitrary code or infer one from the summary.
+			if recovered, ok := b.recoverTransportEnvelope(arguments); ok {
+				envelope, err = recovered, nil
 			}
 		}
 	}
@@ -477,6 +477,11 @@ func (b *Bridge) translateDirectCatalogCall(native object) (object, error) {
 	if err != nil {
 		return nil, err
 	}
+	// A direct call retains any explicit encryption declaration for that tool.
+	// Missing or null metadata keeps the plaintext default from the bridge.
+	if info.Kind == "function" && native["encrypted_function_args"] != nil {
+		result["encrypted_function_args"] = native["encrypted_function_args"]
+	}
 	// The model bypassed run_officejs, so the bare native name is not a BPS tool.
 	// Cache a transport-wrapped replay so the next turn presents a BPS-known
 	// run_officejs item, matching how absent history is rebuilt.
@@ -509,7 +514,7 @@ func (b *Bridge) finishClientToolCall(native object, info tool, envelope object,
 	}
 	if info.Kind == "custom" {
 		// Models address custom input as input, args or arguments; exactly one
-		// may be present. Text passes verbatim, objects are unwrapped or serialized.
+		// may be present, and its value must remain an exact string.
 		var value any
 		fields := 0
 		for _, field := range []string{"input", "args", "arguments"} {
@@ -543,6 +548,10 @@ func (b *Bridge) finishClientToolCall(native object, info tool, envelope object,
 		}
 		encoded, _ := json.Marshal(args)
 		result["arguments"] = string(encoded)
+		// Bridge-generated arguments are plaintext. Codex needs an explicit []
+		// even for parameters declared encrypted:true; otherwise collaboration
+		// messages become encrypted_content in the child agent's input.
+		result["encrypted_function_args"] = []string{}
 	}
 	return result, nil
 }

@@ -128,11 +128,6 @@ func (h *Handler) PublicImageStudioPageEnabled(ctx context.Context) (bool, error
 }
 
 func (h *Handler) CreatePortalImageJob(c *gin.Context) {
-	releaseIntake, admitted := h.imageQueueIntake(c)
-	if !admitted {
-		return
-	}
-	defer releaseIntake()
 	apiKey := portalAPIKeyFromContext(c)
 	if apiKey == nil {
 		writeError(c, http.StatusUnauthorized, "缺少或无效的 API Key")
@@ -153,11 +148,6 @@ func (h *Handler) CreatePortalImageJob(c *gin.Context) {
 }
 
 func (h *Handler) CreatePortalImageEditJob(c *gin.Context) {
-	releaseIntake, admitted := h.imageQueueIntake(c)
-	if !admitted {
-		return
-	}
-	defer releaseIntake()
 	apiKey := portalAPIKeyFromContext(c)
 	if apiKey == nil {
 		writeError(c, http.StatusUnauthorized, "缺少或无效的 API Key")
@@ -178,9 +168,6 @@ func (h *Handler) CreatePortalImageEditJob(c *gin.Context) {
 }
 
 func normalizePortalImageJobPayload(req *imageGenerationJobPayload, editMode bool) error {
-	if err := normalizeImageStoragePolicy(req); err != nil {
-		return err
-	}
 	if req == nil {
 		return errors.New("请求体无效")
 	}
@@ -244,10 +231,6 @@ func (h *Handler) enqueuePortalImageJob(c *gin.Context, apiKey *database.APIKeyR
 	}
 	if status, msg := imageProxy.EnforceAPIKeyLimitsForRequests(c, req.Model, req.N); status != 0 {
 		proxy.SendAPIKeyLimitError(c, status, msg)
-		return
-	}
-	if h.imageQueue != nil {
-		h.persistQueuedImageJob(c, req, apiKey, http.StatusAccepted, false)
 		return
 	}
 	// Reserve the concurrency slot before accepting the job; see the same
@@ -316,13 +299,7 @@ func (h *Handler) ListPortalImageJobs(c *gin.Context) {
 	page, pageSize := paginationParams(c, 20)
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
 	defer cancel()
-	var result *database.ImageJobPage
-	var err error
-	if c.Query("summary") == "1" {
-		result, err = h.db.ListImageJobSummaries(ctx, page, pageSize, apiKey.ID)
-	} else {
-		result, err = h.db.ListImageGenerationJobs(ctx, page, pageSize, apiKey.ID)
-	}
+	result, err := h.db.ListImageGenerationJobs(ctx, page, pageSize, apiKey.ID)
 	if err != nil {
 		writeInternalError(c, err)
 		return
@@ -344,12 +321,7 @@ func (h *Handler) GetPortalImageJob(c *gin.Context) {
 	}
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
 	defer cancel()
-	var job *database.ImageGenerationJob
-	if c.Query("summary") == "1" {
-		job, err = h.db.GetImageJobSummary(ctx, id)
-	} else {
-		job, err = h.db.GetImageGenerationJob(ctx, id)
-	}
+	job, err := h.db.GetImageGenerationJob(ctx, id)
 	if errors.Is(err, sql.ErrNoRows) {
 		writeError(c, http.StatusNotFound, "任务不存在")
 		return
@@ -362,7 +334,7 @@ func (h *Handler) GetPortalImageJob(c *gin.Context) {
 		writeError(c, http.StatusNotFound, "任务不存在")
 		return
 	}
-	if c.Query("include_cache") == "1" && c.Query("summary") != "1" {
+	if c.Query("include_cache") == "1" {
 		h.attachImageJobAssetCachePayload(job)
 	}
 	decorateImageJobAssets(job)
@@ -414,7 +386,6 @@ func (h *Handler) DeletePortalImageJob(c *gin.Context) {
 			}
 		}
 		thumbCache.Invalidate(asset.ID)
-		removeDiskThumbnails(asset.ID)
 	}
 	writeMessage(c, http.StatusOK, "已删除")
 }
@@ -525,7 +496,6 @@ func (h *Handler) DeletePortalImageAsset(c *gin.Context) {
 			_ = backend.Delete(ctx, asset.StoragePath)
 		}
 		thumbCache.Invalidate(asset.ID)
-		removeDiskThumbnails(asset.ID)
 	}
 	writeMessage(c, http.StatusOK, "已删除")
 }

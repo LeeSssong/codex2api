@@ -26,13 +26,11 @@ func transportCall(code, summary string) object {
 	return object{"type": "function_call", "id": "fc_r", "call_id": "call_r", "name": "run_officejs", "arguments": string(arguments), "status": "completed"}
 }
 
-// Models sometimes wrap the JSON envelope in an assignment, prose or code. The
-// envelope is recovered as data; nothing around it is evaluated.
-func TestEmbeddedEnvelopeRecoveredFromCodeAndProse(t *testing.T) {
+// An object inside a program is not a declared client tool invocation.
+func TestEmbeddedEnvelopeRejectedInsideCode(t *testing.T) {
 	bridge, cache := recoveryBridge(t, object{"type": "function", "name": "shell", "parameters": object{"type": "object"}})
 	for name, code := range map[string]string{
 		"assignment":     `const task = {"name":"shell","arguments":{"command":["ls","-la"]}};`,
-		"return":         `return {"name":"shell","arguments":{"command":["ls","-la"]}}`,
 		"office wrapper": `Excel.run(async (ctx) => { const call = {"name":"shell","arguments":{"command":["ls","-la"]}}; return call; });`,
 		"prose with =":   `Running the listing now: envelope = {"name":"shell","arguments":{"command":["ls","-la"]}} (via transport)`,
 		"host prefix":    `{"name":"functions.shell","arguments":{"command":["ls","-la"]}} // done`,
@@ -40,19 +38,11 @@ func TestEmbeddedEnvelopeRecoveredFromCodeAndProse(t *testing.T) {
 		"nested keys":    `call({"name":"shell","arguments":{"command":["ls","-la"],"env":{"name":"inner"}}})`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			call, err := bridge.translateCall(transportCall(code, "List files"))
-			if err != nil {
-				t.Fatalf("envelope not recovered: %v", err)
+			if call, err := bridge.translateCall(transportCall(code, "List files")); err == nil {
+				t.Fatalf("program was dispatched as a client call: %+v", call)
 			}
-			var args object
-			if call["name"] != "shell" || call["type"] != "function_call" || decode([]byte(text(call["arguments"])), &args) != nil {
-				t.Fatalf("wrong client call: %+v", call)
-			}
-			if command, _ := args["command"].([]any); len(command) != 2 || command[0] != "ls" {
-				t.Fatalf("arguments changed: %+v", args)
-			}
-			if native := cache.get("scope", "call_r"); native == nil || !strings.Contains(text(native["arguments"]), "shell") {
-				t.Fatal("original native item must replay verbatim")
+			if cache.get("scope", "call_r") != nil {
+				t.Fatal("rejected code must not populate replay history")
 			}
 		})
 	}
@@ -76,10 +66,10 @@ func TestEmbeddedEnvelopeRejectsAmbiguousUnknownOrBrokenContent(t *testing.T) {
 			}
 		})
 	}
-	// Identical repeated envelopes are one call, not an ambiguous batch.
+	// Repetition is still a batch: do not silently drop a possible second call.
 	call, err := bridge.translateCall(transportCall(`{"name":"shell","arguments":{"command":["ls"]}} {"name":"shell","arguments":{"command":["ls"]}}`, "List"))
-	if err != nil || call["name"] != "shell" {
-		t.Fatalf("repeated identical envelope rejected: %v", err)
+	if err == nil {
+		t.Fatalf("repeated envelope accepted: %+v", call)
 	}
 }
 
@@ -115,20 +105,18 @@ func TestCallShapedEnvelopeRecoversFunctionCalls(t *testing.T) {
 	}
 }
 
-func TestRawCustomInputRecoveredWithoutMarker(t *testing.T) {
+func TestRawCustomInputRequiresExplicitMarker(t *testing.T) {
 	bridge, _ := recoveryBridge(t, object{"type": "namespace", "name": "functions", "tools": []any{
 		object{"type": "custom", "name": "apply_patch"}, object{"type": "custom", "name": "exec"}, object{"type": "function", "name": "shell", "parameters": object{"type": "object"}},
 	}})
 	patch := "*** Begin Patch\n*** Add File: hello.txt\n+hi\n*** End Patch\n"
-	call, err := bridge.translateCall(transportCall(patch, "Create hello.txt"))
-	if err != nil || call["type"] != "custom_tool_call" || call["name"] != "apply_patch" || call["namespace"] != "functions" || call["input"] != patch {
-		t.Fatalf("patch body not routed to apply_patch: %+v, %v", call, err)
+	if call, err := bridge.translateCall(transportCall(patch, "Create hello.txt")); err == nil {
+		t.Fatalf("unmarked patch selected a tool: %+v", call)
 	}
 	script := "const fs = require('fs');\nconsole.log(fs.readdirSync('.'));\n"
 	for _, summary := range []string{"Run exec to list files", "functions.exec listing", "List files (exec)"} {
-		call, err = bridge.translateCall(transportCall(script, summary))
-		if err != nil || call["name"] != "exec" || call["input"] != script {
-			t.Fatalf("%q: raw script not routed by summary: %+v, %v", summary, call, err)
+		if call, err := bridge.translateCall(transportCall(script, summary)); err == nil {
+			t.Fatalf("%q: descriptive summary selected a tool: %+v", summary, call)
 		}
 	}
 	for name, native := range map[string]object{
@@ -147,17 +135,16 @@ func TestRawCustomInputRecoveredWithoutMarker(t *testing.T) {
 	}
 }
 
-func TestCustomArgumentsAcceptedInsteadOfFailing(t *testing.T) {
+func TestCustomArgumentsRequireExactStrings(t *testing.T) {
 	bridge, _ := recoveryBridge(t, object{"type": "custom", "name": "apply_patch"}, object{"type": "custom", "name": "exec"})
 	for name, tc := range map[string]struct {
 		envelope object
 		want     string
 	}{
-		"arguments string":  {object{"name": "apply_patch", "arguments": "*** Begin Patch\n*** End Patch"}, "*** Begin Patch\n*** End Patch"},
-		"arguments unwrap":  {object{"name": "apply_patch", "arguments": object{"patch": "*** Begin Patch\n*** End Patch"}}, "*** Begin Patch\n*** End Patch"},
-		"args unwrap":       {object{"name": "exec", "args": object{"code": "if (a < b) { run(); }"}}, "if (a < b) { run(); }"},
-		"input unwrap":      {object{"name": "exec", "input": object{"script": "1+1"}}, "1+1"},
-		"multi key as json": {object{"name": "exec", "arguments": object{"code": "1<2", "timeout": json.Number("5")}}, `{"code":"1<2","timeout":5}`},
+		"arguments string": {object{"name": "apply_patch", "arguments": "*** Begin Patch\n*** End Patch"}, "*** Begin Patch\n*** End Patch"},
+		"args string":      {object{"name": "exec", "args": "if (a < b) { run(); }"}, "if (a < b) { run(); }"},
+		"input string":     {object{"name": "exec", "input": " 1+1\n"}, " 1+1\n"},
+		"empty string":     {object{"name": "exec", "input": ""}, ""},
 	} {
 		t.Run(name, func(t *testing.T) {
 			call, err := bridge.translateCall(nativeCall(tc.envelope))
@@ -166,12 +153,23 @@ func TestCustomArgumentsAcceptedInsteadOfFailing(t *testing.T) {
 			}
 		})
 	}
+	for _, field := range []string{"input", "args", "arguments"} {
+		for _, value := range []any{object{"code": "1+1"}, object{"code": "1<2", "timeout": 5}, object{}, []any{"code"}, nil, true, 1} {
+			if call, err := bridge.translateCall(nativeCall(object{"name": "exec", field: value})); err == nil {
+				t.Fatalf("non-string %s was converted to custom input: %+v", field, call)
+			}
+		}
+	}
 }
 
 func TestDirectCallKindMismatchRecoveredWhenPayloadFits(t *testing.T) {
 	bridge, _ := recoveryBridge(t, object{"type": "function", "name": "shell", "parameters": object{"type": "object"}}, object{"type": "custom", "name": "apply_patch"})
 	patch := "*** Begin Patch\n*** End Patch"
-	call, err := bridge.translateCall(object{"type": "function_call", "id": "1", "call_id": "c1", "name": "apply_patch", "arguments": `{"input":"` + strings.ReplaceAll(patch, "\n", `\n`) + `"}`})
+	encoded, err := json.Marshal(patch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	call, err := bridge.translateCall(object{"type": "function_call", "id": "1", "call_id": "c1", "name": "apply_patch", "arguments": string(encoded)})
 	if err != nil || call["type"] != "custom_tool_call" || call["input"] != patch {
 		t.Fatalf("custom tool called as function not recovered: %+v, %v", call, err)
 	}
@@ -182,6 +180,7 @@ func TestDirectCallKindMismatchRecoveredWhenPayloadFits(t *testing.T) {
 	for _, native := range []object{
 		{"type": "function_call", "id": "3", "call_id": "c3", "name": "apply_patch", "arguments": "{}"},
 		{"type": "function_call", "id": "4", "call_id": "c4", "name": "apply_patch", "arguments": "not json"},
+		{"type": "function_call", "id": "7", "call_id": "c7", "name": "apply_patch", "arguments": `{"input":"do not unwrap"}`},
 		{"type": "custom_tool_call", "id": "5", "call_id": "c5", "name": "shell", "input": "ls -la"},
 		{"type": "custom_tool_call", "id": "6", "call_id": "c6", "name": "shell", "input": `["ls"]`},
 	} {
