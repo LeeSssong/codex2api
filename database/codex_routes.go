@@ -149,7 +149,18 @@ func (db *DB) ObserveCodexCapability(ctx context.Context, id int64, f CodexCapab
 		if err := db.lockCodexRoutesAccount(ctx, tx, id); err != nil {
 			return err
 		}
-		result, err := tx.ExecContext(ctx, `INSERT INTO account_codex_capabilities(account_id,upstream,model,capability,source,reason,observed_at,credential_generation) SELECT $1,$2,$3,$4,$5,$6,$7,$8 WHERE ($8=0 OR EXISTS (SELECT 1 FROM accounts WHERE id=$1 AND credential_generation=$8)) AND NOT EXISTS (SELECT 1 FROM account_codex_capabilities WHERE account_id=$1 AND upstream=$2 AND model='' AND source='admin_reset' AND observed_at >= $7) ON CONFLICT(account_id,upstream,model) DO UPDATE SET capability=excluded.capability,source=excluded.source,reason=excluded.reason,observed_at=excluded.observed_at,credential_generation=excluded.credential_generation WHERE account_codex_capabilities.observed_at < excluded.observed_at`, id, f.Upstream, f.Model, f.Capability, f.Source, f.Reason, f.ObservedAt, f.CredentialGeneration)
+		// Check under the account lock without mixing the accounts INTEGER ID
+		// and capability BIGINT ID in a shared PostgreSQL parameter inference.
+		if f.CredentialGeneration != 0 {
+			var generation int64
+			if err := tx.QueryRowContext(ctx, `SELECT credential_generation FROM accounts WHERE id=$1`, id).Scan(&generation); err != nil {
+				return err
+			}
+			if generation != f.CredentialGeneration {
+				return nil
+			}
+		}
+		result, err := tx.ExecContext(ctx, `INSERT INTO account_codex_capabilities(account_id,upstream,model,capability,source,reason,observed_at,credential_generation) SELECT $1,$2,$3,$4,$5,$6,$7,$8 WHERE NOT EXISTS (SELECT 1 FROM account_codex_capabilities WHERE account_id=$1 AND upstream=$2 AND model='' AND source='admin_reset' AND observed_at >= $7) ON CONFLICT(account_id,upstream,model) DO UPDATE SET capability=excluded.capability,source=excluded.source,reason=excluded.reason,observed_at=excluded.observed_at,credential_generation=excluded.credential_generation WHERE account_codex_capabilities.observed_at < excluded.observed_at`, id, f.Upstream, f.Model, f.Capability, f.Source, f.Reason, f.ObservedAt, f.CredentialGeneration)
 		if err != nil {
 			return err
 		}
