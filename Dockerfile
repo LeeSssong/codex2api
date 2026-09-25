@@ -21,6 +21,9 @@ FROM --platform=$BUILDPLATFORM golang:1.26.6-alpine AS go-builder
 
 ARG TARGETARCH
 ARG BUILD_VERSION=dev
+ARG SOURCE_REVISION
+ARG SOURCE_TREE
+ARG UPSTREAM_REVISION
 
 ARG GOPROXY=https://proxy.golang.org,direct
 ENV GOPROXY=${GOPROXY}
@@ -35,12 +38,20 @@ COPY --from=frontend-builder /frontend/dist ./frontend/dist
 
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build -ldflags="-s -w -X github.com/codex2api/internal/version.Version=${BUILD_VERSION}" -o /codex2api .
+    CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build -ldflags="-s -w -X github.com/codex2api/internal/version.Version=${BUILD_VERSION} -X github.com/codex2api/internal/version.Revision=${SOURCE_REVISION} -X github.com/codex2api/internal/version.SourceTree=${SOURCE_TREE} -X github.com/codex2api/internal/version.UpstreamRevision=${UPSTREAM_REVISION}" -o /codex2api .
 
 # ============================================================
 # Stage 3: Minimal runtime image.
 # ============================================================
 FROM alpine:3.19
+
+ARG SOURCE_REVISION
+ARG SOURCE_TREE
+ARG UPSTREAM_REVISION
+LABEL org.opencontainers.image.revision=${SOURCE_REVISION} \
+      io.xingqiao.source-tree=${SOURCE_TREE} \
+      io.xingqiao.upstream-revision=${UPSTREAM_REVISION} \
+      org.opencontainers.image.source="https://github.com/LeeSssong/codex2api"
 
 RUN apk --no-cache add ca-certificates tzdata
 

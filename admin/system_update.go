@@ -28,7 +28,7 @@ import (
 )
 
 const (
-	systemUpdateRepo             = "james-6-23/codex2api"
+	systemUpdateRepo             = "hloolx/codex2api"
 	systemUpdateUserAgent        = "Codex2API-Updater"
 	systemUpdateMaxDownloadBytes = 200 * 1024 * 1024
 	systemUpdateRestartDelay     = 900 * time.Millisecond
@@ -42,14 +42,21 @@ var (
 )
 
 type systemUpdater struct {
-	currentVersion     string
-	client             systemReleaseClient
-	goos               string
-	goarch             string
-	executablePath     func() (string, error)
-	restartProcess     func(string) error
-	restartDelay       time.Duration
-	runningInContainer func() bool
+	managedBuild         bool
+	sourceRevision       string
+	sourceTree           string
+	upstreamRevision     string
+	fetchSourceHead      func(context.Context) (*systemSourceHead, error)
+	sourceCache          *systemSourceHead
+	sourceCacheExpiresAt time.Time
+	currentVersion       string
+	client               systemReleaseClient
+	goos                 string
+	goarch               string
+	executablePath       func() (string, error)
+	restartProcess       func(string) error
+	restartDelay         time.Duration
+	runningInContainer   func() bool
 
 	mu                    sync.Mutex
 	releaseCacheMu        sync.Mutex
@@ -64,6 +71,12 @@ type systemReleaseClient interface {
 }
 
 type systemUpdateInfo struct {
+	SourceRepository  string `json:"source_repository,omitempty"`
+	SourceRevision    string `json:"source_revision,omitempty"`
+	SourceTree        string `json:"source_tree,omitempty"`
+	UpstreamRevision  string `json:"upstream_revision,omitempty"`
+	LatestRevision    string `json:"latest_revision,omitempty"`
+	CheckStatus       string `json:"check_status,omitempty"`
 	CurrentVersion    string `json:"current_version"`
 	LatestVersion     string `json:"latest_version"`
 	HasUpdate         bool   `json:"has_update"`
@@ -118,6 +131,11 @@ type defaultSystemReleaseClient struct {
 func newSystemUpdater() *systemUpdater {
 	client := newDefaultSystemReleaseClient()
 	return &systemUpdater{
+		managedBuild:       true,
+		sourceRevision:     version.Revision,
+		sourceTree:         version.SourceTree,
+		upstreamRevision:   version.UpstreamRevision,
+		fetchSourceHead:    client.FetchSourceHead,
 		currentVersion:     version.Current(),
 		client:             client,
 		goos:               runtime.GOOS,
@@ -186,6 +204,12 @@ func (h *Handler) GetSystemUpdate(c *gin.Context) {
 }
 
 func (u *systemUpdater) unavailableInfo() *systemUpdateInfo {
+	if u.managedBuild {
+		info := u.managedInfo()
+		info.CheckStatus = "unknown"
+		info.Warning = "更新源暂时不可用，尚未确认上游最新提交"
+		return info
+	}
 	current := normalizeSystemVersion(u.currentVersion)
 	info := &systemUpdateInfo{
 		CurrentVersion: current,
@@ -246,6 +270,9 @@ func (u *systemUpdater) Check(ctx context.Context) (*systemUpdateInfo, error) {
 }
 
 func (u *systemUpdater) PerformUpdate(ctx context.Context) (*systemUpdateResult, error) {
+	if u.managedBuild || (u.runningInContainer != nil && u.runningInContainer()) {
+		return nil, fmt.Errorf("%w: %s", errSystemUpdateUnsupported, managedUpdateReason)
+	}
 	if !u.mu.TryLock() {
 		return nil, errSystemUpdateBusy
 	}
@@ -286,6 +313,9 @@ func (u *systemUpdater) PerformUpdate(ctx context.Context) (*systemUpdateResult,
 }
 
 func (u *systemUpdater) inspect(ctx context.Context) (*systemUpdateInspection, error) {
+	if u.managedBuild {
+		return u.inspectManaged(ctx)
+	}
 	current := normalizeSystemVersion(u.currentVersion)
 	info := &systemUpdateInfo{
 		CurrentVersion: current,
@@ -308,7 +338,9 @@ func (u *systemUpdater) inspect(ctx context.Context) (*systemUpdateInspection, e
 		info.UnsupportedReason = "Windows 运行时暂不支持在线替换正在运行的可执行文件"
 	}
 	if u.runningInContainer != nil && u.runningInContainer() {
-		info.Warning = "检测到容器环境:在线更新只替换当前容器内的二进制,容器重建后会恢复为镜像自带版本,建议改用拉取新镜像的方式升级"
+		info.Supported = false
+		info.UnsupportedReason = managedUpdateReason
+		info.Warning = managedUpdateReason
 	}
 
 	release, err := u.fetchLatestRelease(ctx)

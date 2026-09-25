@@ -149,8 +149,8 @@ func TestSystemUpdaterContainerWarning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Check() error: %v", err)
 	}
-	if !info.Supported {
-		t.Fatalf("Supported = false: %s", info.UnsupportedReason)
+	if info.Supported {
+		t.Fatal("container must reject binary replacement")
 	}
 	if info.Warning == "" {
 		t.Fatal("Warning is empty, want container warning")
