@@ -157,6 +157,16 @@ class Release:
   try:
    self.run(['docker','exec','-i','codex2api-postgres','sh','-c','exec pg_restore --exit-on-error --no-owner -U "$POSTGRES_USER" -d "$1"','sh',scratch],snapshot.read_bytes())
    self.sql('SELECT count(*) FROM accounts;',scratch)
+   rehearsal_env=self.dir/'rehearsal.env'
+   if any('\n' in value or '\r' in value for value in self.env.values()):raise ValueError('multiline environment requires explicit rehearsal serialization')
+   rehearsal_env.write_text('\n'.join(key+'='+value for key,value in self.env.items())+'\n');rehearsal_env.chmod(0o600)
+   rehearsal_name='codex2api-rehearsal-'+self.args.release_id
+   try:
+    self.run(['docker','run','--rm','--name',rehearsal_name,'--network','codex2api-net','--env-file',str(rehearsal_env),'-e','DATABASE_NAME='+scratch,'-e','CODEX_MIGRATE_ONLY=1',self.args.image],timeout=180)
+    if self.sql("SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='accounts' AND column_name='control_revision';",scratch)!='1':raise RuntimeError('rehearsal did not install account revision fence')
+   finally:
+    if self.run(['docker','ps','-aq','--filter','name=^'+rehearsal_name+'$']).strip():self.run(['docker','rm','-f',rehearsal_name],timeout=60)
+    rehearsal_env.unlink(missing_ok=True)
   finally:self.run(['docker','exec','codex2api-postgres','sh','-c','exec dropdb -U "$POSTGRES_USER" "$1"','sh',scratch])
   self.event('preflight-and-restore-rehearsal-passed')
  def stop_migrator(self):
