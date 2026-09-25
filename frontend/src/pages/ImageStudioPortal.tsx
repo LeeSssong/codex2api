@@ -24,12 +24,10 @@ import {
   Loader2,
   LogIn,
   LogOut,
-  Moon,
   Pencil,
   RefreshCw,
   ShieldCheck,
   Sparkles,
-  Sun,
   Trash2,
   Upload,
   X,
@@ -37,10 +35,10 @@ import {
 import { api } from '../api'
 import { DEFAULT_SITE_LOGO, useBranding } from '../branding'
 import Pagination from '../components/Pagination'
-import { useTheme } from '../hooks/useTheme'
 import type { CreateImageJobPayload, ImageAsset, ImageGenerationJob, ImageStudioQuota } from '../types'
 import { getErrorMessage } from '../utils/error'
 import { formatBeijingTime } from '../utils/time'
+import { CinematicThemeSwitcher } from '@/components/ui/cinematic-theme-switcher'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -150,7 +148,11 @@ function hasServerImageURL(asset: ImageAsset): boolean {
 }
 
 function imageSrc(asset: ImageAsset, localURLs: Record<number, string>): string {
-  return asset.proxy_url || asset.thumbnail_url || localURLs[asset.id] || ''
+  return asset.proxy_url || localURLs[asset.id] || asset.thumbnail_url || ''
+}
+
+function thumbnailSrc(asset: ImageAsset, localURLs: Record<number, string>): string {
+  return asset.thumbnail_url || imageSrc(asset, localURLs)
 }
 
 function blobToDataURL(blob: Blob): Promise<string> {
@@ -224,7 +226,6 @@ function PortalTabs({ activeView, className }: { activeView: PortalView; classNa
 export default function ImageStudioPortal() {
   const { t, i18n } = useTranslation()
   const { siteName, siteLogo } = useBranding()
-  const { theme, toggle } = useTheme()
   const { view } = useParams()
   const navigate = useNavigate()
   const activeView = normalizeView(view)
@@ -442,10 +443,10 @@ export default function ImageStudioPortal() {
     let cancelled = false
     let polling = false
     const timer = window.setInterval(async () => {
-      if (polling) return
+      if (polling || document.visibilityState !== 'visible') return
       polling = true
       try {
-        const res = await api.getPortalImageJob(activeAPIKey, currentJob.id, { includeCache: true })
+        const res = await api.getPortalImageJob(activeAPIKey, currentJob.id, { includeCache: false })
         if (cancelled) return
         setCurrentJob(res.job)
         if (!['queued', 'running'].includes(res.job.status)) {
@@ -825,14 +826,7 @@ export default function ImageStudioPortal() {
       >
         <Languages className="size-4" />
       </Button>
-      <Button
-        variant="outline"
-        size="icon-sm"
-        onClick={toggle}
-        title={theme === 'dark' ? t('common.switchToLight') : t('common.switchToDark')}
-      >
-        {theme === 'dark' ? <Sun className="size-4" /> : <Moon className="size-4" />}
-      </Button>
+      <CinematicThemeSwitcher size="compact" />
     </div>
   )
 
@@ -1333,9 +1327,9 @@ export default function ImageStudioPortal() {
                 <div className="portal-recent-grid">
                   {historyJobs.slice(0, RECENT_JOB_COUNT).map(job => {
                     const asset = job.assets?.[0]
-                    const src = asset ? imageSrc(asset, assetURLs) : ''
+                    const src = asset ? thumbnailSrc(asset, assetURLs) : ''
                     return <Button key={job.id} type="button" variant="ghost" className="portal-recent-item" onClick={() => { setCurrentJob(job); setInspirationOpen(false); selectMobilePanel('canvas') }}>
-                      <span className="portal-recent-thumb">{src ? <img src={src} alt="" loading="lazy" /> : <ImageIcon className="size-4" />}</span>
+                      <span className="portal-recent-thumb">{src ? <img loading="lazy" decoding="async" src={src} alt="" /> : <ImageIcon className="size-4" />}</span>
                       <span className="portal-recent-description"><span>{job.prompt}</span><small><span className={cn('portal-status-dot', `portal-status-${job.status}`)} />{statusLabel(job.status)}</small></span>
                     </Button>
                   })}
@@ -1381,7 +1375,7 @@ export default function ImageStudioPortal() {
                 <div className="space-y-2">
                   {historyJobs.map((job) => {
                     const thumb = job.assets?.[0]
-                    const thumbSrc = thumb ? imageSrc(thumb, assetURLs) : ''
+                    const thumbSrc = thumb ? thumbnailSrc(thumb, assetURLs) : ''
                     const canPreview = Boolean(thumb)
                     return (
                       <div
@@ -1399,7 +1393,7 @@ export default function ImageStudioPortal() {
                           title={canPreview ? t('imageStudioPortal.viewFullscreen') : undefined}
                         >
                           {thumbSrc ? (
-                            <img src={thumbSrc} alt="" className="size-full object-cover" />
+                            <img loading="lazy" decoding="async" src={thumbSrc} alt="" className="size-full object-cover" />
                           ) : (
                             <div className="flex size-full items-center justify-center text-muted-foreground/50">
                               <ImageIcon className="size-5" />
@@ -1506,7 +1500,7 @@ export default function ImageStudioPortal() {
               ) : (
                 <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
                   {assets.map((asset) => {
-                    const src = imageSrc(asset, assetURLs)
+                    const src = thumbnailSrc(asset, assetURLs)
                     return (
                       <div
                         key={asset.id}
@@ -1519,7 +1513,7 @@ export default function ImageStudioPortal() {
                           title={t('imageStudioPortal.viewFullscreen')}
                         >
                           {src ? (
-                            <img src={src} alt={asset.filename} className="size-full object-cover" />
+                            <img loading="lazy" decoding="async" src={src} alt={asset.filename} className="size-full object-cover" />
                           ) : (
                             <div className="flex size-full items-center justify-center text-muted-foreground">
                               <Loader2 className="size-5 animate-spin" />
@@ -1652,7 +1646,7 @@ export default function ImageStudioPortal() {
             ) : (
               <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
                 {assets.map((asset) => {
-                  const src = imageSrc(asset, assetURLs)
+                  const src = thumbnailSrc(asset, assetURLs)
                   const selected = galleryPickerSelected.has(asset.id)
                   return (
                     <button
@@ -1668,7 +1662,7 @@ export default function ImageStudioPortal() {
                     >
                       <div className="image-studio-checkerboard size-full">
                         {src ? (
-                          <img src={src} alt={asset.filename} className="size-full object-cover" />
+                          <img loading="lazy" decoding="async" src={src} alt={asset.filename} className="size-full object-cover" />
                         ) : (
                           <div className="flex size-full items-center justify-center text-muted-foreground">
                             <Loader2 className="size-4 animate-spin" />

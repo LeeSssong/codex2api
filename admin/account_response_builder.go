@@ -264,6 +264,11 @@ func (h *Handler) buildAccountResponse(
 		ClaudeVersionPolicyOverride:  claudeVersionPolicyOverride,
 		ClaudeClientVersionOverride:  claudeClientVersionOverride,
 		Timezone:                     accountTimezone,
+		CodexTurnStateProxyURL:       strings.TrimSpace(row.GetCredential(auth.CodexTurnStateProxyURLCredentialKey)),
+		CodexTurnStateDisabled:       row.GetCredentialBool(auth.CodexTurnStateDisabledCredentialKey),
+		CodexTurnState:               strings.TrimSpace(row.GetCredential(auth.CodexTurnStateCredentialKey)),
+		CodexTurnStateModels:         auth.NormalizeCodexTurnStateModels(row.GetCredential(auth.CodexTurnStateModelsCredentialKey)),
+		CodexTurnStateSetAt:          strings.TrimSpace(row.GetCredential(auth.CodexTurnStateSetAtCredentialKey)),
 		CustomHeaders:                customHeaders,
 		UpstreamRequestIDHeader:      row.GetCredential(auth.UpstreamRequestIDHeaderCredentialKey),
 		ProxyURL:                     row.ProxyURL,
@@ -370,11 +375,14 @@ func (h *Handler) buildAccountResponse(
 		if applicable, ok := runtimeAccount.GetApplicableResetCredits(); ok {
 			resp.ApplicableResetCredits = &applicable
 		}
-		if balance, hasCredits, unlimited, overage, ok := runtimeAccount.GetCreditBalance(); ok {
-			resp.CreditsBalance = &balance
-			resp.CreditsHasCredits = &hasCredits
-			resp.CreditsUnlimited = &unlimited
-			resp.CreditsOverageLimitReached = &overage
+		if credits, ok := runtimeAccount.GetCreditBalance(); ok {
+			resp.CreditsValid = true
+			resp.CreditsBalance = credits.Balance
+			resp.CreditsHasCredits = &credits.HasCredits
+			resp.CreditsUnlimited = &credits.Unlimited
+			resp.CreditsOverageLimitReached = &credits.OverageLimitReached
+			resp.CreditsSpendControlReached = credits.SpendControlReached
+			resp.CreditsRateLimitReachedType = credits.RateLimitReachedType
 		}
 		if includeDetails {
 			if snapshot := runtimeAccount.GetDispatchCountSnapshot(); snapshot.Limit > 0 {

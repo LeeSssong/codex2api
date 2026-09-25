@@ -730,27 +730,25 @@ func normalizeImageIntentText(text string) string {
 	if text == "" {
 		return ""
 	}
-	replacer := strings.NewReplacer(
-		"\r", " ",
-		"\n", " ",
-		"\t", " ",
-		"，", " ",
-		"。", " ",
-		"！", " ",
-		"？", " ",
-		"；", " ",
-		"：", " ",
-		",", " ",
-		".", " ",
-		"!", " ",
-		"?", " ",
-		";", " ",
-		":", " ",
-		"\"", " ",
-		"'", " ",
-		"`", " ",
-	)
-	return strings.Join(strings.Fields(replacer.Replace(text)), " ")
+	previousSpace := false
+	for _, r := range text {
+		if isImageIntentPunctuation(r) || (unicode.IsSpace(r) && (r != ' ' || previousSpace)) {
+			return strings.Join(strings.FieldsFunc(text, func(r rune) bool {
+				return unicode.IsSpace(r) || isImageIntentPunctuation(r)
+			}), " ")
+		}
+		previousSpace = r == ' '
+	}
+	return text
+}
+
+func isImageIntentPunctuation(r rune) bool {
+	switch r {
+	case '，', '。', '！', '？', '；', '：', ',', '.', '!', '?', ';', ':', '"', '\'', '`':
+		return true
+	default:
+		return false
+	}
 }
 
 func containsAnyPhrase(text string, phrases []string) bool {
@@ -966,43 +964,9 @@ func stripResponsesImageGenerationCapabilities(body []byte) []byte {
 		}
 	}
 
-	// 2. Responses Lite: input[].additional_tools.tools[]
-	if input := gjson.GetBytes(body, "input"); input.Exists() && input.IsArray() {
-		items := input.Array()
-		keptItems := make([]interface{}, 0, len(items))
-		mutated := false
-		for _, item := range items {
-			if strings.TrimSpace(item.Get("type").String()) != "additional_tools" {
-				keptItems = append(keptItems, item.Value())
-				continue
-			}
-			nested := item.Get("tools")
-			if !nested.Exists() || !nested.IsArray() {
-				keptItems = append(keptItems, item.Value())
-				continue
-			}
-			keptTools, removed := stripImageGenerationToolsFromArray(nested.Array())
-			if !removed {
-				keptItems = append(keptItems, item.Value())
-				continue
-			}
-			mutated = true
-			if len(keptTools) == 0 {
-				// 载体工具全被剥离：移除整个 additional_tools 项。
-				continue
-			}
-			rebuilt, _ := sjson.SetBytes([]byte(item.Raw), "tools", keptTools)
-			var rebuiltVal interface{}
-			if err := json.Unmarshal(rebuilt, &rebuiltVal); err == nil {
-				keptItems = append(keptItems, rebuiltVal)
-			} else {
-				keptItems = append(keptItems, item.Value())
-			}
-		}
-		if mutated {
-			body, _ = sjson.SetBytes(body, "input", keptItems)
-		}
-	}
+	// 2. Responses Lite: only inspect matching carriers. Ordinary conversation
+	// items stay opaque, including when a different carrier must be rewritten.
+	body = stripResponsesInputImageTools(body)
 
 	// 3. tool_choice：仅删显式指向图片工具的选择
 	if choice := gjson.GetBytes(body, "tool_choice"); choice.Exists() {
@@ -1032,6 +996,74 @@ func stripResponsesImageGenerationCapabilities(body []byte) []byte {
 		}
 	}
 	return body
+}
+
+func stripResponsesInputImageTools(body []byte) []byte {
+	// The wildcard admits whitespace around the type, matching the existing
+	// TrimSpace policy, and decodes JSON escapes. It returns only a candidate
+	// carrier rather than copying the entire input just to learn none exists.
+	if !gjson.GetBytes(body, `input.#(type%"*additional_tools*")`).Exists() {
+		return body
+	}
+	input := gjson.GetBytes(body, "input")
+	if !input.IsArray() {
+		return body
+	}
+	items := input.Array()
+	var replacements map[int][]byte
+	for index, item := range items {
+		if strings.TrimSpace(item.Get("type").String()) != "additional_tools" {
+			continue
+		}
+		nested := item.Get("tools")
+		if !nested.IsArray() {
+			continue
+		}
+		kept, removed := stripImageGenerationToolsFromArray(nested.Array())
+		if !removed {
+			continue
+		}
+		var replacement []byte
+		if len(kept) > 0 {
+			var err error
+			replacement, err = sjson.SetBytes([]byte(item.Raw), "tools", kept)
+			if err != nil {
+				continue
+			}
+		}
+		if replacements == nil {
+			replacements = make(map[int][]byte)
+		}
+		replacements[index] = replacement
+	}
+	if len(replacements) == 0 {
+		return body
+	}
+	var encoded bytes.Buffer
+	encoded.Grow(len(input.Raw))
+	encoded.WriteByte('[')
+	written := false
+	for index, item := range items {
+		replacement, changed := replacements[index]
+		if changed && replacement == nil {
+			continue
+		}
+		if written {
+			encoded.WriteByte(',')
+		}
+		if changed {
+			encoded.Write(replacement)
+		} else {
+			encoded.WriteString(item.Raw)
+		}
+		written = true
+	}
+	encoded.WriteByte(']')
+	updated, err := sjson.SetRawBytes(body, "input", encoded.Bytes())
+	if err != nil {
+		return body
+	}
+	return updated
 }
 
 func validateImagesModel(model string) error {
@@ -1141,6 +1173,11 @@ func multipartFileToDataURL(fileHeader *multipart.FileHeader) (string, error) {
 }
 
 func (h *Handler) ImagesGenerations(c *gin.Context) {
+	releaseImage, admitted := admitDirectImageExecution(c)
+	if !admitted {
+		return
+	}
+	defer releaseImage()
 	rawBody, err := readRawRequestBody(c)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"message": "Invalid request: " + err.Error(), "type": "invalid_request_error"}})
@@ -1220,6 +1257,11 @@ func (h *Handler) ImagesGenerations(c *gin.Context) {
 }
 
 func (h *Handler) ImagesEdits(c *gin.Context) {
+	releaseImage, admitted := admitDirectImageExecution(c)
+	if !admitted {
+		return
+	}
+	defer releaseImage()
 	contentType := strings.ToLower(strings.TrimSpace(c.GetHeader("Content-Type")))
 	if strings.HasPrefix(contentType, "application/json") {
 		h.imagesEditsFromJSON(c)
@@ -1537,13 +1579,17 @@ func imagePreferredAccountFilter(account *auth.Account) bool {
 // 无指纹分流同样要覆盖两层：否则生图流量既能落到分流组账号上，无指纹的生图请求
 // 又不会被关进分流组，两个方向都跟配置意图相反。
 func (h *Handler) nextImageAccount(c *gin.Context, apiKeyID int64, exclude map[int64]bool, model string, identity requestSessionIdentity) (*auth.Account, string) {
-	preferredFilter := applyAffinityGroupRouting(c, identity, h.withModelCooldownFilter(model, imagePreferredAccountFilter))
+	ctx := context.Background()
+	if c != nil && c.Request != nil {
+		ctx = c.Request.Context()
+	}
+	preferredFilter := applyAffinityGroupRouting(c, identity, h.withModelCooldownFilter(ctx, model, imagePreferredAccountFilter))
 	preferredFilter = h.applyScopeBudgetFilter(c, preferredFilter)
 	account, stickyProxyURL := h.nextAccountForSessionWithFilter("", apiKeyID, exclude, preferredFilter)
 	if account != nil {
 		return account, stickyProxyURL
 	}
-	fallbackFilter := applyAffinityGroupRouting(c, identity, h.withModelCooldownFilter(model, imageCapableAccountFilter))
+	fallbackFilter := applyAffinityGroupRouting(c, identity, h.withModelCooldownFilter(ctx, model, imageCapableAccountFilter))
 	return h.nextAccountForSessionWithFilter("", apiKeyID, exclude, h.applyScopeBudgetFilter(c, fallbackFilter))
 }
 
@@ -1591,6 +1637,19 @@ func (h *Handler) forwardImagesRequest(c *gin.Context, inboundEndpoint, requestM
 	}
 	upscalePlan := imageUpscalePlanForRequest(requestModel, responsesBody)
 
+	var replay *os.File
+	if pipeline := pipelineFromContext(c.Request.Context()); pipeline != nil {
+		var err error
+		replay, err = pipeline.spool(responsesBody)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"message": "cannot spool image request"}})
+			return
+		}
+		defer removePipelineFile(replay)
+		responsesBody = pipelineRetryMetadata(responsesBody)
+		compactPipelineIngress(c)
+	}
+
 	for attempt := 0; ; attempt++ {
 		if attempt >= maxImageAttempts && !continuousRetryActive {
 			break
@@ -1606,7 +1665,7 @@ func (h *Handler) forwardImagesRequest(c *gin.Context, inboundEndpoint, requestM
 		if sameAccountRetryID > 0 {
 			preferredID := sameAccountRetryID
 			sameAccountRetryID = 0
-			preferredFilter := applyAffinityGroupRouting(c, sessionIdentity, h.withModelCooldownFilter(requestModel, imageCapableAccountFilter))
+			preferredFilter := applyAffinityGroupRouting(c, sessionIdentity, h.withModelCooldownFilter(c.Request.Context(), requestModel, imageCapableAccountFilter))
 			preferredFilter = h.applyScopeBudgetFilter(c, preferredFilter)
 			account = h.store.TakePreferredAccountWithDispatch(preferredID, apiKeyID, nil, preferredFilter, dispatchPolicyForModel(requestModel))
 			if account != nil {
@@ -1629,7 +1688,7 @@ func (h *Handler) forwardImagesRequest(c *gin.Context, inboundEndpoint, requestM
 			if continuousRetryCommitExpired(c, continuousRetryProtocolResponses) {
 				return
 			}
-			waitFilter := applyAffinityGroupRouting(c, sessionIdentity, h.withModelCooldownFilter(requestModel, imageCapableAccountFilter))
+			waitFilter := applyAffinityGroupRouting(c, sessionIdentity, h.withModelCooldownFilter(c.Request.Context(), requestModel, imageCapableAccountFilter))
 			var selectionErr error
 			account, stickyProxyURL, selectionErr = h.waitForRetryAccountAvailable(c.Request.Context(), "", apiKeyID, retryExclusions.ForSelection(), h.applyScopeBudgetFilter(c, waitFilter), false, dispatchPolicyForModel(requestModel))
 			if writeSchedulerQueueError(c, selectionErr, continuousRetryProtocolResponses) {
@@ -1678,6 +1737,11 @@ func (h *Handler) forwardImagesRequest(c *gin.Context, inboundEndpoint, requestM
 		}
 
 		resp, reqErr := executeHTTPWithContinuousRetryKeepalive(c.Request.Context(), func() (*http.Response, error) {
+			if replay != nil {
+				return executePipelineImage(c.Request.Context(), replay, gjson.GetBytes(responsesBody, "model").String(), func(body []byte) (*http.Response, error) {
+					return ExecuteRequest(c.Request.Context(), account, body, "", proxyURL, apiKey, deviceCfg, c.Request.Header.Clone(), false)
+				})
+			}
 			return ExecuteRequest(c.Request.Context(), account, responsesBody, "", proxyURL, apiKey, deviceCfg, c.Request.Header.Clone(), false)
 		})
 		durationMs := int(time.Since(start).Milliseconds())
@@ -1716,6 +1780,17 @@ func (h *Handler) forwardImagesRequest(c *gin.Context, inboundEndpoint, requestM
 			}
 			ErrorToGinResponse(c, reqErr)
 			return
+		}
+
+		if pipeline := pipelineFromContext(c.Request.Context()); pipeline != nil {
+			file, err := pipeline.collectResponse(c.Request.Context(), resp.Body)
+			if err != nil {
+				h.store.Release(account)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"message": "image response spool failed; upstream result may be unknown: " + err.Error()}})
+				return
+			}
+			defer removePipelineFile(file)
+			resp.Body = &pipelineResponseReader{File: file, err: pipeline.responseReadError}
 		}
 
 		if resp.StatusCode != http.StatusOK {
@@ -2106,6 +2181,9 @@ func buildImageErrorUsageLog(account *auth.Account, inboundEndpoint, logModel, l
 // catch-all. Explicitly selected failures bypass the ordinary image-attempt
 // cap; unselected legacy retry budgets keep honoring it.
 func shouldRetryImageStreamError(err error, generalRetries *int, maxGeneralRetries int, attempt int, maxAttempts int, policies ...database.ContinuousRetryPolicy) bool {
+	if isPipelineOutputError(err) {
+		return false
+	}
 	if err == nil || generalRetries == nil {
 		return false
 	}
@@ -2288,6 +2366,9 @@ func applyImageUpscalePlan(ctx context.Context, plan imageUpscalePlan, results [
 
 // applyImageUpscalePlanWithKeepalive 在图片超分期间保持下游连接有协议流量。
 func applyImageUpscalePlanWithKeepalive(ctx context.Context, plan imageUpscalePlan, results []imageCallResult) ([]imageCallResult, error) {
+	if p := pipelineFromContext(ctx); p != nil && p.Output != nil {
+		return results, nil
+	}
 	if !plan.enabled() {
 		return results, nil
 	}
@@ -2673,13 +2754,13 @@ func collectImagesResponse(ctx context.Context, body io.Reader, responseFormat, 
 		}
 		switch normalizedUpstreamSSEEventType(event, data) {
 		case "response.output_item.done":
-			if image, ok := extractImageFromOutputItemDone(data, fallbackModel); ok {
+			if image, ok := extractImageFromOutputItemDone(data, fallbackModel, pipelineFromContext(ctx) != nil); ok {
 				mergeImageMeta(&image, firstMeta)
 				pendingResults = append(pendingResults, image)
 			}
 		case "response.completed":
 			gotTerminal = true
-			results, completedAt, usageRaw, completedMeta, completedUsage, err := extractImagesFromResponsesCompleted(data, fallbackModel)
+			results, completedAt, usageRaw, completedMeta, completedUsage, err := extractImagesFromResponsesCompleted(data, fallbackModel, pipelineFromContext(ctx) != nil)
 			if err != nil {
 				readErr = err
 				return false
@@ -3205,7 +3286,7 @@ func firstNonEmptyImageErrorField(values ...string) string {
 	return ""
 }
 
-func extractImagesFromResponsesCompleted(payload []byte, fallbackModel string) ([]imageCallResult, int64, []byte, imageCallResult, *UsageInfo, error) {
+func extractImagesFromResponsesCompleted(payload []byte, fallbackModel string, skipStats ...bool) ([]imageCallResult, int64, []byte, imageCallResult, *UsageInfo, error) {
 	if gjson.GetBytes(payload, "type").String() != "response.completed" {
 		return nil, 0, nil, imageCallResult{}, nil, fmt.Errorf("unexpected event type")
 	}
@@ -3241,7 +3322,9 @@ func extractImagesFromResponsesCompleted(payload []byte, fallbackModel string) (
 				Quality:       strings.TrimSpace(item.Get("quality").String()),
 				Model:         fallbackModel,
 			}
-			populateImageStats(&image)
+			if len(skipStats) == 0 || !skipStats[0] {
+				populateImageStats(&image)
+			}
 			mergeImageMeta(&image, firstMeta)
 			if len(results) == 0 {
 				firstMeta = image
@@ -3267,7 +3350,7 @@ func hasTokenUsage(usage *UsageInfo) bool {
 	return usage != nil && (usage.InputTokens > 0 || usage.OutputTokens > 0 || usage.TotalTokens > 0)
 }
 
-func extractImageFromOutputItemDone(payload []byte, fallbackModel string) (imageCallResult, bool) {
+func extractImageFromOutputItemDone(payload []byte, fallbackModel string, skipStats ...bool) (imageCallResult, bool) {
 	if gjson.GetBytes(payload, "type").String() != "response.output_item.done" {
 		return imageCallResult{}, false
 	}
@@ -3291,7 +3374,9 @@ func extractImageFromOutputItemDone(payload []byte, fallbackModel string) (image
 		Quality:       strings.TrimSpace(item.Get("quality").String()),
 		Model:         fallbackModel,
 	}
-	populateImageStats(&image)
+	if len(skipStats) == 0 || !skipStats[0] {
+		populateImageStats(&image)
+	}
 	return image, true
 }
 
@@ -3345,6 +3430,9 @@ func mergeImageMeta(target *imageCallResult, source imageCallResult) {
 type imageURLBuilder func(ctx context.Context, image imageCallResult, idx int) (string, bool)
 
 func buildImagesAPIResponse(ctx context.Context, results []imageCallResult, createdAt int64, usageRaw []byte, firstMeta imageCallResult, responseFormat string, urlFor imageURLBuilder) ([]byte, error) {
+	if p := pipelineFromContext(ctx); p != nil && p.Output != nil {
+		return p.saveResults(ctx, results)
+	}
 	if createdAt <= 0 {
 		createdAt = time.Now().Unix()
 	}

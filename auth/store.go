@@ -176,6 +176,13 @@ type Account struct {
 	// 改写请求体 environment_context 里的时区与日期（见 proxy/codex_environment_context.go）；
 	// 空 = 不绑定、透传下游值。Claude 账号沿用同一凭据键做身份标签。
 	Timezone string
+	// CodexTurnState* 见 codex_turn_state.go：凭据级 X-Codex-Turn-State 强制注入的值、
+	// 模型名单与设置时刻。空值 = 不注入。
+	CodexTurnStateProxyURL string
+	CodexTurnStateDisabled bool
+	CodexTurnState         string
+	CodexTurnStateModels   string
+	CodexTurnStateSetAt    time.Time
 	// ClaudeFingerprintMode 见 claude_fingerprint_mode.go:Claude Code 出站身份头
 	// 收敛模式(preserve/force;空=跟随全局默认)。
 	ClaudeFingerprintMode string
@@ -278,14 +285,21 @@ type Account struct {
 	ApplicableResetCreditsValid bool
 	// Credits* 是 wham/usage 返回的 credits 积分余额快照（零额度成本）。
 	// Balance 原样保留上游字符串（单位未知，不做换算）；Valid 表示已探测过。
-	CreditsBalance             string
-	CreditsHasCredits          bool
-	CreditsUnlimited           bool
-	CreditsOverageLimitReached bool
-	CreditsValid               bool
+	CreditsBalance              string
+	CreditsBalanceKnown         bool
+	CreditsHasCredits           bool
+	CreditsUnlimited            bool
+	CreditsOverageLimitReached  bool
+	CreditsSpendControlReached  bool
+	CreditsSpendControlValid    bool
+	CreditsRateLimitReachedType string
+	CreditsValid                bool
 	// creditsPersistedKey 是最近一次成功落库的积分快照指纹，用于跳过无变化的写库。
-	// 只比对四个业务字段，不含时间戳——否则每次探针都会写一次库。
-	creditsPersistedKey string
+	// 只比对业务字段，不含时间戳——否则每次探针都会写一次库。
+	// creditsPersistedFlagsKey 是同一快照去掉余额后的指纹：普通响应头路径只在
+	// 业务标志变化时落库，余额逐请求递减不能每次都写。
+	creditsPersistedKey      string
+	creditsPersistedFlagsKey string
 	// resetCreditsProbedAt 记录最近一次成功 wham 用量探针的时间。
 	// 「主动重置次数」只能通过 wham 探针刷新（普通 /responses 流量不携带该字段），
 	// 因此用它独立判断重置次数是否过期，避免活跃账号因用量快照一直被流量刷新而长期不探针。
@@ -1714,19 +1728,56 @@ func creditsBalanceValue(raw string) float64 {
 	return v
 }
 
+// isWorkspaceCreditHardStop 判断 rate_limit_reached_type 是否为 workspace 级别的强制停止信号。
+// 官方 Codex 客户端中：
+// - workspace_owner_credits_depleted
+// - workspace_member_credits_depleted
+// - workspace_owner_usage_limit_reached
+// - workspace_member_usage_limit_reached
+// 这些均属于工作区级配额耗尽或达到上限的权威 hard-stop，不能用积分顶替。
+func isWorkspaceCreditHardStop(kind string) bool {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "workspace_owner_credits_depleted",
+		"workspace_member_credits_depleted",
+		"workspace_owner_usage_limit_reached",
+		"workspace_member_usage_limit_reached":
+		return true
+	default:
+		return false
+	}
+}
+
 // creditsAvailableLocked 判断账号当前是否还有可花的积分（需持有 mu 读锁）。
 //
 // CreditsValid=false 表示 wham 探针还没跑过、余额未知，这里按「没有积分」处理：
 // 宁可白等一个用量窗口，也不要把请求送进注定 429 的账号。
-// OverageLimitReached 是上游给的权威「超额额度已用尽」信号，优先于余额数字。
+//
+// 判定顺序：
+// 1. 未探测或标记无效 -> false
+// 2. workspace hard-stop (spend_control.reached=true 或 rate_limit_reached_type 耗尽/超限) -> false
+// 3. 上游 overage_limit_reached (兼容旧上游) -> false
+// 4. unlimited=false 且余额已知为 0 -> false（刚花掉最后一分积分的那次响应）
+// 5. unlimited=true 或 has_credits=true -> true (官方 Codex 明确允许 has_credits=true 且 balance 隐藏)
 func (a *Account) creditsAvailableLocked() bool {
-	if !a.CreditsValid || a.CreditsOverageLimitReached {
+	if !a.CreditsValid {
+		return false
+	}
+	if a.CreditsSpendControlValid && a.CreditsSpendControlReached {
+		return false
+	}
+	if isWorkspaceCreditHardStop(a.CreditsRateLimitReachedType) {
+		return false
+	}
+	if a.CreditsOverageLimitReached {
 		return false
 	}
 	if a.CreditsUnlimited {
 		return true
 	}
-	return a.CreditsHasCredits && creditsBalanceValue(a.CreditsBalance) > 0
+	if a.CreditsBalanceKnown && creditsBalanceValue(a.CreditsBalance) <= 0 {
+		return false
+	}
+	return a.CreditsHasCredits
 }
 
 // creditSkipsUsageWindowLocked 判断是否用积分顶替用量窗口限流。
@@ -2391,39 +2442,127 @@ func (a *Account) GetApplicableResetCredits() (int, bool) {
 	return a.ApplicableResetCredits, a.ApplicableResetCreditsValid
 }
 
-// SetCreditBalance 记录 wham/usage 返回的 credits 积分余额快照。
-func (a *Account) SetCreditBalance(balance string, hasCredits, unlimited, overageReached bool) {
+// SetCreditBalanceDetails 记录 wham/usage 返回的完整 credits 积分与配额状态。
+// wham 是权威全量快照：spend_control / rate_limit_reached_type 缺席即视为未触达，
+// 一并清掉旧值，否则工作区充值后 hard-stop 标记会一直粘着。
+func (a *Account) SetCreditBalanceDetails(balance *string, hasCredits, unlimited, overageReached bool,
+	spendControlReached *bool, rateLimitReachedType string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.CreditsBalance = balance
+	a.setCreditBalanceLocked(balance)
 	a.CreditsHasCredits = hasCredits
 	a.CreditsUnlimited = unlimited
 	a.CreditsOverageLimitReached = overageReached
+	a.CreditsSpendControlValid = spendControlReached != nil
+	a.CreditsSpendControlReached = spendControlReached != nil && *spendControlReached
+	a.CreditsRateLimitReachedType = strings.TrimSpace(rateLimitReachedType)
 	a.CreditsValid = true
 }
 
-// GetCreditBalance 返回 credits 积分余额快照及其是否已探测过。
-func (a *Account) GetCreditBalance() (balance string, hasCredits, unlimited, overageReached, ok bool) {
+// setCreditBalanceLocked 写入余额；nil 或空串都表示上游隐藏了余额（Team 成员），
+// 记为「未知」而不是「0」，否则会被当成已耗尽。
+func (a *Account) setCreditBalanceLocked(balance *string) {
+	if balance != nil {
+		if trimmed := strings.TrimSpace(*balance); trimmed != "" {
+			a.CreditsBalance = trimmed
+			a.CreditsBalanceKnown = true
+			return
+		}
+	}
+	a.CreditsBalance = ""
+	a.CreditsBalanceKnown = false
+}
+
+// SetCreditBalance 记录 wham/usage 返回的 credits 积分余额快照（向后兼容接口）。
+func (a *Account) SetCreditBalance(balance string, hasCredits, unlimited, overageReached bool) {
+	a.SetCreditBalanceDetails(&balance, hasCredits, unlimited, overageReached, nil, "")
+}
+
+// SetRateLimitReachedType 更新账号的 rate_limit_reached_type。
+// 这是逐响应字段：空串表示本次响应未触达，要清掉旧值。
+func (a *Account) SetRateLimitReachedType(kind string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.CreditsRateLimitReachedType = strings.TrimSpace(kind)
+}
+
+// ApplySparseCreditsHeaders 应用普通 Codex 响应头携带的 sparse credits 观测信息。
+// 余额 / 超额头缺席时保留旧值；rate_limit_reached_type 缺席即「未触达」，必须覆盖。
+func (a *Account) ApplySparseCreditsHeaders(hasCredits, unlimited bool, balance *string, overageReached *bool, rateLimitReachedType string) {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.CreditsValid = true
+	a.CreditsHasCredits = hasCredits
+	a.CreditsUnlimited = unlimited
+	if balance != nil {
+		a.setCreditBalanceLocked(balance)
+	}
+	if overageReached != nil {
+		a.CreditsOverageLimitReached = *overageReached
+	}
+	a.CreditsRateLimitReachedType = strings.TrimSpace(rateLimitReachedType)
+}
+
+// GetCreditBalance 返回 credits 积分快照及其是否已探测过。
+// 快照的 Balance 为 nil 表示上游隐藏了余额，SpendControlReached 为 nil 表示未观测到。
+func (a *Account) GetCreditBalance() (CreditBalanceSnapshot, bool) {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	return a.CreditsBalance, a.CreditsHasCredits, a.CreditsUnlimited, a.CreditsOverageLimitReached, a.CreditsValid
+	return a.creditSnapshotLocked(), a.CreditsValid
+}
+
+// creditSnapshotLocked 把内存字段投影成快照（需持有 mu），落库与对外展示共用。
+func (a *Account) creditSnapshotLocked() CreditBalanceSnapshot {
+	snap := CreditBalanceSnapshot{
+		HasCredits:           a.CreditsHasCredits,
+		Unlimited:            a.CreditsUnlimited,
+		OverageLimitReached:  a.CreditsOverageLimitReached,
+		RateLimitReachedType: a.CreditsRateLimitReachedType,
+	}
+	if a.CreditsBalanceKnown {
+		balance := a.CreditsBalance
+		snap.Balance = &balance
+	}
+	if a.CreditsSpendControlValid {
+		reached := a.CreditsSpendControlReached
+		snap.SpendControlReached = &reached
+	}
+	return snap
 }
 
 // CreditBalanceSnapshot 是落库到 credentials["codex_credits"] 的积分快照。
-// 积分只能由 wham 探针刷新（普通 /responses 流量不带 credits），不落库的话重启后
-// CreditsValid 归零 → 账号被当成「没积分」→ 积分顶替限流失效、且会被「清理限流账号」
-// 误删，直到下一轮 wham 探针落地才恢复。
+// 没有它的话重启后 CreditsValid 归零 → 账号被当成「没积分」→ 积分顶替限流失效、
+// 且会被「清理限流账号」误删，直到下一轮 wham 探针落地才恢复。
 type CreditBalanceSnapshot struct {
-	Balance             string    `json:"balance"`
-	HasCredits          bool      `json:"has_credits"`
-	Unlimited           bool      `json:"unlimited"`
-	OverageLimitReached bool      `json:"overage_limit_reached"`
-	UpdatedAt           time.Time `json:"updated_at"`
+	Balance              *string   `json:"balance"`
+	HasCredits           bool      `json:"has_credits"`
+	Unlimited            bool      `json:"unlimited"`
+	OverageLimitReached  bool      `json:"overage_limit_reached"`
+	SpendControlReached  *bool     `json:"spend_control_reached,omitempty"`
+	RateLimitReachedType string    `json:"rate_limit_reached_type,omitempty"`
+	UpdatedAt            time.Time `json:"updated_at"`
 }
 
 // creditBalanceKey 是快照的比对指纹（不含时间戳）。
-func creditBalanceKey(balance string, hasCredits, unlimited, overageReached bool) string {
-	return fmt.Sprintf("%s|%t|%t|%t", balance, hasCredits, unlimited, overageReached)
+func creditBalanceKey(snap CreditBalanceSnapshot) string {
+	balStr := "<nil>"
+	if snap.Balance != nil {
+		balStr = *snap.Balance
+	}
+	return balStr + "|" + creditFlagsKey(snap)
+}
+
+// creditFlagsKey 是去掉余额的指纹。普通响应头路径只按它判断是否落库：
+// 余额每个请求都在递减，逐次写库会把行锁事务加到首字延迟上；余额本身由 wham 探针定期刷新。
+func creditFlagsKey(snap CreditBalanceSnapshot) string {
+	scStr := "<nil>"
+	if snap.SpendControlReached != nil {
+		scStr = strconv.FormatBool(*snap.SpendControlReached)
+	}
+	return fmt.Sprintf("%t|%t|%t|%s|%s", snap.HasCredits, snap.Unlimited, snap.OverageLimitReached, scStr, snap.RateLimitReachedType)
 }
 
 // MarshalCreditBalanceSnapshot 序列化积分快照，供落库使用。
@@ -2436,7 +2575,7 @@ func MarshalCreditBalanceSnapshot(snap CreditBalanceSnapshot) (string, error) {
 }
 
 // RestoreCreditBalanceFromJSON 用库里的积分快照回填账号（重启后恢复）。
-// 空串/解析失败/未探测过（三个布尔全 false 且余额为空）都视为无快照，返回 false，
+// 空串/解析失败/未探测过（全空且无任何有效标记）都视为无快照，返回 false，
 // 保持 CreditsValid=false 的「未知」语义，不会凭空造出一个可用余额。
 func (a *Account) RestoreCreditBalanceFromJSON(raw string) bool {
 	if a == nil {
@@ -2450,58 +2589,101 @@ func (a *Account) RestoreCreditBalanceFromJSON(raw string) bool {
 	if err := json.Unmarshal([]byte(raw), &snap); err != nil {
 		return false
 	}
-	balance := strings.TrimSpace(snap.Balance)
-	if balance == "" && !snap.HasCredits && !snap.Unlimited && !snap.OverageLimitReached {
+	// 旧版快照余额是纯字符串，隐藏余额写成 ""，与 null 同义。
+	if snap.Balance != nil && strings.TrimSpace(*snap.Balance) == "" {
+		snap.Balance = nil
+	}
+	if snap.Balance == nil && !snap.HasCredits && !snap.Unlimited && !snap.OverageLimitReached && snap.SpendControlReached == nil && snap.RateLimitReachedType == "" {
 		return false
 	}
 	a.mu.Lock()
-	a.CreditsBalance = snap.Balance
+	a.setCreditBalanceLocked(snap.Balance)
 	a.CreditsHasCredits = snap.HasCredits
 	a.CreditsUnlimited = snap.Unlimited
 	a.CreditsOverageLimitReached = snap.OverageLimitReached
+	a.CreditsSpendControlValid = snap.SpendControlReached != nil
+	a.CreditsSpendControlReached = snap.SpendControlReached != nil && *snap.SpendControlReached
+	a.CreditsRateLimitReachedType = strings.TrimSpace(snap.RateLimitReachedType)
 	a.CreditsValid = true
 	// 恢复值本来自库里，指纹一并对齐，避免启动后第一次探针又写一遍同样的内容。
-	a.creditsPersistedKey = creditBalanceKey(snap.Balance, snap.HasCredits, snap.Unlimited, snap.OverageLimitReached)
+	restored := a.creditSnapshotLocked()
+	a.creditsPersistedKey = creditBalanceKey(restored)
+	a.creditsPersistedFlagsKey = creditFlagsKey(restored)
 	a.mu.Unlock()
 	return true
 }
 
-// PersistCreditBalance 写入积分快照并落库（值无变化时跳过写库）。
-// store 为 nil（单测/无库场景）时只更新内存，行为与 SetCreditBalance 一致。
-func (s *Store) PersistCreditBalance(acc *Account, balance string, hasCredits, unlimited, overageReached bool) {
+// PersistCreditBalance 写入 wham 积分快照并落库（值无变化时跳过写库）。
+// store 为 nil（单测/无库场景）时只更新内存，行为与 SetCreditBalanceDetails 一致。
+func (s *Store) PersistCreditBalance(acc *Account, balance *string, hasCredits, unlimited, overageReached bool,
+	spendControlReached *bool, rateLimitReachedType string) {
 	if acc == nil {
 		return
 	}
-	acc.SetCreditBalance(balance, hasCredits, unlimited, overageReached)
-	if s == nil || s.db == nil {
+	acc.SetCreditBalanceDetails(balance, hasCredits, unlimited, overageReached, spendControlReached, rateLimitReachedType)
+	s.persistCreditSnapshot(acc, false)
+}
+
+// PersistSparseCreditObservation 写入来自响应头的 sparse credits 观测；只有业务标志
+// 变化时才落库，余额变化留给 wham 探针刷新。
+func (s *Store) PersistSparseCreditObservation(acc *Account, hasCredits, unlimited bool, balance *string, overageReached *bool, rateLimitReachedType string) {
+	if acc == nil {
 		return
 	}
+	acc.ApplySparseCreditsHeaders(hasCredits, unlimited, balance, overageReached, rateLimitReachedType)
+	s.persistCreditSnapshot(acc, true)
+}
 
-	key := creditBalanceKey(balance, hasCredits, unlimited, overageReached)
+// PersistRateLimitReachedType 记录响应头里的 rate_limit_reached_type（含清空）并在
+// 已有积分快照时落库，避免重启后从库里恢复出一个早已解除的 hard-stop。
+func (s *Store) PersistRateLimitReachedType(acc *Account, kind string) {
+	if acc == nil {
+		return
+	}
+	acc.SetRateLimitReachedType(kind)
+	acc.mu.RLock()
+	valid := acc.CreditsValid
+	acc.mu.RUnlock()
+	if !valid {
+		return
+	}
+	s.persistCreditSnapshot(acc, true)
+}
+
+// persistCreditSnapshot 把账号当前积分快照落库，指纹无变化时跳过。
+// flagsOnly=true 只比对去掉余额的指纹（普通响应头路径）。
+func (s *Store) persistCreditSnapshot(acc *Account, flagsOnly bool) {
+	if s == nil || s.db == nil || acc == nil {
+		return
+	}
 	acc.mu.Lock()
-	if acc.creditsPersistedKey == key {
+	snap := acc.creditSnapshotLocked()
+	fullKey := creditBalanceKey(snap)
+	flagsKey := creditFlagsKey(snap)
+	unchanged := acc.creditsPersistedKey == fullKey
+	if flagsOnly {
+		unchanged = acc.creditsPersistedFlagsKey == flagsKey
+	}
+	if unchanged {
 		acc.mu.Unlock()
 		return
 	}
-	acc.creditsPersistedKey = key
+	acc.creditsPersistedKey = fullKey
+	acc.creditsPersistedFlagsKey = flagsKey
 	acc.mu.Unlock()
 
-	raw, err := MarshalCreditBalanceSnapshot(CreditBalanceSnapshot{
-		Balance:             balance,
-		HasCredits:          hasCredits,
-		Unlimited:           unlimited,
-		OverageLimitReached: overageReached,
-		UpdatedAt:           time.Now(),
-	})
+	snap.UpdatedAt = time.Now()
+	raw, err := MarshalCreditBalanceSnapshot(snap)
 	if err == nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		err = s.db.UpdateCredentials(ctx, acc.DBID, map[string]interface{}{"codex_credits": raw})
 	}
 	if err != nil {
-		// 落库失败就清掉指纹，让下一次探针重试，而不是把"已持久化"错记下来。
+		// 落库失败就清掉指纹，让下一次观测重试，而不是把「已持久化」错记下来。
 		acc.mu.Lock()
 		acc.creditsPersistedKey = ""
+		acc.creditsPersistedFlagsKey = ""
 		acc.mu.Unlock()
 		log.Printf("[账号 %d] 持久化积分快照失败: %v", acc.DBID, err)
 	}
@@ -3362,7 +3544,8 @@ type Store struct {
 	dispatchReconciledAt     int64
 
 	// Codex 上游 WebSocket 相关（默认全部关闭，不影响现有 HTTP 路径）
-	codexForceWebsocket atomic.Bool // 强制 Codex 上游走 WebSocket（复用连接池）
+	codexBasispointsEnabled atomic.Bool // Global Codex pool upstream selection.
+	codexForceWebsocket     atomic.Bool // 强制 Codex 上游走 WebSocket（复用连接池）
 	// codexRequestCompression HTTP /responses 请求体 zstd 压缩，默认开启（对齐真实客户端）。
 	// 与上面几项 WS 设置正交：WS 走 permessage-deflate，本项只作用于 HTTP 路径。
 	codexRequestCompression     atomic.Bool
@@ -3775,21 +3958,27 @@ func (s *Store) setCachedModelCooldown(accountID int64, cooldown ModelCooldown) 
 }
 
 func (s *Store) getCachedModelCooldown(accountID int64, model string) (runtimeCooldownRecord, bool) {
-	if s == nil || s.tokenCache == nil || accountID == 0 {
+	return s.getCachedModelCooldownContext(context.Background(), accountID, model)
+}
+
+func (s *Store) getCachedModelCooldownContext(parent context.Context, accountID int64, model string) (runtimeCooldownRecord, bool) {
+	if s == nil || s.tokenCache == nil || accountID == 0 || parent.Err() != nil {
 		return runtimeCooldownRecord{}, false
 	}
 	key := normalizeModelCooldownKey(model)
 	if key == "" {
 		return runtimeCooldownRecord{}, false
 	}
-	ctx, cancel := cooldownRuntimeContext()
+	ctx, cancel := context.WithTimeout(parent, runtimeCooldownCacheTimeout)
 	defer cancel()
 	if s.schedulerMetrics != nil {
 		s.schedulerMetrics.modelCooldownCacheReads.Add(1)
 	}
 	payload, ok, err := s.tokenCache.GetRuntime(ctx, modelCooldownCacheNamespace, modelCooldownRuntimeKey(accountID, key))
 	if err != nil {
-		log.Printf("[账号 %d] 读取模型冷却缓存失败 model=%s: %v", accountID, key, err)
+		if parent.Err() == nil {
+			log.Printf("[账号 %d] 读取模型冷却缓存失败 model=%s: %v", accountID, key, err)
+		}
 		return runtimeCooldownRecord{}, false
 	}
 	if !ok || len(payload) == 0 {
@@ -3798,11 +3987,11 @@ func (s *Store) getCachedModelCooldown(accountID int64, model string) (runtimeCo
 	var record runtimeCooldownRecord
 	if err := json.Unmarshal(payload, &record); err != nil {
 		log.Printf("[账号 %d] 解析模型冷却缓存失败 model=%s: %v", accountID, key, err)
-		s.deleteCachedModelCooldown(accountID, key)
+		s.deleteCachedModelCooldownContext(parent, accountID, key)
 		return runtimeCooldownRecord{}, false
 	}
 	if !record.ResetAt.After(time.Now()) {
-		s.deleteCachedModelCooldown(accountID, key)
+		s.deleteCachedModelCooldownContext(parent, accountID, key)
 		return runtimeCooldownRecord{}, false
 	}
 	record.Model = key
@@ -3811,17 +4000,23 @@ func (s *Store) getCachedModelCooldown(accountID int64, model string) (runtimeCo
 }
 
 func (s *Store) deleteCachedModelCooldown(accountID int64, model string) {
-	if s == nil || s.tokenCache == nil || accountID == 0 {
+	s.deleteCachedModelCooldownContext(context.Background(), accountID, model)
+}
+
+func (s *Store) deleteCachedModelCooldownContext(parent context.Context, accountID int64, model string) {
+	if s == nil || s.tokenCache == nil || accountID == 0 || parent.Err() != nil {
 		return
 	}
 	key := normalizeModelCooldownKey(model)
 	if key == "" {
 		return
 	}
-	ctx, cancel := cooldownRuntimeContext()
+	ctx, cancel := context.WithTimeout(parent, runtimeCooldownCacheTimeout)
 	defer cancel()
 	if err := s.tokenCache.DeleteRuntime(ctx, modelCooldownCacheNamespace, modelCooldownRuntimeKey(accountID, key)); err != nil {
-		log.Printf("[账号 %d] 删除模型冷却缓存失败 model=%s: %v", accountID, key, err)
+		if parent.Err() == nil {
+			log.Printf("[账号 %d] 删除模型冷却缓存失败 model=%s: %v", accountID, key, err)
+		}
 	}
 }
 
@@ -3855,6 +4050,10 @@ func (s *Store) applyCachedModelCooldown(acc *Account, model string, record runt
 }
 
 func (s *Store) accountHasCachedModelCooldown(acc *Account, model string) bool {
+	return s.accountHasCachedModelCooldownContext(context.Background(), acc, model)
+}
+
+func (s *Store) accountHasCachedModelCooldownContext(ctx context.Context, acc *Account, model string) bool {
 	if acc == nil {
 		return false
 	}
@@ -3865,7 +4064,7 @@ func (s *Store) accountHasCachedModelCooldown(acc *Account, model string) bool {
 	if acc.IsModelRateLimited(key) {
 		return true
 	}
-	record, ok := s.getCachedModelCooldown(acc.DBID, key)
+	record, ok := s.getCachedModelCooldownContext(ctx, acc.DBID, key)
 	if !ok {
 		return false
 	}
@@ -3875,18 +4074,35 @@ func (s *Store) accountHasCachedModelCooldown(acc *Account, model string) bool {
 
 // WithModelCooldownFilter wraps a request model filter with Redis-backed model cooldown checks.
 func (s *Store) WithModelCooldownFilter(model string, filter AccountFilter) AccountFilter {
-	key := normalizeModelCooldownKey(model)
-	if s == nil || key == "" {
+	if s == nil || normalizeModelCooldownKey(model) == "" {
 		return filter
 	}
+	return s.WithModelCooldownFilterContext(context.Background(), model, filter)
+}
+
+// WithModelCooldownFilterContext stops Redis reads when the downstream request
+// is canceled. A canceled read must reject the candidate, not fail open into a
+// fresh upstream request after the client has already disconnected.
+func (s *Store) WithModelCooldownFilterContext(ctx context.Context, model string, filter AccountFilter) AccountFilter {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	key := normalizeModelCooldownKey(model)
 	return func(acc *Account) bool {
-		if acc == nil {
+		if acc == nil || ctx.Err() != nil {
 			return false
 		}
 		if filter != nil && !filter(acc) {
 			return false
 		}
-		return !s.accountHasCachedModelCooldown(acc, key)
+		if ctx.Err() != nil {
+			return false
+		}
+		if s == nil || key == "" {
+			return true
+		}
+		blocked := s.accountHasCachedModelCooldownContext(ctx, acc, key)
+		return ctx.Err() == nil && !blocked
 	}
 }
 
@@ -4042,6 +4258,7 @@ func NewStore(db *database.DB, tc cache.TokenCache, settings *database.SystemSet
 
 	// Codex 上游 WebSocket 相关设置（默认关闭，不影响现有路径）
 	s.codexForceWebsocket.Store(settings.CodexForceWebsocket)
+	s.codexBasispointsEnabled.Store(settings.CodexBasispointsEnabled)
 	s.codexRequestCompression.Store(settings.CodexRequestCompression)
 	s.codexWSKeepaliveEnabled.Store(settings.CodexWSKeepaliveEnabled)
 	s.codexWSKeepaliveIntervalSec.Store(normalizeWSKeepaliveInterval(settings.CodexWSKeepaliveIntervalSec))
@@ -4630,11 +4847,17 @@ func (s *Store) resolveProxyForAccountSnapshot(acc *Account) (string, bool) {
 	var accountID int64
 	var accountProxy string
 	var groupIDs []int64
+	// Resin 承担 Codex 出站时,代理池 fail-closed 对 Codex 账号不再成立:出口 IP 由
+	// Resin 提供,池空或绑定的托管代理已禁用都不会让它脏 IP 直连。选出的代理照常返回
+	// (Resin 模式下执行器只拿它做审计),只有 usable 判定放行。中继型账号不经 Resin,
+	// 仍按原规则(issue #679)。
+	resinCarriesEgress := false
 	if acc != nil {
 		acc.mu.RLock()
 		accountID = acc.DBID
 		accountProxy = strings.TrimSpace(acc.ProxyURL)
 		groupIDs = cloneInt64Slice(acc.GroupIDs)
+		resinCarriesEgress = ResinEgressEnabled() && !acc.isRelayStyleLocked()
 		acc.mu.RUnlock()
 	}
 
@@ -4653,7 +4876,7 @@ func (s *Store) resolveProxyForAccountSnapshot(acc *Account) (string, bool) {
 	}
 	if accountProxy != "" {
 		if managedProxyUnavailable(accountProxy) {
-			return "", false
+			return "", resinCarriesEgress
 		}
 		return accountProxy, true
 	}
@@ -4683,7 +4906,7 @@ func (s *Store) resolveProxyForAccountSnapshot(acc *Account) (string, bool) {
 	}
 
 	proxyURL := strings.TrimSpace(s.globalProxy)
-	return proxyURL, proxyURL != "" || !s.proxyPoolEnabled
+	return proxyURL, proxyURL != "" || !s.proxyPoolEnabled || resinCarriesEgress
 }
 
 // resolveGroupProxyForAccount 返回账号按组继承的代理(issue #479):按 GroupIDs
@@ -5317,6 +5540,11 @@ func (s *Store) buildAccountFromRow(ctx context.Context, row *database.AccountRo
 		CodexPassthroughMode:         codexPassthroughMode,
 		CodexFingerprintMode:         codexFingerprintMode,
 		Timezone:                     accountTimezone,
+		CodexTurnStateProxyURL:       strings.TrimSpace(row.GetCredential(CodexTurnStateProxyURLCredentialKey)),
+		CodexTurnStateDisabled:       row.GetCredentialBool(CodexTurnStateDisabledCredentialKey),
+		CodexTurnState:               strings.TrimSpace(row.GetCredential(CodexTurnStateCredentialKey)),
+		CodexTurnStateModels:         NormalizeCodexTurnStateModels(row.GetCredential(CodexTurnStateModelsCredentialKey)),
+		CodexTurnStateSetAt:          ParseCodexTurnStateSetAt(row.GetCredential(CodexTurnStateSetAtCredentialKey)),
 		ClaudeFingerprintMode:        claudeFingerprintMode,
 		ClaudeAuthKind:               claudeAuthKind,
 		ClaudeBaseURL:                row.GetCredential(ClaudeBaseURLCredentialKey),
@@ -5745,6 +5973,7 @@ func (s *Store) reconcileDispatchState(ctx context.Context) (bool, error) {
 			allowedAPIKeyIDs := normalizeAllowedAPIKeyIDs(row.GetCredentialInt64Slice("allowed_api_key_ids"))
 			acc.mu.Lock()
 			acc.UpstreamRequestIDHeader = row.GetCredential(UpstreamRequestIDHeaderCredentialKey)
+			acc.setCodexTurnStateFromRowLocked(row)
 			accountMetadataChanged := !int64SliceEqual(normalizeAllowedGroupIDs(acc.GroupIDs), groupIDs) ||
 				!int64SliceEqual(normalizeAllowedAPIKeyIDs(acc.AllowedAPIKeyIDs), allowedAPIKeyIDs)
 			if accountMetadataChanged {

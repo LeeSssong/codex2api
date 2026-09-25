@@ -59,6 +59,7 @@ func main() {
 		log.Fatalf("数据库初始化失败: %v", err)
 	}
 	defer db.Close()
+	proxy.SetCodexTurnStateTemplateDatabase(db)
 	if migrateOnlyEnabled() {
 		log.Println("数据库迁移完成，CODEX_MIGRATE_ONLY 已启用，进程退出")
 		return
@@ -118,7 +119,7 @@ func main() {
 			UsageLogFlushIntervalSeconds:      5,
 			StreamFlushPolicy:                 proxy.StreamFlushPolicyImmediate,
 			StreamFlushIntervalMS:             20,
-			FirstTokenMode:                    proxy.FirstTokenModeStrict,
+			FirstTokenMode:                    proxy.FirstTokenModeLoose,
 			FirstTokenTimeoutSeconds:          0,
 			BillingTierPolicy:                 proxy.NormalizeBillingTierPolicy(os.Getenv("CODEX_BILLING_TIER_POLICY")),
 			ImageStorageConfig:                "{}",
@@ -170,7 +171,7 @@ func main() {
 			UsageLogFlushIntervalSeconds:      5,
 			StreamFlushPolicy:                 proxy.StreamFlushPolicyImmediate,
 			StreamFlushIntervalMS:             20,
-			FirstTokenMode:                    proxy.FirstTokenModeStrict,
+			FirstTokenMode:                    proxy.FirstTokenModeLoose,
 			FirstTokenTimeoutSeconds:          0,
 			BillingTierPolicy:                 proxy.NormalizeBillingTierPolicy(os.Getenv("CODEX_BILLING_TIER_POLICY")),
 			ImageStorageConfig:                "{}",
@@ -375,6 +376,9 @@ func main() {
 	adminHandler.StartOfficialPricingSync(backgroundCtx)
 	// Prompt 审核日志保留清理：默认保留 7 天，每小时分批清理过期行，CY 关联行不动。
 	adminHandler.StartPromptLogRetention(backgroundCtx)
+	// Basispoints inbound images: embedded base64 images become self-hosted signed
+	// HTTPS links (imagestore + /p/img) and are swept after their retention window.
+	proxy.StartBasispointsImageHost(backgroundCtx, db)
 
 	// 后台定时同步 Codex CLI 模拟版本（启动即拉一次，之后按设置的间隔）；
 	// 出上游新版本门槛时无需发版即可跟进。开关/间隔在设置页可调，
@@ -398,6 +402,7 @@ func main() {
 	r.Use(api.RequestContextMiddleware())
 	r.Use(api.VersionMiddleware())
 	security.MaxRequestBodySize = cfg.MaxRequestBodySize
+	security.ConfigureRequestMemoryBudget(cfg.RequestMemoryBudgetBytes)
 	// 账号导入端点(multipart 文件上传)单独放宽体积上限,默认 200MB,可用
 	// CODEX_MAX_IMPORT_BODY_SIZE_MB 覆盖。前端按大小分批发送,单批控制在此上限内。
 	if v := strings.TrimSpace(os.Getenv("CODEX_MAX_IMPORT_BODY_SIZE_MB")); v != "" {
@@ -429,6 +434,7 @@ func main() {
 
 	// 注册 Agent Identity task 确保函数（proxy 无 Store 引用，启动时注入）
 	proxy.EnsureCodexAgentIdentityTaskFunc = store.EnsureCodexAgentIdentityTask
+	adminHandler.StartCodexTurnStateRenewal(backgroundCtx)
 
 	// 上游 WS 空闲连接保活常驻任务（默认关闭：goroutine 常驻但仅在运行时开关开启时才发送 Ping）
 	wsKeepalive := wsrelay.NewKeepaliveTask(
@@ -446,6 +452,16 @@ func main() {
 
 	handler.RegisterRoutes(r)
 	adminHandler.RegisterExternalImageRoutes(r, handler)
+	imageWorkers, queueErr := admin.ImageJobWorkerCount()
+	if queueErr != nil {
+		log.Fatal(queueErr)
+	}
+	if err := adminHandler.StartImageJobQueue(backgroundCtx, imageWorkers); err != nil {
+		log.Fatalf("Initialize image queue: %v", err)
+	}
+	if err := adminHandler.StartImageMaintenance(backgroundCtx); err != nil {
+		log.Fatalf("Initialize image maintenance: %v", err)
+	}
 	adminHandler.StartPromptIntelligence(backgroundCtx)
 	adminHandler.RegisterRoutes(r)
 
@@ -613,7 +629,10 @@ func main() {
 	log.Printf("  API:    POST /v1/responses")
 	log.Printf("  API:    POST /v1/images/generations")
 	log.Printf("  API:    POST /v1/images/jobs")
+	log.Printf("  API:    POST /v1/images/jobs/results")
 	log.Printf("  API:    GET  /v1/images/jobs/:id")
+	log.Printf("  API:    GET  /v1/images/jobs/:id/output")
+	log.Printf("  API:    POST /v1/images/jobs/:id/ack")
 	log.Printf("  API:    POST /v1/messages")
 	log.Printf("  API:    GET  /v1/models")
 	log.Println("==========================================")
@@ -648,6 +667,7 @@ func main() {
 	adminHandler.WaitAutoResetCredits()
 	adminHandler.WaitAutoActivate5hWindow()
 	adminHandler.WaitQualityTests()
+	adminHandler.WaitCodexTurnStateRenewal()
 	wsKeepalive.Stop()
 	wsrelay.ShutdownExecutor()
 	if !proxy.DrainResponseCacheBackendWrites(2 * time.Second) {

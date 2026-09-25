@@ -335,6 +335,15 @@ export interface AccountRow {
   claude_usage_windows_probed?: boolean
   timezone?: string
   custom_headers?: Record<string, string> | null
+  codex_turn_state_status?: CodexTurnStateStatus
+  codex_turn_state_proxy_url?: string
+  codex_turn_state_disabled?: boolean
+  /** Forced X-Codex-Turn-State injected on every outbound Codex request; empty = off. */
+  codex_turn_state?: string
+  /** Comma-separated model scope for the injection; empty = all models. */
+  codex_turn_state_models?: string
+  /** RFC3339 timestamp of the last time the injected value changed; absent = unknown. */
+  codex_turn_state_set_at?: string
   health_tier?: string
   scheduler_score?: number
   dispatch_score?: number
@@ -386,10 +395,13 @@ export interface AccountRow {
   usage_percent_spark?: number | null
   rate_limit_reset_credits?: number | null
   applicable_reset_credits?: number | null
+  credits_valid?: boolean
   credits_balance?: string | null
   credits_has_credits?: boolean | null
   credits_unlimited?: boolean | null
   credits_overage_limit_reached?: boolean | null
+  credits_spend_control_reached?: boolean | null
+  credits_rate_limit_reached_type?: string | null
   auto_pause_5h_threshold?: number | null
   auto_pause_7d_threshold?: number | null
   auto_pause_5h_disabled?: boolean
@@ -515,8 +527,31 @@ export interface AccountPageStatsResponse {
   stats: Record<string, AccountPageStatsItem>
 }
 
+export type CodexTurnStatePhase = 'unknown' | 'ready' | 'healthy' | 'recovering' | 'degraded'
+
+export interface CodexTurnStateStatus {
+  injection_enabled?: boolean
+  state: CodexTurnStatePhase
+  mode: 'personal' | 'team'
+  template_length: number
+  replace_length: number
+  models: {
+    model: string
+    state: CodexTurnStatePhase
+    length: number
+    consecutive: number
+    observed_at: string
+    template_cached: boolean
+    template_expires_at?: string
+  }[]
+}
+
 export interface AccountLiveStateResponse {
-  accounts: Record<string, { active_requests: number; occupied_requests: number }>
+  accounts: Record<string, {
+    codex_turn_state_status?: CodexTurnStateStatus
+    active_requests: number
+    occupied_requests: number
+  }>
   session_slot_buffer_enabled: boolean
 }
 
@@ -1454,6 +1489,10 @@ export interface UpdateAccountSchedulerRequest {
   claude_version_policy?: 'passthrough' | 'fixed' | 'minimum' | null
   claude_client_version?: string | null
   timezone?: string | null
+  codex_turn_state_proxy_url?: string | null
+  codex_turn_state_disabled?: boolean | null
+  codex_turn_state?: string | null
+  codex_turn_state_models?: string | null
 }
 
 export interface BatchUpdateAccountsRequest extends UpdateAccountSchedulerRequest {
@@ -2031,6 +2070,15 @@ export interface AntigravityOAuthClientSetting {
   client_secret?: string
 }
 
+/** Codex 渠道当前由谁承担出站:resin 为整层覆盖,proxy_chain 表示按 账号 > 分组 > 代理池 > 全局 > 直连 解析。 */
+export interface CodexEgressSummary {
+  mode: 'resin' | 'proxy_chain' | string
+  resin_enabled: boolean
+  /** 打码后的 Resin 地址(不含 token),仅用于展示。 */
+  resin_endpoint?: string
+  resin_platform_name?: string
+}
+
 export interface SystemSettings {
   site_name: string
   site_logo: string
@@ -2068,8 +2116,11 @@ export interface SystemSettings {
   proxy_pool_enabled: boolean
   fast_scheduler_enabled: boolean
   scheduler_engine: 'legacy' | 'shadow' | 'indexed'
+  codex_basispoints_enabled: boolean
   codex_force_websocket: boolean
   codex_telemetry_enabled: boolean
+  codex_turn_state_template_cache_enabled: boolean
+  codex_turn_state_account_mode: 'personal' | 'team' | 'auto' 
   codex_telemetry_timing_debug: boolean
   codex_request_compression: boolean
   codex_ws_weak_network_mode: boolean
@@ -2169,6 +2220,8 @@ export interface SystemSettings {
   reasoning_effort_models: string
   resin_url: string
   resin_platform_name: string
+  /** 后端权威的 Codex 出口摘要(只读):Resin 启用时代理池/分组/账号/全局代理对 Codex 渠道均不参与出站。 */
+  codex_egress?: CodexEgressSummary
   prompt_filter_enabled: boolean
   prompt_filter_mode: 'monitor' | 'warn' | 'block' | string
   prompt_filter_threshold: number
@@ -3440,6 +3493,10 @@ export interface UsageLog {
   upstream_request_id?: string
   upstream_proxy_id?: number
   upstream_proxy_name?: string
+  /** X-Codex-Turn-State value the gateway injected on this attempt ("" = none). */
+  injected_turn_state?: string
+  /** X-Codex-Turn-State value observed from the upstream response ("" = none). */
+  upstream_turn_state?: string
   id: number
   account_id: number
   // 上游渠道(codex/grok),写入时固化;历史行回填,可能为空
@@ -3448,11 +3505,17 @@ export interface UsageLog {
   client_user_agent: string
   upstream_user_agent: string
   user_agent_overridden: boolean
+  turn_state_overridden?: boolean
+  turn_state_rewrite_note?: string
   internal_reason: string
   parent_request_id: string
   endpoint: string
   model: string
   effective_model: string
+  /** 上游响应自报的模型名（未自报/历史行为空）。 */
+  upstream_response_model?: string
+  /** 三态：undefined/null=上游未自报无法比对；true/false=自报与实发是否一致。 */
+  upstream_model_mismatch?: boolean | null
   prompt_tokens: number
   completion_tokens: number
   total_tokens: number

@@ -275,7 +275,11 @@ func (h *Handler) hasNativeClaudeAccountMatching(c *gin.Context, model string, a
 	}
 	apiKeyID := requestAPIKeyID(c)
 	accountFilter := claudeChannelAccountFilter(model)
-	accountFilter = h.withModelCooldownFilter(model, accountFilter)
+	ctx := context.Background()
+	if c != nil && c.Request != nil {
+		ctx = c.Request.Context()
+	}
+	accountFilter = h.withModelCooldownFilter(ctx, model, accountFilter)
 	if c != nil && c.Request != nil {
 		// The full Messages filter is assembled immediately after this routing
 		// stub. Apply the request's session affinity here as well, so a native
@@ -525,7 +529,7 @@ func (h *Handler) Messages(c *gin.Context) {
 	// 翻译后的请求体本身就是 Responses 形态，中转账号直接以 HTTP 转发，
 	// 使仅接入中转的用户也能使用 Claude Code（issue #181）。
 	accountFilter := accountFilterForResponsesModel(effectiveModel, modelIDInList(effectiveModel, SupportedModelIDs(c.Request.Context(), h.db)))
-	accountFilter = h.withModelCooldownFilter(effectiveModel, accountFilter)
+	accountFilter = h.withModelCooldownFilter(c.Request.Context(), effectiveModel, accountFilter)
 	accountFilter = h.applyUpstreamChannelFilter(c, effectiveModel, accountFilter)
 	accountFilter = h.applyScopeBudgetFilter(c, accountFilter)
 	// scope 并发位在选中账号后才能占，请求退出时统一释放（issue #439 v2）。
@@ -792,6 +796,8 @@ func (h *Handler) Messages(c *gin.Context) {
 			}
 			// service_tier 记账按 payload 规则改写后的值归因（仅 Codex 路径套用规则）。
 			serviceTier = EffectiveRequestedServiceTier(codexBody, attemptEffectiveModel, downstreamHeaders, attemptIdentity)
+			upstreamCtx = WithCodexTurnStateAffinityKey(upstreamCtx, affinityKey)
+			guardCodexTurnStateEcho(affinityKey, account, downstreamHeaders)
 			resp, reqErr = executeHTTPWithContinuousRetryKeepalive(upstreamCtx, func() (*http.Response, error) {
 				return ExecuteRequest(upstreamCtx, account, codexBody, upstreamSessionID, proxyURL, apiKey, deviceCfg, downstreamHeaders, useWebsocket)
 			})
@@ -1247,7 +1253,7 @@ func (h *Handler) Messages(c *gin.Context) {
 			// Anthropic 原生 ping；翻译写入与保活不会再由独立 ticker 并发。
 			// contentStarted 用严格口径（isFirstTokenResult）跟踪"首个真实内容帧"，
 			// 专供流提交决策（缓冲/重试窗口/failed 抑制）使用；ttftRecorded 按
-			// first_token_mode 可能是 loose 口径，只用于首字统计。loose 模式会把
+			// 宽松首字口径记录，只用于首字统计。宽松口径会把
 			// output_item.added 等纯结构帧当"首字"，若拿它做流提交门，结构帧一到
 			// 就落盘 200，首包前静默重试窗口被过早关闭（issue #435）。
 			readErr = readSSEStreamWithContinuousRetryKeepalive(readCtx, resp.Body, func(sseEvent string, data []byte) bool {
@@ -1260,7 +1266,7 @@ func (h *Handler) Messages(c *gin.Context) {
 
 				// TTFT 跟踪
 				ttftGuard.MarkProgress(eventType)
-				isFirstToken := isFirstTokenResultForMode(parsed, currentFirstTokenMode())
+				isFirstToken := isLooseFirstTokenResult(parsed)
 				if !ttftRecorded && isFirstToken {
 					firstTokenMs = int(time.Since(start).Milliseconds())
 					ttftRecorded = true
@@ -1430,7 +1436,7 @@ func (h *Handler) Messages(c *gin.Context) {
 				}
 
 				ttftGuard.MarkProgress(eventType)
-				if !ttftRecorded && isFirstTokenResultForMode(parsed, currentFirstTokenMode()) {
+				if !ttftRecorded && isLooseFirstTokenResult(parsed) {
 					firstTokenMs = int(time.Since(start).Milliseconds())
 					ttftRecorded = true
 				}

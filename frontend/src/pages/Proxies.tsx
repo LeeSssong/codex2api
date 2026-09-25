@@ -37,7 +37,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { api, type ProxyRow } from "../api";
-import type { AccountRow, ProxyRiskScoreSnapshot, ProxyRiskScoringJob, ProxyRiskScoringProfile } from "../types";
+import type { AccountRow, CodexEgressSummary, ProxyRiskScoreSnapshot, ProxyRiskScoringJob, ProxyRiskScoringProfile } from "../types";
 import ChannelLogo from "../components/ChannelLogo";
 import Modal from "../components/Modal";
 import PageHeader from "../components/PageHeader";
@@ -63,7 +63,7 @@ import { cn } from "@/lib/utils";
 const PROXY_SCHEMES = ["http:", "https:", "socks5:", "socks5h:"];
 
 type BindFilter = "all" | "unbound" | "this" | "other";
-type BindKindFilter = "all" | "codex" | "grok" | "claude";
+type BindKindFilter = "all" | "codex" | "grok" | "antigravity" | "claude";
 type StatusFilter = "all" | "enabled" | "disabled" | "error" | "untested";
 type RiskFilter = "all" | "unscored" | "low" | "medium" | "high" | "very_high" | "error" | "stale";
 
@@ -100,6 +100,7 @@ function accountDisplayName(account: AccountRow): string {
 
 function accountKindKey(account: AccountRow): string {
   if (account.claude_api) return "claude";
+  if (account.antigravity_api) return "antigravity";
   if (account.grok_api) return "grok";
   if (account.openai_responses_api) return "openai";
   if (account.agent_identity) return "agent";
@@ -440,6 +441,8 @@ export default function Proxies() {
   const [proxies, setProxies] = useState<ProxyRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [poolEnabled, setPoolEnabled] = useState(false);
+  // Resin 启用时代理池对 Codex 渠道整层失效,页面顶部必须明说(issue #679)。
+  const [codexEgress, setCodexEgress] = useState<CodexEgressSummary | null>(null);
   const [showAdd, setShowAdd] = useState(false);
   const [addInput, setAddInput] = useState("");
   const [addLabel, setAddLabel] = useState("");
@@ -495,7 +498,7 @@ export default function Proxies() {
   const [bindSubmitting, setBindSubmitting] = useState(false);
 
   const [showBalance, setShowBalance] = useState(false);
-  const [balanceChannel, setBalanceChannel] = useState<"" | "codex" | "grok" | "claude">("grok");
+  const [balanceChannel, setBalanceChannel] = useState<"" | "codex" | "grok" | "antigravity" | "claude">("grok");
   const [balanceMode, setBalanceMode] = useState<"unbound" | "all">("unbound");
   const [balanceMaxPerProxy, setBalanceMaxPerProxy] = useState("");
   const [balanceSubmitting, setBalanceSubmitting] = useState(false);
@@ -563,6 +566,7 @@ export default function Proxies() {
       ]);
       setProxies(proxyRes.proxies);
       setPoolEnabled(settingsRes.proxy_pool_enabled);
+      setCodexEgress(settingsRes.codex_egress ?? null);
       setRiskProfiles(riskRes.profiles ?? []);
     } catch (error) {
       showToast(
@@ -1351,6 +1355,13 @@ export default function Proxies() {
               style={{ width: `${(testAllDone / testAllTotal) * 100}%` }}
             />
           </div>
+        </div>
+      ) : null}
+
+      {codexEgress?.resin_enabled ? (
+        <div className="flex items-start gap-2.5 rounded-xl border border-amber-500/30 bg-amber-500/5 p-3.5 text-xs leading-relaxed text-amber-800 dark:text-amber-200">
+          <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+          <span>{t("proxies.resinOverrideNotice", { endpoint: codexEgress.resin_endpoint || "" })}</span>
         </div>
       ) : null}
 
@@ -2186,6 +2197,7 @@ export default function Proxies() {
                 [
                   ["grok", t("proxies.bindKindGrok")],
                   ["codex", t("proxies.bindKindCodex")],
+                  ["antigravity", t("proxies.bindKindAntigravity")],
                   ["claude", t("proxies.bindKindClaude")],
                   ["", t("proxies.bindKindAll")],
                 ] as const
@@ -2369,6 +2381,7 @@ export default function Proxies() {
                       ["all", t("proxies.bindKindAll")],
                       ["codex", t("proxies.bindKindCodex")],
                       ["grok", t("proxies.bindKindGrok")],
+                      ["antigravity", t("proxies.bindKindAntigravity")],
                       ["claude", t("proxies.bindKindClaude")],
                     ] as const
                   ).map(([key, label]) => (
@@ -2382,7 +2395,7 @@ export default function Proxies() {
                           : "text-muted-foreground hover:text-foreground"
                       }`}
                     >
-                      {key === "codex" || key === "grok" || key === "claude" ? (
+                      {key !== "all" ? (
                         <ChannelLogo channel={key} size={14} />
                       ) : null}
                       {label}
