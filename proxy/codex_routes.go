@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -533,6 +534,7 @@ func executeCodexRoute(ctx context.Context, account *auth.Account, body []byte, 
 				continue
 			}
 		}
+		resp.Header.Set("X-Codex2API-Credential-Generation", strconv.FormatInt(a.generation, 10))
 		resp.Body = observeCodexRouteBody(resp.Body, a, resp.Header.Get("Content-Type"))
 		return resp, nil
 	}

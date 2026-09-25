@@ -245,6 +245,7 @@ func executeBasispointsRequest(ctx context.Context, account *auth.Account, reque
 	if resp.Header == nil {
 		resp.Header = make(http.Header)
 	}
+	observeAccountOpsResponse(account, resp)
 	inspectCodexRouteResponse(ctx, resp)
 	resp.Header.Set("X-Codex2API-Upstream", "basispoints")
 	resp.Header.Set("X-Codex2API-Reasoning-Effort", bridge.Effort)
@@ -285,6 +286,7 @@ func executeBasispointsCompactRequest(ctx context.Context, account *auth.Account
 	resp.Body = io.NopCloser(bytes.NewReader(result))
 	resp.ContentLength = int64(len(result))
 	resp.Header.Set("Content-Type", "application/json")
+	observeAccountOpsResponse(account, resp)
 	return resp, nil
 }
 

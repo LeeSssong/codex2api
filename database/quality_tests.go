@@ -16,12 +16,14 @@ var ErrQualityTestCapacity = errors.New("最多同时运行 3 个检测任务，
 var ErrQualityTestAccountBusy = errors.New("该账号已有进行中的检测任务")
 
 type QualityTestMetrics struct {
-	ResponseModel   string `json:"response_model,omitempty"`
-	DurationMS      int64  `json:"duration_ms"`
-	FirstContentMS  *int64 `json:"first_content_ms,omitempty"`
-	InputTokens     *int64 `json:"input_tokens,omitempty"`
-	OutputTokens    *int64 `json:"output_tokens,omitempty"`
-	ReasoningTokens *int64 `json:"reasoning_tokens,omitempty"`
+	Upstream             string `json:"upstream,omitempty"`
+	CredentialGeneration int64  `json:"credential_generation,omitempty"`
+	ResponseModel        string `json:"response_model,omitempty"`
+	DurationMS           int64  `json:"duration_ms"`
+	FirstContentMS       *int64 `json:"first_content_ms,omitempty"`
+	InputTokens          *int64 `json:"input_tokens,omitempty"`
+	OutputTokens         *int64 `json:"output_tokens,omitempty"`
+	ReasoningTokens      *int64 `json:"reasoning_tokens,omitempty"`
 }
 
 // Account identity is a snapshot, so renaming/deleting an account cannot rewrite history.
@@ -157,6 +159,9 @@ func (db *DB) ensureQualityTestSchema(ctx context.Context) error {
 		if _, err := db.conn.ExecContext(ctx, `ALTER TABLE quality_test_jobs ADD COLUMN IF NOT EXISTS `+column+` TEXT NOT NULL DEFAULT ''`); err != nil {
 			return err
 		}
+	}
+	if err := db.ensureAccountOpsSchema(ctx); err != nil {
+		return err
 	}
 	return db.ensureQualityTestPromptSchema(ctx)
 }

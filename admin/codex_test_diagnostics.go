@@ -50,20 +50,22 @@ type codexTestUsage struct {
 }
 
 type codexTestDiagnostics struct {
-	HTTPStatus      int    `json:"http_status,omitempty"`
-	DurationMS      *int64 `json:"duration_ms,omitempty"`
-	HeadersMS       *int64 `json:"headers_ms,omitempty"`
-	FirstFrameMS    *int64 `json:"first_frame_ms,omitempty"`
-	FirstContentMS  *int64 `json:"first_content_ms,omitempty"`
-	Model           string `json:"model"`
-	ResponseModel   string `json:"response_model,omitempty"`
-	Transport       string `json:"transport,omitempty"`
-	RequestID       string `json:"request_id,omitempty"`
-	ResponseID      string `json:"response_id,omitempty"`
-	CFRay           string `json:"cf_ray,omitempty"`
-	PlanType        string `json:"plan_type,omitempty"`
-	TurnStateLength *int   `json:"turn_state_length,omitempty"`
-	TurnStateSource string `json:"turn_state_source,omitempty"`
+	Upstream             string `json:"upstream,omitempty"`
+	CredentialGeneration int64  `json:"credential_generation,omitempty"`
+	HTTPStatus           int    `json:"http_status,omitempty"`
+	DurationMS           *int64 `json:"duration_ms,omitempty"`
+	HeadersMS            *int64 `json:"headers_ms,omitempty"`
+	FirstFrameMS         *int64 `json:"first_frame_ms,omitempty"`
+	FirstContentMS       *int64 `json:"first_content_ms,omitempty"`
+	Model                string `json:"model"`
+	ResponseModel        string `json:"response_model,omitempty"`
+	Transport            string `json:"transport,omitempty"`
+	RequestID            string `json:"request_id,omitempty"`
+	ResponseID           string `json:"response_id,omitempty"`
+	CFRay                string `json:"cf_ray,omitempty"`
+	PlanType             string `json:"plan_type,omitempty"`
+	TurnStateLength      *int   `json:"turn_state_length,omitempty"`
+	TurnStateSource      string `json:"turn_state_source,omitempty"`
 	// Enabled describes capability; faster_model is the official CLI retry target.
 	// Only an event with safety_buffering=true marks this response as buffered.
 	SafetyBufferingEnabled     *bool             `json:"safety_buffering_enabled,omitempty"`
@@ -186,6 +188,8 @@ func newCodexTestRecorder(resp *http.Response, model string, account *auth.Accou
 		return r
 	}
 	r.details.HTTPStatus = resp.StatusCode
+	r.details.Upstream = resp.Header.Get("X-Codex2API-Upstream")
+	r.details.CredentialGeneration, _ = strconv.ParseInt(resp.Header.Get("X-Codex2API-Credential-Generation"), 10, 64)
 	ms := max(int64(0), time.Since(start).Milliseconds())
 	r.details.Transport = codexTestTransport(resp.Header)
 	stateSource := "http_headers"

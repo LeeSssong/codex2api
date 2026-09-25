@@ -360,6 +360,7 @@ func main() {
 	defer store.Stop()
 	backgroundCtx, cancelBackground := context.WithCancel(context.Background())
 	adminHandler.StartQualityTests(backgroundCtx)
+	adminHandler.StartAccountOps(backgroundCtx)
 	if err := adminHandler.StartStatePool(backgroundCtx); err != nil {
 		log.Printf("State pool startup failed: %v", err)
 		return
@@ -656,6 +657,7 @@ func main() {
 	adminHandler.WaitAutoResetCredits()
 	adminHandler.WaitAutoActivate5hWindow()
 	adminHandler.WaitQualityTests()
+	adminHandler.WaitAccountOps()
 	adminHandler.StopStatePool()
 	wsKeepalive.Stop()
 	wsrelay.ShutdownExecutor()

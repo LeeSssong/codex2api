@@ -220,7 +220,7 @@ func (h *Handler) testConnection(c *gin.Context, quality *qualityTestRequest) {
 	}
 	defer resp.Body.Close()
 	if isClaudeAccount {
-		h.handleClaudeConnectionTest(c, account, resp, testModel, start, claudeFingerprintMode, isTransient, restoreOnSuccess, &transientOutcome, id, quality != nil, usageReason, usageEffort)
+		h.handleClaudeConnectionTest(c, account, resp, testModel, start, claudeFingerprintMode, isTransient, restoreOnSuccess, &transientOutcome, id, quality != nil, usageReason, usageEffort, quality != nil && quality.TextOnly)
 		return
 	}
 
@@ -376,7 +376,7 @@ func (h *Handler) testConnection(c *gin.Context, quality *qualityTestRequest) {
 			}
 			// Successful tests reset failure/cooldown state; the scheduler still enforces usage limits.
 			// Temporary recycle-bin accounts must not update scheduling state.
-			if !isTransient && (isOpenAIResponsesAccount || usageState.UsageWindowLimitsIgnored || (!usageState.Premium5hRateLimited && (!usageState.HasUsage7d || usageState.UsagePct7d < 100))) {
+			if !isTransient && (quality == nil || !quality.TextOnly) && (isOpenAIResponsesAccount || usageState.UsageWindowLimitsIgnored || (!usageState.Premium5hRateLimited && (!usageState.HasUsage7d || usageState.UsagePct7d < 100))) {
 				h.store.RecordManualTestSuccess(account, time.Since(start))
 			}
 			if isTransient {
@@ -499,6 +499,7 @@ func (h *Handler) handleClaudeConnectionTest(
 	preserveWhitespace bool,
 	usageReason string,
 	usageEffort string,
+	preserveControl ...bool,
 ) {
 	// For API Key accounts fingerprintMode already carries the account-level
 	// client-identity emulation mode (empty = passthrough), so it is reported
@@ -594,6 +595,10 @@ func (h *Handler) handleClaudeConnectionTest(
 			*transientOutcome = "rate_limited"
 		}
 		sendTestEvent(c, testEvent{Type: "error", Error: "Claude 上游返回了有效响应，但账号仍处于配额/限流状态"})
+		return
+	}
+	if len(preserveControl) > 0 && preserveControl[0] {
+		sendTestEvent(c, testEvent{Type: "test_complete", Success: true})
 		return
 	}
 	if isTransient {

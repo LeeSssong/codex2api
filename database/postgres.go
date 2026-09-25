@@ -497,6 +497,9 @@ func New(driver string, dsn string, schema ...string) (*DB, error) {
 	if err := db.ensureAccountControlSchema(ctx); err != nil {
 		return nil, fmt.Errorf("初始化账号控制版本失败: %w", err)
 	}
+	if err := db.ensureAccountQualityOwnershipTriggers(ctx); err != nil {
+		return nil, fmt.Errorf("初始化账号质量恢复保护失败: %w", err)
+	}
 	if err := db.ensureAPIKeyAuthCacheSchema(ctx); err != nil {
 		backgroundTaskCancel()
 		_ = conn.Close()

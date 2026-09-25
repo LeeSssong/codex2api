@@ -230,6 +230,8 @@ func (h *Handler) runQualityTestJob(parent context.Context, job database.Quality
 			complete = event.Success
 		}
 		if d := event.CodexDiagnostics; d != nil {
+			job.Upstream = d.Upstream
+			job.CredentialGeneration = d.CredentialGeneration
 			job.ResponseModel = d.ResponseModel
 			if d.FirstContentMS != nil {
 				job.FirstContentMS = d.FirstContentMS
