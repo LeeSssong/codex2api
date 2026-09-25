@@ -102,6 +102,7 @@ class Release:
   self.dc('config','--quiet');self.request('/health');self.request('/api/admin/settings',True)
   self.request('/health',public=True);self.request('/api/admin/settings',True,public=True)
   self.original_settings=json.loads(self.request('/api/admin/settings',True)[2])
+  self.original_account_ops_enabled=json.loads(self.request('/api/admin/account-ops/module',True)[2]).get('enabled') is True
   self.route_before=copy.deepcopy(codex_route(self.caddy())['handle'])
   (self.dir/'caddy-handle.before.json').write_text(json.dumps(self.route_before))
   snapshot=self.dir/'preflight.dump';self.dump(snapshot)
@@ -149,7 +150,7 @@ class Release:
    if self.inspect('codex2api')['Image']!=self.args.digest:raise RuntimeError('running image mismatch')
    for endpoint in ['/api/admin/account-ops/module','/api/admin/account-ops/config','/api/admin/quality-ops/plans','/api/admin/quality-ops/history','/api/admin/account-ops/alerts']:
     self.request(endpoint,True)
-   if json.loads(self.request('/api/admin/account-ops/module',True)[2]).get('enabled') is not False:raise RuntimeError('new module must remain opt-in')
+   if (json.loads(self.request('/api/admin/account-ops/module',True)[2]).get('enabled') is True) != self.original_account_ops_enabled:raise RuntimeError('existing account-ops module state changed')
    settings=json.loads(self.request('/api/admin/settings',True)[2])
    for key in ['codex_basispoints_enabled']:
     if key not in settings or key not in self.original_settings:raise RuntimeError('missing compatibility setting')

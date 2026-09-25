@@ -25,7 +25,7 @@ class RollbackDecisionTests(unittest.TestCase):
   class Fake(Release):
    def __init__(self):
     self.args=types.SimpleNamespace(image='new',digest='digest',release_id='test');self.before='services:\n  codex2api:\n    image: old\n';self.dir=pathlib.Path('/unused');self.report={};self.maintenance=False;self.stopped=False;self.opened=False;self.migrated=False;self.app_started=False;self.gated=False;self.calls=[]
-   def preflight(self):self.original_settings={'codex_basispoints_enabled':False}
+   def preflight(self):self.original_settings={'codex_basispoints_enabled':False};self.original_account_ops_enabled=False
    def event(self,n):self.calls.append(n)
    def save(self):pass
    def caddy(self):return {'apps':{'http':{'servers':{'s':{'routes':[{'match':[{'host':['codex.xingqiaolab.top']}],'handle':[]}]}}}}}
