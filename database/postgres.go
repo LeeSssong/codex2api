@@ -494,6 +494,9 @@ func New(driver string, dsn string, schema ...string) (*DB, error) {
 		return nil, fmt.Errorf("创建代理风险评分表失败: %w", err)
 	}
 
+	if err := db.ensureAccountControlSchema(ctx); err != nil {
+		return nil, fmt.Errorf("初始化账号控制版本失败: %w", err)
+	}
 	if err := db.ensureAPIKeyAuthCacheSchema(ctx); err != nil {
 		backgroundTaskCancel()
 		_ = conn.Close()
