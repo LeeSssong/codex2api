@@ -1,6 +1,16 @@
 import copy, unittest
-from release_host import maintenance_config, replace_image, check_source
+from release_host import maintenance_config, replace_image, check_source, module_state, assert_unchanged_containers, image_pinned_compose
 class ReleaseTests(unittest.TestCase):
+ def test_standard_image_uses_persisted_module_flag(self):
+  self.assertTrue(module_state(None, 'true'))
+  self.assertFalse(module_state(None, None))
+  self.assertFalse(module_state({'enabled':False}, 'true'))
+ def test_rollback_pins_the_original_image_id(self):
+  before='services:\n  codex2api:\n    image: ghcr.io/hloolx/codex2api:latest\n'
+  self.assertIn('image: sha256:old',image_pinned_compose(before,{'Image':'sha256:old'}))
+ def test_unrelated_containers_are_unchanged(self):
+  assert_unchanged_containers({'db':'id1','sub':'id2'},{'db':'id1','sub':'id2'})
+  with self.assertRaises(RuntimeError):assert_unchanged_containers({'db':'id1'},{'db':'id3'})
  def test_maintenance_only_changes_codex_route(self):
   config={'apps':{'http':{'servers':{'srv0':{'routes':[{'match':[{'host':['api.xingqiaolab.top']}],'handle':[{'handler':'reverse_proxy'}]},{'match':[{'host':['codex.xingqiaolab.top','64-83-10-67.nip.io']}],'handle':[{'handler':'subroute'}]}]}}}}}
   original=copy.deepcopy(config); updated=maintenance_config(config)
@@ -27,6 +37,9 @@ class RollbackDecisionTests(unittest.TestCase):
     self.args=types.SimpleNamespace(image='new',digest='digest',release_id='test');self.before='services:\n  codex2api:\n    image: old\n';self.dir=pathlib.Path('/unused');self.report={};self.maintenance=False;self.stopped=False;self.opened=False;self.migrated=False;self.app_started=False;self.gated=False;self.calls=[]
    def preflight(self):self.original_settings={'codex_basispoints_enabled':False};self.original_account_ops_enabled=False
    def event(self,n):self.calls.append(n)
+   def drain(self):self.calls.append('drain')
+   def verify_protected_containers(self):pass
+   def feature_smoke(self,public=False):self.request('/health',public=public)
    def save(self):pass
    def caddy(self):return {'apps':{'http':{'servers':{'s':{'routes':[{'match':[{'host':['codex.xingqiaolab.top']}],'handle':[]}]}}}}}
    def load_caddy(self,c):pass

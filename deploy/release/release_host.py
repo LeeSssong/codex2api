@@ -3,7 +3,7 @@
 Only the codex app is stopped/recreated. PostgreSQL, Redis and Sub stay running.
 An image built from verified/pushed clean main is mandatory. No credentials print.
 """
-import argparse, copy, fcntl, ipaddress, json, os, pathlib, re, shutil, subprocess, time, urllib.request
+import argparse, copy, fcntl, ipaddress, json, os, pathlib, re, shutil, subprocess, time, urllib.request, urllib.error
 
 def codex_route(config):
  matches=[]
@@ -29,6 +29,16 @@ def check_source(labels,revision,tree):
  if labels.get('org.opencontainers.image.revision')!=revision or labels.get('io.xingqiao.source-tree')!=tree:
   raise ValueError('image source labels do not match release manifest')
 
+def module_state(api_value, stored_value):
+ return api_value.get('enabled') is True if api_value is not None else stored_value == 'true'
+
+def image_pinned_compose(compose, container):
+ return replace_image(compose, container['Image'])
+
+def assert_unchanged_containers(before, after):
+ changed=[name for name,identity in before.items() if after.get(name)!=identity]
+ if changed:raise RuntimeError('unrelated containers changed: '+','.join(changed))
+
 class Release:
  def __init__(self,args):
   self.args=args; self.root=pathlib.Path('/opt/codex2api'); self.compose=self.root/'docker-compose.yml'
@@ -36,8 +46,8 @@ class Release:
   self.events=[]; self.started=time.monotonic(); self.maintenance=False; self.stopped=False; self.migrated=False; self.opened=False; self.app_started=False; self.gated=False
   self.report={'revision':args.revision,'tree':args.tree,'image':args.image,'digest':args.digest,'release_id':args.release_id,'events':self.events}
   self.before=self.compose.read_text(); (self.dir/'compose.before.yml').write_text(self.before)
-  self.old=self.inspect('codex2api'); self.env=dict(v.split('=',1) for v in self.old['Config']['Env']); self.port=int(self.env.get('CODEX_PORT','18080'))
-  self.report['rollback_image_id']=self.old['Image']; self.report['rollback_compose']=str(self.dir/'compose.before.yml')
+  self.old=self.inspect('codex2api'); self.rollback_compose=image_pinned_compose(self.before,self.old); (self.dir/'compose.rollback.yml').write_text(self.rollback_compose); self.env=dict(v.split('=',1) for v in self.old['Config']['Env']); self.port=int(self.env.get('CODEX_PORT','18080'))
+  self.report['rollback_image_id']=self.old['Image']; self.report['rollback_compose']=str(self.dir/'compose.rollback.yml')
   self.save()
  def event(self,name):
   item={'stage':name,'elapsed_seconds':round(time.monotonic()-self.started,2)};self.events.append(item);self.save();print(json.dumps(item),flush=True)
@@ -89,6 +99,36 @@ class Release:
    except Exception:pass
    time.sleep(1)
   raise RuntimeError('readiness deadline exceeded')
+ def protected_containers(self):
+  names=['codex2api-postgres','codex2api-redis','sub2api-sub2api-green-1','sub2api-sub2api-worker-1','sub2api-model-detector-1','sub2api-postgres-1','sub2api-redis-1','sub2api-caddy-1','sub2api-relay-ops-1']
+  return {name:self.inspect(name)['Id'] for name in names}
+ def verify_protected_containers(self):
+  assert_unchanged_containers(self.protected_before,self.protected_containers())
+ def drain(self):
+  deadline=time.monotonic()+300; remaining=None
+  while time.monotonic()<deadline:
+   try:
+    value=json.loads(self.request('/api/admin/runtime-status',True)[2])['accounts']['active_requests']
+    if not isinstance(value,int) or value<0:raise ValueError('invalid drain counter')
+    remaining=value
+    if remaining==0:break
+   except Exception:
+    # Missing telemetry is not proof of an empty pool. Preserve the full window.
+    remaining=None
+   time.sleep(2)
+  self.report['drain_remaining_requests']=remaining
+  self.report['drain_deadline_reached']=time.monotonic()>=deadline
+  self.event('old-requests-drained')
+ def feature_smoke(self,public=False):
+  endpoints=['/api/admin/account-ops/module','/api/admin/account-ops/config','/api/admin/quality-ops/plans','/api/admin/quality-ops/history','/api/admin/account-ops/alerts','/api/admin/account-ops/token-guard/status','/api/admin/account-ops/token-guard/config','/api/admin/account-ops/token-guard/events?limit=1']
+  for endpoint in endpoints:
+   status,headers,payload=self.request(endpoint,True,public)
+   if status!=200 or 'application/json' not in headers.get('Content-Type',headers.get('content-type','')):raise RuntimeError('feature endpoint did not return JSON: '+endpoint)
+   json.loads(payload)
+  info=json.loads(self.request('/api/admin/system/update',True,public)[2])
+  if info.get('source_revision')!=self.args.revision or info.get('source_tree')!=self.args.tree or info.get('mode')!='source_image' or info.get('supported') is not False:raise RuntimeError('managed build provenance mismatch')
+  self.report['upstream_revision']=info.get('upstream_revision')
+  self.report['upstream_check_status']=info.get('check_status')
  def preflight(self):
   image=json.loads(self.run(['docker','image','inspect',self.args.image]))[0]
   if image['Id']!=self.args.digest:raise ValueError('image digest mismatch')
@@ -99,10 +139,16 @@ class Release:
   subnets=[item['Subnet'] for item in network['IPAM']['Config'] if ipaddress.ip_network(item['Subnet']).version==4]
   if len(subnets)!=1:raise ValueError('expected one Codex IPv4 subnet')
   self.subnet=subnets[0]
+  self.protected_before=self.protected_containers()
   self.dc('config','--quiet');self.request('/health');self.request('/api/admin/settings',True)
   self.request('/health',public=True);self.request('/api/admin/settings',True,public=True)
   self.original_settings=json.loads(self.request('/api/admin/settings',True)[2])
-  self.original_account_ops_enabled=json.loads(self.request('/api/admin/account-ops/module',True)[2]).get('enabled') is True
+  try:module_info=json.loads(self.request('/api/admin/account-ops/module',True)[2])
+  except urllib.error.HTTPError as err:
+   if err.code!=404:raise
+   module_info=None
+  persisted=self.sql("SELECT value FROM account_ops_settings WHERE key='module_enabled';")
+  self.original_account_ops_enabled=module_state(module_info,persisted)
   self.route_before=copy.deepcopy(codex_route(self.caddy())['handle'])
   (self.dir/'caddy-handle.before.json').write_text(json.dumps(self.route_before))
   snapshot=self.dir/'preflight.dump';self.dump(snapshot)
@@ -127,7 +173,7 @@ class Release:
    self.load_caddy(maintenance_config(self.caddy()));self.maintenance=True
   exists=self.run(['docker','ps','-aq','--filter','name=^codex2api$']).strip()
   if exists and self.inspect('codex2api')['State']['Running']:self.dc('stop','-t','300','codex2api',timeout=330)
-  self.write_compose(self.before)
+  self.write_compose(self.rollback_compose)
   if self.migrated and not preserve_database:
    self.run(['docker','exec','codex2api-postgres','sh','-c','dropdb --force -U "$POSTGRES_USER" "$POSTGRES_DB" && createdb -U "$POSTGRES_USER" -O "$POSTGRES_USER" "$POSTGRES_DB"'])
    self.run(['docker','exec','-i','codex2api-postgres','sh','-c','exec pg_restore --exit-on-error --no-owner -U "$POSTGRES_USER" -d "$POSTGRES_DB"'],(self.dir/'stopped.dump').read_bytes())
@@ -140,6 +186,7 @@ class Release:
   try:
    self.network_gate(True)
    self.maintenance=True;self.load_caddy(maintenance_config(self.caddy()));self.event('maintenance-on')
+   self.drain()
    self.stopped=True;self.dc('stop','-t','300','codex2api',timeout=330);self.event('app-stopped')
    self.dump(self.dir/'stopped.dump');self.event('consistent-backup-completed')
    self.write_compose(replace_image(self.before,self.args.image));self.dc('config','--quiet')
@@ -148,20 +195,19 @@ class Release:
    self.app_started=True
    self.dc('up','-d','--no-deps','codex2api');self.ready()
    if self.inspect('codex2api')['Image']!=self.args.digest:raise RuntimeError('running image mismatch')
-   for endpoint in ['/api/admin/account-ops/module','/api/admin/account-ops/config','/api/admin/quality-ops/plans','/api/admin/quality-ops/history','/api/admin/account-ops/alerts']:
-    self.request(endpoint,True)
+   self.feature_smoke()
    if (json.loads(self.request('/api/admin/account-ops/module',True)[2]).get('enabled') is True) != self.original_account_ops_enabled:raise RuntimeError('existing account-ops module state changed')
    settings=json.loads(self.request('/api/admin/settings',True)[2])
    for key in ['codex_basispoints_enabled']:
-    if key not in settings or key not in self.original_settings:raise RuntimeError('missing compatibility setting')
-    if settings.get(key)!=self.original_settings.get(key):raise RuntimeError('existing setting changed: '+key)
-   for path in ['/admin/quality-ops','/admin/account-ops']:
+    if key in self.original_settings and settings.get(key)!=self.original_settings.get(key):raise RuntimeError('existing setting changed: '+key)
+   for path in ['/admin/quality-ops','/admin/account-ops','/admin/token-guard']:
     if b'<html' not in self.request(path)[2].lower():raise RuntimeError('admin UI shell missing')
+   self.verify_protected_containers()
    self.event('internal-feature-smoke-passed')
    self.opened=True;self.network_gate(False);self.restore_route();self.event('traffic-restored')
    self.request('/health',public=True)
-   for path in ['/api/admin/account-ops/module','/api/admin/quality-ops/plans']:
-    self.request(path,True,public=True)
+   self.feature_smoke(public=True)
+   self.verify_protected_containers()
    self.report['result']='success';self.report['rolled_back']=False;self.event('public-feature-smoke-passed')
   except BaseException:
    self.report['result']='failed';self.save()
