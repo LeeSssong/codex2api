@@ -3,6 +3,8 @@ package auth
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,6 +16,7 @@ import (
 
 	"github.com/codex2api/cache"
 	"github.com/codex2api/database"
+	"modernc.org/sqlite"
 )
 
 func codexRefreshFixture(t *testing.T, handler http.HandlerFunc) (*Store, *database.DB, int64, string) {
@@ -172,7 +175,21 @@ func TestCodexRefreshDatabaseFailureFencesRestartAndDoesNotPublish(t *testing.T)
 	}
 }
 
+var codexSaveFaultSequence atomic.Int64
+
 func TestCodexRefreshRetriesPersistenceWithoutRepeatingOAuth(t *testing.T) {
+	// The counter is outside the SQLite transaction, so rollback does not
+	// rearm the injected fault. Exactly one save fails regardless of timing.
+	var saves atomic.Int32
+	function := fmt.Sprintf("codex_save_fault_%d", codexSaveFaultSequence.Add(1))
+	if err := sqlite.RegisterScalarFunction(function, 0, func(*sqlite.FunctionContext, []driver.Value) (driver.Value, error) {
+		if saves.Add(1) == 1 {
+			return int64(1), nil
+		}
+		return int64(0), nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 	var calls atomic.Int32
 	store, db, id, path := codexRefreshFixture(t, func(w http.ResponseWriter, _ *http.Request) { calls.Add(1); writeCodexRefreshedTokens(w) })
 	injector, err := sql.Open("sqlite", path)
@@ -180,20 +197,14 @@ func TestCodexRefreshRetriesPersistenceWithoutRepeatingOAuth(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer injector.Close()
-	if _, err := injector.Exec(`CREATE TRIGGER transient_codex_save BEFORE UPDATE OF credentials ON accounts BEGIN SELECT RAISE(ABORT, 'transient write failure'); END`); err != nil {
+	if _, err := injector.Exec(`CREATE TRIGGER transient_codex_save BEFORE UPDATE OF credentials ON accounts WHEN ` + function + `() = 1 BEGIN SELECT RAISE(ABORT, 'transient write failure'); END`); err != nil {
 		t.Fatal(err)
 	}
-	restored := make(chan error, 1)
-	go func() {
-		time.Sleep(150 * time.Millisecond)
-		_, err := injector.Exec(`DROP TRIGGER transient_codex_save`)
-		restored <- err
-	}()
 	if err := store.RefreshSingle(context.Background(), id); err != nil {
 		t.Fatal(err)
 	}
-	if err := <-restored; err != nil {
-		t.Fatal(err)
+	if saves.Load() < 2 {
+		t.Fatal("persistence retry was not exercised")
 	}
 	row, err := db.GetAccountByID(context.Background(), id)
 	if err != nil {
