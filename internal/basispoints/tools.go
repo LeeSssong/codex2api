@@ -4,6 +4,7 @@ import (
 	"container/list"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 )
@@ -401,6 +402,13 @@ func (b *Bridge) translateCall(native object) (object, error) {
 	envelope, marked, err := customTransportEnvelope(arguments)
 	if !marked && err == nil {
 		envelope, err = decodeTransportEnvelope(arguments["code"])
+		if err != nil {
+			// Strict decoding failed; accept only an unambiguous envelope the
+			// model embedded in other text, or raw custom input it forgot to mark.
+			if recovered, raw, ok := b.recoverTransportEnvelope(arguments); ok {
+				envelope, marked, err = recovered, raw, nil
+			}
+		}
 	}
 	if err != nil {
 		return nil, err
@@ -409,7 +417,7 @@ func (b *Bridge) translateCall(native object) (object, error) {
 	if err != nil {
 		return nil, err
 	}
-	info, allowed := b.tools[toolName]
+	_, info, allowed := b.catalogTool(toolName)
 	if !allowed {
 		return nil, fmt.Errorf("Basispoints returned a tool outside the client's catalog")
 	}
@@ -428,15 +436,11 @@ func (b *Bridge) translateCall(native object) (object, error) {
 // this rather than failing the whole response. It relays the client's declared tool
 // call to the client unchanged and never executes any code. Only exact catalog names
 // (optionally carrying a host "functions." display prefix) are accepted; any other
-// native tool remains an unsupported-native-tool error.
+// native tool remains an unsupported-native-tool error. A declared tool arriving
+// under the other item kind is accepted when its payload carries the declared
+// kind's content: JSON-object input for a function, text for a custom tool.
 func (b *Bridge) translateDirectCatalogCall(native object) (object, error) {
-	name := text(native["name"])
-	info, ok := b.tools[name]
-	if !ok {
-		if trimmed := strings.TrimPrefix(name, "functions."); trimmed != name {
-			info, ok = b.tools[trimmed]
-		}
-	}
+	_, info, ok := b.catalogTool(text(native["name"]))
 	if !ok {
 		return nil, fmt.Errorf("Basispoints returned an unsupported native tool; no tool was executed")
 	}
@@ -444,17 +448,26 @@ func (b *Bridge) translateDirectCatalogCall(native object) (object, error) {
 	var envelope object
 	switch info.Kind {
 	case "function":
-		if kind != "function_call" {
-			return nil, fmt.Errorf("Basispoints returned client function tool %q as a %q; no tool was executed", info.Name, kind)
+		arguments := native["arguments"]
+		if kind == "custom_tool_call" {
+			var parsed object
+			if input, isText := native["input"].(string); !isText || decode([]byte(input), &parsed) != nil || parsed == nil {
+				return nil, fmt.Errorf("Basispoints returned client function tool %q as a %q without JSON object arguments; no tool was executed", info.Name, kind)
+			}
+			arguments = parsed
 		}
-		envelope = object{"name": info.Name, "arguments": native["arguments"]}
+		envelope = object{"name": info.Name, "arguments": arguments}
 	case "custom":
-		if kind != "custom_tool_call" {
-			return nil, fmt.Errorf("Basispoints returned client custom tool %q as a %q; no tool was executed", info.Name, kind)
-		}
-		input, ok := native["input"].(string)
-		if !ok {
-			return nil, fmt.Errorf("Basispoints direct custom tool input must be a string")
+		input := native["input"]
+		if kind == "function_call" {
+			input = native["arguments"]
+			if encoded, isText := input.(string); isText {
+				var parsed any
+				if decode([]byte(encoded), &parsed) != nil {
+					return nil, fmt.Errorf("Basispoints returned client custom tool %q as a %q with invalid arguments; no tool was executed", info.Name, kind)
+				}
+				input = parsed
+			}
 		}
 		envelope = object{"name": info.Name, "input": input}
 	default:
@@ -495,19 +508,22 @@ func (b *Bridge) finishClientToolCall(native object, info tool, envelope object,
 		result["namespace"] = info.Namespace
 	}
 	if info.Kind == "custom" {
-		value, hasInput := envelope["input"]
-		if alias, hasAlias := envelope["args"]; hasAlias {
-			if hasInput {
-				return nil, fmt.Errorf("Basispoints custom tool envelope contains conflicting input fields")
+		// Models address custom input as input, args or arguments; exactly one
+		// may be present. Text passes verbatim, objects are unwrapped or serialized.
+		var value any
+		fields := 0
+		for _, field := range []string{"input", "args", "arguments"} {
+			if candidate, exists := envelope[field]; exists {
+				value = candidate
+				fields++
 			}
-			value = alias
 		}
-		if _, exists := envelope["arguments"]; exists {
-			return nil, fmt.Errorf("Basispoints custom tools require input text, not arguments")
+		if fields > 1 {
+			return nil, fmt.Errorf("Basispoints custom tool envelope contains conflicting input fields")
 		}
-		input, ok := value.(string)
-		if !ok {
-			return nil, fmt.Errorf("Basispoints custom tool input must be a string")
+		input, err := customInputText(value)
+		if err != nil {
+			return nil, err
 		}
 		result["type"] = "custom_tool_call"
 		result["id"] = "ctc_" + fingerprint(id)
@@ -531,24 +547,87 @@ func (b *Bridge) finishClientToolCall(native object, info tool, envelope object,
 	return result, nil
 }
 
+// translateResponse converts every native tool item in a completed response. A
+// call to a tool that does not exist for this request (a host Excel tool such as
+// read_ranges, or an undeclared name) is dropped when the model also answered with
+// assistant text and made no other tool call, so the client still receives the
+// text instead of a failed turn; nothing is executed for the dropped call. Any
+// malformed call to a real client tool still fails the response.
 func (b *Bridge) translateResponse(response object) error {
 	if response == nil {
 		return nil
 	}
 	output, _ := response["output"].([]any)
-	for i, raw := range output {
+	kept := make([]any, 0, len(output))
+	var leak error
+	dropped := make([]string, 0)
+	for _, raw := range output {
 		item, _ := raw.(object)
-		if isTool(item) {
-			translated, err := b.translateCall(item)
-			if err != nil {
+		if !isTool(item) {
+			kept = append(kept, raw)
+			continue
+		}
+		translated, err := b.translateCall(item)
+		if err != nil {
+			if !isNativeToolLeak(err) {
 				return err
 			}
-			output[i] = translated
+			leak = err
+			dropped = append(dropped, loggableNativeToolName(text(item["name"])))
+			continue
 		}
+		kept = append(kept, translated)
 	}
+	if leak != nil {
+		if !hasAssistantText(kept) || hasToolCalls(kept) {
+			return leak
+		}
+		log.Printf("[Basispoints] stage=stream result=dropped_native_tool count=%d tools=%s", len(dropped), strings.Join(dropped, ","))
+	}
+	response["output"] = kept
 	response["reasoning"] = object{"effort": b.Effort}
 	response["parallel_tool_calls"] = false
 	return nil
+}
+
+func hasAssistantText(output []any) bool {
+	for _, raw := range output {
+		item, _ := raw.(object)
+		if text(item["type"]) != "message" || text(item["role"]) != "assistant" {
+			continue
+		}
+		content, _ := item["content"].([]any)
+		for _, rawPart := range content {
+			part, _ := rawPart.(object)
+			if text(part["type"]) == "output_text" && strings.TrimSpace(text(part["text"])) != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func hasToolCalls(output []any) bool {
+	for _, raw := range output {
+		if item, _ := raw.(object); isTool(item) {
+			return true
+		}
+	}
+	return false
+}
+
+// loggableNativeToolName keeps host tool names such as read_ranges, which are
+// worth counting, and hides anything that could echo a client's catalog name.
+func loggableNativeToolName(name string) string {
+	if len(name) == 0 || len(name) > 64 {
+		return "redacted"
+	}
+	for _, r := range name {
+		if !(r == '_' || r >= 'a' && r <= 'z' || r >= '0' && r <= '9') {
+			return "redacted"
+		}
+	}
+	return name
 }
 
 func isToolEvent(kind string) bool {

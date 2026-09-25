@@ -50,9 +50,11 @@ func TestTerminalValidationDoesNotDispatchPartialOrMixedTools(t *testing.T) {
 	valid := nativeCall(object{"name": "shell", "arguments": object{}})
 	invalid := nativeCall(object{"name": "other", "arguments": object{}})
 	invalid["id"], invalid["call_id"] = "fc_other", "call_other"
+	// A completed payload that omits the tool item is restored from the done
+	// event (see recovery_test.go); mixed, incomplete and failed responses never
+	// dispatch anything.
 	for _, terminal := range []object{
 		{"type": "response.completed", "response": object{"output": []any{valid, invalid}}},
-		{"type": "response.completed", "response": object{"output": []any{}}},
 		{"type": "response.incomplete", "response": object{"output": []any{valid}}},
 		{"type": "response.failed", "response": object{"output": []any{valid}, "error": object{"code": "upstream_failure"}}},
 	} {

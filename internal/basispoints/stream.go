@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
+	"sort"
 	"strings"
 	"sync"
 )
@@ -46,7 +48,9 @@ func (b *Bridge) transform(reader io.Reader, writer io.Writer) error {
 	sequence := 0
 	terminal := false
 	emitted := make(map[string]bool)
-	pendingTools := make(map[string]bool)
+	pendingTools := make(map[string]pendingTool)
+	doneCount := 0
+	toolKey := func(item object) string { return text(item["call_id"]) + "\x00" + text(item["id"]) }
 	emit := func(kind string, payload object) error {
 		payload["type"] = kind
 		payload["sequence_number"] = sequence
@@ -104,25 +108,35 @@ func (b *Bridge) transform(reader io.Reader, writer io.Writer) error {
 			return nil
 		}
 		if kind == "response.output_item.done" && isTool(item) {
-			// Only the terminal response contains the authoritative native item.
+			// The terminal response contains the authoritative native item.
 			// Text keeps streaming; tool calls wait until the whole response validates.
 			if len(pendingTools) >= 1024 {
 				return fmt.Errorf("Basispoints response contains too many tool items")
 			}
-			pendingTools[text(item["call_id"])+"\x00"+text(item["id"])] = true
+			pendingTools[toolKey(item)] = pendingTool{item: item, order: doneCount}
+			doneCount++
 			return nil
 		}
 		if response, ok := payload["response"].(object); ok {
 			if kind == "response.completed" {
 				output, _ := response["output"].([]any)
+				completedCalls := make(map[string]bool)
 				for _, raw := range output {
 					item, _ := raw.(object)
 					if isTool(item) {
-						delete(pendingTools, text(item["call_id"])+"\x00"+text(item["id"]))
+						delete(pendingTools, toolKey(item))
+						completedCalls[text(item["call_id"])] = true
 					}
 				}
 				if len(pendingTools) != 0 {
-					return fmt.Errorf("Basispoints completed response omitted an original tool item")
+					// The completed payload sometimes omits items that already
+					// arrived complete in output_item.done; those items are the
+					// same native calls, so use them rather than failing the turn.
+					// A call the payload lists under another item ID is not restored.
+					output = completeOutputFromDoneItems(output, pendingTools, completedCalls)
+					response["output"] = output
+					log.Printf("[Basispoints] stage=stream result=restored_tool_items count=%d", len(pendingTools))
+					pendingTools = make(map[string]pendingTool)
 				}
 				if err := b.translateResponse(response); err != nil {
 					return err
@@ -179,6 +193,27 @@ func (b *Bridge) transform(reader io.Reader, writer io.Writer) error {
 		return io.ErrUnexpectedEOF
 	}
 	return nil
+}
+
+type pendingTool struct {
+	item  object
+	order int
+}
+
+// completeOutputFromDoneItems appends tool items the completed payload omitted,
+// in the order their done events arrived, so translation sees every native call.
+func completeOutputFromDoneItems(output []any, pending map[string]pendingTool, completedCalls map[string]bool) []any {
+	missing := make([]pendingTool, 0, len(pending))
+	for _, entry := range pending {
+		if !completedCalls[text(entry.item["call_id"])] {
+			missing = append(missing, entry)
+		}
+	}
+	sort.Slice(missing, func(i, j int) bool { return missing[i].order < missing[j].order })
+	for _, entry := range missing {
+		output = append(output, entry.item)
+	}
+	return output
 }
 
 func readEvents(reader io.Reader, consume func(string, []byte) error) error {

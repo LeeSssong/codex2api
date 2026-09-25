@@ -140,10 +140,11 @@ func Prepare(raw []byte, scope string, replay *ReplayCache) ([]byte, *Bridge, er
 	if instructions := text(source["instructions"]); instructions != "" {
 		prologue = append(prologue, message("developer", instructions))
 	}
-	protocol := "This request comes from an external Responses client. Return assistant text. Do not call Excel, Office, workbook or connector tools."
+	protocol := "This request comes from an external Responses client. Return assistant text. Do not call Excel, Office, workbook or connector tools such as read_ranges or search_workbook; they do not exist for this request and fail if called."
 	if len(catalog) > 0 {
 		protocol = "This request comes from an external Responses client. Use only the client tools in the catalog below. " +
-			"There is no live Excel workbook for this request. The proxy intercepts run_officejs as a transport and never executes Office code. " +
+			"There is no live Excel workbook for this request. Host workbook tools such as read_ranges, search_workbook, write_ranges or get_selection do not exist here and fail if called; the catalog tools are the only way to read files, search code or run commands. " +
+			"The proxy intercepts run_officejs as a transport and never executes Office code. " +
 			"To call one client tool, call native run_officejs using the transport matching its catalog type. " +
 			"FUNCTION: code must contain one serialized JSON object {\"name\":\"CATALOG_NAME\",\"arguments\":{...}}. Arguments is an object, not an extra JSON string. " +
 			"CUSTOM: set summary to exactly codex2api.custom/CATALOG_NAME and put the exact raw tool input directly in code. Do not wrap custom input in another JSON object or add Markdown fences. " +
