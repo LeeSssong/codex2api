@@ -26,6 +26,8 @@ env:
 
 jobs:
   docker:
+    # Xingqiao production builds and deploys only through deploy/release locally.
+    if: github.repository == 'hloolx/codex2api'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
