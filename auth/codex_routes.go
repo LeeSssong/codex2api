@@ -16,6 +16,7 @@ type codexPathHealth struct {
 	Reason     string
 	ObservedAt int64
 	Probing    bool
+	Rejections int
 }
 
 type codexAccountRoutes struct {
@@ -225,6 +226,32 @@ func (a *Account) SetCodexPathCooldown(path, model, reason string, started, unti
 		r.health = make(map[string]codexPathHealth)
 	}
 	r.health[key] = codexPathHealth{Until: until, Reason: reason, ObservedAt: started.UnixNano(), Probing: r.health[key].Probing}
+}
+
+// A usage-policy rejection is temporary path health evidence, not proof of an
+// exhausted account or missing entitlement. Concurrent failures share a window;
+// only a failed recovery attempt increases the backoff, up to five minutes.
+func (a *Account) NoteCodexPathUsageRejection(path, model string, started, now time.Time) {
+	r := &a.codexRoutes
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	key := codexFactKey(path, model)
+	previous := r.health[key]
+	if previous.ObservedAt >= started.UnixNano() || r.facts[key].ObservedAt >= started.UnixNano() || r.facts[codexFactKey(path, "")].ObservedAt >= started.UnixNano() {
+		return
+	}
+	if now.Before(previous.Until) || started.Before(previous.Until) {
+		return
+	}
+	failures := 1
+	if previous.Reason == "ambiguous_usage_rejection" {
+		failures = min(previous.Rejections+1, 5)
+	}
+	delay := min(30*time.Second*time.Duration(1<<(failures-1)), 5*time.Minute)
+	if r.health == nil {
+		r.health = make(map[string]codexPathHealth)
+	}
+	r.health[key] = codexPathHealth{Until: now.Add(delay), Reason: "ambiguous_usage_rejection", ObservedAt: started.UnixNano(), Probing: previous.Probing, Rejections: failures}
 }
 
 func (a *Account) ObserveCodexPath(ctx context.Context, f database.CodexCapability) {

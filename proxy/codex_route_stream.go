@@ -285,7 +285,7 @@ func (b *codexObservedBody) observe(payload []byte) {
 	if !b.failed && (kind == "response.completed" && response.IsObject() || b.json && gjson.GetBytes(payload, "object").String() == "response.compaction" && !codexCompletedHasError(gjson.ParseBytes(payload))) {
 		b.success.Do(func() {
 			a := b.attempt
-			a.account.ObserveCodexPath(a.decision.client, database.CodexCapability{Upstream: a.path, Model: a.model, Capability: database.CapabilitySupported, Source: "upstream_completed", Reason: "success", ObservedAt: a.started.UnixNano(), CredentialGeneration: a.generation})
+			a.account.ObserveCodexPath(context.WithoutCancel(a.decision.client), database.CodexCapability{Upstream: a.path, Model: a.model, Capability: database.CapabilitySupported, Source: "upstream_completed", Reason: "success", ObservedAt: a.started.UnixNano(), CredentialGeneration: a.generation})
 		})
 	}
 }

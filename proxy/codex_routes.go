@@ -44,31 +44,34 @@ type CodexRouteAttempt struct {
 // One decision is shared by ordinary, encrypted, continuation and route retries.
 // The account scheduler still owns authorization, accounting and concurrency.
 type CodexRouteDecision struct {
-	mu                 sync.Mutex
-	RequestedModel     string
-	EffectiveModel     string
-	Policy             string
-	CapabilityFilter   string
-	AllowedGroupIDs    []int64
-	NoAffinityGroupIDs []int64
-	Preferred          string
-	Paths              []string
-	Attempts           []CodexRouteAttempt
-	Remaining          int
-	Switched           bool
-	Committed          bool
-	NoSwitch           bool
-	HistoryLockReason  string
-	pinnedPath         string
-	historyError       *Error
-	historyCache       cache.TokenCache
-	historyOwner       string
-	schedulerSelected  bool
-	routeConstrained   bool
-	FinalPath          string
-	Reason             string
-	client             context.Context
-	limits             database.APIKeyLimits
+	mu                   sync.Mutex
+	RequestedModel       string
+	EffectiveModel       string
+	Policy               string
+	CapabilityFilter     string
+	AllowedGroupIDs      []int64
+	NoAffinityGroupIDs   []int64
+	Preferred            string
+	Paths                []string
+	Attempts             []CodexRouteAttempt
+	Remaining            int
+	Switched             bool
+	Committed            bool
+	NoSwitch             bool
+	HistoryLockReason    string
+	pinnedPath           string
+	historyError         *Error
+	historyCache         cache.TokenCache
+	historyOwner         string
+	schedulerSelected    bool
+	routeConstrained     bool
+	selectionReasons     map[int64][]string
+	recordSelectionError func(*Error)
+	selectionLogged      bool
+	FinalPath            string
+	Reason               string
+	client               context.Context
+	limits               database.APIKeyLimits
 }
 
 type codexRouteAttemptState struct {
@@ -144,49 +147,67 @@ func nativeStateEligible(account *auth.Account, model string) bool {
 }
 
 func (d *CodexRouteDecision) pathEligible(account *auth.Account, path, model string, body []byte) bool {
+	return d.pathIneligibleReason(account, path, model, body) == ""
+}
+
+func (d *CodexRouteDecision) pathIneligibleReason(account *auth.Account, path, model string, body []byte) string {
 	d.mu.Lock()
 	blocked := d.historyError != nil || d.pinnedPath != "" && d.pinnedPath != path
 	d.mu.Unlock()
 	if blocked {
-		return false
+		return "history_path"
 	}
 	if account == nil || account.IsRelayStyle() {
-		return false
+		return "account_identity"
 	}
 	if err := account.RefreshCodexRoutes(d.client, time.Now()); err != nil {
-		return false
+		return "route_configuration"
 	}
 	if path == database.CodexPathBasispoints {
 		if !basispointsActiveForModel(model) || account.IsCodexAgentIdentity() || account.GetAccessToken() == "" || account.EffectiveAccountID() == "" {
-			return false
+			return "basispoints_unavailable"
 		}
-		if len(body) > 0 && basispoints.NativeCodexReason(body, basispointsImageHostAvailable()) != "" {
-			return false
+		if len(body) > 0 {
+			if reason := basispoints.NativeCodexReason(body, basispointsImageHostAvailable()); reason != "" {
+				return "requires_native_" + reason
+			}
 		}
 	} else if !nativeStateEligible(account, model) {
-		return false
+		return "native_state"
 	}
 	s := account.CodexPathSnapshot(path, model, time.Now())
-	if !s.Allowed || s.Capability == database.CapabilityUnsupported || s.Health == "cooldown" || s.Health == "recovering" {
-		return false
+	if s.Health == "unavailable" {
+		return "route_configuration"
+	}
+	if !s.Allowed {
+		return "path_disabled"
+	}
+	if s.Capability == database.CapabilityUnsupported {
+		return "capability_unsupported"
+	}
+	if s.Health == "cooldown" || s.Health == "recovering" {
+		return "path_" + s.Health
 	}
 	supported := func(p string) bool {
 		return account.CodexPathSnapshot(p, model, time.Now()).Capability == database.CapabilitySupported
 	}
+	allowed := false
 	switch d.CapabilityFilter {
 	case "supported":
-		return supported(path)
+		allowed = supported(path)
 	case "dual_supported":
-		return supported(database.CodexPathNative) && supported(database.CodexPathBasispoints)
+		allowed = supported(database.CodexPathNative) && supported(database.CodexPathBasispoints)
 	case "codex_supported":
-		return supported(database.CodexPathNative)
+		allowed = supported(database.CodexPathNative)
 	case "basispoints_supported":
-		return supported(database.CodexPathBasispoints)
+		allowed = supported(database.CodexPathBasispoints)
 	case "", "any":
-		return true
-	default:
-		return false
+		allowed = true
 	}
+	if !allowed {
+		return "capability_filter"
+	}
+	return ""
 }
 
 func (d *CodexRouteDecision) eligiblePaths() []string {
@@ -215,6 +236,7 @@ func (h *Handler) withCodexRouteFilter(c *gin.Context, requested, model string, 
 	d := newCodexRouteDecision(c.Request.Context(), requested, model, limits, budget)
 	d.historyCache = h.cache
 	d.historyOwner = responseCacheOwner(requestAPIKeyID(c))
+	d.recordSelectionError = func(err *Error) { h.logCodexRouteSelectionError(c, d, err) }
 	d.bindHistory(body)
 	if row != nil {
 		d.AllowedGroupIDs = append([]int64(nil), row.AllowedGroupIDs...)
@@ -226,18 +248,32 @@ func (h *Handler) withCodexRouteFilter(c *gin.Context, requested, model string, 
 		base = h.store.WithModelCooldownFilter(model, base)
 	}
 	return func(account *auth.Account) bool {
-		if account == nil || base != nil && !base(account) {
+		if account == nil {
+			return false
+		}
+		if base != nil && !base(account) {
+			d.rememberSelectionReasons(account.ID(), []string{"model_or_account_filter"})
 			return false
 		}
 		if account.IsRelayStyle() {
 			// Known direct-upstream state cannot be replayed through an arbitrary relay.
-			return !d.hasKnownHistoryRoute()
+			if d.hasKnownHistoryRoute() {
+				d.rememberSelectionReasons(account.ID(), []string{"history_relay"})
+				return false
+			}
+			d.rememberSelectionReasons(account.ID(), nil)
+			return true
 		}
+		reasons := []string{}
 		for _, p := range d.eligiblePaths() {
-			if d.pathEligible(account, p, model, body) {
+			reason := d.pathIneligibleReason(account, p, model, body)
+			if reason == "" {
+				d.rememberSelectionReasons(account.ID(), nil)
 				return true
 			}
+			reasons = append(reasons, p+":"+reason)
 		}
+		d.rememberSelectionReasons(account.ID(), reasons)
 		d.mu.Lock()
 		d.routeConstrained = true
 		d.mu.Unlock()
@@ -498,6 +534,9 @@ func (a *codexRouteAttemptState) recordFailure(f codexRouteFailure) {
 	log.Printf("[CodexRoute] preferred=%s path=%s account=%d http_status=%d reported_status=%d source=%s code=%s reason=%s switch_blocked=%s", d.Preferred, a.path, a.account.ID(), f.HTTPStatus, f.ReportedStatus, f.Source, f.Code, f.Category, blocked)
 	if f.Category == "upstream_access" {
 		a.account.SetCodexPathCooldown(a.path, a.model, f.Category, a.started, time.Now().Add(30*time.Second))
+	}
+	if f.Category == "ambiguous_usage_rejection" {
+		a.account.NoteCodexPathUsageRejection(a.path, a.model, a.started, time.Now())
 	}
 	if f.Category == "model_access" {
 		a.account.ObserveCodexPath(d.client, database.CodexCapability{Upstream: a.path, Model: a.model, Capability: database.CapabilityUnsupported, Source: f.Source, Reason: f.Code, ObservedAt: a.started.UnixNano(), CredentialGeneration: a.generation})

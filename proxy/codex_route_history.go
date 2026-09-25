@@ -1,13 +1,18 @@
 package proxy
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"log"
+	"net"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/codex2api/cache"
 	"github.com/codex2api/database"
+	"github.com/codex2api/internal/basispoints"
 	"github.com/tidwall/gjson"
 )
 
@@ -105,6 +110,7 @@ func (d *CodexRouteDecision) bindHistory(body []byte) {
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	defer d.validateHistoryProtocolLocked(body)
 	d.NoSwitch = true
 	if d.HistoryLockReason == "" {
 		d.HistoryLockReason = "history_not_replayable"
@@ -122,15 +128,15 @@ func (d *CodexRouteDecision) bindHistory(body []byte) {
 		d.historyError.HTTPStatus = http.StatusBadRequest
 		return
 	}
+	values, err := d.readHistoryRoutes(keys)
+	if err != nil {
+		// Retain the preferred path on lookup failure without assuming replayability.
+		log.Printf("[CodexRoute] history_lookup_failed error_kind=%s switch_blocked=history_not_replayable", codexHistoryCacheErrorKind(err))
+		return
+	}
 	known := ""
 	for _, key := range keys {
-		raw, found, err := d.historyCache.GetRuntime(d.client, codexHistoryNamespace, d.historyOwner+":"+key)
-		if err != nil {
-			// Match legacy compaction availability on cache failure. Retain
-			// the current/preferred path and forbid all automatic switching.
-			log.Printf("[CodexRoute] history_lookup_failed switch_blocked=history_not_replayable")
-			return
-		}
+		raw, found := values[d.historyOwner+":"+key]
 		if !found {
 			continue
 		}
@@ -161,22 +167,88 @@ func (d *CodexRouteDecision) bindHistory(body []byte) {
 	d.HistoryLockReason = "history_provenance"
 }
 
+func (d *CodexRouteDecision) validateHistoryProtocolLocked(body []byte) {
+	if d.historyError != nil || d.pinnedPath != database.CodexPathBasispoints {
+		return
+	}
+	if reason := basispoints.NativeCodexReason(body, basispointsImageHostAvailable()); reason != "" {
+		d.historyError = routeLocalError("codex_route_history_protocol_conflict", "This history is pinned to Basispoints, but the request requires native Codex ("+reason+"). Remove the incompatible feature or start a new conversation on native Codex; retrying the same history cannot resolve this conflict.")
+		d.historyError.HTTPStatus = http.StatusBadRequest
+	}
+}
+
 func (a *codexRouteAttemptState) recordHistoryRoute(payload []byte, seen map[string]bool) {
 	d := a.decision
 	if d.historyCache == nil {
 		return
 	}
 	raw, _ := json.Marshal(a.path)
+	values := make(map[string]json.RawMessage)
 	for _, key := range codexHistoryKeys(payload, true) {
-		if seen[key] || len(seen) >= codexHistoryMaxKeys {
+		if seen[key] || len(seen)+len(values) >= codexHistoryMaxKeys {
 			continue
 		}
-		seen[key] = true
-		if err := d.historyCache.SetRuntime(d.client, codexHistoryNamespace, d.historyOwner+":"+key, raw, codexHistoryTTL); err != nil {
-			log.Printf("[CodexRoute] history_record_failed path=%s account=%d", a.path, a.account.ID())
-			return
+		values[d.historyOwner+":"+key] = raw
+	}
+	if len(values) == 0 {
+		return
+	}
+	// These output identities have already been produced. Client cancellation
+	// must not erase their provenance while a drained stream is being observed.
+	ctx := context.WithoutCancel(d.client)
+	var err error
+	if writer, ok := d.historyCache.(cache.RuntimeBatchWriter); ok {
+		err = writer.SetRuntimeBatch(ctx, codexHistoryNamespace, values, codexHistoryTTL)
+	} else {
+		for key, value := range values {
+			if err = d.historyCache.SetRuntime(ctx, codexHistoryNamespace, key, value, codexHistoryTTL); err != nil {
+				break
+			}
 		}
 	}
+	if err != nil {
+		log.Printf("[CodexRoute] history_record_failed path=%s account=%d error_kind=%s", a.path, a.account.ID(), codexHistoryCacheErrorKind(err))
+		return
+	}
+	// A failed write remains retryable when the completion repeats the item.
+	for key := range values {
+		seen[strings.TrimPrefix(key, d.historyOwner+":")] = true
+	}
+}
+
+func (d *CodexRouteDecision) readHistoryRoutes(keys []string) (map[string]json.RawMessage, error) {
+	scoped := make([]string, 0, len(keys))
+	for _, key := range keys {
+		scoped = append(scoped, d.historyOwner+":"+key)
+	}
+	if reader, ok := d.historyCache.(cache.RuntimeBatchReader); ok {
+		return reader.GetRuntimeBatch(d.client, codexHistoryNamespace, scoped)
+	}
+	values := make(map[string]json.RawMessage)
+	for _, key := range scoped {
+		raw, found, err := d.historyCache.GetRuntime(d.client, codexHistoryNamespace, key)
+		if err != nil {
+			return nil, err
+		}
+		if found {
+			values[key] = raw
+		}
+	}
+	return values, nil
+}
+
+func codexHistoryCacheErrorKind(err error) string {
+	switch {
+	case errors.Is(err, context.Canceled):
+		return "context_canceled"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "deadline_exceeded"
+	}
+	var networkErr net.Error
+	if errors.As(err, &networkErr) {
+		return "network"
+	}
+	return "cache_backend"
 }
 
 func codexRouteSelectionError(err error) bool {

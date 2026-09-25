@@ -65,6 +65,9 @@ type Error struct {
 	// HTTPStatus is the HTTP status code to return
 	HTTPStatus int
 
+	// RetryAfterSeconds is a local scheduling delay, not an account quota reset.
+	RetryAfterSeconds int
+
 	// Cause is the underlying error (for error chain)
 	Cause error
 }

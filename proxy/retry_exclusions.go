@@ -520,7 +520,7 @@ func (h *Handler) nextRetryAccountWithGuard(ctx context.Context, affinityKey str
 			initial := !d.schedulerSelected && d.routeConstrained
 			d.mu.Unlock()
 			if initial && !h.codexRouteHasCandidates(ctx, apiKeyID, filter) {
-				return nil, "", auth.SessionAffinityGuard{}, routeLocalError("codex_route_no_candidates", "No account in this Key's authorized groups satisfies the route, capability, model and native State requirements")
+				return nil, "", auth.SessionAffinityGuard{}, h.codexRouteNoCandidatesError(ctx, apiKeyID, filter)
 			}
 		}
 		h.store.TriggerDispatchStateReconcileAsync()

@@ -647,7 +647,10 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 			}
 			if codexRouteSelectionError(selectionErr) {
 				routeErr := selectionErr.(*Error)
-				apiErr = api.NewAPIError(api.ErrorCode(routeErr.Code), routeErr.Message, api.ErrorType(routeErr.Type))
+				if d := codexRouteFromContext(c.Request.Context()); d != nil && d.recordSelectionError != nil {
+					d.recordSelectionError(routeErr)
+				}
+				apiErr = api.NewAPIError(api.ErrorCode(routeErr.Code), routeErr.Message, routeAPIErrorType(routeErr))
 			} else if errors.Is(selectionErr, auth.ErrSchedulerQueueFull) {
 				apiErr = schedulerQueueFullAPIError()
 			} else if lastRetryableUpstreamErr != nil {

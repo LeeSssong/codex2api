@@ -3,6 +3,7 @@ package proxy
 import (
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/codex2api/api"
@@ -24,6 +25,12 @@ func writeSchedulerQueueError(c *gin.Context, err error, protocol continuousRetr
 		if !claimContinuousRetryTerminal(c, protocol) || c.Request.Context().Err() != nil {
 			return true
 		}
+		if d := codexRouteFromContext(c.Request.Context()); d != nil && d.recordSelectionError != nil {
+			d.recordSelectionError(routeErr)
+		}
+		if routeErr.RetryAfterSeconds > 0 && !c.Writer.Written() {
+			c.Header("Retry-After", strconv.Itoa(routeErr.RetryAfterSeconds))
+		}
 		switch protocol {
 		case continuousRetryProtocolAnthropic:
 			if !writeCommittedAnthropicRetryError(c, "overloaded_error", routeErr.Message) {
@@ -31,11 +38,11 @@ func writeSchedulerQueueError(c *gin.Context, err error, protocol continuousRetr
 			}
 		case continuousRetryProtocolChat:
 			if !writeCommittedChatRetryError(c, routeErr.Message) {
-				c.JSON(routeErr.HTTPStatus, gin.H{"error": api.NewAPIError(api.ErrorCode(routeErr.Code), routeErr.Message, api.ErrorTypeServer)})
+				c.JSON(routeErr.HTTPStatus, gin.H{"error": api.NewAPIError(api.ErrorCode(routeErr.Code), routeErr.Message, routeAPIErrorType(routeErr))})
 			}
 		default:
 			if !writeCommittedResponsesRetryError(c, routeErr.Message) {
-				c.JSON(routeErr.HTTPStatus, gin.H{"error": api.NewAPIError(api.ErrorCode(routeErr.Code), routeErr.Message, api.ErrorTypeServer)})
+				c.JSON(routeErr.HTTPStatus, gin.H{"error": api.NewAPIError(api.ErrorCode(routeErr.Code), routeErr.Message, routeAPIErrorType(routeErr))})
 			}
 		}
 		return true
