@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/codex2api/proxy"
+	"github.com/gin-gonic/gin"
 )
 
 const managedUpdateReason = "当前为星桥集成镜像，请通过已审核的源码发布流程更新，以保留智能运维和数据库兼容性"
@@ -87,4 +88,9 @@ func (c *defaultSystemReleaseClient) FetchSourceHead(ctx context.Context) (*syst
 		return nil, err
 	}
 	return &systemSourceHead{SHA: data.SHA, PublishedAt: data.Commit.Committer.Date}, nil
+}
+
+// GetSystemBuild returns local immutable provenance without depending on GitHub.
+func (h *Handler) GetSystemBuild(c *gin.Context) {
+	c.JSON(http.StatusOK, h.systemUpdater().managedInfo())
 }

@@ -3,8 +3,27 @@ package admin
 import (
 	"context"
 	"errors"
+	"github.com/gin-gonic/gin"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 )
+
+func TestManagedBuildProvenanceDoesNotWaitForUpstream(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h := &Handler{systemUpdate: &systemUpdater{managedBuild: true, sourceRevision: "verified-commit", sourceTree: "verified-tree", fetchSourceHead: func(context.Context) (*systemSourceHead, error) {
+		t.Fatal("build provenance must not fetch GitHub")
+		return nil, nil
+	}}}
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/admin/system/build", nil)
+	h.GetSystemBuild(c)
+	if w.Code != 200 || !strings.Contains(w.Body.String(), "verified-commit") || !strings.Contains(w.Body.String(), "verified-tree") {
+		t.Fatalf("missing provenance: %s", w.Body.String())
+	}
+}
 
 func TestManagedSourceTracksHloolxCommit(t *testing.T) {
 	for _, tc := range []struct {
