@@ -148,8 +148,18 @@ func executeBasispointsRequest(ctx context.Context, account *auth.Account, reque
 	RecordObservedInstructions(requestBody, headers)
 	requestBody = ApplyPayloadRulesToBody(requestBody, gjson.GetBytes(requestBody, "model").String(), headers, PayloadRuleIdentityFromContext(ctx))
 	// Native stateless session IDs change per request; they cannot identify a tool loop.
-	if explicitSessionID := ResolveExplicitSessionID(headers, requestBody); explicitSessionID != "" {
+	explicitSessionID := ResolveExplicitSessionID(headers, requestBody)
+	if explicitSessionID != "" {
 		requestBody, _ = sjson.SetBytes(requestBody, "prompt_cache_key", explicitSessionID)
+	}
+	// A session whose replayed ciphertext Basispoints already rejected keeps
+	// replaying it every turn; strip it before the upstream fails again. The
+	// streaming handler still recovers the first, unremembered rejection.
+	if basispointsEncryptedRejections.rejected(explicitSessionID) {
+		if stripped, changed := stripInvalidEncryptedContentFromResponsesBody(requestBody); changed {
+			requestBody = stripped
+			log.Printf("[Basispoints] stage=prepare result=stripped_encrypted account=%d", account.ID())
+		}
 	}
 	scope := fmt.Sprintf("%d|%x", account.ID(), sha256.Sum256([]byte(apiKey)))
 	if conversation := gjson.GetBytes(requestBody, "prompt_cache_key").String(); conversation != "" {
@@ -209,6 +219,9 @@ func executeBasispointsRequest(ctx context.Context, account *auth.Account, reque
 	}
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		resp.Body = bridge.Stream(resp.Body)
+		if explicitSessionID != "" {
+			resp.Body = observeBasispointsEncryptedRejection(resp.Body, explicitSessionID)
+		}
 		resp.ContentLength = -1
 		resp.Header.Del("Content-Length")
 		resp.Header.Set("Content-Type", "text/event-stream")

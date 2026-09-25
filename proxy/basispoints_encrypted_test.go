@@ -3,11 +3,13 @@ package proxy
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/codex2api/auth"
 	"github.com/codex2api/config"
@@ -15,6 +17,35 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 )
+
+func TestBasispointsEncryptedRejectionSetScopesExpiresAndBounds(t *testing.T) {
+	now := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
+	set := &basispointsEncryptedRejectionSet{seen: map[[32]byte]time.Time{}, now: func() time.Time { return now }}
+	if set.rejected("sess-a") || set.rejected("") {
+		t.Fatal("an empty set must reject nothing")
+	}
+	set.mark("")
+	if len(set.seen) != 0 {
+		t.Fatal("an empty session must not be recorded")
+	}
+	set.mark("sess-a")
+	if !set.rejected("sess-a") || set.rejected("sess-b") {
+		t.Fatal("mark must scope to the exact session")
+	}
+	now = now.Add(basispointsEncryptedRejectTTL + time.Minute)
+	if set.rejected("sess-a") {
+		t.Fatal("an entry must expire after the TTL")
+	}
+	if len(set.seen) != 0 {
+		t.Fatal("an expired entry must be pruned when read")
+	}
+	for i := 0; i < basispointsEncryptedRejectMax+200; i++ {
+		set.mark(fmt.Sprintf("sess-%d", i))
+	}
+	if len(set.seen) > basispointsEncryptedRejectMax {
+		t.Fatalf("the set exceeded its bound: %d", len(set.seen))
+	}
+}
 
 func basispointsTestFailed(code, message string) *http.Response {
 	raw, _ := json.Marshal(map[string]any{
@@ -149,5 +180,73 @@ func TestBasispointsStreamInvalidEncryptedContentRetriesOnlyOnce(t *testing.T) {
 	}
 	if bytes.Contains(sent[1], []byte("gAAAAOPAQUE_ENC_SENTINEL")) {
 		t.Fatalf("retry must drop the rejected encrypted content: %s", sent[1])
+	}
+}
+
+// After a session's ciphertext is rejected once, later turns strip it before
+// contacting Basispoints, so they succeed on the first attempt instead of failing
+// and retrying every turn.
+func TestBasispointsProactivelyStripsEncryptedAfterRejection(t *testing.T) {
+	enableBasispointsForTest(t)
+	resetResponseCacheForTest()
+	t.Cleanup(resetResponseCacheForTest)
+	previousSet := basispointsEncryptedRejections
+	basispointsEncryptedRejections = &basispointsEncryptedRejectionSet{seen: map[[32]byte]time.Time{}, now: time.Now}
+	t.Cleanup(func() { basispointsEncryptedRejections = previousSet })
+	gin.SetMode(gin.TestMode)
+	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-6-astra", CodexBasispointsEnabled: true})
+	t.Cleanup(store.Stop)
+	account := &auth.Account{DBID: 91272, AccountID: "synthetic-workspace", AccessToken: "synthetic-token", PlanType: "pro"}
+	store.AddAccount(account)
+	seedContinuousRetryLocalHealth(account)
+	handler := NewHandler(store, nil, &config.Config{}, nil)
+	handler.configKeys["synthetic-client-key"] = true
+	router := gin.New()
+	handler.RegisterRoutes(router)
+
+	var sent [][]byte
+	installBasispointsTransport(t, account, func(req *http.Request) (*http.Response, error) {
+		body, _ := io.ReadAll(req.Body)
+		sent = append(sent, body)
+		// Fail only while the request still carries the rejected ciphertext.
+		if bytes.Contains(body, []byte("gAAAAOPAQUE_ENC_SENTINEL")) {
+			return basispointsTestFailed("invalid_encrypted_content", "Encrypted function output content could not be decrypted or decoded."), nil
+		}
+		return basispointsTestCompleted("resp_ok", []any{map[string]any{"type": "message", "role": "assistant", "content": []any{map[string]any{"type": "output_text", "text": "ok"}}}}), nil
+	})
+
+	requestBody := map[string]any{
+		"model": "gpt-6-astra", "stream": true,
+		"input": []any{
+			map[string]any{"type": "reasoning", "encrypted_content": "gAAAAOPAQUE_ENC_SENTINEL", "summary": []any{}},
+			map[string]any{"type": "message", "role": "user", "content": []any{map[string]any{"type": "input_text", "text": "turn"}}},
+		},
+	}
+	invoke := func() {
+		t.Helper()
+		raw, _ := json.Marshal(requestBody)
+		req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(raw))
+		req.Header.Set("Authorization", "Bearer synthetic-client-key")
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Session-Id", "synthetic-proactive-session")
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, req)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("turn returned %d: %s", recorder.Code, recorder.Body.String())
+		}
+	}
+	// Turn 1: the ciphertext is rejected, the streaming handler strips and retries,
+	// and the observer marks the session — two upstream calls.
+	invoke()
+	if len(sent) != 2 {
+		t.Fatalf("turn 1 should fail then recover in two calls, got %d", len(sent))
+	}
+	// Turn 2: same session, ciphertext stripped before sending, one call succeeds.
+	invoke()
+	if len(sent) != 3 {
+		t.Fatalf("turn 2 should proactively strip and succeed in one call, got %d total", len(sent))
+	}
+	if bytes.Contains(sent[2], []byte("gAAAAOPAQUE_ENC_SENTINEL")) || bytes.Contains(sent[2], []byte("encrypted_content")) {
+		t.Fatalf("turn 2 still sent the rejected ciphertext: %s", sent[2])
 	}
 }
