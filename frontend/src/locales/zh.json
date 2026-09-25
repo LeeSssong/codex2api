@@ -197,7 +197,9 @@
     "images": "生图工作台",
     "promptFilter": "Prompt 检查",
     "modelPricing": "模型定价",
-    "payloadRules": "请求体重写"
+    "payloadRules": "请求体重写",
+    "accountQuality": "降智运维",
+    "accountAlerts": "账号告警"
   },
   "antigravity": {
     "pageTitle": "Antigravity 账号",

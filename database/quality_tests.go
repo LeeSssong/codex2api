@@ -158,6 +158,9 @@ func (db *DB) ensureQualityTestSchema(ctx context.Context) error {
 			return err
 		}
 	}
+	if err := db.ensureAccountOpsSchema(ctx); err != nil {
+		return err
+	}
 	return db.ensureQualityTestPromptSchema(ctx)
 }
 

@@ -1476,6 +1476,17 @@ export const api = {
   dismissPromptIntelligenceCandidate: (id: number) =>
     request<import('./types').PromptIntelligenceCandidate>(`/prompt-filter/intelligence/candidates/${id}/dismiss`, { method: 'POST' }),
   getModels: () => request<ModelsResponse>('/models'),
+  getAccountOpsModule: () => request<{enabled:boolean}>('/account-ops/module'),
+  saveAccountOpsModule: (enabled:boolean) => request<{enabled:boolean}>('/account-ops/module',{method:'PUT',body:JSON.stringify({enabled})}),
+  getAccountOpsSettings: () => request<import('./lib/accountOps').AccountOpsSettings>('/account-ops/config'),
+  saveAccountOpsSettings: (body:Pick<import('./lib/accountOps').AccountOpsSettings,'config'|'smtp'>) => request<import('./lib/accountOps').AccountOpsSettings>('/account-ops/config',{method:'PUT',body:JSON.stringify(body)}),
+  getAccountOpsAlerts: (offset=0) => request<{items:import('./lib/accountOps').AccountOpsEvent[]}>(`/account-ops/alerts?offset=${offset}`),
+  getAccountQualityPlans: () => request<{items:import('./lib/accountOps').AccountQualityPlan[]}>('/quality-ops/plans'),
+  saveAccountQualityPlan: (body:import('./lib/accountOps').AccountQualityPlan) => request<import('./lib/accountOps').AccountQualityPlan>('/quality-ops/plans',{method:'POST',body:JSON.stringify(body)}),
+  deleteAccountQualityPlan: (id:number) => request(`/quality-ops/plans/${id}`,{method:'DELETE'}),
+  triggerAccountQualityPlan: (id:number) => request(`/quality-ops/plans/${id}/trigger`,{method:'POST'}),
+  getAccountQualityHistory: (before=0) => request<{items:import('./lib/accountOps').AccountQualityRound[];next_cursor:number}>(`/quality-ops/history?before=${before}`),
+  getAccountQualityRound: (id:number) => request<import('./lib/accountOps').AccountQualityRound>(`/quality-ops/history/${id}`),
   getQualityTestOptions: (id: number, signal?: AbortSignal) =>
     request<{ models: string[]; reasoning_efforts: string[] }>(`/accounts/${id}/quality-test/options`, { signal }),
   getQualityTestPrompts: (signal?: AbortSignal) =>
