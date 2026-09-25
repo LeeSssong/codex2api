@@ -403,10 +403,10 @@ func (b *Bridge) translateCall(native object) (object, error) {
 	if !marked && err == nil {
 		envelope, err = decodeTransportEnvelope(arguments["code"])
 		if err != nil {
-			// Strict decoding failed; accept only an unambiguous envelope the
-			// model embedded in other text, or raw custom input it forgot to mark.
-			if recovered, raw, ok := b.recoverTransportEnvelope(arguments); ok {
-				envelope, marked, err = recovered, raw, nil
+			// Recover only one complete declared invocation. Never extract a
+			// tool envelope from arbitrary code or infer one from the summary.
+			if recovered, ok := b.recoverTransportEnvelope(arguments); ok {
+				envelope, err = recovered, nil
 			}
 		}
 	}
@@ -514,7 +514,7 @@ func (b *Bridge) finishClientToolCall(native object, info tool, envelope object,
 	}
 	if info.Kind == "custom" {
 		// Models address custom input as input, args or arguments; exactly one
-		// may be present. Text passes verbatim, objects are unwrapped or serialized.
+		// may be present, and its value must remain an exact string.
 		var value any
 		fields := 0
 		for _, field := range []string{"input", "args", "arguments"} {

@@ -30,7 +30,7 @@ func assertAgentEncryption(t *testing.T, call object, want string) {
 func TestAgentMessagePlaintextAcrossStreamAndReplay(t *testing.T) {
 	const task = "检查子代理消息\nKeep \"quotes\", tab\tand CRLF\r\nunchanged."
 	for _, name := range []string{"spawn_agent", "send_message", "followup_task"} {
-		for _, mode := range []string{"relay", "direct"} {
+		for _, mode := range []string{"relay", "direct", "invocation"} {
 			t.Run(name+"/"+mode, func(t *testing.T) {
 				cache := new(ReplayCache)
 				source := agentToolSource(name)
@@ -45,6 +45,10 @@ func TestAgentMessagePlaintextAcrossStreamAndReplay(t *testing.T) {
 				if mode == "direct" {
 					encoded, _ := json.Marshal(args)
 					native["name"], native["arguments"] = "collaboration."+name, string(encoded)
+				} else if mode == "invocation" {
+					encoded, _ := json.Marshal(args)
+					native["arguments"] = object{"code": "return await collaboration." + name + "(" + string(encoded) + " ) ; ", "summary": "Delegate task"}
+					native["encrypted_function_args"] = []any{"code"}
 				} else {
 					// Wrapper metadata describes OfficeJS arguments, not the child task.
 					native["encrypted_function_args"] = []any{"code"}
@@ -119,6 +123,12 @@ func TestAgentMessagePlaintextAcrossStreamAndReplay(t *testing.T) {
 				for _, replay := range []*ReplayCache{cache, new(ReplayCache)} {
 					prepared, _ := mustPrepare(t, source, "account/key/parent", replay)
 					items := prepared["input"].([]any)
+					if mode == "invocation" && replay == cache {
+						if !reflect.DeepEqual(items[len(items)-2], native) {
+							t.Fatal("cache hit changed the original invocation")
+						}
+						continue
+					}
 					envelope := historyCollisionEnvelope(t, items[len(items)-2].(object))
 					if !reflect.DeepEqual(envelope["arguments"], args) {
 						t.Fatal("cache hit or history reconstruction changed the task")

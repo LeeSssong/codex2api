@@ -288,9 +288,11 @@ func TestBasispointsHTTPIngressToolRoundTrip(t *testing.T) {
 		kind         string
 		continuation bool
 		rawCustom    bool
+		invocation   bool
 	}{
-		{"function", false, false}, {"custom", false, false}, {"function", true, false}, {"custom", true, false},
-		{"custom", false, true}, {"custom", true, true},
+		{"function", false, false, false}, {"custom", false, false, false}, {"function", true, false, false}, {"custom", true, false, false},
+		{"custom", false, true, false}, {"custom", true, true, false},
+		{"function", false, false, true}, {"function", true, false, true}, {"custom", false, false, true}, {"custom", true, false, true},
 	} {
 		name := tc.kind + "/full_history"
 		if tc.continuation {
@@ -298,6 +300,9 @@ func TestBasispointsHTTPIngressToolRoundTrip(t *testing.T) {
 		}
 		if tc.rawCustom {
 			name += "/raw_transport"
+		}
+		if tc.invocation {
+			name += "/invocation"
 		}
 		t.Run(name, func(t *testing.T) {
 			enableBasispointsForTest(t)
@@ -326,6 +331,17 @@ func TestBasispointsHTTPIngressToolRoundTrip(t *testing.T) {
 				arguments := native["arguments"].(map[string]any)
 				arguments["summary"] = "codex2api.custom/functions.run"
 				arguments["code"] = envelope["input"]
+			}
+			if tc.invocation {
+				value := envelope["arguments"]
+				if tc.kind == "custom" {
+					value = envelope["input"]
+				}
+				literal, err := json.Marshal(value)
+				if err != nil {
+					t.Fatal(err)
+				}
+				native["arguments"].(map[string]any)["code"] = "return await functions.run(" + string(literal) + " ) ; "
 			}
 			var sent [][]byte
 			installBasispointsTransport(t, account, func(req *http.Request) (*http.Response, error) {
