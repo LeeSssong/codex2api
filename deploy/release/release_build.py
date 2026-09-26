@@ -19,8 +19,8 @@ def verify_source(root, upstream):
 def build(root, upstream, output):
  root=pathlib.Path(root).resolve();revision,tree=verify_source(root,upstream)
  output=pathlib.Path(output).resolve();output.mkdir(mode=0o700,parents=True,exist_ok=False)
- image='codex2api:smartops-'+revision[:12]
- build_version='smartops-'+datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%d')+'-'+revision[:12]
+ image='codex2api:release-'+revision[:12]
+ build_version='release-'+datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%d')+'-'+revision[:12]
  with tempfile.TemporaryDirectory(prefix='codex2api-verified-build-') as tmp:
   source=pathlib.Path(tmp)/'source';source.mkdir()
   archive=pathlib.Path(tmp)/'source.tar'
