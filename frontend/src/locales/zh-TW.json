@@ -2803,6 +2803,15 @@
       "cleanup_errors": "清理失敗次數",
       "max_bytes": "儲存上限（位元組）",
       "max_assets": "資產數量上限"
+    },
+    "deliveryStatus": "通知狀態",
+    "credentialGeneration": "憑證代次 {{generation}}",
+    "notificationChannelHint": "Basispoints 事件使用獨立 Bark 通道，郵件設定不控制 Bark 通知。",
+    "eventKinds": {
+      "auto_403_disabled": "BPS 403 自動停用",
+      "image_capacity_rejected": "BPS 圖片容量拒絕",
+      "image_cleanup_failed": "BPS 圖片清理失敗",
+      "recovery_suggested": "BPS 建議恢復"
     }
   }
 }

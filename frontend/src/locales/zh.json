@@ -7694,6 +7694,15 @@
       "cleanup_errors": "清理失败次数",
       "max_bytes": "存储上限（字节）",
       "max_assets": "资产数量上限"
+    },
+    "deliveryStatus": "通知状态",
+    "credentialGeneration": "凭据代次 {{generation}}",
+    "notificationChannelHint": "Basispoints 事件使用独立 Bark 通道，邮件配置不控制 Bark 通知。",
+    "eventKinds": {
+      "auto_403_disabled": "BPS 403 自动禁用",
+      "image_capacity_rejected": "BPS 图片容量拒绝",
+      "image_cleanup_failed": "BPS 图片清理失败",
+      "recovery_suggested": "BPS 建议恢复"
     }
   }
 }

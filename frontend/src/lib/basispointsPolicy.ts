@@ -42,15 +42,34 @@ export function bpsPolicyPatch(
     cache_creation_as_input,
   };
 }
+function normalizedModels(models: string[]): string[] {
+  return [...new Set(models.map((model) => model.trim().toLowerCase()).filter(Boolean))];
+}
+function modelPatternAllows(pattern: string, model: string): boolean {
+  if (pattern === model) return true;
+  if (!model.startsWith(pattern + "-")) return false;
+  const suffix = model.slice(pattern.length + 1);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(suffix)) return false;
+  const date = new Date(suffix + "T00:00:00.000Z");
+  return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === suffix;
+}
 export function bpsEffectiveModels(
   policy: Pick<BasispointsPolicy, "model_scope" | "models">,
   global: Pick<BasispointsSettings, "model_scope" | "models">,
 ): string[] | null {
+  const globalModels = normalizedModels(global.models);
   if (policy.model_scope !== "selected")
-    return global.model_scope === "all" ? null : global.models;
-  return global.model_scope === "all"
-    ? policy.models
-    : policy.models.filter((model) => global.models.includes(model));
+    return global.model_scope === "all" ? null : globalModels;
+  const accountModels = normalizedModels(policy.models);
+  if (global.model_scope === "all") return accountModels;
+  const intersection = new Set<string>();
+  for (const account of accountModels) {
+    for (const globalModel of globalModels) {
+      if (modelPatternAllows(globalModel, account)) intersection.add(account);
+      else if (modelPatternAllows(account, globalModel)) intersection.add(globalModel);
+    }
+  }
+  return [...intersection];
 }
 export type BasispointsSettingsInput = Pick<
   BasispointsSettings,

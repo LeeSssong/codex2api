@@ -7697,6 +7697,15 @@
       "cleanup_errors": "Cleanup errors",
       "max_bytes": "Storage capacity (bytes)",
       "max_assets": "Asset count capacity"
+    },
+    "deliveryStatus": "Delivery status",
+    "credentialGeneration": "Credential generation {{generation}}",
+    "notificationChannelHint": "Basispoints events use the independent Bark channel. Email settings do not control Bark notifications.",
+    "eventKinds": {
+      "auto_403_disabled": "BPS disabled after 403",
+      "image_capacity_rejected": "BPS image capacity rejected",
+      "image_cleanup_failed": "BPS image cleanup failed",
+      "recovery_suggested": "BPS recovery suggested"
     }
   }
 }

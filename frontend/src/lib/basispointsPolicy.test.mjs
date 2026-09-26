@@ -66,3 +66,12 @@ test("a relay-only edit preserves the latest complete persisted settings", async
     image_relay_public_origin: "https://relay.example.com",
   });
 });
+test('model family intersections match valid case-insensitive snapshots in either direction', () => {
+ const effective=(account,global)=>bpsEffectiveModels({model_scope:'selected',models:account},{model_scope:'selected',models:global});
+ assert.deepEqual(effective(['GPT-6-ASTRA-2026-09-26'],['gpt-6-astra']),['gpt-6-astra-2026-09-26']);
+ assert.deepEqual(effective(['gpt-6-astra'],['GPT-6-ASTRA-2026-09-26']),['gpt-6-astra-2026-09-26']);
+ assert.deepEqual(effective(['gpt-6-astra-2024-02-29'],['gpt-6-astra']),['gpt-6-astra-2024-02-29']);
+ for(const suffix of ['2026-02-29','2026-13-01','2026-09-31','2026-9-26','2026-09-26-extra']) assert.deepEqual(effective(['gpt-6-astra-'+suffix],['gpt-6-astra']),[]);
+ assert.deepEqual(effective(['gpt-6-astra-2026-09-26'],['gpt-6-astra-2026-09-25']),[]);
+ assert.deepEqual(effective(['GPT-6-ASTRA','gpt-6-astra'],['gpt-6-astra']),['gpt-6-astra']);
+});

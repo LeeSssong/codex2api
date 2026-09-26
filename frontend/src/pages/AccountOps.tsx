@@ -12,6 +12,9 @@ import { Button } from "../components/ui/button";
 import { Select } from "../components/ui/select";
 import {
   date,
+  accountOpsEventKey,
+  isBasispointsOpsEvent,
+  BASISPOINTS_OPS_KINDS,
   type AccountOpsSettings,
   type AccountOpsEvent,
 } from "../lib/accountOps";
@@ -129,6 +132,7 @@ export default function AccountOps() {
     suppressed: t("smartOps.copy.suppressed"),
   };
   const kinds: Record<string, string> = {
+    ...Object.fromEntries(BASISPOINTS_OPS_KINDS.map((kind) => [kind, t("bps.eventKinds." + kind)])),
     balance_low: t("smartOps.copy.balanceLow"),
     weekly_quota: t("smartOps.copy.weeklyQuota"),
     quality_degraded: t("smartOps.copy.qualityAction"),
@@ -337,6 +341,7 @@ export default function AccountOps() {
                 ? t("smartOps.copy.observing")
                 : t("smartOps.copy.disabled")}{" "}
               · {t("smartOps.noRawErrors")}
+              <span className="block">{t("bps.notificationChannelHint")}</span>
             </p>
           </header>
           <div className="ops-toolbar">
@@ -351,6 +356,7 @@ export default function AccountOps() {
               value={kind}
               options={[
                 { value: "all", label: t("smartOps.copy.allTypes") },
+                ...BASISPOINTS_OPS_KINDS.map((value) => ({ value, label: kinds[value] })),
                 { value: "balance_low", label: t("smartOps.copy.balanceLow") },
                 {
                   value: "weekly_quota",
@@ -383,7 +389,7 @@ export default function AccountOps() {
                   <th>{t("smartOps.copy.account")}</th>
                   <th>{t("smartOps.copy.alertType")}</th>
                   <th>{t("smartOps.copy.latestSignal")}</th>
-                  <th>{t("smartOps.copy.mailStatus")}</th>
+                  <th>{t("bps.deliveryStatus")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -396,13 +402,16 @@ export default function AccountOps() {
                         .includes(search.toLowerCase()),
                   )
                   .map((e) => (
-                    <tr key={`${e.account_id}:${e.kind}`}>
+                    <tr key={accountOpsEventKey(e)}>
                       <td>
                         {e.account_name || `#${e.account_id}`}
                         <small>
                           #{e.account_id} · {e.occurrences}{" "}
                           {t("smartOps.copy.occurrences")}
                         </small>
+                        {isBasispointsOpsEvent(e) && e.credential_generation !== undefined && (
+                          <small>{t("bps.credentialGeneration", { generation: e.credential_generation })}</small>
+                        )}
                       </td>
                       <td>
                         {kinds[e.kind] || e.kind}
@@ -413,7 +422,9 @@ export default function AccountOps() {
                               : e.signal === "scheduling_disabled"
                                 ? t("smartOps.copy.schedulingDisabled")
                                 : t("smartOps.copy.restored")
-                            : `HTTP ${e.http_status}`}
+                            : isBasispointsOpsEvent(e) && !e.http_status
+                              ? e.signal
+                              : `HTTP ${e.http_status}`}
                         </small>
                       </td>
                       <td>
@@ -424,7 +435,7 @@ export default function AccountOps() {
                         </small>
                       </td>
                       <td>
-                        {states[e.state] || e.state}
+                        {isBasispointsOpsEvent(e) ? "Bark · " : ""}{states[e.state] || e.state}
                         <small>
                           {e.last_sent_at
                             ? date(e.last_sent_at)
@@ -458,7 +469,7 @@ export default function AccountOps() {
                     setEvents((es) => [
                       ...new Map(
                         [...es, ...p.items].map((e) => [
-                          `${e.account_id}:${e.kind}`,
+                          accountOpsEventKey(e),
                           e,
                         ]),
                       ).values(),

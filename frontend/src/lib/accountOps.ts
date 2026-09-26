@@ -75,6 +75,7 @@ export interface AccountOpsSettings {
   failures: number;
 }
 export interface AccountOpsEvent {
+  credential_generation?: number;
   account_id: number;
   account_name: string;
   kind: string;
@@ -87,6 +88,15 @@ export interface AccountOpsEvent {
   last_sent_at?: string;
   next_send_at: string;
   attempts: number;
+}
+export const BASISPOINTS_OPS_KINDS = [
+  "auto_403_disabled", "image_capacity_rejected", "image_cleanup_failed", "recovery_suggested",
+] as const;
+export function isBasispointsOpsEvent(event: Pick<AccountOpsEvent, "kind">): boolean {
+  return BASISPOINTS_OPS_KINDS.some((kind) => kind === event.kind);
+}
+export function accountOpsEventKey(event: Pick<AccountOpsEvent, "account_id" | "kind" | "credential_generation">): string {
+  return `${event.account_id}:${event.kind}:${event.credential_generation ?? 0}`;
 }
 export function newQualityPlan(): AccountQualityPlan {
   return {
