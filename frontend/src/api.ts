@@ -1,3 +1,4 @@
+import type { BasispointsPolicy, BasispointsSettings, BasispointsSettingsInput } from './lib/basispointsPolicy'
 import type { CodexPathSnapshot } from "./types"
 import { readCodexProbeEvents, type CodexProbeBatch, type CodexProbeEvent, type CodexProbeLevel, type CodexProbeResult } from './lib/codexProbe.ts'
 import { qualityTestFilterQuery, type QualityTestJob, type QualityTestJobsFilter, type QualityTestJobsResponse, type QualityTestPrompt } from './lib/qualityTest.ts'
@@ -620,7 +621,7 @@ export const api = {
     const qs = searchParams.toString()
     return request<AccountsResponse>(`/accounts${qs ? `?${qs}` : ''}`)
   },
-  getCodexRoutes: (id: number, model?: string, signal?: AbortSignal) => request<{ paths: CodexPathSnapshot[]; probes?: CodexProbeResult[] }>(`/accounts/${id}/codex-routes${model ? `?model=${encodeURIComponent(model)}` : ''}`, { signal }),
+  getCodexRoutes: (id: number, model?: string, signal?: AbortSignal) => request<{ paths: CodexPathSnapshot[]; probes?: CodexProbeResult[]; basispoints_policy?: BasispointsPolicy }>(`/accounts/${id}/codex-routes${model ? `?model=${encodeURIComponent(model)}` : ''}`, { signal }),
   probeCodexAccounts: async (data: { ids: number[]; model: string; level: CodexProbeLevel }, onEvent: (event: CodexProbeEvent) => void, signal: AbortSignal): Promise<CodexProbeBatch> => {
     const adminKey = getAdminKey()
     const response = await fetch(`${BASE}/accounts/codex/probe?stream=true`, {
@@ -639,7 +640,7 @@ export const api = {
     }
     return response.json() as Promise<CodexProbeBatch>
   },
-  updateCodexRoutes: (data: { ids: number[]; upstream: string; allowed?: boolean; reset_observations?: boolean }) =>
+  updateCodexRoutes: (data: { ids: number[]; upstream: string; allowed?: boolean; reset_observations?: boolean; basispoints_policy?: BasispointsPolicy }) =>
     request<{ updated: number }>('/accounts/codex/routes', { method: 'POST', body: JSON.stringify(data) }),
   getAccountsPage: (params: AccountsPageParams, signal?: AbortSignal) => {
     const searchParams = new URLSearchParams({
@@ -1318,6 +1319,8 @@ export const api = {
   clearUsageLogs: () =>
     request<MessageResponse>('/usage/logs', { method: 'DELETE' }),
   getSetupHints: () => request<SetupHintsResponse>('/setup-hints'),
+  getBasispointsSettings: () => request<BasispointsSettings>('/settings/basispoints'),
+  updateBasispointsSettings: (data: BasispointsSettingsInput) => request<BasispointsSettings>('/settings/basispoints', { method: 'PUT', body: JSON.stringify(data) }),
   getSettings: () => request<SystemSettings>('/settings'),
   getClaudeConfig: () =>
     request<ClaudeGlobalConfig>('/settings/claude-config'),

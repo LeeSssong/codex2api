@@ -1,3 +1,4 @@
+import { BasispointsPolicyEditor } from './BasispointsPolicy'
 import { useEffect, useId, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { FlaskConical, GitBranch, RefreshCw } from 'lucide-react'
@@ -206,6 +207,7 @@ export function CodexRouteManager({ ids, onChanged }: { ids: number[]; onChanged
       <p className="text-xs text-muted-foreground">{t('codexRoutes.resetHint')}</p>
       {ids.length > 100 && <p className="text-xs text-destructive">{t('codexRoutes.batchLimit')}</p>}
       {message && <p role={failed ? 'alert' : 'status'} className={failed ? 'text-xs text-destructive' : 'text-xs text-muted-foreground'}>{message}</p>}
+      <BasispointsPolicyEditor ids={ids} onChanged={() => { onChanged?.(); setRoutesVersion(value => value + 1) }} />
       <CodexStrongProbe ids={ids} onChanged={() => {
         onChanged?.()
         setRoutesVersion(value => value + 1)

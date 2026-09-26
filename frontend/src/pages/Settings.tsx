@@ -1,3 +1,4 @@
+import { BasispointsSettingsEditor } from '../components/BasispointsSettings'
 import type { ChangeEvent, FocusEvent, ReactNode } from 'react'
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -3615,6 +3616,7 @@ export default function Settings() {
                     />
                   </SettingField>
                 </div>
+                <BasispointsSettingsEditor />
               </SettingsCard>
               <SettingsCard title={t('settings.codexWebsocket')} description={t('settings.codexWebsocketDesc')} icon={<Wifi className="size-4" />}>
                 <div className="space-y-4">

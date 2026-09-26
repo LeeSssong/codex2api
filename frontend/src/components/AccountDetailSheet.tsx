@@ -451,7 +451,7 @@ export default function AccountDetailSheet({
           </SheetHeader>
 
           <SheetBody className="space-y-5">
-            {account.codex_paths?.length ? <CodexRouteManager ids={[account.id]} /> : null}
+            {!account.openai_responses_api && !account.grok_api && !account.claude_api && !account.antigravity_api && !account.agent_identity ? <CodexRouteManager ids={[account.id]} /> : null}
             <Section title={t("accounts.status")}>
               <div className="space-y-3 rounded-xl border border-border bg-card p-3">
                 <div className="flex flex-wrap items-center gap-2">
