@@ -1848,6 +1848,9 @@ func responsesWSCloseCodeForStatus(statusCode int) int {
 }
 
 func responsesWSUpstreamAPIError(statusCode int, body []byte) *api.APIError {
+	if basispointsRequestErrorCode(body) == "basispoints_upstream_error" {
+		return api.NewAPIError(api.ErrorCode("basispoints_upstream_error"), usageLogErrorMessage(statusCode, body), api.ErrorTypeUpstream)
+	}
 	if basispointsRequestErrorCode(body) != "" {
 		return api.NewAPIError(api.ErrCodeInvalidRequest, usageLogErrorMessage(statusCode, body), api.ErrorTypeInvalidRequest)
 	}

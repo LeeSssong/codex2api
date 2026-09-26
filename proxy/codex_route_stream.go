@@ -20,12 +20,47 @@ const codexUsageRejectedCode = "codex_upstream_usage_rejected"
 const codexAmbiguousUsageMessage = "403: This request was blocked by our usage policy."
 
 type codexRouteFailure struct {
-	HTTPStatus     int
-	ReportedStatus int
-	Code           string
-	Source         string
-	Category       string
-	Switch         bool
+	HTTPStatus         int
+	ReportedStatus     int
+	Code               string
+	Source             string
+	Category           string
+	Switch             bool
+	BasispointsHTTP403 bool
+}
+
+// This entry point is called only by the actual BPS HTTP executor. Neither an
+// error string nor a caller-controlled header can establish upstream origin.
+func normalizeBasispointsHTTP403(ctx context.Context, resp *http.Response) {
+	if resp == nil || resp.StatusCode != http.StatusForbidden || resp.Body == nil {
+		return
+	}
+	original := resp.Body
+	prefix, err := io.ReadAll(io.LimitReader(original, codexRoutePrefixLimit+1))
+	f := classifyCodexRouteFailure(resp.StatusCode, "upstream_http", prefix)
+	if err == nil && len(prefix) <= codexRoutePrefixLimit {
+		switch f.Category {
+		case "authentication", "billing", "rate_limit", "model_access", "explicit_safety_policy", "protocol", "encrypted_content":
+			resp.Body = &codexPrefixBody{Reader: replayCodexPrefix(prefix, err, original), closer: original}
+			return
+		}
+	} else {
+		f.Category = "network_or_waf"
+	}
+	f.Code = "basispoints_upstream_error"
+	f.Switch = false
+	f.BasispointsHTTP403 = true
+	if a := codexAttemptFromContext(ctx); a != nil {
+		a.failure, a.inspected = &f, true
+	}
+	// A bounded, fixed error also covers HTML, truncated reads and oversized
+	// bodies without retaining arbitrary upstream data or signed image URLs.
+	const payload = "{\"error\":{\"code\":\"basispoints_upstream_error\",\"type\":\"upstream_error\",\"message\":\"Basispoints denied this request (HTTP 403). No automatic retry was performed.\"}}"
+	resp.Body = &codexPrefixBody{Reader: strings.NewReader(payload), closer: original}
+	resp.ContentLength = int64(len(payload))
+	resp.Header.Del("Content-Length")
+	resp.Header.Del("Content-Encoding")
+	resp.Header.Set("Content-Type", "application/json")
 }
 
 // Only trusted raw executor responses enter this classifier. Message-reported

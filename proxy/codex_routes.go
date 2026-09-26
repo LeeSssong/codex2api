@@ -543,7 +543,7 @@ func executeCodexRoute(ctx context.Context, account *auth.Account, body []byte, 
 func (a *codexRouteAttemptState) recordFailure(f codexRouteFailure) {
 	d := a.decision
 	d.mu.Lock()
-	if f.Category == "explicit_safety_policy" {
+	if f.Category == "explicit_safety_policy" || f.BasispointsHTTP403 {
 		d.NoSwitch = true
 	}
 	if len(d.Attempts) > 0 {
@@ -560,6 +560,9 @@ func (a *codexRouteAttemptState) recordFailure(f codexRouteFailure) {
 	blocked := d.HistoryLockReason
 	d.mu.Unlock()
 	log.Printf("[CodexRoute] preferred=%s path=%s account=%d http_status=%d reported_status=%d source=%s code=%s reason=%s switch_blocked=%s", d.Preferred, a.path, a.account.ID(), f.HTTPStatus, f.ReportedStatus, f.Source, f.Code, f.Category, blocked)
+	if f.BasispointsHTTP403 {
+		return
+	}
 	if f.Category == "upstream_access" {
 		a.account.SetCodexPathCooldown(a.path, a.model, f.Category, a.started, time.Now().Add(30*time.Second))
 	}

@@ -352,7 +352,10 @@ func TestBasispointsErrorsAndCompactUseSameEndpoint(t *testing.T) {
 		if err != nil || resp.StatusCode != status || !gjson.ValidBytes(body) {
 			t.Fatalf("compact status=%d body=%s error=%v", resp.StatusCode, body, err)
 		}
-		if status != 200 && gjson.GetBytes(body, "error.message").String() != "upstream rejected request" {
+		if status == 403 && gjson.GetBytes(body, "error.code").String() != "basispoints_upstream_error" {
+			t.Fatal("compact must preserve terminal BPS 403 semantics")
+		}
+		if status != 200 && status != 403 && gjson.GetBytes(body, "error.message").String() != "upstream rejected request" {
 			t.Fatal("upstream errors must remain intact for account handling")
 		}
 	}

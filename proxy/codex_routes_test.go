@@ -117,6 +117,12 @@ func TestCodexControlledSameAccountFallback(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			if !stream {
+				if bpsCalls != 1 || nativeCalls != 0 || tracked.closed != 1 || d.Switched || !d.NoSwitch || resp.StatusCode != 403 || gjson.GetBytes(out, "error.code").String() != "basispoints_upstream_error" {
+					t.Fatal("real BPS HTTP403 must be terminal even when its text resembles a stream usage rejection")
+				}
+				return
+			}
 			if bpsCalls != 1 || nativeCalls != 1 || tracked.closed != 1 || !d.Switched || len(d.Attempts) != 2 || d.Remaining != 1 {
 				t.Fatalf("attempts: %+v bps=%d native=%d closed=%d", d, bpsCalls, nativeCalls, tracked.closed)
 			}

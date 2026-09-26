@@ -137,7 +137,7 @@ func markBasispointsNativeRoute(resp *http.Response, reason string) {
 
 func basispointsRequestErrorCode(body []byte) string {
 	code := firstGJSONString(body, "error.code", "response.error.code", "response.status_details.error.code")
-	if code == "basispoints_model_access_changed" || code == "basispoints_protocol_error" || code == codexUsageRejectedCode || code == "codex_path_temporarily_unavailable" {
+	if code == "basispoints_upstream_error" || code == "basispoints_model_access_changed" || code == "basispoints_protocol_error" || code == codexUsageRejectedCode || code == "codex_path_temporarily_unavailable" {
 		return code
 	}
 	return ""
@@ -245,8 +245,9 @@ func executeBasispointsRequest(ctx context.Context, account *auth.Account, reque
 	if resp.Header == nil {
 		resp.Header = make(http.Header)
 	}
-	observeAccountOpsResponse(account, resp)
+	normalizeBasispointsHTTP403(ctx, resp)
 	inspectCodexRouteResponse(ctx, resp)
+	observeAccountOpsResponse(account, resp)
 	resp.Header.Set("X-Codex2API-Upstream", "basispoints")
 	resp.Header.Set("X-Codex2API-Reasoning-Effort", bridge.Effort)
 	if len(bridge.Warnings) > 0 {
