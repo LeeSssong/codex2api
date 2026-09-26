@@ -54,6 +54,9 @@ type AccountOpsRepository struct{ db *DB }
 
 func NewAccountOpsRepository(db *DB) *AccountOpsRepository { return &AccountOpsRepository{db} }
 func (r *AccountOpsRepository) Record(ctx context.Context, e accountops.AccountOpsEvent) error {
+	if accountops.IsBasispointsCategory(e.Kind) {
+		return r.recordBasispoints(ctx, e)
+	}
 	return r.db.withSQLiteWriteLock(ctx, func() error {
 		// Native runtime accounts carry email, not the administrator display name.
 		// Resolve that snapshot off the proxy hot path, in the queue consumer.
@@ -69,10 +72,12 @@ func (r *AccountOpsRepository) Record(ctx context.Context, e accountops.AccountO
 			}
 			e.AccountName = string(runes)
 		}
-		_, err := r.db.conn.ExecContext(ctx, `INSERT INTO account_ops_alerts(account_id,kind,account_name,signal,http_status,first_seen,last_seen,next_send_at) VALUES($1,$2,$3,$4,$5,$6,$6,$6) ON CONFLICT(account_id,kind) DO UPDATE SET account_name=EXCLUDED.account_name,signal=EXCLUDED.signal,http_status=EXCLUDED.http_status,last_seen=EXCLUDED.last_seen,occurrences=account_ops_alerts.occurrences+1,state=CASE WHEN account_ops_alerts.state IN ('sent','suppressed','failed') AND account_ops_alerts.next_send_at<=EXCLUDED.last_seen AND (account_ops_alerts.state<>'failed' OR account_ops_alerts.attempts>=3) THEN 'pending' ELSE account_ops_alerts.state END,attempts=CASE WHEN account_ops_alerts.state IN ('sent','suppressed','failed') AND account_ops_alerts.next_send_at<=EXCLUDED.last_seen AND (account_ops_alerts.state<>'failed' OR account_ops_alerts.attempts>=3) THEN 0 ELSE account_ops_alerts.attempts END`, e.AccountID, e.Kind, e.AccountName, e.Signal, e.HTTPStatus, r.db.timeArg(time.Now().UTC()))
+		_, err := r.db.conn.ExecContext(ctx, accountOpsRecordSQL, e.AccountID, e.Kind, e.AccountName, e.Signal, e.HTTPStatus, r.db.timeArg(time.Now().UTC()))
 		return err
 	})
 }
+
+const accountOpsRecordSQL = `INSERT INTO account_ops_alerts(account_id,kind,account_name,signal,http_status,first_seen,last_seen,next_send_at) VALUES($1,$2,$3,$4,$5,$6,$6,$6) ON CONFLICT(account_id,kind) DO UPDATE SET account_name=EXCLUDED.account_name,signal=EXCLUDED.signal,http_status=EXCLUDED.http_status,last_seen=EXCLUDED.last_seen,occurrences=account_ops_alerts.occurrences+1,state=CASE WHEN account_ops_alerts.state IN ('sent','suppressed','failed') AND account_ops_alerts.next_send_at<=EXCLUDED.last_seen AND (account_ops_alerts.state<>'failed' OR account_ops_alerts.attempts>=3) THEN 'pending' ELSE account_ops_alerts.state END,attempts=CASE WHEN account_ops_alerts.state IN ('sent','suppressed','failed') AND account_ops_alerts.next_send_at<=EXCLUDED.last_seen AND (account_ops_alerts.state<>'failed' OR account_ops_alerts.attempts>=3) THEN 0 ELSE account_ops_alerts.attempts END`
 
 const accountOpsColumns = `account_id,kind,account_name,signal,http_status,first_seen,last_seen,occurrences,state,last_sent_at,next_send_at,attempts,lease`
 
@@ -96,11 +101,18 @@ func scanAccountOps(row interface{ Scan(...any) error }) (*accountops.AccountOps
 	if st.Valid {
 		e.LastSentAt = &st.Time
 	}
+	if err == nil {
+		err = decodeBasispointsOpsKind(&e)
+	}
 	return &e, err
 }
 func (r *AccountOpsRepository) Claim(ctx context.Context) (event *accountops.AccountOpsEvent, err error) {
 	err = r.db.withWriteTx(ctx, func(tx *sql.Tx) error {
 		now := time.Now().UTC()
+		_, err = tx.ExecContext(ctx, "UPDATE account_ops_alerts SET state='suppressed',lease='',lease_until=NULL WHERE kind LIKE 'basispoints:%' AND state IN ('pending','failed','sending') AND account_id<>0 AND NOT EXISTS (SELECT 1 FROM accounts a WHERE a.id=account_ops_alerts.account_id AND a.deleted_at IS NULL AND a.status<>'deleted' AND account_ops_alerts.kind LIKE '%@' || CAST(a.credential_generation AS TEXT))")
+		if err != nil {
+			return err
+		}
 		q := `SELECT ` + accountOpsColumns + ` FROM account_ops_alerts WHERE ((state IN ('pending','failed') AND attempts<3 AND next_send_at<=$1) OR (state='sending' AND lease_until<$1)) ORDER BY next_send_at LIMIT 1`
 		if !r.db.isSQLite() {
 			q += ` FOR UPDATE SKIP LOCKED`
@@ -116,7 +128,7 @@ func (r *AccountOpsRepository) Claim(ctx context.Context) (event *accountops.Acc
 		event.Lease = uuid.NewString()
 		event.Attempts++
 		event.State = "sending"
-		_, err = tx.ExecContext(ctx, `UPDATE account_ops_alerts SET state='sending',attempts=attempts+1,lease=$1,lease_until=$2 WHERE account_id=$3 AND kind=$4`, event.Lease, r.db.timeArg(now.Add(2*time.Minute)), event.AccountID, event.Kind)
+		_, err = tx.ExecContext(ctx, `UPDATE account_ops_alerts SET state='sending',attempts=attempts+1,lease=$1,lease_until=$2 WHERE account_id=$3 AND kind=$4`, event.Lease, r.db.timeArg(now.Add(2*time.Minute)), event.AccountID, basispointsOpsStorageKind(*event))
 		if err != nil {
 			return err
 		}
@@ -127,13 +139,13 @@ func (r *AccountOpsRepository) Claim(ctx context.Context) (event *accountops.Acc
 func (r *AccountOpsRepository) Complete(ctx context.Context, e *accountops.AccountOpsEvent, state string, delay time.Duration) error {
 	return r.db.withSQLiteWriteLock(ctx, func() error {
 		now := time.Now().UTC()
-		_, err := r.db.conn.ExecContext(ctx, `UPDATE account_ops_alerts SET state=$4,lease='',lease_until=NULL,next_send_at=$5,last_sent_at=CASE WHEN $4='sent' THEN $6 ELSE last_sent_at END WHERE account_id=$1 AND kind=$2 AND lease=$3`, e.AccountID, e.Kind, e.Lease, state, r.db.timeArg(now.Add(delay)), r.db.timeArg(now))
+		_, err := r.db.conn.ExecContext(ctx, `UPDATE account_ops_alerts SET state=$4,lease='',lease_until=NULL,next_send_at=$5,last_sent_at=CASE WHEN $4='sent' THEN $6 ELSE last_sent_at END WHERE account_id=$1 AND kind=$2 AND lease=$3`, e.AccountID, basispointsOpsStorageKind(*e), e.Lease, state, r.db.timeArg(now.Add(delay)), r.db.timeArg(now))
 		return err
 	})
 }
 func (r *AccountOpsRepository) SuppressDisabled(ctx context.Context, c accountops.AccountOpsConfig) error {
 	return r.db.withSQLiteWriteLock(ctx, func() error {
-		_, err := r.db.conn.ExecContext(ctx, `UPDATE account_ops_alerts SET state='suppressed',lease='',lease_until=NULL WHERE state IN ('pending','failed') AND (NOT $1 OR (kind='balance_low' AND NOT $2) OR (kind='weekly_quota' AND NOT $3) OR (kind='quality_degraded' AND NOT $4) OR (kind='quality_restored' AND NOT $5))`, c.Enabled, c.BalanceLow, c.WeeklyQuota, c.QualityDegraded, c.QualityRestored)
+		_, err := r.db.conn.ExecContext(ctx, `UPDATE account_ops_alerts SET state='suppressed',lease='',lease_until=NULL WHERE kind NOT LIKE 'basispoints:%' AND state IN ('pending','failed') AND (NOT $1 OR (kind='balance_low' AND NOT $2) OR (kind='weekly_quota' AND NOT $3) OR (kind='quality_degraded' AND NOT $4) OR (kind='quality_restored' AND NOT $5))`, c.Enabled, c.BalanceLow, c.WeeklyQuota, c.QualityDegraded, c.QualityRestored)
 		return err
 	})
 }

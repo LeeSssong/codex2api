@@ -34,6 +34,7 @@ func (h *Handler) StartAccountOps(ctx context.Context) {
 	h.accountOps = r
 	r.alerts = accountops.NewAccountOpsService(database.NewAccountOpsSettings(h.db), database.NewAccountOpsRepository(h.db), accountops.SMTPSender{Config: h.db.GetAccountOpsSMTP})
 	r.alerts.SetModuleGate(r.enabled.Load)
+	r.alerts.SetBasispointsNotifier(h.basispointsOpsNotifier(nil))
 	h.refreshAccountOpsModule(ctx)
 	r.alerts.Start()
 	if r.enabled.Load() {
