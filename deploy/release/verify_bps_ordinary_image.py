@@ -10,12 +10,16 @@ writer ownership. No upstream retries or account/model switching.
 from verify_bps_tool_image import *
 
 
+def raw_text(response):
+    return ''.join(c.get('text', '') for o in response.get('output', [])
+                   if o.get('type') == 'message' for c in o.get('content', [])
+                   if c.get('type') == 'output_text')
+
+
 def diagnose(response, expected, previous=None):
     result = classify(response, expected)
-    text = ''.join(c.get('text', '') for o in response.get('output', [])
-                   if o.get('type') == 'message' for c in o.get('content', [])
-                   if c.get('type') == 'output_text').strip()
-    result.update(strict_match=text == expected,
+    text = raw_text(response)
+    result.update(strict_match=text == expected, reply_length=len(text),
                   reply_sha256=hashlib.sha256(text.encode()).hexdigest())
     if result['refusal'] or result['unreadable_statement']:
         kind = 'unreadable_or_refused'
@@ -49,7 +53,7 @@ class OrdinaryImageVerifier(ToolImageVerifier):
     def capture(self, name, expected, response, previous=None):
         # Only this synthetic test's text is retained; never raw SSE, headers,
         # tool arguments, credentials, data URLs or signed image URLs.
-        text = self.output_text(response)
+        text = raw_text(response)
         self.private_write(name + '.json', json.dumps(
             {'expected': expected, 'reply_text': text}, ensure_ascii=False,
             indent=2).encode())
@@ -72,7 +76,7 @@ class OrdinaryImageVerifier(ToolImageVerifier):
             {'type': 'input_text', 'text': 'Reply with exactly ' + previous}]}]
         first = self.infer(history)
         first_diagnostic = self.capture('01-text', previous, first)
-        if not first_diagnostic['strict_match']:
+        if first_diagnostic['classification'] != 'exact_match':
             self.reconcile(start, [first])
             raise Failure('text_mismatch')
         history.extend(first['output'])

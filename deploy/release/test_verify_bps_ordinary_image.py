@@ -18,7 +18,7 @@ def reply(text):
 class DiagnosisTests(unittest.TestCase):
     def test_exact_match_is_distinct_from_formatting(self):
         self.assertEqual(diagnose(reply('ABCDEF01'), 'ABCDEF01')['classification'], 'exact_match')
-        for text in ('abcdef01', 'The code is ABCDEF01.', '```\nABCDEF01\n```'):
+        for text in ('abcdef01', 'The code is ABCDEF01.', '```\nABCDEF01\n```', ' ABCDEF01\n'):
             result = diagnose(reply(text), 'ABCDEF01')
             self.assertTrue(result['correct'])
             self.assertFalse(result['strict_match'])
@@ -49,7 +49,7 @@ class DiagnosisTests(unittest.TestCase):
                 def infer(self, history, tools=None):
                     self.calls += 1
                     self.report['requests'] = self.calls
-                    text = history[0]['content'][0]['text'].removeprefix('Reply with exactly ') if self.calls == 1 else 'Cannot read this image.'
+                    text = history[0]['content'][0]['text'].removeprefix('Reply with exactly ') if self.calls == 1 else ' Cannot read this image.\n'
                     result = reply(text)
                     self.report['response_diagnostics'].append({'request': self.calls})
                     return result
@@ -74,7 +74,7 @@ class DiagnosisTests(unittest.TestCase):
             private = pathlib.Path(args.output + '.private')
             self.assertEqual(private.stat().st_mode & 0o777, 0o700)
             evidence = json.loads((private / '02-ordinary-image.json').read_text())
-            self.assertEqual(evidence['reply_text'], 'Cannot read this image.')
+            self.assertEqual(evidence['reply_text'], ' Cannot read this image.\n')
             self.assertEqual(len(evidence['expected']), 8)
             self.assertTrue((private / '02-ordinary-image.png').read_bytes().startswith(b'\x89PNG'))
             for path in private.iterdir():
@@ -90,6 +90,35 @@ class DiagnosisTests(unittest.TestCase):
             report = verifier.execute()
             self.assertEqual(report['failure'], 'evidence_directory_exists')
             self.assertEqual(verifier.calls, 0)
+
+    def test_first_turn_must_be_valid_text_only_before_image_request(self):
+        for extra in ({'type': 'function_call', 'name': 'unexpected'},
+                      {'type': 'message', 'content': [{'type': 'refusal', 'refusal': 'no'}]}):
+            with self.subTest(extra=extra), tempfile.TemporaryDirectory() as directory:
+                args = argparse.Namespace(output=str(pathlib.Path(directory) / 'report.json'))
+
+                class Fake(OrdinaryImageVerifier):
+                    def setup(self):
+                        pass
+
+                    def infer(self, history, tools=None):
+                        self.calls += 1
+                        result = reply(history[0]['content'][0]['text'].removeprefix('Reply with exactly '))
+                        result['output'].append(extra)
+                        self.report['response_diagnostics'].append({'request': self.calls})
+                        return result
+
+                    def reconcile(self, start, responses):
+                        self.report['reconciled_responses'] = len(responses)
+
+                    def cleanup(self):
+                        return True
+
+                verifier = Fake(args)
+                report = verifier.execute()
+                self.assertEqual(report['failure'], 'text_mismatch')
+                self.assertEqual(report['reconciled_responses'], 1)
+                self.assertEqual(verifier.calls, 1)
 
 
 if __name__ == '__main__':
