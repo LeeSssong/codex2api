@@ -1,6 +1,6 @@
-# Codex2API Basispoints 上游优化实施方案（待批准）
+# Codex2API Basispoints 上游优化实施方案（已获实施批准）
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development or superpowers:executing-plans to implement this plan task-by-task. 本文只交付研究与计划；用户当前授权实施、部署的是智能运维。BPS 优化不随本次智能运维发布自动实施。
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development or superpowers:executing-plans to implement this plan task-by-task. 用户已于 2026-09-26 批准 BPS 优化实施，并明确批准按当前预览落实界面。本地候选、验证证据及生产待办见 [实施记录](../../bps-upstream-implementation-2026-09-26.md)。本文后续保留原方案快照；具体完成状态以实施记录为准。
 
 **Goal:** 在 Codex2API 原生路由、账号、计费、图片存储和智能运维上补齐 Sub 的 BPS 可管理能力，优先解决图片中转的可用性与通用 403 的错误处置边界。
 
