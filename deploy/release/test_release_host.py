@@ -136,3 +136,119 @@ class PublicRollbackDrainTests(unittest.TestCase):
   def drain():calls.append('drain');r.drain_started=time.monotonic()
   r.drain=drain;r.dc=lambda *a,**k:calls.append(a[0]);r.rollback(preserve_database=True)
   self.assertLess(calls.index('drain'),calls.index('stop'));self.assertFalse(r.report['database_restored'])
+
+class BPSReleaseSafetyTests(unittest.TestCase):
+ def fixture(self):
+  import tempfile,pathlib,types
+  from release_host import Release
+  tmp=tempfile.TemporaryDirectory();self.addCleanup(tmp.cleanup);root=pathlib.Path(tmp.name).resolve()
+  data=root/'data';data.mkdir();backup=root/'backup';backup.mkdir(mode=0o700)
+  r=Release.__new__(Release);r.dir=backup;r.root=root;r.bps=True;r.report={};r.args=types.SimpleNamespace(image='new',bps_signing_env=None)
+  r.old={'Mounts':[{'Type':'bind','Source':str(data),'Destination':'/data'}]};r.env={};r.save=lambda:None
+  return r,data
+ def test_quarantine_moves_only_bps_and_preserves_metadata_and_quota_until_move(self):
+  import json,stat
+  r,data=self.fixture();(data/'bps.png').write_bytes(b'secret');(data/'ordinary.png').write_bytes(b'keep')
+  asset={'id':1,'storage_path':'/data/bps.png','model':'bps-inbound'};r.bps_assets=lambda:[asset];calls=[]
+  def sql(q):
+   calls.append(q)
+   if 'json_agg(storage_path)' in q:return '["/data/ordinary.png"]'
+   if q.startswith('BEGIN'):
+    self.assertFalse((data/'bps.png').exists());self.assertEqual((r.dir/'bps-quarantine/1.asset').read_bytes(),b'secret');return ''
+   return '0'
+  r.sql=sql;r.quarantine_bps_assets()
+  self.assertEqual((data/'ordinary.png').read_bytes(),b'keep');self.assertEqual(json.loads((r.dir/'bps-quarantine/metadata.json').read_text()),[asset])
+  self.assertEqual(stat.S_IMODE((r.dir/'bps-quarantine/metadata.json').stat().st_mode),0o600)
+  self.assertTrue(any("model='bps-inbound' AND id IN (1)" in q for q in calls))
+ def test_all_paths_validated_before_any_file_move_or_row_delete(self):
+  r,data=self.fixture();(data/'good').write_bytes(b'keep');r.bps_assets=lambda:[{'id':1,'storage_path':'/data/good'},{'id':2,'storage_path':'s3://bucket/key'}]
+  calls=[];r.sql=lambda q:calls.append(q) or '[]'
+  with self.assertRaises(ValueError):r.quarantine_bps_assets()
+  self.assertTrue((data/'good').exists());self.assertFalse(any(q.startswith('BEGIN') for q in calls))
+ def test_rejects_escape_symlink_unmounted_and_shared_ordinary_file(self):
+  from release_host import host_asset_path,quarantine_plan
+  r,data=self.fixture();(data/'asset').write_bytes(b'x');(data/'link').symlink_to(data/'asset');mounts=r.old['Mounts']
+  for raw in ['/data/../private','/other/asset','/data/link']:
+   with self.subTest(raw=raw),self.assertRaises(ValueError):host_asset_path(raw,mounts)
+  for ordinary in [['/data/asset'],['/data/link']]:
+   with self.assertRaises(ValueError):quarantine_plan([{'id':1,'storage_path':'/data/asset'}],ordinary,mounts,r.dir)
+ def test_missing_file_is_allowed_but_permission_error_is_not(self):
+  from release_host import host_asset_path
+  from unittest.mock import patch
+  r,data=self.fixture();self.assertEqual(host_asset_path('/data/missing',r.old['Mounts']),data/'missing')
+  with patch('release_host.pathlib.Path.lstat',side_effect=PermissionError('denied')):
+   with self.assertRaises(PermissionError):host_asset_path('/data/missing',r.old['Mounts'])
+ def test_quarantine_failed_move_retains_database_rows(self):
+  from unittest.mock import patch
+  r,data=self.fixture();(data/'asset').write_bytes(b'x');r.bps_assets=lambda:[{'id':1,'storage_path':'/data/asset'}];calls=[];r.sql=lambda q:calls.append(q) or '[]'
+  with patch('release_host.os.rename',side_effect=OSError('disk failure')):
+   with self.assertRaises(OSError):r.quarantine_bps_assets()
+  self.assertTrue((data/'asset').exists());self.assertFalse(any(q.startswith('BEGIN') for q in calls))
+ def test_environment_snapshots_and_extra_signing_file_only_affect_new_compose(self):
+  import json,stat
+  r,data=self.fixture();old=r.root/'.env';old.write_text('ADMIN_SECRET=fixture\n');old.chmod(0o640)
+  extra=r.root/'signing.env';extra.write_text('IMAGE_ASSET_SIGNING_SECRET=fixture-only\n');extra.chmod(0o600);r.args.bps_signing_env=str(extra)
+  effective={'services':{'codex2api':{'image':'old','env_file':[{'path':str(old),'required':True}]},'postgres':{'image':'pg'}}}
+  r.dc=lambda *a:json.dumps(effective).encode();r.bps_assets=lambda:[];r.prepare_bps_release()
+  result=json.loads(r.new_compose);self.assertEqual(result['services']['codex2api']['env_file'][-1]['path'],str(extra));self.assertEqual(result['services']['postgres'],effective['services']['postgres'])
+  self.assertEqual(old.read_text(),'ADMIN_SECRET=fixture\n');old.write_text('changed');r.restore_env_snapshots();self.assertEqual(old.read_text(),'ADMIN_SECRET=fixture\n');self.assertEqual(stat.S_IMODE(old.stat().st_mode),0o640)
+ def test_existing_origin_and_s3_fail_closed(self):
+  r,data=self.fixture();r.env={'IMAGE_ASSET_PUBLIC_BASE_URL':'https://images.example'}
+  with self.assertRaises(RuntimeError):r.prepare_bps_release()
+  r.env={};r.bps_assets=lambda:[{'storage_path':'s3://bucket/a'}]
+  with self.assertRaises(RuntimeError):r.prepare_bps_release()
+ def test_schema_assertion_includes_latest_retry_field(self):
+  r,data=self.fixture();queries=[]
+  def sql(q,db):
+   queries.append(q);return str(len(q.split(' IN (')[1].split(')')[0].split(',')))
+  r.sql=sql;r.verify_bps_schema('scratch');self.assertTrue(any('relay_cleanup_next_attempt' in q for q in queries));self.assertEqual(len(queries),5)
+ def test_quarantine_failure_keeps_maintenance_and_never_starts_old_app(self):
+  import time
+  r=RollbackDecisionTests().fake(None);r.bps=True;r.stopped=True;r.migrated=True;r.opened=True;r.rollback_compose='old';r.event=lambda n:None;r.stop_migrator=lambda:None
+  r.run=lambda *a,**k:b'current';r.inspect=lambda n:{'State':{'Running':True}};r.restore_env_snapshots=lambda:None
+  def fail():raise RuntimeError('unsafe BPS path')
+  r.quarantine_bps_assets=fail;calls=[];r.dc=lambda *a,**k:calls.append(a[0])
+  from release_host import Release
+  with self.assertRaises(RuntimeError):Release.rollback(r,preserve_database=True)
+  self.assertTrue(r.maintenance);self.assertTrue(r.gated);self.assertNotIn('up',calls)
+ def test_manual_restore_loads_saved_state_without_overwriting_original_backup(self):
+  import json,types
+  from unittest.mock import patch
+  from release_host import Release
+  r,data=self.fixture();directory=r.dir
+  original={'root':'/opt/codex2api','compose':'/opt/codex2api/docker-compose.yml','bps_release':True,'release_id':'test','digest':'new','events':[{'stage':'success'}],'protected_before':{'sub':'previous'},'env_snapshots':[]}
+  saved={'release.json':original,'old-container.json':{'Image':'old','Mounts':[]},'caddy-handle.before.json':[]}
+  for name,value in saved.items():(directory/name).write_text(json.dumps(value));(directory/name).chmod(0o600)
+  (directory/'compose.rollback.yml').write_text('old compose');(directory/'compose.rollback.yml').chmod(0o600)
+  before=(directory/'release.json').read_bytes()
+  def run(self,cmd,**kw):
+   if cmd[:3]==['docker','network','inspect']:return b'[{"IPAM":{"Config":[{"Subnet":"172.19.0.0/16"}]}}]'
+   return b'[]'
+  with patch.object(Release,'inspect',return_value={'Image':'new','Config':{'Env':['CODEX_PORT=18080','ADMIN_SECRET=fixture']}}),patch.object(Release,'run',run),patch.object(Release,'protected_containers',return_value={'sub':'current'}),patch('release_host.subprocess.run',return_value=types.SimpleNamespace(returncode=1)):
+   loaded=Release.from_existing(types.SimpleNamespace(rollback_existing=str(directory)))
+  self.assertNotEqual(loaded.dir,directory);self.assertEqual((directory/'release.json').read_bytes(),before)
+  self.assertEqual(loaded.rollback_compose,'old compose');self.assertEqual(loaded.protected_before,{'sub':'current'});self.assertEqual(loaded.report['protected_changes_since_release'],['sub'])
+ def test_manual_restore_rejects_unrelated_current_image(self):
+  import json,types
+  from unittest.mock import patch
+  from release_host import Release
+  r,data=self.fixture();directory=r.dir
+  for name,value in {'release.json':{'root':'/opt/codex2api','compose':'/opt/codex2api/docker-compose.yml','bps_release':True,'release_id':'test','digest':'new'},'old-container.json':{'Image':'old'},'caddy-handle.before.json':[]}.items():
+   (directory/name).write_text(json.dumps(value));(directory/name).chmod(0o600)
+  (directory/'compose.rollback.yml').write_text('old');(directory/'compose.rollback.yml').chmod(0o600)
+  with patch.object(Release,'inspect',return_value={'Image':'other','Config':{'Env':[]}}),self.assertRaises(RuntimeError):Release.from_existing(types.SimpleNamespace(rollback_existing=str(directory)))
+ def test_feature_smoke_checks_actual_bps_diagnostics_and_canonical_flag(self):
+  import json,types
+  r,data=self.fixture();r.args=types.SimpleNamespace(revision='rev',tree='tree');r.report={'bps_signing_env':'protected'}
+  payload={'enabled':False,'image_relay_runtime':{'source':'environment','validation_status':'disabled','signing_key_configured':True,'backend':'local'}}
+  def request(path,auth=False,public=False):
+   value={}
+   if path.endswith('/basispoints'):value=payload
+   elif path.endswith('/settings'):value={'codex_basispoints_enabled':False}
+   elif path.endswith('/build'):value={'source_revision':'rev','source_tree':'tree','mode':'source_image','supported':False}
+   return 200,{'Content-Type':'application/json'},json.dumps(value).encode()
+  r.request=request;r.feature_smoke();payload['image_relay_runtime']['source']='persisted';r.feature_smoke();self.assertEqual(r.report['upstream_check_status'],'source-ancestry-verified-before-build')
+  payload['enabled']=True
+  with self.assertRaises(RuntimeError):r.feature_smoke()
+  payload['enabled']=False;payload['image_relay_runtime']['signing_key_configured']=False
+  with self.assertRaises(RuntimeError):r.feature_smoke()
