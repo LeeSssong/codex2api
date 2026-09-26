@@ -49,3 +49,10 @@
 
 - 机器证据：/opt/codex2api/releases/bps-20260926-1aaa1688/ 下的 manifest.json、image-smoke/result.json、post-deployment.json、bps-live-acceptance*.json、bps-tool-image-acceptance.json、final-state.json。报告不含 Key、签名 URL、图片或原始 SSE。
 - 发布前用户的三处本地修改单独备份与 stash；不进入制品，发布归档后恢复并验证原补丁，保留备份及 stash。
+
+## 普通图片识别复测跟进 — 2026-09-26
+
+- 针对首轮普通图片严格全文比对失败，先补充了受限诊断脚本及测试：`d20435e949c773616ceaa90d0a76154e03343a8e`（tree `628882dc1833e498230babd77b38fb17eb8a533f`）。脚本保留原始回复全文、期望值和合成 PNG 到发布目录下的 owner-only 私有证据目录，再进行图片字节、用量和费用校验；公开报告只记录分类、长度和 SHA-256，不放原始 SSE、凭据或签名 URL。首尾空白、混入工具调用、拒答等情况仍严格失败。相关 14 项测试全部通过。
+- 已在生产锁内使用同一账号 69、Pro 组 1、模型 `gpt-5.6-sol` 完成一次两请求复测：文本回显和普通用户图片均为 `exact_match`，图片资产 1 个，usage 1686/1687，费用合计 `$0.048064`，严格八位字符校验通过。证据目录：`/opt/codex2api/releases/bps-20260926-1aaa1688/ordinary-image-diagnosis-d20435e9/`；报告 `0600`，私有证据目录 `0700`，文件 `0600`。
+- 复测时间为 `2026-09-26T08:10:11Z`–`08:10:21Z`，合成图片 SHA-256 为 `a37827d3930eda79515fea7210cc9927d926ea7627290e845f96144ad76830cd`。临时 Key 已撤销、旧签名链接已拒绝、BPS 全局开关恢复 `false`；最终服务仍为同一镜像 digest `sha256:5b25ad1e39c5b7ec7a58a084d387dfb1efc5c22196d50d67eca6b3e61f1a2462`，健康状态正常，图片中转保持开启，epoch 为 8。
+- 代码离线复核未发现普通图片在 rewrite、历史转换或上游请求体中丢失/错配。由于首轮旧脚本未保留原回复，无法诚实地把历史失败归因为格式差异或单次 OCR 错字；本次受控复测已通过，后续若再失败可直接按上述私有证据分类定位。未改动应用镜像，未访问测试站或旧备用服务器。
