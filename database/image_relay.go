@@ -13,6 +13,9 @@ const ImageRelayMaxBytes int64 = 1 << 30
 const ImageRelayMaxAssets int64 = 512
 const ImageRelayLifetime = 30 * time.Minute
 
+// Persisted at claim time so failed deletes and interrupted workers retry fairly.
+const imageRelayCleanupRetryDelay = time.Minute
+
 var ErrImageRelayCapacity = errors.New("image relay storage capacity exhausted")
 var ErrImageRelayBusy = errors.New("image relay asset is being written or removed")
 
@@ -24,7 +27,7 @@ func relayToken() string {
 	return hex.EncodeToString(b[:])
 }
 func (db *DB) ensureImageRelaySchema(ctx context.Context) error {
-	for _, c := range []struct{ name, def string }{{"relay_expires_at", "BIGINT NOT NULL DEFAULT 0"}, {"relay_scope_hash", "TEXT NOT NULL DEFAULT ''"}, {"relay_epoch", "BIGINT NOT NULL DEFAULT 0"}, {"relay_digest", "TEXT NOT NULL DEFAULT ''"}, {"relay_state", "TEXT NOT NULL DEFAULT ''"}, {"relay_request", "TEXT NOT NULL DEFAULT ''"}} {
+	for _, c := range []struct{ name, def string }{{"relay_expires_at", "BIGINT NOT NULL DEFAULT 0"}, {"relay_scope_hash", "TEXT NOT NULL DEFAULT ''"}, {"relay_epoch", "BIGINT NOT NULL DEFAULT 0"}, {"relay_digest", "TEXT NOT NULL DEFAULT ''"}, {"relay_state", "TEXT NOT NULL DEFAULT ''"}, {"relay_request", "TEXT NOT NULL DEFAULT ''"}, {"relay_cleanup_next_attempt", "BIGINT NOT NULL DEFAULT 0"}} {
 		var e error
 		if db.isSQLite() {
 			e = db.ensureSQLiteColumn(ctx, "image_assets", c.name, c.def)
@@ -189,6 +192,9 @@ func (db *DB) FinishImageRelay(ctx context.Context, token string, commit bool, r
 }
 
 // Claim first prevents reuse racing deletion; errors leave rows for retry.
+// A failed batch becomes eligible after a bounded delay, while other expired
+// objects remain claimable. Order by due time rather than ID so old failures
+// cannot monopolize every batch and newly arriving work cannot jump the queue.
 func (db *DB) ClaimExpiredImageRelay(ctx context.Context, now time.Time, limit int) ([]ImageAsset, error) {
 	tx, e := db.lockImageRelay(ctx)
 	if e != nil {
@@ -198,7 +204,7 @@ func (db *DB) ClaimExpiredImageRelay(ctx context.Context, now time.Time, limit i
 	if _, e = tx.ExecContext(ctx, "DELETE FROM image_relay_reservations WHERE expires_at<=$1", now.Unix()); e != nil {
 		return nil, e
 	}
-	rows, e := tx.QueryContext(ctx, "SELECT id FROM image_assets WHERE model='bps-inbound' AND (relay_expires_at <= $1 OR relay_state='deleting') ORDER BY id LIMIT $2", now.Unix(), limit)
+	rows, e := tx.QueryContext(ctx, "SELECT id FROM image_assets WHERE model='bps-inbound' AND (relay_expires_at <= $1 OR relay_state='deleting') AND relay_cleanup_next_attempt <= $1 ORDER BY CASE WHEN relay_cleanup_next_attempt=0 THEN relay_expires_at ELSE relay_cleanup_next_attempt END,id LIMIT $2", now.Unix(), limit)
 	if e != nil {
 		return nil, e
 	}
@@ -217,7 +223,7 @@ func (db *DB) ClaimExpiredImageRelay(ctx context.Context, now time.Time, limit i
 		return nil, e
 	}
 	for _, id := range ids {
-		if _, e = tx.ExecContext(ctx, "UPDATE image_assets SET relay_state='deleting' WHERE id=$1", id); e != nil {
+		if _, e = tx.ExecContext(ctx, "UPDATE image_assets SET relay_state='deleting',relay_cleanup_next_attempt=$1 WHERE id=$2", now.Add(imageRelayCleanupRetryDelay).Unix(), id); e != nil {
 			return nil, e
 		}
 	}

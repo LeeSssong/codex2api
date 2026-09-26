@@ -155,6 +155,7 @@ func TestImageAssetRelayPostgresAtomicAndCleanup(t *testing.T) {
 	}
 	defer secondConn.Close()
 	second := &DB{conn: secondConn, driver: "postgres"}
+	t.Run("CleanupRetryFairness", func(t *testing.T) { testImageRelayCleanupRetryFairness(t, second) })
 	type result struct {
 		token string
 		err   error
@@ -203,5 +204,83 @@ func TestImageAssetRelayPostgresAtomicAndCleanup(t *testing.T) {
 	}
 	if _, err = first.ReserveImageRelay(ctx, 1<<30, 512); err != nil {
 		t.Fatalf("quota not released: %v", err)
+	}
+}
+
+func TestImageAssetRelayCleanupRetryFairness(t *testing.T) {
+	db, err := New("sqlite", filepath.Join(t.TempDir(), "cleanup.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	testImageRelayCleanupRetryFairness(t, db)
+}
+func testImageRelayCleanupRetryFairness(t *testing.T, db *DB) {
+	t.Helper()
+	ctx := context.Background()
+	now := time.Now().Truncate(time.Second)
+	failedIDs := map[int64]bool{}
+	for i := 0; i < 512; i++ {
+		id, err := db.InsertImageAsset(ctx, ImageAssetInput{Model: "bps-inbound", Bytes: 100})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = db.conn.ExecContext(ctx, "UPDATE image_assets SET relay_state='ready',relay_expires_at=$1 WHERE id=$2", now.Add(-time.Minute).Unix(), id); err != nil {
+			t.Fatal(err)
+		}
+		if i < 200 {
+			failedIDs[id] = true
+		}
+	}
+	first, err := db.ClaimExpiredImageRelay(ctx, now, 200)
+	if err != nil || len(first) != 200 {
+		t.Fatalf("first claim: count=%d err=%v", len(first), err)
+	}
+	for _, asset := range first {
+		if !failedIDs[asset.ID] {
+			t.Fatal("unexpected initial claim")
+		}
+	}
+	// A separate wrapper verifies scheduling is persisted across workers/restarts.
+	worker := &DB{conn: db.conn, driver: db.driver}
+	removed := 0
+	for i := 0; i < 2; i++ {
+		assets, err := worker.ClaimExpiredImageRelay(ctx, now, 200)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, asset := range assets {
+			if failedIDs[asset.ID] {
+				t.Fatal("failed batch retried before other expired objects")
+			}
+			if err := worker.DeleteCleanedImageRelay(ctx, asset.ID); err != nil {
+				t.Fatal(err)
+			}
+			removed++
+		}
+	}
+	if removed != 312 {
+		t.Fatalf("later objects starved: removed=%d", removed)
+	}
+	usage, err := db.GetImageRelayUsage(ctx)
+	if err != nil || usage.Assets != 200 || usage.Bytes != 20000 || usage.CleanupPending != 200 {
+		t.Fatalf("failed objects lost quota: %+v %v", usage, err)
+	}
+	early, err := worker.ClaimExpiredImageRelay(ctx, now.Add(59*time.Second), 200)
+	if err != nil || len(early) != 0 {
+		t.Fatalf("immediate retries: count=%d err=%v", len(early), err)
+	}
+	retry, err := worker.ClaimExpiredImageRelay(ctx, now.Add(time.Minute), 200)
+	if err != nil || len(retry) != 200 {
+		t.Fatalf("retry unavailable: count=%d err=%v", len(retry), err)
+	}
+	for _, asset := range retry {
+		if err := worker.DeleteCleanedImageRelay(ctx, asset.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	usage, err = db.GetImageRelayUsage(ctx)
+	if err != nil || usage.Assets != 0 || usage.Bytes != 0 {
+		t.Fatalf("recovery quota: %+v %v", usage, err)
 	}
 }
