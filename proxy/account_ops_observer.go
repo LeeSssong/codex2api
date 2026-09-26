@@ -65,3 +65,9 @@ func observeAccountOpsResponse(a *auth.Account, r *http.Response) {
 	}
 	r.Body = &accountOpsBody{ReadCloser: r.Body, observe: observe}
 }
+
+func observeBasispointsOps(accountID, generation int64, category string) {
+	if s := accountOpsObserver.Load(); s != nil {
+		s.ObserveBasispoints(accountID, generation, category)
+	}
+}

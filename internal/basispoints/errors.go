@@ -37,7 +37,7 @@ func Category(err error) string {
 
 var userMessages = map[string]string{
 	"tool_history":            "工具调用历史不完整：本次请求里的工具结果找不到对应的原始工具调用（服务重启、更换账号或会话过长都可能让缓存失效）。请新建会话后重试。",
-	"image_input":             "Basispoints 渠道无法使用这种图片：支持可公开访问的 HTTPS 图片链接，以及会自动转成自托管 HTTPS 链接的 base64 内嵌图片（PNG/JPEG/GIF/WebP，单张不超过 10MB）；不支持 http 链接、本地文件、file_id 和无法识别的图片数据。请改用 HTTPS 图片 URL，或新建一个不含图片的会话。",
+	"image_input":             "Basispoints 渠道无法使用这种图片：支持可公开访问的 HTTPS 图片链接，以及会自动转成自托管 HTTPS 链接的 base64 内嵌图片（PNG/JPEG/GIF/WebP，单张不超过 20MiB，每请求最多 20 张且解码合计不超过 32MiB）；不支持 http 链接、本地文件、file_id 和无法识别的图片数据。请改用 HTTPS 图片 URL，或新建一个不含图片的会话。",
 	"image_hosting":           "图片托管不可用：Basispoints 渠道需要先把内嵌图片转成自托管的 HTTPS 签名链接，但图片托管未配置或落盘失败。请管理员检查 IMAGE_ASSET_PUBLIC_BASE_URL（公网可达的 HTTPS 域名）、IMAGE_ASSET_SIGNING_SECRET 和图片存储后端，或关闭 Basispoints 后新建会话。",
 	"tool_choice":             "Basispoints 渠道只支持 tool_choice 为 auto 或 none，不支持强制指定工具。",
 	"tool_catalog":            "工具声明无法通过 Basispoints 渠道转发：只支持带名称的 function / custom 客户端工具，且同名工具的定义不能冲突。",

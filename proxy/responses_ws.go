@@ -827,7 +827,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 					return errResponsesWSClientGone
 				}
 				var localFailure *Error
-				if errors.As(reqErr, &localFailure) && localFailure.Code == ErrorCodeBasispointsInvalidRequest {
+				if errors.As(reqErr, &localFailure) && isBasispointsPreparationError(localFailure) {
 					clientErr := api.NewAPIErrorWithDetails(api.ErrorCode(localFailure.Code), localFailure.Message, api.ErrorTypeInvalidRequest, map[string]string{
 						"stage": "prepare", "category": basispointsPreparationCategory(localFailure),
 					})

@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"encoding/json"
 	"github.com/codex2api/proxy"
 	"github.com/gin-gonic/gin"
 	"net/http/httptest"
@@ -37,5 +38,28 @@ func TestBasispointsSettingsAdmin(t *testing.T) {
 	h.GetBasispointsSettings(c)
 	if w.Code != 200 || !strings.Contains(w.Body.String(), "\"models\":[]") {
 		t.Fatal(w.Code, w.Body.String())
+	}
+}
+
+func TestBasispointsSettingsRuntimeDiagnostics(t *testing.T) {
+	h, _, _ := newPagedAccountsHandler(t)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("GET", "/", nil)
+	h.GetBasispointsSettings(c)
+	if w.Code != 200 {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	var response map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	runtime, ok := response["image_relay_runtime"].(map[string]any)
+	if !ok || runtime["validation_status"] != "disabled" || runtime["max_image_bytes"] != float64(20<<20) || runtime["request_body_limit_bytes"] != float64(48<<20) || runtime["source"] != "environment" {
+		t.Fatalf("missing truthful diagnostics: %v", runtime)
+	}
+	usage, ok := response["image_relay_usage"].(map[string]any)
+	if !ok || usage["bytes"] != float64(0) || usage["max_assets"] != float64(512) {
+		t.Fatalf("missing durable quota statistics: %v", usage)
 	}
 }

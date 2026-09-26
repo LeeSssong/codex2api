@@ -65,7 +65,7 @@ func TestBasispointsImageFailedCleanupStaysChargedAndRetries(t *testing.T) {
 	if err = os.Remove(filepath.Join(file, "keep")); err != nil {
 		t.Fatal(err)
 	}
-	if n, err := sweepBasispointsImages(ctx, s.db, time.Now()); err != nil || n != 1 {
+	if n, err := sweepBasispointsImages(ctx, s.db, time.Now().Add(time.Minute)); err != nil || n != 1 {
 		t.Fatalf("cleanup retry failed: %d %v", n, err)
 	}
 	usage, _ = s.db.GetImageRelayUsage(ctx)

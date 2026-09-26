@@ -13,6 +13,7 @@ import (
 )
 
 type BasispointsSettings struct {
+	ConfigSource           string   `json:"-"`
 	Enabled                bool     `json:"enabled"`
 	ModelScope             string   `json:"model_scope"`
 	Models                 []string `json:"models"`
@@ -22,7 +23,7 @@ type BasispointsSettings struct {
 }
 
 func DefaultBasispointsSettings() BasispointsSettings {
-	s := BasispointsSettings{ModelScope: "selected", Models: []string{"gpt-5.6-sol", "gpt-6-astra"}, ImageRelayPublicOrigin: strings.TrimSpace(os.Getenv("BASISPOINTS_IMAGE_PUBLIC_ORIGIN"))}
+	s := BasispointsSettings{ConfigSource: "environment", ModelScope: "selected", Models: []string{"gpt-5.6-sol", "gpt-6-astra"}, ImageRelayPublicOrigin: strings.TrimSpace(os.Getenv("BASISPOINTS_IMAGE_PUBLIC_ORIGIN"))}
 	raw := strings.TrimSpace(os.Getenv("BASISPOINTS_MODELS"))
 	if raw == "*" || strings.EqualFold(raw, "all") {
 		s.ModelScope = "all"
@@ -101,7 +102,7 @@ func (s BasispointsSettings) Validate() error {
 	}
 	if s.ImageRelayPublicOrigin != "" {
 		u, e := url.Parse(s.ImageRelayPublicOrigin)
-		if e != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
+		if e != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
 			return fmt.Errorf("image_relay_public_origin must be an HTTPS origin")
 		}
 	}
@@ -113,6 +114,7 @@ func (s BasispointsSettings) Validate() error {
 func decodeBasispointsSettings(raw string, enabled bool) (BasispointsSettings, error) {
 	s := DefaultBasispointsSettings()
 	if strings.TrimSpace(raw) != "" {
+		s.ConfigSource = "persisted"
 		if e := json.Unmarshal([]byte(raw), &s); e != nil {
 			return BasispointsSettings{}, fmt.Errorf("invalid persisted Basispoints settings: %w", e)
 		}

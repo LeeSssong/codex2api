@@ -202,6 +202,7 @@ func sweepBasispointsImages(ctx context.Context, db *database.DB, now time.Time)
 		}
 		if e != nil {
 			db.ImageRelayCleanupFailed(ctx)
+			observeBasispointsOps(0, 0, "image_cleanup_failed")
 			if first == nil {
 				first = errors.New("image relay cleanup pending retry")
 			}

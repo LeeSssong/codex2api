@@ -290,3 +290,12 @@ func TestBasispointsPolicyRejectsOversizedModelConfiguration(t *testing.T) {
 		t.Fatal("unbounded account models")
 	}
 }
+
+func TestBasispointsSettingsRejectEmptyQueryOrigin(t *testing.T) {
+	s := DefaultBasispointsSettings()
+	s.ImageRelayEnabled = true
+	s.ImageRelayPublicOrigin = "https://relay.example?"
+	if s.Validate() == nil {
+		t.Fatal("explicit empty query must not be accepted as an HTTPS origin")
+	}
+}

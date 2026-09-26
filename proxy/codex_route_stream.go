@@ -88,7 +88,7 @@ func classifyCodexRouteFailure(status int, source string, body []byte) codexRout
 		return f
 	}
 	switch {
-	case status == 401 || code == "invalid_api_key" || code == "token_expired":
+	case status == 401 || code == "invalid_api_key" || code == "token_expired" || code == "deactivated_workspace":
 		f.Category = "authentication"
 	case isPermanentQuotaFailure(body) || status == 402:
 		f.Category = "billing"

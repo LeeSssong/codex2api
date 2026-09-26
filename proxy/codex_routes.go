@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -77,16 +78,17 @@ type CodexRouteDecision struct {
 }
 
 type codexRouteAttemptState struct {
-	decision   *CodexRouteDecision
-	account    *auth.Account
-	path       string
-	model      string
-	started    time.Time
-	release    func()
-	failure    *codexRouteFailure
-	inspected  bool
-	websocket  bool
-	generation int64
+	decision       *CodexRouteDecision
+	account        *auth.Account
+	path           string
+	model          string
+	started        time.Time
+	release        func()
+	failure        *codexRouteFailure
+	inspected      bool
+	websocket      bool
+	generation     int64
+	policyRevision int64
 }
 
 func codexRouteFromContext(ctx context.Context) *CodexRouteDecision {
@@ -176,6 +178,9 @@ func (d *CodexRouteDecision) pathIneligibleReason(account *auth.Account, path, m
 		return "route_configuration"
 	}
 	if path == database.CodexPathBasispoints {
+		if !account.BasispointsPolicySnapshot().AllowsModel(model, CurrentBasispointsSettings()) {
+			return "basispoints_model_not_selected"
+		}
 		if !basispointsActiveForModel(model) || account.IsCodexAgentIdentity() || account.GetAccessToken() == "" || account.EffectiveAccountID() == "" {
 			return "basispoints_unavailable"
 		}
@@ -401,6 +406,7 @@ func executeCodexRoute(ctx context.Context, account *auth.Account, body []byte, 
 		}
 		ctx = context.WithValue(ctx, codexRouteKey{}, d)
 	}
+	ctx = WithBasispointsImageScope(ctx, fmt.Sprintf("%d|%x", account.ID(), sha256.Sum256([]byte(apiKey))))
 	d.bindHistory(body)
 	d.validateModelPolicy(body)
 	if err := codexRouteBudgetError(ctx); err != nil {
@@ -420,7 +426,7 @@ func executeCodexRoute(ctx context.Context, account *auth.Account, body []byte, 
 	if selected == "" && d.Preferred == database.CodexPathBasispoints && d.pathEligible(account, database.CodexPathBasispoints, model, nil) {
 		// Preserve the bridge's actionable local protocol/hosting diagnostics.
 		if _, _, imageErr := rewriteBasispointsImages(ctx, body); imageErr != nil {
-			return nil, newBasispointsPreparationError(imageErr)
+			return nil, newBasispointsImagePreparationError(imageErr)
 		}
 		if _, _, prepareErr := basispoints.Prepare(body, "route-validation", &basispoints.ReplayCache{}); prepareErr != nil {
 			return nil, newBasispointsPreparationError(prepareErr)
@@ -457,7 +463,8 @@ func executeCodexRoute(ctx context.Context, account *auth.Account, body []byte, 
 			if images.converted+images.reused > 0 {
 				log.Printf("[Basispoints] stage=images result=hosted converted=%d reused=%d account=%d", images.converted, images.reused, account.ID())
 			}
-			if err != nil && !d.NoSwitch && !d.Switched && d.Remaining > 0 {
+			_, _, terminalImageError := basispointsImageErrorStatus(err)
+			if err != nil && !terminalImageError && !d.NoSwitch && !d.Switched && d.Remaining > 0 {
 				for _, path := range paths {
 					if path == database.CodexPathNative && d.pathEligible(account, path, model, canonical) {
 						release()
@@ -481,7 +488,10 @@ func executeCodexRoute(ctx context.Context, account *auth.Account, body []byte, 
 					resp, err = executeBasispointsRequest(attemptCtx, account, attemptBody, sessionID, proxyURL, apiKey, attemptHeaders)
 				}
 			} else {
-				err = newBasispointsPreparationError(err)
+				if status, _, ok := basispointsImageErrorStatus(err); ok && status == 503 {
+					observeBasispointsOps(account.ID(), a.generation, "image_capacity_rejected")
+				}
+				err = newBasispointsImagePreparationError(err)
 			}
 		} else {
 			attemptCtx = context.WithValue(attemptCtx, statePoolBypassKey{}, false)
@@ -561,6 +571,16 @@ func (a *codexRouteAttemptState) recordFailure(f codexRouteFailure) {
 	d.mu.Unlock()
 	log.Printf("[CodexRoute] preferred=%s path=%s account=%d http_status=%d reported_status=%d source=%s code=%s reason=%s switch_blocked=%s", d.Preferred, a.path, a.account.ID(), f.HTTPStatus, f.ReportedStatus, f.Source, f.Code, f.Category, blocked)
 	if f.BasispointsHTTP403 {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(d.client), 3*time.Second)
+		defer cancel()
+		changed, err := a.account.DisableBasispointsForHTTP403(ctx, a.generation, a.policyRevision)
+		if err != nil {
+			log.Printf("[Basispoints] stage=auto_403 result=persistence_failed account=%d", a.account.ID())
+		}
+		if changed {
+			observeBasispointsOps(a.account.ID(), a.generation, "auto_403_disabled")
+			log.Printf("[Basispoints] stage=auto_403 result=disabled account=%d generation=%d", a.account.ID(), a.generation)
+		}
 		return
 	}
 	if f.Category == "upstream_access" {

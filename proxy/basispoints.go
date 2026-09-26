@@ -37,22 +37,8 @@ const (
 var defaultBasispointsModels = []string{"gpt-5.6-sol", "gpt-6-astra"}
 
 func basispointsAllowedModels() (models []string, all bool) {
-	raw := strings.TrimSpace(os.Getenv(basispointsModelsEnv))
-	if raw == "" {
-		return defaultBasispointsModels, false
-	}
-	if raw == "*" || strings.EqualFold(raw, "all") {
-		return nil, true
-	}
-	for _, part := range strings.Split(raw, ",") {
-		if p := strings.ToLower(strings.TrimSpace(part)); p != "" {
-			models = append(models, p)
-		}
-	}
-	if len(models) == 0 {
-		return defaultBasispointsModels, false
-	}
-	return models, false
+	s := CurrentBasispointsSettings()
+	return s.Models, s.ModelScope == "all"
 }
 
 // basispointsModelAllowed reports whether the Basispoints channel should serve
@@ -90,10 +76,13 @@ func basispointsPreparationCategory(err error) string {
 }
 
 func newBasispointsPreparationError(err error) *Error {
-	return &Error{
-		Code: ErrorCodeBasispointsInvalidRequest, Message: basispoints.UserMessage(err),
-		Type: ErrorTypeInvalidRequest, HTTPStatus: http.StatusBadRequest,
+	return &Error{Code: ErrorCodeBasispointsInvalidRequest, Message: basispoints.UserMessage(err), Type: ErrorTypeInvalidRequest, HTTPStatus: http.StatusBadRequest}
+}
+func newBasispointsImagePreparationError(err error) *Error {
+	if status, code, ok := basispointsImageErrorStatus(err); ok {
+		return &Error{Code: code, Message: err.Error(), Type: ErrorTypeInvalidRequest, HTTPStatus: status}
 	}
+	return newBasispointsPreparationError(err)
 }
 
 // basispointsNativeFallbackEnabled reports whether requests Basispoints cannot
@@ -163,7 +152,12 @@ func executeBasispointsRequest(ctx context.Context, account *auth.Account, reque
 	}
 	account.Mu().RLock()
 	token, proxyURL := account.AccessToken, account.ProxyURL
+	generation := account.CredentialGeneration
+	policy := account.BasispointsPolicySnapshot()
 	account.Mu().RUnlock()
+	if attempt := codexAttemptFromContext(ctx); attempt != nil {
+		attempt.generation, attempt.policyRevision = generation, policy.Revision
+	}
 	accountID := account.EffectiveAccountID()
 	if strings.TrimSpace(token) == "" || accountID == "" || account.IsCodexAgentIdentity() {
 		return nil, ErrBadRequest("Basispoints 需要 ChatGPT access token 和账号 ID，不支持 Agent Identity 凭据")
@@ -199,6 +193,12 @@ func executeBasispointsRequest(ctx context.Context, account *auth.Account, reque
 	if err != nil {
 		log.Printf("[Basispoints] stage=prepare result=rejected code=%s category=%s account=%d", ErrorCodeBasispointsInvalidRequest, basispointsPreparationCategory(err), account.ID())
 		return nil, newBasispointsPreparationError(err)
+	}
+	bridge.TransformUsage = func(usage map[string]any) {
+		raw := normalizeBasispointsUsage(usage, policy.CacheCreationAsInput)
+		if raw != nil && policy.CacheCreationAsInput {
+			log.Printf("[Basispoints] stage=usage account=%d generation=%d raw_input=%d raw_cached_read=%d raw_cache_write=%d raw_output=%d cache_creation_as_input=true", account.ID(), generation, raw.InputTokens, raw.CachedTokens, raw.CacheWriteTokens, raw.OutputTokens)
+		}
 	}
 	endpoint := basispoints.ResponsesURL
 	client, err := getBasispointsClient(account, proxyURL)

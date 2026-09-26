@@ -41,6 +41,7 @@ func ProbeCodexCapability(ctx context.Context, account *auth.Account, options Co
 	}
 	var generation int64
 	var evidence *database.CodexCapability
+	var previousProbes []database.CodexProbeResult
 	if account != nil {
 		result.AccountID = account.ID()
 		generation = account.GetCredentialGeneration()
@@ -60,6 +61,8 @@ func ProbeCodexCapability(ctx context.Context, account *auth.Account, options Co
 		if err != nil {
 			result.Message += "; result persistence failed"
 			log.Printf("[CodexProbe] persistence failed account=%d", account.ID())
+		} else if applied && result.Outcome == "supported" && result.Attempts > 0 && basispointsProbeRecoverySuggested(previousProbes, result) {
+			observeBasispointsOps(account.ID(), generation, "recovery_suggested")
 		} else if !applied {
 			result.Outcome, result.Capability, result.ErrorCode, result.Message = "skipped", database.CapabilityUnknown, "stale_probe_result", "A newer test or credential replacement superseded this result"
 			if account.GetCredentialGeneration() != generation {
@@ -90,6 +93,11 @@ func ProbeCodexCapability(ctx context.Context, account *auth.Account, options Co
 		setFailure("blocked", "configuration_unavailable", "Routing configuration is unavailable")
 		return
 	}
+	if !account.BasispointsPolicySnapshot().AllowsModel(result.Model, CurrentBasispointsSettings()) {
+		setFailure("blocked", "basispoints_model_not_selected", "The account model selection does not allow this test")
+		return
+	}
+	previousProbes, _ = account.GetCodexCapabilityProbeResults(ctx)
 	result.Capability = account.CodexPathSnapshot(result.Upstream, result.Model, time.Now()).Capability
 	release, reason := account.BeginCodexCapabilityProbe(ctx, result.Model)
 	if reason != "" {
@@ -376,4 +384,13 @@ func codexProbeValidatedCall(response gjson.Result, nonce string) (gjson.Result,
 	marker := call.Get("encrypted_function_args")
 	args := call.Get("arguments").String()
 	return call, call.Get("name").String() == codexProbeTool && call.Get("call_id").String() != "" && marker.IsArray() && len(marker.Array()) == 0 && gjson.Valid(args) && gjson.Get(args, "nonce").String() == nonce
+}
+
+func basispointsProbeRecoverySuggested(previous []database.CodexProbeResult, current CodexProbeResult) bool {
+	for _, p := range previous {
+		if p.Upstream == database.CodexPathBasispoints && p.Model == current.Model && p.Level == current.Level && p.Outcome != "supported" && p.Attempts > 0 {
+			return true
+		}
+	}
+	return false
 }

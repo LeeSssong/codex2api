@@ -83,16 +83,27 @@ func relayBasispointsResponseHeaders(c *gin.Context, response *http.Response) {
 // attempts or leaking caller-controlled tool names, prompts or arguments.
 func (h *Handler) logBasispointsPreparationFailure(c *gin.Context, account *auth.Account, err error, model, effort string, durationMs, attempt int, stream bool) {
 	var failure *Error
-	if !errors.As(err, &failure) || failure.Code != ErrorCodeBasispointsInvalidRequest {
+	if !errors.As(err, &failure) || !isBasispointsPreparationError(failure) {
 		return
 	}
 	endpoint := c.Request.URL.Path
 	h.logUsageForRequest(c, &database.UsageLogInput{
 		AccountID: account.ID(), Endpoint: endpoint, InboundEndpoint: endpoint,
-		Model: model, StatusCode: http.StatusBadRequest, DurationMs: durationMs,
+		Model: model, StatusCode: failure.HTTPStatus, DurationMs: durationMs,
 		ReasoningEffort: effectiveReasoningEffortForAccount(account, effort, c.Request.Context()),
 		Stream:          stream, AttemptIndex: attempt + 1,
-		UpstreamErrorKind: ErrorCodeBasispointsInvalidRequest,
-		ErrorMessage:      fmt.Sprintf("%s · stage=prepare · category=%s; request rejected locally before contacting Basispoints", ErrorCodeBasispointsInvalidRequest, basispointsPreparationCategory(failure)),
+		UpstreamErrorKind: failure.Code,
+		ErrorMessage:      fmt.Sprintf("%s · stage=prepare · category=%s; request rejected locally before contacting Basispoints", failure.Code, basispointsPreparationCategory(failure)),
 	})
+}
+
+func isBasispointsPreparationError(e *Error) bool {
+	if e == nil {
+		return false
+	}
+	switch e.Code {
+	case ErrorCodeBasispointsInvalidRequest, "invalid_image", "image_too_large", "image_capacity_exhausted":
+		return true
+	}
+	return false
 }

@@ -348,6 +348,15 @@ func main() {
 	// 全局 RPM 限流器
 	rateLimiter := proxy.NewRateLimiter(settings.GlobalRPM)
 	adminHandler := admin.NewHandler(store, db, tc, rateLimiter, cfg.AdminSecret)
+	if err := proxy.SyncBasispointsSettings(context.Background(), db, store.SetCodexBasispointsEnabled); err != nil {
+		log.Fatalf("初始化 Basispoints 设置失败: %v", err)
+	}
+	admin.BasispointsSettingsPublisher = func(_ database.BasispointsSettings) {
+		if err := proxy.SyncBasispointsSettings(context.Background(), db, store.SetCodexBasispointsEnabled); err != nil {
+			log.Printf("同步 Basispoints 设置失败")
+		}
+	}
+
 	// 初始化 admin handler 的连接池设置跟踪
 	adminHandler.SetPoolSizes(settings.PgMaxConns, settings.RedisPoolSize)
 	store.SetUsageProbeFunc(adminHandler.ProbeUsageSnapshot)
@@ -370,6 +379,9 @@ func main() {
 	defer cancelBackground()
 	if !proxy.StartResponseCacheSettingsPoller(backgroundCtx, db) {
 		log.Fatalf("启动响应缓存设置同步失败")
+	}
+	if !proxy.StartBasispointsSettingsPoller(backgroundCtx, db, store.SetCodexBasispointsEnabled) {
+		log.Fatalf("启动 Basispoints 设置同步失败")
 	}
 	adminHandler.StartAutoResetCredits(backgroundCtx)
 	adminHandler.StartAutoActivate5hWindow(backgroundCtx)
