@@ -82,3 +82,34 @@ func TestCodexRouteIDValidation(t *testing.T) {
 		}
 	}
 }
+
+func TestBasispointsAccountPolicyAdminAndRuntime(t *testing.T) {
+	h, ids, _ := newPagedAccountsHandler(t)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/", strings.NewReader(fmt.Sprintf("{\"ids\":[%d],\"upstream\":\"basispoints\",\"basispoints_policy\":{\"model_scope\":\"selected\",\"models\":[],\"auto_disable_on_403\":true,\"cache_creation_as_input\":true}}", ids[0])))
+	c.Request.Header.Set("Content-Type", "application/json")
+	h.UpdateCodexRoutes(c)
+	if w.Code != 200 {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	a := h.store.FindByID(ids[0])
+	p := a.BasispointsPolicySnapshot()
+	if p.ModelScope != "selected" || !p.AutoDisableOn403 || !p.CacheCreationAsInput || p.Revision == 0 {
+		t.Fatal(p)
+	}
+	global := database.BasispointsSettings{ModelScope: "all"}
+	if p.AllowsModel("gpt-test", global) {
+		t.Fatal("selected empty allows models")
+	}
+	ok, e := a.DisableBasispointsForHTTP403(context.Background(), a.GetCredentialGeneration(), p.Revision)
+	if !ok || e != nil {
+		t.Fatal(ok, e)
+	}
+	if a.CodexPathSnapshot("basispoints", "gpt-test", time.Now()).Allowed {
+		t.Fatal("disable not visible immediately")
+	}
+	if !a.CodexPathSnapshot("codex", "gpt-test", time.Now()).Allowed {
+		t.Fatal("native path changed")
+	}
+}

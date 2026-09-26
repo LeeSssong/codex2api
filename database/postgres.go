@@ -3112,6 +3112,7 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 				public_image_studio_page_enabled = EXCLUDED.public_image_studio_page_enabled,
 					reasoning_effort_models = EXCLUDED.reasoning_effort_models,
 					codex_force_websocket = EXCLUDED.codex_force_websocket,
+					basispoints_image_relay_epoch = system_settings.basispoints_image_relay_epoch + CASE WHEN system_settings.codex_basispoints_enabled <> EXCLUDED.codex_basispoints_enabled THEN 1 ELSE 0 END,
 					codex_basispoints_enabled = EXCLUDED.codex_basispoints_enabled,
 					codex_request_compression = EXCLUDED.codex_request_compression,
 					codex_ws_keepalive_enabled = EXCLUDED.codex_ws_keepalive_enabled,

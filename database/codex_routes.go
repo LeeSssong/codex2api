@@ -82,6 +82,9 @@ func (db *DB) ensureCodexRoutesSchema(ctx context.Context) error {
 			return fmt.Errorf("initialize Codex routes: %w", err)
 		}
 	}
+	if err := db.ensureBasispointsPolicySchema(ctx); err != nil {
+		return err
+	}
 	if db.isSQLite() {
 		return db.ensureSQLiteColumn(ctx, "account_codex_capabilities", "credential_generation", "BIGINT NOT NULL DEFAULT 0")
 	}
@@ -130,13 +133,18 @@ func (db *DB) SetCodexPathAllowed(ctx context.Context, id int64, path string, al
 	if !ValidCodexPath(path) {
 		return fmt.Errorf("invalid Codex path")
 	}
-	value := 0
-	if allowed {
-		value = 1
+	if path == CodexPathBasispoints {
+		return db.UpdateBasispointsAccountRoute(ctx, id, &allowed, nil)
 	}
-	return db.withSQLiteWriteLock(ctx, func() error {
-		_, err := db.conn.ExecContext(ctx, `INSERT INTO account_codex_paths(account_id,upstream,allowed) VALUES($1,$2,$3) ON CONFLICT(account_id,upstream) DO UPDATE SET allowed=excluded.allowed`, id, path, value)
-		return err
+	return db.withWriteTx(ctx, func(tx *sql.Tx) error {
+		if err := db.lockCodexRoutesAccount(ctx, tx, id); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, "INSERT INTO account_codex_paths(account_id,upstream,allowed,policy_revision) VALUES($1,$2,$3,1) ON CONFLICT(account_id,upstream) DO UPDATE SET allowed=excluded.allowed,policy_revision=account_codex_paths.policy_revision+1,disabled_by='',disabled_reason='',disabled_at=0", id, path, boolInt(allowed))
+		if err != nil {
+			return err
+		}
+		return insertSchedulerOutboxEventTx(ctx, tx, "account", id, "codex_routes_updated")
 	})
 }
 

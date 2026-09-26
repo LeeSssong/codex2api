@@ -36,6 +36,7 @@ const (
 )
 
 type schedulerOutboxKey struct {
+	projection string
 	entityType string
 	entityID   int64
 }
@@ -255,6 +256,9 @@ func (s *Store) applySchedulerOutboxBatch(ctx context.Context, events []database
 			entityID = 0
 		}
 		key := schedulerOutboxKey{entityType: event.EntityType, entityID: entityID}
+		if event.EntityType == database.SchedulerEntityAccount && event.EventType == "codex_routes_updated" {
+			key.projection = "codex_routes"
+		}
 		latest[key] = event
 	}
 	coalesced := make([]database.SchedulerOutboxEvent, 0, len(latest))
@@ -265,7 +269,7 @@ func (s *Store) applySchedulerOutboxBatch(ctx context.Context, events []database
 
 	accountIDs := make([]int64, 0, len(coalesced))
 	for _, event := range coalesced {
-		if event.EntityType == database.SchedulerEntityAccount {
+		if event.EntityType == database.SchedulerEntityAccount && event.EventType != "codex_routes_updated" {
 			accountIDs = append(accountIDs, event.EntityID)
 			continue
 		}
@@ -317,6 +321,12 @@ func (s *Store) recordSchedulerOutboxError(err error) {
 func (s *Store) applySchedulerOutboxEvent(ctx context.Context, event database.SchedulerOutboxEvent) error {
 	switch strings.ToLower(strings.TrimSpace(event.EntityType)) {
 	case database.SchedulerEntityAccount:
+		if event.EventType == "codex_routes_updated" {
+			if a := s.FindByID(event.EntityID); a != nil {
+				return a.ReloadCodexRoutes(ctx)
+			}
+			return nil
+		}
 		return s.reloadDispatchAccountByID(ctx, event.EntityID)
 	case database.SchedulerEntityAPIKey:
 		return s.reloadAPIKeyRoutingByID(ctx, event.EntityID)

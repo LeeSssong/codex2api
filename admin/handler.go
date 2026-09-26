@@ -1127,6 +1127,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.GET("/accounts/:id/codex-probes", h.GetCodexProbes)
 	api.POST("/accounts/codex/probe", h.ProbeCodexAccounts)
 	api.POST("/accounts/codex/routes", h.UpdateCodexRoutes)
+	api.GET("/settings/basispoints", h.GetBasispointsSettings)
+	api.PUT("/settings/basispoints", h.UpdateBasispointsSettings)
 	api.POST("/accounts", h.AddAccount)
 	api.POST("/accounts/at", h.AddATAccount)
 	api.POST("/accounts/codex/agent-identity", h.ImportCodexAgentIdentity)
@@ -11918,6 +11920,14 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 			return
 		}
 	} else {
+		if req.CodexBasispointsEnabled != nil && BasispointsSettingsPublisher != nil {
+			snapshot, readErr := h.db.GetBasispointsSettings(c.Request.Context())
+			if readErr != nil {
+				writeInternalError(c, readErr)
+				return
+			}
+			BasispointsSettingsPublisher(snapshot)
+		}
 		if req.SessionSlotBufferSeconds != nil {
 			h.store.SetSessionSlotBuffer(time.Duration(sessionSlotBufferSeconds) * time.Second)
 			log.Printf("设置已更新: session_slot_buffer_seconds = %d", sessionSlotBufferSeconds)

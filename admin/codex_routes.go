@@ -127,19 +127,26 @@ func (h *Handler) codexCapabilityPredicate(ctx context.Context, filter, model st
 
 func (h *Handler) UpdateCodexRoutes(c *gin.Context) {
 	var req struct {
-		IDs      []int64 `json:"ids"`
-		Upstream string  `json:"upstream"`
-		Allowed  *bool   `json:"allowed"`
-		Reset    bool    `json:"reset_observations"`
+		IDs      []int64                            `json:"ids"`
+		Upstream string                             `json:"upstream"`
+		Allowed  *bool                              `json:"allowed"`
+		Reset    bool                               `json:"reset_observations"`
+		Policy   *database.BasispointsAccountPolicy `json:"basispoints_policy"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		writeError(c, 400, "Invalid route configuration")
 		return
 	}
 	ids := positiveUniqueAdminIDs(req.IDs)
-	if len(ids) == 0 || len(ids) > 100 || !database.ValidCodexPath(req.Upstream) || req.Allowed == nil && !req.Reset {
+	if len(ids) == 0 || len(ids) > 100 || !database.ValidCodexPath(req.Upstream) || req.Allowed == nil && !req.Reset && req.Policy == nil {
 		writeError(c, 400, "Select 1–100 Codex OAuth accounts, an upstream and an action")
 		return
+	}
+	if req.Policy != nil {
+		if req.Upstream != database.CodexPathBasispoints || req.Policy.Validate() != nil {
+			writeError(c, 400, "Invalid Basispoints account policy")
+			return
+		}
 	}
 	ctx := c.Request.Context()
 	// Validate the complete batch before changing anything.
@@ -152,7 +159,9 @@ func (h *Handler) UpdateCodexRoutes(c *gin.Context) {
 	}
 	for _, id := range ids {
 		var err error
-		if req.Allowed != nil {
+		if req.Upstream == database.CodexPathBasispoints && (req.Allowed != nil || req.Policy != nil) {
+			err = h.db.UpdateBasispointsAccountRoute(ctx, id, req.Allowed, req.Policy)
+		} else if req.Allowed != nil {
 			err = h.db.SetCodexPathAllowed(ctx, id, req.Upstream, *req.Allowed)
 		}
 		if err == nil && req.Reset {
@@ -192,13 +201,18 @@ func (h *Handler) GetCodexRoutes(c *gin.Context) {
 		writeInternalError(c, err)
 		return
 	}
+	policy, err := h.db.GetBasispointsAccountPolicy(c.Request.Context(), id)
+	if err != nil {
+		writeInternalError(c, err)
+		return
+	}
 	model := strings.ToLower(strings.TrimSpace(c.Query("model")))
 	probes, err := h.codexProbeResults(c.Request.Context(), id, model)
 	if err != nil {
 		writeInternalError(c, err)
 		return
 	}
-	c.JSON(200, gin.H{"paths": codexViewsFromRecords(&database.CodexRouteRecords{Paths: configs, Facts: facts}, model, h.store.FindByID(id), time.Now()), "probes": probes})
+	c.JSON(200, gin.H{"paths": codexViewsFromRecords(&database.CodexRouteRecords{Paths: configs, Facts: facts}, model, h.store.FindByID(id), time.Now()), "probes": probes, "basispoints_policy": policy})
 }
 
 func parseCodexRouteID(raw string) (int64, error) {

@@ -24,6 +24,7 @@ type codexAccountRoutes struct {
 	db           *database.DB
 	loadedAt     time.Time
 	loadFailed   bool
+	policy       database.BasispointsAccountPolicy
 	configs      map[string]bool
 	facts        map[string]database.CodexCapability
 	health       map[string]codexPathHealth
@@ -68,10 +69,15 @@ func (a *Account) reloadCodexRoutesLocked(ctx context.Context, now time.Time) er
 		return nil
 	}
 	configs, facts, err := r.db.GetCodexRoutes(ctx, a.ID())
+	var policy database.BasispointsAccountPolicy
+	if err == nil {
+		policy, err = r.db.GetBasispointsAccountPolicy(ctx, a.ID())
+	}
 	r.loadedAt, r.loadFailed = now, err != nil
 	if err != nil {
 		return err
 	}
+	r.policy = policy
 	r.configs = make(map[string]bool, len(configs))
 	r.facts = make(map[string]database.CodexCapability, len(facts))
 	for _, c := range configs {
@@ -301,4 +307,38 @@ func (a *Account) ClearCodexPathHealth(path string) {
 			delete(a.codexRoutes.health, key)
 		}
 	}
+}
+
+// BasispointsPolicySnapshot returns an independent immutable policy view.
+func (a *Account) BasispointsPolicySnapshot() database.BasispointsAccountPolicy {
+	a.codexRoutes.mu.Lock()
+	defer a.codexRoutes.mu.Unlock()
+	p := a.codexRoutes.policy
+	p.Models = append([]string{}, p.Models...)
+	if a.codexRoutes.loadFailed {
+		p.ModelScope = "selected"
+		p.Models = []string{}
+	}
+	return p
+}
+
+// A failed request may close only its original credential and policy generation.
+func (a *Account) DisableBasispointsForHTTP403(ctx context.Context, generation, revision int64) (bool, error) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.CredentialGeneration != generation {
+		return false, nil
+	}
+	r := &a.codexRoutes
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.db == nil {
+		return false, nil
+	}
+	changed, err := r.db.DisableBasispointsForHTTP403(ctx, a.ID(), generation, revision)
+	if err != nil || !changed {
+		return changed, err
+	}
+	err = a.reloadCodexRoutesLocked(ctx, time.Now())
+	return changed, err
 }
