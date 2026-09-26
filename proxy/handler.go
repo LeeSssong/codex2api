@@ -4517,6 +4517,7 @@ func (h *Handler) Responses(c *gin.Context) {
 					logInput.PromptTokens, logInput.CompletionTokens, logInput.TotalTokens = usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens
 					logInput.InputTokens, logInput.OutputTokens = usage.InputTokens, usage.OutputTokens
 					logInput.ReasoningTokens, logInput.CachedTokens = usage.ReasoningTokens, usage.CachedTokens
+					applyUsageCacheWritesToLog(logInput, usage)
 					logInput.ImageInputTokens, logInput.ImageOutputTokens, logInput.CachedImageInputTokens = usage.ImageInputTokens, usage.ImageOutputTokens, usage.CachedImageInputTokens
 				}
 				if outcome.logStatusCode != http.StatusOK {
@@ -4932,6 +4933,7 @@ func (h *Handler) Responses(c *gin.Context) {
 				logInput.OutputTokens = usage.OutputTokens
 				logInput.ReasoningTokens = usage.ReasoningTokens
 				logInput.CachedTokens = usage.CachedTokens
+				applyUsageCacheWritesToLog(logInput, usage)
 				logInput.ImageInputTokens, logInput.ImageOutputTokens, logInput.CachedImageInputTokens = usage.ImageInputTokens, usage.ImageOutputTokens, usage.CachedImageInputTokens
 			}
 			applyImageUsageLogInfo(logInput, imageLogInfo)
@@ -5854,6 +5856,7 @@ func (h *Handler) Responses(c *gin.Context) {
 			logInput.OutputTokens = usage.OutputTokens
 			logInput.ReasoningTokens = usage.ReasoningTokens
 			logInput.CachedTokens = usage.CachedTokens
+			applyUsageCacheWritesToLog(logInput, usage)
 			logInput.ImageInputTokens, logInput.ImageOutputTokens, logInput.CachedImageInputTokens = usage.ImageInputTokens, usage.ImageOutputTokens, usage.CachedImageInputTokens
 		}
 		applyImageUsageLogInfo(logInput, imageLogInfo)
@@ -7277,6 +7280,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 				logInput.PromptTokens, logInput.CompletionTokens, logInput.TotalTokens = usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens
 				logInput.InputTokens, logInput.OutputTokens = usage.InputTokens, usage.OutputTokens
 				logInput.ReasoningTokens, logInput.CachedTokens = usage.ReasoningTokens, usage.CachedTokens
+				applyUsageCacheWritesToLog(logInput, usage)
 				logInput.ImageInputTokens, logInput.ImageOutputTokens, logInput.CachedImageInputTokens = usage.ImageInputTokens, usage.ImageOutputTokens, usage.CachedImageInputTokens
 			}
 			if outcome.logStatusCode != http.StatusOK {
@@ -7775,6 +7779,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			logInput.OutputTokens = usage.OutputTokens
 			logInput.ReasoningTokens = usage.ReasoningTokens
 			logInput.CachedTokens = usage.CachedTokens
+			applyUsageCacheWritesToLog(logInput, usage)
 			logInput.ImageInputTokens, logInput.ImageOutputTokens, logInput.CachedImageInputTokens = usage.ImageInputTokens, usage.ImageOutputTokens, usage.CachedImageInputTokens
 		}
 		h.logUsageForRequest(c, logInput)

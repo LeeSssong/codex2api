@@ -96,6 +96,16 @@ func (b *Bridge) transform(reader io.Reader, writer io.Writer) error {
 		if decode(data, &payload) != nil || payload == nil {
 			return fmt.Errorf("invalid Basispoints SSE event")
 		}
+		if b.TransformUsage != nil {
+			if usage, ok := payload["usage"].(object); ok {
+				b.TransformUsage(usage)
+			}
+			if response, ok := payload["response"].(object); ok {
+				if usage, ok := response["usage"].(object); ok {
+					b.TransformUsage(usage)
+				}
+			}
+		}
 		kind := text(payload["type"])
 		if kind == "" {
 			kind = event

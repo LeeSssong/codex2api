@@ -1028,6 +1028,7 @@ type anthropicStreamTranslator struct {
 	inputTokens               int
 	outputTokens              int
 	cachedTokens              int
+	cacheWriteTokens          int
 	thinkingTokens            *anthropicOutputTokensDetails
 	pingAfterStartSent        bool
 	deltasSincePing           int
@@ -1327,8 +1328,10 @@ func (t *anthropicStreamTranslator) handleCompleted(data []byte) []anthropicStre
 		// OpenAI Responses 的 input_tokens 含缓存命中部分，而 Anthropic Messages
 		// 的 input_tokens 不含缓存（缓存另计在 cache_read_input_tokens）。
 		// 直接透传会把缓存 token 重复计入，导致费用偏高，因此这里扣除缓存部分。
-		t.cachedTokens = int(usage.Get("input_tokens_details.cached_tokens").Int())
-		t.inputTokens = max(int(usage.Get("input_tokens").Int())-t.cachedTokens, 0)
+		measurement := extractUsageFromResult(usage)
+		t.cachedTokens = measurement.CachedTokens
+		t.cacheWriteTokens = measurement.CacheWriteTokens
+		t.inputTokens = max(measurement.InputTokens-t.cachedTokens-t.cacheWriteTokens, 0)
 		t.outputTokens = int(usage.Get("output_tokens").Int())
 		t.thinkingTokens = anthropicThinkingTokensFromUsage(usage)
 	}
@@ -1354,10 +1357,11 @@ func (t *anthropicStreamTranslator) handleCompleted(data []byte) []anthropicStre
 			StopDetails:  anthropicJSONNull,
 		},
 		Usage: &anthropicUsage{
-			InputTokens:          t.inputTokens,
-			OutputTokens:         t.outputTokens,
-			CacheReadInputTokens: t.cachedTokens,
-			OutputTokensDetails:  t.thinkingTokens,
+			InputTokens:              t.inputTokens,
+			OutputTokens:             t.outputTokens,
+			CacheReadInputTokens:     t.cachedTokens,
+			CacheCreationInputTokens: t.cacheWriteTokens,
+			OutputTokensDetails:      t.thinkingTokens,
 		},
 	})
 
@@ -1648,13 +1652,15 @@ func buildAnthropicResponseFromCompleted(completedData []byte, model string) *an
 	usage := gjson.GetBytes(completedData, "response.usage")
 	if usage.Exists() {
 		// 见流式分支说明：扣除缓存命中部分，避免缓存 token 被重复计入。
-		cached := int(usage.Get("input_tokens_details.cached_tokens").Int())
-		input := max(int(usage.Get("input_tokens").Int())-cached, 0)
+		measurement := extractUsageFromResult(usage)
+		cached := measurement.CachedTokens
+		input := max(measurement.InputTokens-cached-measurement.CacheWriteTokens, 0)
 		resp.Usage = anthropicUsage{
-			InputTokens:          input,
-			OutputTokens:         int(usage.Get("output_tokens").Int()),
-			CacheReadInputTokens: cached,
-			OutputTokensDetails:  anthropicThinkingTokensFromUsage(usage),
+			InputTokens:              input,
+			OutputTokens:             int(usage.Get("output_tokens").Int()),
+			CacheReadInputTokens:     cached,
+			CacheCreationInputTokens: measurement.CacheWriteTokens,
+			OutputTokensDetails:      anthropicThinkingTokensFromUsage(usage),
 		}
 	}
 

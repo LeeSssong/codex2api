@@ -17,6 +17,9 @@ const ResponsesURL = "https://bps.openai.com/basispoints/api/responses"
 type object = map[string]any
 
 type Bridge struct {
+	// TransformUsage applies the executing account's policy before downstream
+	// adapters and billing consume the same usage measurement.
+	TransformUsage   func(map[string]any)
 	RequestedEffort  string
 	Effort           string
 	Warnings         []string
