@@ -49,7 +49,7 @@ class HTTP:
     def __init__(self): self.opener=urllib.request.build_opener(NoRedirect())
     def request(self,url,method='GET',data=None,headers=None):
         payload=None if data is None else json.dumps(data).encode()
-        hdr=dict(headers or {})
+        hdr={'User-Agent':'Codex2API-ReleaseCheck/1.0'}; hdr.update(headers or {})
         if payload is not None: hdr['Content-Type']='application/json'
         try:
             with self.opener.open(urllib.request.Request(url,data=payload,headers=hdr,method=method),timeout=90) as r:
@@ -117,7 +117,7 @@ class Verifier:
         body={'model':self.a.model,'input':history,'stream':True,'store':False,'reasoning':{'effort':'low'},'max_output_tokens':512}
         if tools: body.update(tools=tools,tool_choice='auto')
         status,headers,raw=self.http.request(ORIGIN+'/v1/responses','POST',body,{'Authorization':'Bearer '+self.key,'Session-Id':self.name})
-        require(status==200,'upstream_http_'+str(status)); headers={k.lower():v for k,v in headers.items()}
+        require(status==200,'public_http_'+str(status)); headers={k.lower():v for k,v in headers.items()}
         require(headers.get('x-codex2api-upstream','').lower()=='basispoints','actual_upstream_not_bps')
         return sse(raw)
     def output_text(self,r): return ''.join(c.get('text','') for o in r.get('output',[]) if o.get('type')=='message' for c in o.get('content',[]) if c.get('type')=='output_text').strip()
