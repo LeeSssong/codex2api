@@ -204,7 +204,7 @@ func BodyCacheMiddleware() gin.HandlerFunc {
 
 // RecoveryMiddleware provides enhanced panic recovery with standardized error response
 func RecoveryMiddleware() gin.HandlerFunc {
-	return gin.CustomRecovery(func(c *gin.Context, recovered interface{}) {
+	ordinaryRecovery := gin.CustomRecovery(func(c *gin.Context, recovered interface{}) {
 		log.Printf("Panic recovered: %v", recovered)
 
 		// Return a generic message to the client to avoid leaking internal details.
@@ -212,6 +212,21 @@ func RecoveryMiddleware() gin.HandlerFunc {
 
 		SendError(c, NewAPIError(ErrCodeServerError, message, ErrorTypeServer))
 	})
+	// Signed image URLs are bearer credentials. Gin's default recovery writer
+	// dumps the request for broken-pipe panics, even in release mode. Neither
+	// that dump nor the recovered value may enter ordinary logs for this route.
+	imageRecovery := gin.CustomRecoveryWithWriter(nil, func(c *gin.Context, _ interface{}) {
+		log.Print("Signed image request panic recovered")
+		c.Abort()
+		SendError(c, NewAPIError(ErrCodeServerError, "Internal server error", ErrorTypeServer))
+	})
+	return func(c *gin.Context) {
+		if strings.HasPrefix(c.Request.URL.Path, "/p/img/") {
+			imageRecovery(c)
+			return
+		}
+		ordinaryRecovery(c)
+	}
 }
 
 // LoggingMiddleware provides structured API request logging
