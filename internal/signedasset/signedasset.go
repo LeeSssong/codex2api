@@ -92,6 +92,12 @@ func imageAssetSignature(assetID int64, exp int64, thumbKB int) string {
 }
 
 func imageAssetSecret() []byte {
+	// A protected shared key takes precedence on every call, including a process
+	// which previously served gallery assets before relay was configured.
+	if configured := strings.TrimSpace(os.Getenv(imageAssetSigningSecretEnv)); configured != "" {
+		digest := sha256.Sum256([]byte(configured))
+		return digest[:]
+	}
 	secretOnce.Do(func() {
 		if configured := strings.TrimSpace(os.Getenv(imageAssetSigningSecretEnv)); configured != "" {
 			digest := sha256.Sum256([]byte(configured))
@@ -108,4 +114,30 @@ func imageAssetSecret() []byte {
 		log.Printf("signedasset: %s is not set; signed image links use a per-process random key and will not survive a restart or work across replicas", imageAssetSigningSecretEnv)
 	})
 	return secret
+}
+
+// HTTPSOrigin is deliberately stricter than the gallery's historical base URL.
+// A relay origin cannot inject credentials, a path, query, or fragment.
+func HTTPSOrigin(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || (u.Path != "" && u.Path != "/") || u.RawPath != "" || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.Opaque != "" {
+		return "", fmt.Errorf("image relay origin must be an HTTPS origin without credentials, path, query or fragment")
+	}
+	return "https://" + u.Host, nil
+}
+
+// PersistentSigningConfigured prevents replicas from publishing links signed
+// with the gallery's per-process fallback secret.
+func PersistentSigningConfigured() bool {
+	return strings.TrimSpace(os.Getenv(imageAssetSigningSecretEnv)) != ""
+}
+func ImageAssetURLAtOrigin(assetID int64, origin string, expires time.Time) string {
+	origin, err := HTTPSOrigin(origin)
+	if err != nil || assetID <= 0 || !PersistentSigningConfigured() {
+		return ""
+	}
+	exp := expires.Unix()
+	sig := imageAssetSignature(assetID, exp, 0)
+	return fmt.Sprintf("%s%s/%d?exp=%d&sig=%s", origin, imageAssetPathPrefix, assetID, exp, sig)
 }

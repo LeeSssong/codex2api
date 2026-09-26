@@ -508,6 +508,9 @@ func New(driver string, dsn string, schema ...string) (*DB, error) {
 		_ = conn.Close()
 		return nil, fmt.Errorf("初始化鉴权缓存修订表失败: %w", err)
 	}
+	if err := db.ensureImageRelaySchema(ctx); err != nil {
+		return nil, fmt.Errorf("initialize image relay schema: %w", err)
+	}
 	// 启动批量写入后台协程
 	db.startLogFlusher()
 

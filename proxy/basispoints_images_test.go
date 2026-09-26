@@ -204,54 +204,19 @@ func TestBasispointsSendsHostedImagesUpstreamWithoutFallback(t *testing.T) {
 	}
 }
 
-func TestBasispointsImageHostFailureDegradesByFallbackSetting(t *testing.T) {
-	enableBasispointsForTest(t)
-	settings := CurrentRuntimeSettings()
-	settings.CodexForceWebsocket = false
-	settings.CodexRequestCompression = false
-	ApplyRuntimeSettings(settings)
-	host := &fakeImageHost{err: errors.New("disk full")}
+func TestBasispointsImageHostFailureReturnsCapacityError(t *testing.T) {
+	host := &fakeImageHost{err: errors.New("disk full private filesystem detail")}
 	host.install(t)
-	account := &auth.Account{DBID: 91261, AccountID: "workspace", AccessToken: "test-token"}
-	body := `{"model":"gpt-6-astra","input":[{"type":"message","role":"user","content":[{"type":"input_image","image_url":"` + dataURL(solidPNG(t, 4, color.RGBA{A: 255})) + `"}]}]}`
-	installBasispointsTransport(t, account, func(*http.Request) (*http.Response, error) {
-		t.Fatal("a failed hosting attempt must not reach Basispoints")
-		return nil, nil
-	})
-	nativeCalls := 0
-	installClaudeBoundaryTransport(t, account, func(req *http.Request) (*http.Response, error) {
-		nativeCalls++
-		raw, _ := io.ReadAll(req.Body)
-		if !strings.Contains(string(raw), "data:image/png;base64,") {
-			t.Fatal("native fallback must keep the original embedded image")
-		}
-		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("data: {\"type\":\"response.completed\",\"response\":{\"output\":[]}}\n\n"))}, nil
-	})
-	resp, err := ExecuteRequest(context.Background(), account, []byte(body), "", "", "client-key", nil, nil, false)
-	if err != nil {
-		t.Fatal(err)
+	body := []byte(fmt.Sprintf("{\"input\":[{\"type\":\"message\",\"content\":[{\"type\":\"input_image\",\"image_url\":%q}]}]}", dataURL(solidPNG(t, 4, color.RGBA{A: 255}))))
+	_, _, err := rewriteBasispointsImages(context.Background(), body)
+	status, _, ok := basispointsImageErrorStatus(err)
+	if !ok || status != 503 || strings.Contains(err.Error(), "private filesystem") {
+		t.Fatalf("storage error must be sanitized local 503: %v", err)
 	}
-	_ = resp.Body.Close()
-	if nativeCalls != 1 || resp.Header.Get(basispointsBypassHeader) != basispoints.RouteImageInput || resp.Header.Get("X-Codex2API-Upstream") != "codex" {
-		t.Fatalf("hosting failure did not fall back to Codex: calls=%d headers=%v", nativeCalls, resp.Header)
-	}
-	t.Setenv(basispointsNativeFallbackEnv, "off")
-	_, err = ExecuteRequest(context.Background(), account, []byte(body), "", "", "client-key", nil, nil, false)
-	var typed *Error
-	if !errors.As(err, &typed) || typed.Code != ErrorCodeBasispointsInvalidRequest || typed.HTTPStatus != 400 {
-		t.Fatalf("expected a local rejection with the fallback off: %v", err)
-	}
-	if basispointsPreparationCategory(typed) != "image_hosting" || !strings.Contains(typed.Message, "IMAGE_ASSET_PUBLIC_BASE_URL") || !strings.Contains(typed.Message, "disk full") {
-		t.Fatalf("hosting failure lacks the operator hint: %s", typed.Message)
-	}
-	if nativeCalls != 1 {
-		t.Fatal("the fallback kill switch must not reach the Codex channel")
-	}
-	// Without any host the request is rejected the same way, pointing at hosting.
 	SetBasispointsImageHost(nil)
-	_, err = ExecuteRequest(context.Background(), account, []byte(body), "", "", "client-key", nil, nil, false)
-	if !errors.As(err, &typed) || basispointsPreparationCategory(typed) != "image_hosting" {
-		t.Fatalf("missing host must be reported as a hosting problem: %v", err)
+	_, _, err = rewriteBasispointsImages(context.Background(), body)
+	if !errors.Is(err, errBasispointsImageHostUnavailable) {
+		t.Fatalf("missing host classification: %v", err)
 	}
 }
 
@@ -263,7 +228,7 @@ func TestBasispointsImageHostRequiresPublicHTTPSBase(t *testing.T) {
 	t.Cleanup(func() { _ = db.Close() })
 	for _, base := range []string{"", "http://plain.example", "not a url"} {
 		t.Setenv("IMAGE_ASSET_PUBLIC_BASE_URL", base)
-		if NewBasispointsImageHost(db) != nil {
+		if host := NewBasispointsImageHost(db); host == nil || host.Available(context.Background()) {
 			t.Fatalf("base %q must not enable the image host", base)
 		}
 	}
@@ -275,7 +240,8 @@ func TestBasispointsImageHostRequiresPublicHTTPSBase(t *testing.T) {
 func TestBasispointsBuiltInHostStoresDeduplicatesAndSweeps(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("IMAGE_ASSET_DIR", dir)
-	t.Setenv("IMAGE_ASSET_PUBLIC_BASE_URL", "https://cdn.example/")
+	t.Setenv("IMAGE_ASSET_PUBLIC_BASE_URL", "https://gallery.example/")
+	t.Setenv("IMAGE_ASSET_SIGNING_SECRET", "persistent-test-secret")
 	if err := imagestore.Configure(imagestore.Config{Backend: imagestore.BackendLocal, LocalDir: dir}); err != nil {
 		t.Fatal(err)
 	}
@@ -284,14 +250,17 @@ func TestBasispointsBuiltInHostStoresDeduplicatesAndSweeps(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
+	ctx := WithBasispointsImageScope(context.Background(), "tenant-one")
+	if err := db.SaveBasispointsSettings(ctx, database.BasispointsSettings{Enabled: true, ModelScope: "all", ImageRelayEnabled: true, ImageRelayPublicOrigin: "https://cdn.example"}); err != nil {
+		t.Fatal(err)
+	}
 	host := NewBasispointsImageHost(db)
 	if host == nil {
 		t.Fatal("HTTPS base must enable the host")
 	}
-	now := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
-	store := &basispointsImageStore{db: db, now: func() time.Time { return now }, recent: map[[32]byte]basispointsHostedImage{}}
+	store := &basispointsImageStore{db: db}
 	red := solidPNG(t, 6, color.RGBA{R: 255, A: 255})
-	first, err := store.host(context.Background(), red, "image/png")
+	first, err := store.host(ctx, red, "image/png")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -318,25 +287,27 @@ func TestBasispointsBuiltInHostStoresDeduplicatesAndSweeps(t *testing.T) {
 		t.Fatalf("image not stored under the asset directory: %v", err)
 	}
 	// Identical bytes within the reuse window share the asset and get a fresh link.
-	now = now.Add(time.Hour)
-	second, err := store.host(context.Background(), red, "image/png")
+	second, err := store.host(ctx, red, "image/png")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(second, fmt.Sprintf("/p/img/%d?", id)) {
 		t.Fatalf("identical image was stored again: %s", second)
 	}
-	// Different bytes get their own asset; an expired reuse entry stores again.
-	if third, err := store.host(context.Background(), solidPNG(t, 6, color.RGBA{B: 255, A: 255}), "image/png"); err != nil || strings.Contains(third, fmt.Sprintf("/p/img/%d?", id)) {
-		t.Fatalf("distinct image reused another asset: %s, %v", third, err)
+	// Distinct data and distinct tenant scopes each get their own asset.
+	if third, err := store.host(ctx, solidPNG(t, 6, color.RGBA{B: 255, A: 255}), "image/png"); err != nil || strings.Contains(third, fmt.Sprintf("/p/img/%d?", id)) {
+		t.Fatalf("distinct data reused: %v", err)
 	}
-	now = now.Add(basispointsImageReuseWindow + time.Minute)
-	if again, err := store.host(context.Background(), red, "image/png"); err != nil || strings.Contains(again, fmt.Sprintf("/p/img/%d?", id)) {
-		t.Fatalf("expired reuse entry must not hand out an aging asset: %s, %v", again, err)
+	restarted := &basispointsImageStore{db: db}
+	if again, err := restarted.host(ctx, red, "image/png"); err != nil || !strings.Contains(again, fmt.Sprintf("/p/img/%d?", id)) {
+		t.Fatalf("restart did not reuse persisted asset: %v", err)
+	}
+	if other, err := restarted.host(WithBasispointsImageScope(context.Background(), "tenant-two"), red, "image/png"); err != nil || strings.Contains(other, fmt.Sprintf("/p/img/%d?", id)) {
+		t.Fatalf("cross-scope reuse: %v", err)
 	}
 	page, err := db.ListImageAssets(context.Background(), 1, 50, 0)
-	if err != nil || page.Total != 3 {
-		t.Fatalf("expected three inbound assets, got %d (%v)", page.Total, err)
+	if err != nil || page.Total != 0 {
+		t.Fatalf("expected no inbound assets in gallery, got %d (%v)", page.Total, err)
 	}
 	// Sweeping with a future cutoff removes rows and files; a second pass is a no-op.
 	removed, err := sweepBasispointsImages(context.Background(), db, time.Now().Add(time.Hour))

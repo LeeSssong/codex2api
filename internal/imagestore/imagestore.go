@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -209,4 +210,23 @@ func PresignURL(ctx context.Context, ref string, ttl time.Duration) (string, err
 		return "", ErrPresignUnsupported
 	}
 	return presigner.PresignGetURL(ctx, ref, ttl)
+}
+
+// PlannedRef returns the exact native storage reference before Save, allowing
+// callers to durably record cleanup metadata before any object I/O starts.
+func PlannedRef(backend Backend, key string) (string, error) {
+	if key == "" || filepath.Base(key) != key || strings.ContainsAny(key, "/\\") {
+		return "", errors.New("invalid image object key")
+	}
+	switch b := backend.(type) {
+	case *LocalBackend:
+		if b.dir == "" {
+			return "", errors.New("image directory not configured")
+		}
+		return filepath.Abs(filepath.Join(b.dir, key))
+	case *S3Backend:
+		return buildS3Ref(b.bucket, b.prefix+key), nil
+	default:
+		return "", errors.New("image backend does not support durable preflight references")
+	}
 }

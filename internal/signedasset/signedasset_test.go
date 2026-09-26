@@ -92,3 +92,20 @@ func TestVerifyImageAssetURLRejectsTampering(t *testing.T) {
 		t.Fatal("expected expired URL to fail")
 	}
 }
+
+func TestSignedImageRelayOriginDoesNotChangeGallery(t *testing.T) {
+	t.Setenv(imageAssetSigningSecretEnv, "persistent-test-key")
+	t.Setenv(imageAssetPublicBaseURLEnv, "https://gallery.example")
+	for _, raw := range []string{"http://relay.example", "https://relay.example/path", "https://u:p@relay.example", "https://relay.example?x=1", "https://relay.example#x", "https://relay.example?"} {
+		if _, err := HTTPSOrigin(raw); err == nil {
+			t.Errorf("unsafe relay origin accepted: %q", raw)
+		}
+	}
+	relay := ImageAssetURLAtOrigin(42, "https://relay.example", time.Now().Add(30*time.Minute))
+	if !strings.HasPrefix(relay, "https://relay.example/p/img/42?") {
+		t.Fatalf("relay origin not applied: %s", relay)
+	}
+	if gallery := ImageAssetURL(43, 32); !strings.HasPrefix(gallery, "https://gallery.example/p/img/43?") {
+		t.Fatalf("gallery origin changed: %s", gallery)
+	}
+}

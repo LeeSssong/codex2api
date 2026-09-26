@@ -3,72 +3,59 @@ package proxy
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
-	"fmt"
-	"image"
-	"log"
-	"strings"
-	"sync"
-	"time"
-
+	"errors"
 	"github.com/codex2api/database"
 	"github.com/codex2api/internal/imagestore"
 	"github.com/codex2api/internal/signedasset"
+	"image"
+	"time"
 )
 
 const (
-	// basispointsImageModel tags inbound images in image_assets so the gallery and
-	// the retention sweep can tell them apart from generated images.
-	basispointsImageModel = "bps-inbound"
-	// basispointsImageURLTTL only needs to outlive one upstream request including
-	// slow fetches and retries; every turn re-signs a fresh link.
-	basispointsImageURLTTL = 6 * time.Hour
-	// basispointsImageRetention bounds how long an inbound image stays hosted.
-	basispointsImageRetention = 24 * time.Hour
-	// basispointsImageReuseWindow lets later turns of the same conversation reuse
-	// an asset for identical bytes. Reuse window plus link TTL stays below the
-	// retention so a reused link never outlives its file.
-	basispointsImageReuseWindow = 12 * time.Hour
-	basispointsImageReuseLimit  = 4096
-	basispointsImageSweepEvery  = time.Hour
+	basispointsImageModel       = "bps-inbound"
+	basispointsImageURLTTL      = database.ImageRelayLifetime
+	basispointsImageRetention   = database.ImageRelayLifetime
+	basispointsImageReuseWindow = database.ImageRelayLifetime
+	basispointsImageSweepEvery  = time.Minute
 	basispointsImageSweepBatch  = 200
 )
 
-type basispointsHostedImage struct {
-	assetID  int64
-	storedAt time.Time
+type basispointsImageStore struct{ db *database.DB }
+type basispointsImageTransactionKey struct{}
+type basispointsImageTransaction struct {
+	token, scope, origin string
+	epoch                int64
+	reused               []int64
+	expires              time.Time
 }
 
-// basispointsImageStore is the built-in host: the configured imagestore backend,
-// an image_assets row per stored image and signed /p/img links. Recent digests
-// are remembered in-process so a conversation replaying the same image each turn
-// does not store it again.
-type basispointsImageStore struct {
-	db     *database.DB
-	now    func() time.Time
-	mu     sync.Mutex
-	recent map[[sha256.Size]byte]basispointsHostedImage
+func (s *basispointsImageStore) settings(ctx context.Context) (database.BasispointsSettings, error) {
+	settings, err := s.db.GetBasispointsSettings(ctx)
+	if err != nil {
+		return settings, err
+	}
+	if !settings.Enabled || !settings.ImageRelayEnabled || !signedasset.PersistentSigningConfigured() {
+		return settings, errBasispointsImageHostUnavailable
+	}
+	origin, err := signedasset.HTTPSOrigin(settings.ImageRelayPublicOrigin)
+	if err != nil {
+		return settings, errBasispointsImageHostUnavailable
+	}
+	settings.ImageRelayPublicOrigin = origin
+	return settings, nil
 }
 
-// NewBasispointsImageHost returns the built-in host, or nil with a logged reason
-// when signed links cannot be public HTTPS URLs that OpenAI's servers can fetch.
+// Install even while disabled, so later saved settings take effect immediately.
 func NewBasispointsImageHost(db *database.DB) *BasispointsImageHost {
 	if db == nil {
 		return nil
 	}
-	base := signedasset.PublicBaseURL()
-	if !strings.HasPrefix(base, "https://") {
-		log.Printf("[Basispoints] image host disabled: IMAGE_ASSET_PUBLIC_BASE_URL must be a public HTTPS base URL reachable by OpenAI's servers; embedded images keep using the original Codex channel")
-		return nil
-	}
-	store := &basispointsImageStore{db: db, now: time.Now, recent: make(map[[sha256.Size]byte]basispointsHostedImage)}
-	return &BasispointsImageHost{Host: store.host}
+	s := &basispointsImageStore{db: db}
+	return &BasispointsImageHost{Host: s.host, Begin: s.begin, Available: func(ctx context.Context) bool { _, err := s.settings(ctx); return err == nil }}
 }
-
-// StartBasispointsImageHost installs the built-in host when it can produce public
-// links and sweeps expired inbound images until ctx ends. The sweep runs even
-// without a host so images hosted by an earlier configuration are still removed.
 func StartBasispointsImageHost(ctx context.Context, db *database.DB) {
 	if db == nil {
 		return
@@ -78,110 +65,151 @@ func StartBasispointsImageHost(ctx context.Context, db *database.DB) {
 		ticker := time.NewTicker(basispointsImageSweepEvery)
 		defer ticker.Stop()
 		for {
+			_, _ = sweepBasispointsImages(ctx, db, time.Now())
 			select {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				sweepBasispointsImages(ctx, db, time.Now().Add(-basispointsImageRetention))
 			}
 		}
 	}()
 }
-
+func (s *basispointsImageStore) begin(ctx context.Context, size int64, count int) (context.Context, func(bool) error, error) {
+	settings, err := s.settings(ctx)
+	if err != nil {
+		return ctx, nil, err
+	}
+	token, err := s.db.ReserveImageRelay(ctx, size, count)
+	if err != nil {
+		return ctx, nil, imageInputError(503, "Basispoints image storage capacity unavailable")
+	}
+	scope := basispointsImageScope(ctx)
+	if scope == "" {
+		sum := sha256.Sum256([]byte(token))
+		scope = hex.EncodeToString(sum[:])
+	}
+	tx := &basispointsImageTransaction{token: token, scope: scope, origin: settings.ImageRelayPublicOrigin, epoch: settings.ImageRelayEpoch, expires: time.Now().Add(basispointsImageURLTTL)}
+	ctx, cancelRequest := context.WithTimeout(ctx, 2*time.Minute)
+	finished := false
+	finish := func(commit bool) error {
+		if finished {
+			return nil
+		}
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer cancel()
+		if commit {
+			current, e := s.settings(ctx)
+			if e != nil || current.ImageRelayEpoch != tx.epoch || current.ImageRelayPublicOrigin != tx.origin {
+				return imageInputError(503, "Basispoints image relay configuration changed")
+			}
+			if e = ctx.Err(); e != nil {
+				return e
+			}
+		}
+		if e := s.db.FinishImageRelay(cleanupCtx, tx.token, commit, tx.reused, tx.epoch); e != nil {
+			return imageInputError(503, "Basispoints image lifecycle commit unavailable")
+		}
+		finished = true
+		cancelRequest()
+		if !commit {
+			_, _ = sweepBasispointsImages(cleanupCtx, s.db, time.Now())
+		}
+		return nil
+	}
+	return context.WithValue(ctx, basispointsImageTransactionKey{}, tx), finish, nil
+}
 func (s *basispointsImageStore) host(ctx context.Context, data []byte, mime string) (string, error) {
-	sum := sha256.Sum256(data)
-	if id, ok := s.reusable(sum); ok {
-		return signedasset.ImageAssetURLWithTTL(id, 0, basispointsImageURLTTL), nil
+	tx, _ := ctx.Value(basispointsImageTransactionKey{}).(*basispointsImageTransaction)
+	if tx == nil {
+		next, finish, err := s.begin(ctx, int64(len(data)), 1)
+		if err != nil {
+			return "", err
+		}
+		ok := false
+		defer func() {
+			if !ok {
+				_ = finish(false)
+			}
+		}()
+		link, err := s.host(next, data, mime)
+		if err != nil {
+			return "", err
+		}
+		if err = finish(true); err != nil {
+			return "", err
+		}
+		ok = true
+		return link, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
 	}
 	backend, err := imagestore.Primary()
 	if err != nil {
 		return "", err
 	}
+	sum := sha256.Sum256(data)
+	var nonce [16]byte
+	if _, err = rand.Read(nonce[:]); err != nil {
+		return "", err
+	}
 	extension := basispointsImageExtension(mime)
-	key := fmt.Sprintf("bps-%d-%s.%s", s.now().UnixNano(), hex.EncodeToString(sum[:6]), extension)
-	ref, err := backend.Save(ctx, key, data, mime)
+	key := "bps-" + hex.EncodeToString(nonce[:]) + "." + extension
+	ref, err := imagestore.PlannedRef(backend, key)
 	if err != nil {
-		return "", fmt.Errorf("save image: %w", err)
+		return "", err
 	}
 	width, height := inlineImageDimensions(data)
-	id, err := s.db.InsertImageAsset(ctx, database.ImageAssetInput{
-		Filename: key, StoragePath: ref, MimeType: mime, Bytes: len(data), Width: width, Height: height,
-		Model: basispointsImageModel, ActualSize: imageActualSize(width, height), OutputFormat: extension,
-	})
+	id, reused, err := s.db.PrepareImageRelay(ctx, tx.token, tx.scope, hex.EncodeToString(sum[:]), tx.epoch, database.ImageAssetInput{Filename: key, StoragePath: ref, MimeType: mime, Bytes: len(data), Width: width, Height: height, Model: basispointsImageModel, ActualSize: imageActualSize(width, height), OutputFormat: extension})
 	if err != nil {
-		_ = backend.Delete(ctx, ref)
-		return "", fmt.Errorf("record image asset: %w", err)
+		return "", err
 	}
-	s.remember(sum, id)
-	return signedasset.ImageAssetURLWithTTL(id, 0, basispointsImageURLTTL), nil
-}
-
-func (s *basispointsImageStore) reusable(sum [sha256.Size]byte) (int64, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	entry, ok := s.recent[sum]
-	if !ok {
-		return 0, false
-	}
-	if s.now().Sub(entry.storedAt) > basispointsImageReuseWindow {
-		delete(s.recent, sum)
-		return 0, false
-	}
-	return entry.assetID, true
-}
-
-func (s *basispointsImageStore) remember(sum [sha256.Size]byte, assetID int64) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	now := s.now()
-	if len(s.recent) >= basispointsImageReuseLimit {
-		for digest, entry := range s.recent {
-			if now.Sub(entry.storedAt) > basispointsImageReuseWindow {
-				delete(s.recent, digest)
-			}
+	if reused {
+		tx.reused = append(tx.reused, id)
+	} else {
+		saveCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+		defer cancel()
+		saved, e := backend.Save(saveCtx, key, data, mime)
+		if e != nil {
+			return "", e
 		}
-		for digest := range s.recent {
-			if len(s.recent) < basispointsImageReuseLimit {
-				break
-			}
-			delete(s.recent, digest)
+		if saved != ref {
+			return "", errors.New("image backend changed its planned reference")
 		}
 	}
-	s.recent[sum] = basispointsHostedImage{assetID: assetID, storedAt: now}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	return signedasset.ImageAssetURLAtOrigin(id, tx.origin, tx.expires), nil
 }
 
-// sweepBasispointsImages deletes inbound images created before cutoff, row first
-// and then the stored object, mirroring the gallery's delete order.
-func sweepBasispointsImages(ctx context.Context, db *database.DB, cutoff time.Time) (int, error) {
+// Object first, metadata last. An unavailable backend or failed unlink leaves
+// quota-accounted deletion metadata for the next startup/tick to retry.
+func sweepBasispointsImages(ctx context.Context, db *database.DB, now time.Time) (int, error) {
+	assets, err := db.ClaimExpiredImageRelay(ctx, now, basispointsImageSweepBatch)
+	if err != nil {
+		return 0, err
+	}
 	removed := 0
-	// One sweep clears at most this many batches; the next tick continues.
-	for batch := 0; batch < 1000; batch++ {
-		assets, err := db.ListImageAssetsByModelBefore(ctx, basispointsImageModel, cutoff, basispointsImageSweepBatch)
-		if err != nil {
-			log.Printf("[Basispoints] image sweep: list expired assets: %v", err)
-			return removed, err
+	var first error
+	for _, asset := range assets {
+		backend, e := imagestore.Resolve(asset.StoragePath)
+		if e == nil {
+			e = backend.Delete(ctx, asset.StoragePath)
 		}
-		if len(assets) == 0 {
-			if removed > 0 {
-				log.Printf("[Basispoints] image sweep removed %d expired inbound images", removed)
-			}
-			return removed, nil
+		if e == nil {
+			e = db.DeleteCleanedImageRelay(ctx, asset.ID)
 		}
-		for _, asset := range assets {
-			if err := db.DeleteImageAsset(ctx, asset.ID); err != nil {
-				log.Printf("[Basispoints] image sweep: delete asset %d: %v", asset.ID, err)
-				return removed, err
+		if e != nil {
+			db.ImageRelayCleanupFailed(ctx)
+			if first == nil {
+				first = errors.New("image relay cleanup pending retry")
 			}
-			if asset.StoragePath != "" {
-				if backend, err := imagestore.Resolve(asset.StoragePath); err == nil {
-					_ = backend.Delete(ctx, asset.StoragePath)
-				}
-			}
-			removed++
+			continue
 		}
+		removed++
 	}
-	log.Printf("[Basispoints] image sweep stopped after %d expired inbound images; continuing next tick", removed)
-	return removed, nil
+	return removed, first
 }
 
 func basispointsImageExtension(mime string) string {

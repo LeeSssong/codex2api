@@ -78,6 +78,11 @@ type ImageGenerationJobInput struct {
 }
 
 type ImageAsset struct {
+	RelayExpiresAt int64  `json:"-"`
+	RelayScopeHash string `json:"-"`
+	RelayEpoch     int64  `json:"-"`
+	RelayState     string `json:"-"`
+
 	ID            int64     `json:"id"`
 	JobID         int64     `json:"job_id"`
 	TemplateID    int64     `json:"template_id"`
@@ -546,21 +551,21 @@ func (db *DB) ListImageAssets(ctx context.Context, page, pageSize int, apiKeyID 
 		if err := db.conn.QueryRowContext(ctx, `
 			SELECT COUNT(*) FROM image_assets a
 			INNER JOIN image_generation_jobs j ON j.id = a.job_id
-			WHERE j.api_key_id=$1
+			WHERE j.api_key_id=$1 AND a.model<>'bps-inbound'
 		`, apiKeyID).Scan(&total); err != nil {
 			return nil, err
 		}
 		rows, err = db.conn.QueryContext(ctx, imageAssetSelectSQL("a")+`
 			INNER JOIN image_generation_jobs j ON j.id = a.job_id
-			WHERE j.api_key_id=$1
+			WHERE j.api_key_id=$1 AND a.model<>'bps-inbound'
 			ORDER BY a.created_at DESC, a.id DESC
 			LIMIT $2 OFFSET $3
 		`, apiKeyID, pageSize, (page-1)*pageSize)
 	} else {
-		if err := db.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM image_assets`).Scan(&total); err != nil {
+		if err := db.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM image_assets WHERE model<>'bps-inbound'`).Scan(&total); err != nil {
 			return nil, err
 		}
-		rows, err = db.conn.QueryContext(ctx, imageAssetSelectSQL("")+`
+		rows, err = db.conn.QueryContext(ctx, imageAssetSelectSQL("")+` WHERE model<>'bps-inbound'
 			ORDER BY created_at DESC, id DESC
 			LIMIT $1 OFFSET $2
 		`, pageSize, (page-1)*pageSize)
@@ -640,7 +645,7 @@ func imageAssetSelectSQL(tableAlias string) string {
 		from = "image_assets " + alias
 	}
 	return `SELECT ` + prefix + `id, ` + prefix + `job_id, ` + prefix + `template_id, ` + prefix + `filename, ` + prefix + `storage_path, ` + prefix + `mime_type, ` + prefix + `bytes, ` + prefix + `width, ` + prefix + `height,
-		` + prefix + `model, ` + prefix + `requested_size, ` + prefix + `actual_size, ` + prefix + `quality, ` + prefix + `output_format, ` + prefix + `revised_prompt, ` + prefix + `created_at
+		` + prefix + `model, ` + prefix + `requested_size, ` + prefix + `actual_size, ` + prefix + `quality, ` + prefix + `output_format, ` + prefix + `revised_prompt, ` + prefix + `created_at, ` + prefix + `relay_expires_at, ` + prefix + `relay_scope_hash, ` + prefix + `relay_epoch, ` + prefix + `relay_state
 		FROM ` + from
 }
 
@@ -665,6 +670,7 @@ func scanImageAsset(scanner interface {
 		&asset.ID, &asset.JobID, &asset.TemplateID, &asset.Filename, &asset.StoragePath, &asset.MimeType,
 		&asset.Bytes, &asset.Width, &asset.Height, &asset.Model, &asset.RequestedSize, &asset.ActualSize,
 		&asset.Quality, &asset.OutputFormat, &asset.RevisedPrompt, &createdRaw,
+		&asset.RelayExpiresAt, &asset.RelayScopeHash, &asset.RelayEpoch, &asset.RelayState,
 	); err != nil {
 		return nil, err
 	}

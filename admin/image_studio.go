@@ -624,6 +624,11 @@ func (h *Handler) GetSignedImageAssetFile(c *gin.Context) {
 		writeInternalError(c, err)
 		return
 	}
+	if asset.Model == "bps-inbound" && exp > asset.RelayExpiresAt {
+		c.Header("Cache-Control", "no-store, no-cache, must-revalidate, private")
+		writeError(c, http.StatusForbidden, "图片链接已失效")
+		return
+	}
 	h.serveImageAssetFile(c, asset, imageAssetFileOptions{
 		thumbKB:         thumbKB,
 		requireAssetDir: true,
@@ -631,6 +636,29 @@ func (h *Handler) GetSignedImageAssetFile(c *gin.Context) {
 }
 
 func (h *Handler) serveImageAssetFile(c *gin.Context, asset *database.ImageAsset, opts imageAssetFileOptions) {
+	if asset != nil && asset.Model == "bps-inbound" {
+		c.Header("Cache-Control", "no-store, no-cache, must-revalidate, private")
+		c.Header("Pragma", "no-cache")
+		c.Header("Expires", "0")
+		settings, err := h.db.GetBasispointsSettings(c.Request.Context())
+		if err != nil || !settings.Enabled || !settings.ImageRelayEnabled || !signedasset.PersistentSigningConfigured() || asset.RelayEpoch != settings.ImageRelayEpoch || asset.RelayExpiresAt <= time.Now().Unix() || asset.RelayState != "ready" {
+			writeError(c, http.StatusForbidden, "图片链接已失效")
+			return
+		}
+		if opts.thumbKB > 0 {
+			writeError(c, http.StatusForbidden, "临时图片不支持缩略图")
+			return
+		}
+		opts.private = true
+		memory, ok := security.TryAcquireImageRelayMemory(64 << 10)
+		if !ok {
+			c.Header("Retry-After", "1")
+			writeError(c, http.StatusServiceUnavailable, "图片读取容量暂时不足")
+			return
+		}
+		defer memory.Release()
+	}
+
 	if asset == nil || strings.TrimSpace(asset.StoragePath) == "" {
 		writeError(c, http.StatusNotFound, "图片文件不存在")
 		return
@@ -776,6 +804,27 @@ func (h *Handler) DeleteImageAsset(c *gin.Context) {
 	}
 	if err != nil {
 		writeInternalError(c, err)
+		return
+	}
+	if asset.Model == "bps-inbound" {
+		if err := h.db.MarkImageRelayDeleting(ctx, id); err != nil {
+			writeInternalError(c, err)
+			return
+		}
+		backend, err := imagestore.Resolve(asset.StoragePath)
+		if err == nil {
+			err = backend.Delete(ctx, asset.StoragePath)
+		}
+		if err != nil {
+			h.db.ImageRelayCleanupFailed(ctx)
+			writeError(c, http.StatusServiceUnavailable, "图片清理待重试")
+			return
+		}
+		if err = h.db.DeleteCleanedImageRelay(ctx, id); err != nil {
+			writeInternalError(c, err)
+			return
+		}
+		writeMessage(c, http.StatusOK, "已删除")
 		return
 	}
 	if err := h.db.DeleteImageAsset(ctx, id); err != nil {
