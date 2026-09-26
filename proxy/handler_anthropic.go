@@ -866,6 +866,18 @@ func (h *Handler) Messages(c *gin.Context) {
 						continue
 					}
 				}
+				if errors.As(reqErr, &structured) && isBasispointsPreparationError(structured) {
+					h.logBasispointsPreparationFailure(c, account, reqErr, model, reasoningEffort, durationMs, attempt, isStream)
+					errorType := "invalid_request_error"
+					if structured.HTTPStatus == http.StatusServiceUnavailable {
+						errorType = "overloaded_error"
+					}
+					if isStream && writeCommittedAnthropicRetryError(c, errorType, structured.Message) {
+						return
+					}
+					sendAnthropicError(c, structured.HTTPStatus, errorType, structured.Message)
+					return
+				}
 				if errors.As(reqErr, &structured) && (structured.HTTPStatus == http.StatusBadRequest || structured.HTTPStatus == http.StatusUpgradeRequired) {
 					if isStream && writeCommittedAnthropicRetryError(c, "invalid_request_error", structured.Message) {
 						return

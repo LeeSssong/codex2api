@@ -214,6 +214,9 @@ func executeCodexProbeStep(ctx context.Context, account *auth.Account, generatio
 	if err := account.ReloadCodexRoutes(ctx); err != nil {
 		return codexProbeStep{outcome: "blocked", code: "configuration_unavailable", message: "Routing configuration is unavailable"}
 	}
+	if !account.BasispointsPolicySnapshot().AllowsModel(model, CurrentBasispointsSettings()) {
+		return codexProbeStep{outcome: "blocked", code: "basispoints_model_not_selected", message: "Account model permissions changed during the test"}
+	}
 	path := account.CodexPathSnapshot(database.CodexPathBasispoints, model, time.Now())
 	if !account.IsAvailable() || account.IsModelRateLimited(model) || !path.Allowed {
 		return codexProbeStep{outcome: "blocked", code: "account_or_route_unavailable", message: "Account or route permissions changed during the test"}
