@@ -27,6 +27,12 @@ class ReleaseTests(unittest.TestCase):
   labels={'org.opencontainers.image.revision':'a','io.xingqiao.source-tree':'b'}
   check_source(labels,'a','b')
   with self.assertRaises(ValueError):check_source(labels,'wrong','b')
+ def test_json_compose_changes_only_app_image(self):
+  import json
+  config={'services':{'codex2api':{'image':'old','env_file':['private.env']},'postgres':{'image':'postgres:18'}}}
+  updated=json.loads(replace_image(json.dumps(config),'new'))
+  config['services']['codex2api']['image']='new'
+  self.assertEqual(updated,config)
 
 class RollbackDecisionTests(unittest.TestCase):
  def fake(self, failure):

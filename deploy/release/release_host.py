@@ -20,6 +20,10 @@ def maintenance_config(config):
  return result
 
 def replace_image(compose,image):
+ if compose.lstrip().startswith('{'):
+  config=json.loads(compose)
+  config['services']['codex2api']['image']=image
+  return json.dumps(config,indent=2)+'\n'
  pattern=r'(^  codex2api:\s*\n(?:(?!^  \S).)*?^    image:\s*)[^\n]+'
  result,count=re.subn(pattern,lambda m:m.group(1)+image,compose,count=1,flags=re.M|re.S)
  if count!=1: raise ValueError('cannot identify application image in compose')
