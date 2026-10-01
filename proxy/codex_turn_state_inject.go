@@ -3,17 +3,120 @@ package proxy
 import (
 	"bytes"
 	"context"
+	"net/http"
 	"strings"
 	"unicode/utf8"
 
+	"github.com/codex2api/auth"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
-// 观测到的 state 实测在 300 字符上下，留一个数量级的余量即可；超限的一律丢弃，
-// 截断后的 state 既不能复用也会误导排查。
+// Credential-level injection runs after model and transport selection. HTTP
+// headers and WebSocket frames share the same decision through the context.
+// Managed state and probe requests take precedence over manual injection.
+
+// codexTurnStateMetadataKey carries per-turn state on an existing WebSocket.
+const codexTurnStateMetadataKey = "x-codex-turn-state"
+
+type codexTurnStateInjectionKey struct{}
+type codexClientModelKey struct{}
+
+// WithCodexClientModel retains the original model for matching before aliases.
+func WithCodexClientModel(ctx context.Context, model string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, codexClientModelKey{}, model)
+}
+
+func codexClientModelFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	model, _ := ctx.Value(codexClientModelKey{}).(string)
+	return model
+}
+
+func withCodexTurnStateInjection(ctx context.Context, value string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, codexTurnStateInjectionKey{}, value)
+}
+
+// CodexTurnStateInjectionFromContext returns the selected outbound state.
+func CodexTurnStateInjectionFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	value, _ := ctx.Value(codexTurnStateInjectionKey{}).(string)
+	return value
+}
+
+// prepareCodexTurnStateInjection copies headers and WebSocket metadata only when
+// the account's configured model scope matches and no managed state owns it.
+func prepareCodexTurnStateInjection(ctx context.Context, account *auth.Account, requestBody []byte, headers http.Header, websocket bool) (context.Context, []byte, http.Header) {
+	if account == nil {
+		return ctx, requestBody, headers
+	}
+	upstreamModel := strings.TrimSpace(gjson.GetBytes(requestBody, "model").String())
+	if ctx != nil && ctx.Value(statePoolBypassKey{}) == true {
+		return ctx, requestBody, headers
+	}
+	if provider := ipv6StateProvider.Load(); provider != nil && provider.Applies != nil && provider.Applies(account, upstreamModel) {
+		return withCodexTurnStateInjection(ctx, headers.Get(codexTurnStateHeader)), requestBody, headers
+	}
+	// Resolve already checked the actual business proxy before injection.
+	if provider := verifiedStateProvider.Load(); provider != nil && provider.claims != nil {
+		state := headers.Get(codexTurnStateHeader)
+		if provider.claims(account, upstreamModel, gjson.GetBytes(requestBody, "reasoning.effort").String(), state) {
+			return withCodexTurnStateInjection(ctx, state), requestBody, headers
+		}
+	}
+	injected := account.CodexTurnStateInjection(codexClientModelFromContext(ctx), upstreamModel)
+	if injected == "" {
+		return ctx, requestBody, headers
+	}
+	ctx = withCodexTurnStateInjection(ctx, injected)
+	if headers == nil {
+		headers = make(http.Header)
+	} else {
+		headers = headers.Clone()
+	}
+	headers.Set(codexTurnStateHeader, injected)
+	if websocket {
+		// Existing sockets require state in each response.create frame.
+		if updated, err := sjson.SetBytes(requestBody, "client_metadata."+codexTurnStateMetadataKey, injected); err == nil {
+			requestBody = updated
+		}
+	}
+	return ctx, requestBody, headers
+}
+
+// applyCodexTurnStateInjectionHeader applies the decision after custom headers.
+func applyCodexTurnStateInjectionHeader(ctx context.Context, headers http.Header) {
+	if headers == nil {
+		return
+	}
+	if value := CodexTurnStateInjectionFromContext(ctx); value != "" {
+		headers.Set(codexTurnStateHeader, value)
+	}
+}
+
+// ApplyCodexTurnStateInjectionHeader exposes final header injection to wsrelay.
+func ApplyCodexTurnStateInjectionHeader(ctx context.Context, headers http.Header) {
+	applyCodexTurnStateInjectionHeader(ctx, headers)
+}
+
+// Oversized observed values are rejected rather than truncated.
 const maxObservedCodexTurnStateBytes = 4096
 
-// observedCodexTurnState 规整一个观测值：只接受单行可见字符串，超限丢弃。
+// observedCodexTurnState accepts bounded single-line visible strings.
 func observedCodexTurnState(value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" || len(value) > maxObservedCodexTurnStateBytes || !utf8.ValidString(value) {
@@ -29,9 +132,8 @@ func observedCodexTurnState(value string) string {
 
 var codexTurnStateFrameNeedles = [][]byte{[]byte("turn-state"), []byte("Turn-State")}
 
-// codexTurnStateFromFrame 从 WS 事件帧里找上游回带的 turn state。官方契约里 WS 路径
-// 的值来自握手响应头或 response.metadata 事件；这里按键名等值（大小写不敏感）在几个
-// 已知承载位置上找，找不到返回空。先做一次零分配的子串预检，避免每帧都解析 JSON。
+// codexTurnStateFromFrame searches known metadata locations after a cheap
+// substring check, avoiding JSON parsing for unrelated WebSocket frames.
 func codexTurnStateFromFrame(payload []byte) string {
 	if len(payload) == 0 {
 		return ""
@@ -73,12 +175,9 @@ func codexTurnStateFromFrame(payload []byte) string {
 	return ""
 }
 
-// ObserveCodexTurnStateFrame 供 WS 中继在逐帧转发时调用：发现上游回带的 turn state
-// 就记到本次尝试的追踪里（用量日志据此显示“回带 Turn State”）。
-func ObserveCodexTurnStateFrame(ctx context.Context, payload []byte) string {
-	state := codexTurnStateFromFrame(payload)
-	if state != "" {
+// ObserveCodexTurnStateFrame records upstream state in the current trace.
+func ObserveCodexTurnStateFrame(ctx context.Context, payload []byte) {
+	if state := codexTurnStateFromFrame(payload); state != "" {
 		noteUpstreamTurnState(ctx, state)
 	}
-	return state
 }

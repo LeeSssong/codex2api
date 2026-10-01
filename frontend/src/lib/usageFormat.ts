@@ -75,6 +75,7 @@ type AccountStatusSource = {
   openai_responses_api?: boolean
   grok_api?: boolean
   claude_api?: boolean
+  antigravity_api?: boolean
   claude_usage_probe_at?: string | null
   claude_usage_probe_error?: string | null
   usage_percent_5h?: number | null
@@ -114,7 +115,9 @@ export function getAccountStatusBadgeStatus(account: AccountStatusSource): strin
   const status = account.status || 'unknown'
   if (status === 'overload_paused') return 'active'
   const key = status.toLowerCase()
-  if ((key === 'active' || key === 'ready') && isUnsampledQuotaAccount(account)) {
+  // Codex health is independent of quota sampling. Other providers retain
+  // their existing probe-status presentation.
+  if ((account.claude_api || account.antigravity_api) && (key === 'active' || key === 'ready') && isUnsampledQuotaAccount(account)) {
     return 'unsampled'
   }
   return status

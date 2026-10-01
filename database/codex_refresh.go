@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/codex2api/internal/openaiidentity"
 	"github.com/google/uuid"
 )
 
@@ -182,10 +183,16 @@ func (db *DB) FinishCodexRefresh(ctx context.Context, attempt *CodexRefreshAttem
 				unresolved = true
 				continue
 			}
+			keepEvidence := codexRefreshKeepsIdentity(row.Credentials, updates)
 			merged := mergeCredentialMaps(row.Credentials, updates)
 			merged["codex_refresh_attempt_id"] = attempt.ID
 			if err := db.writeCodexRefreshCredentials(ctx, tx, row, merged, true); err != nil {
 				return err
+			}
+			if keepEvidence {
+				if err := carryCodexRefreshEvidence(ctx, tx, row.ID, row.CredentialGeneration); err != nil {
+					return err
+				}
 			}
 			applied = append(applied, row.ID)
 		}
@@ -200,6 +207,46 @@ func (db *DB) FinishCodexRefresh(ctx context.Context, attempt *CodexRefreshAttem
 		return nil, err
 	}
 	return applied, nil
+}
+
+// Only the successful OAuth publication path may carry evidence across a
+// rotation. Missing identity information is inconclusive, and administrative
+// replacement paths deliberately never call this helper.
+func codexRefreshKeepsIdentity(before, updates map[string]any) bool {
+	if credentialStringFromMap(updates, "access_token") == "" || strings.TrimSpace(credentialStringFromMap(updates, "codex_refresh_error")) != "" {
+		return false
+	}
+	for _, key := range []string{"account_id", "workspace_id"} {
+		oldValue := strings.TrimSpace(credentialStringFromMap(before, key))
+		if _, updated := updates[key]; updated && oldValue != "" && oldValue != strings.TrimSpace(credentialStringFromMap(updates, key)) {
+			return false
+		}
+	}
+	identity := func(credentials map[string]any) (string, string) {
+		email, workspace := openaiidentity.TokenIdentity(credentialStringFromMap(credentials, "id_token"), credentialStringFromMap(credentials, "access_token"))
+		if email == "" || workspace == "" {
+			email = strings.TrimSpace(credentialStringFromMap(credentials, "email"))
+			workspace = openaiidentity.NormalizeWorkspaceID(credentialStringFromMap(credentials, "account_id"))
+		}
+		return email, workspace
+	}
+	oldEmail, oldWorkspace := identity(before)
+	newEmail, newWorkspace := identity(updates)
+	return oldEmail != "" && oldWorkspace != "" && newEmail != "" && newWorkspace != "" &&
+		strings.EqualFold(oldEmail, newEmail) && oldWorkspace == newWorkspace
+}
+
+// Carry only evidence belonging to the exact generation consumed by this
+// refresh. The account generation still advances, so an old in-flight probe
+// cannot publish after the rotation and previously invalidated evidence cannot
+// be resurrected by a later refresh.
+func carryCodexRefreshEvidence(ctx context.Context, tx *sql.Tx, accountID, generation int64) error {
+	for _, table := range []string{"account_codex_capabilities", "account_codex_probes"} {
+		if _, err := tx.ExecContext(ctx, `UPDATE `+table+` SET credential_generation=$1 WHERE account_id=$2 AND credential_generation=$3`, generation+1, accountID, generation); err != nil {
+			return fmt.Errorf("carry Codex OAuth evidence: %w", err)
+		}
+	}
+	return nil
 }
 
 // FailCodexRefresh keeps the fence for an uncertain result. Only an explicit

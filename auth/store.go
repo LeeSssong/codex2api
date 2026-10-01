@@ -157,6 +157,10 @@ func NormalizeTestContent(content string) string {
 // Account 运行时账号状态
 type Account struct {
 	daybreak                  database.DaybreakSnapshot
+	codexRoutes               codexAccountRoutes
+	stateAdmissionMu          sync.Mutex
+	stateBusinessLimit        int64
+	stateCaptureRequests      int64
 	codexLiteSupport          map[string]bool
 	codexCapabilityGeneration int64
 	codexCapabilityObservedAt int64
@@ -210,7 +214,10 @@ type Account struct {
 	// Timezone 是账号绑定的 IANA 时区（credentials.timezone）。Codex 官方出站路径据此
 	// 改写请求体 environment_context 里的时区与日期（见 proxy/codex_environment_context.go）；
 	// 空 = 不绑定、透传下游值。Claude 账号沿用同一凭据键做身份标签。
-	Timezone string
+	Timezone             string
+	CodexTurnState       string
+	CodexTurnStateModels string
+	CodexTurnStateSetAt  time.Time
 	// ClaudeFingerprintMode 见 claude_fingerprint_mode.go:Claude Code 出站身份头
 	// 收敛模式(preserve/force;空=跟随全局默认)。
 	ClaudeFingerprintMode string
@@ -3592,7 +3599,8 @@ type Store struct {
 	dispatchReconciledAt     int64
 
 	// Codex 上游 WebSocket 相关（默认全部关闭，不影响现有 HTTP 路径）
-	codexForceWebsocket atomic.Bool // 强制 Codex 上游走 WebSocket（复用连接池）
+	codexBasispointsEnabled atomic.Bool // Global Codex pool upstream selection.
+	codexForceWebsocket     atomic.Bool // 强制 Codex 上游走 WebSocket（复用连接池）
 	// codexRequestCompression HTTP /responses 请求体 zstd 压缩，默认开启（对齐真实客户端）。
 	// 与上面几项 WS 设置正交：WS 走 permessage-deflate，本项只作用于 HTTP 路径。
 	codexRequestCompression     atomic.Bool
@@ -4305,6 +4313,7 @@ func NewStore(db *database.DB, tc cache.TokenCache, settings *database.SystemSet
 
 	// Codex 上游 WebSocket 相关设置（默认关闭，不影响现有路径）
 	s.codexForceWebsocket.Store(settings.CodexForceWebsocket)
+	s.codexBasispointsEnabled.Store(settings.CodexBasispointsEnabled)
 	s.codexRequestCompression.Store(settings.CodexRequestCompression)
 	s.codexWSKeepaliveEnabled.Store(settings.CodexWSKeepaliveEnabled)
 	s.codexWSKeepaliveIntervalSec.Store(normalizeWSKeepaliveInterval(settings.CodexWSKeepaliveIntervalSec))
@@ -5591,6 +5600,9 @@ func (s *Store) buildAccountFromRow(ctx context.Context, row *database.AccountRo
 		ResponsesUpstreamTransport:   responsesUpstreamTransport,
 		CodexFingerprintMode:         codexFingerprintMode,
 		Timezone:                     accountTimezone,
+		CodexTurnState:               strings.TrimSpace(row.GetCredential(CodexTurnStateCredentialKey)),
+		CodexTurnStateModels:         NormalizeCodexTurnStateModels(row.GetCredential(CodexTurnStateModelsCredentialKey)),
+		CodexTurnStateSetAt:          ParseCodexTurnStateSetAt(row.GetCredential(CodexTurnStateSetAtCredentialKey)),
 		ClaudeFingerprintMode:        claudeFingerprintMode,
 		ClaudeAuthKind:               claudeAuthKind,
 		ClaudeBaseURL:                row.GetCredential(ClaudeBaseURLCredentialKey),
@@ -5851,6 +5863,7 @@ func (s *Store) buildAccountFromRow(ctx context.Context, row *database.AccountRo
 	}
 	// 恢复积分余额快照：积分只有 wham 探针能刷，不恢复的话重启后账号会被判成
 	// 「没积分」——积分顶替限流失效，还会被「清理限流账号」当成真限流删掉。
+	account.attachCodexRouteDB(s.db)
 	account.RestoreCreditBalanceFromJSON(row.GetCredential("codex_credits"))
 	if threshold, ok := row.GetCredentialFloat64("auto_pause_5h_threshold"); ok {
 		account.AutoPause5hThreshold = normalizeQuotaAutoPauseThreshold(threshold)
@@ -6025,6 +6038,7 @@ func (s *Store) reconcileDispatchState(ctx context.Context) (bool, error) {
 			allowedAPIKeyIDs := normalizeAllowedAPIKeyIDs(row.GetCredentialInt64Slice("allowed_api_key_ids"))
 			acc.mu.Lock()
 			acc.UpstreamRequestIDHeader = row.GetCredential(UpstreamRequestIDHeaderCredentialKey)
+			acc.setCodexTurnStateFromRowLocked(row)
 			accountMetadataChanged := !int64SliceEqual(normalizeAllowedGroupIDs(acc.GroupIDs), groupIDs) ||
 				!int64SliceEqual(normalizeAllowedAPIKeyIDs(acc.AllowedAPIKeyIDs), allowedAPIKeyIDs)
 			if accountMetadataChanged {
@@ -6453,14 +6467,14 @@ const (
 	accountAcquireFailureUnavailable
 )
 
-func (s *Store) tryAcquireAccountWithFailure(acc *Account, limit int64, updateSchedulerOnLimit bool) (bool, accountAcquireFailure) {
+func (s *Store) tryAcquireAccountWithFailure(acc *Account, limit int64, updateSchedulerOnLimit bool, capture ...bool) (bool, accountAcquireFailure) {
 	if acc == nil || limit <= 0 {
 		return false, accountAcquireFailureDispatchLimit
 	}
 	if accountDispatchBlocked(acc) {
 		return false, accountAcquireFailureUnavailable
 	}
-	if !reserveOccupiedAccountSlot(acc, limit) {
+	if !reserveOccupiedAccountSlot(acc, limit, capture...) {
 		if accountDispatchBlocked(acc) {
 			return false, accountAcquireFailureUnavailable
 		}
@@ -6469,7 +6483,11 @@ func (s *Store) tryAcquireAccountWithFailure(acc *Account, limit int64, updateSc
 	now := time.Now()
 	reservation := acc.reserveDispatchCount(now)
 	if !reservation.Allowed {
-		releaseOccupiedAccountSlot(acc)
+		if len(capture) > 0 && capture[0] {
+			releaseStateCaptureSlot(acc)
+		} else {
+			releaseOccupiedAccountSlot(acc)
+		}
 		s.markDispatchCountLimitCooldown(acc, reservation.ResetAt, updateSchedulerOnLimit)
 		return false, accountAcquireFailureDispatchLimit
 	}
@@ -6507,8 +6525,14 @@ func accountDispatchBlocked(acc *Account) bool {
 	return acc == nil || atomic.LoadInt32(&acc.Disabled) != 0 || atomic.LoadInt32(&acc.DispatchPaused) != 0
 }
 
-func reserveOccupiedAccountSlot(acc *Account, limit int64) bool {
+func reserveOccupiedAccountSlot(acc *Account, limit int64, capture ...bool) bool {
 	if limit <= 0 || accountDispatchBlocked(acc) {
+		return false
+	}
+	acc.stateAdmissionMu.Lock()
+	defer acc.stateAdmissionMu.Unlock()
+	isCapture := len(capture) > 0 && capture[0]
+	if !isCapture && acc.stateBusinessLimit > 0 && atomic.LoadInt64(&acc.ActiveRequests)-acc.stateCaptureRequests >= acc.stateBusinessLimit {
 		return false
 	}
 	for {
@@ -6521,6 +6545,9 @@ func reserveOccupiedAccountSlot(acc *Account, limit int64) bool {
 			if accountDispatchBlocked(acc) {
 				releaseOccupiedAccountSlot(acc)
 				return false
+			}
+			if isCapture {
+				acc.stateCaptureRequests++
 			}
 			return true
 		}
@@ -7462,7 +7489,7 @@ func (s *Store) takeByIDMode(id int64, apiKeyID int64, exclude map[int64]bool, f
 // takeByIDModeWithCapacity distinguishes a pure concurrency miss from every
 // other reason a bound account cannot be selected. Only the former is safe to
 // treat as a one-request spillover without migrating the durable binding.
-func (s *Store) takeByIDModeWithCapacity(id int64, apiKeyID int64, exclude map[int64]bool, filter AccountFilter, continuation bool, sessionKey string, policy DispatchPolicy) (*Account, bool) {
+func (s *Store) takeByIDModeWithCapacity(id int64, apiKeyID int64, exclude map[int64]bool, filter AccountFilter, continuation bool, sessionKey string, policy DispatchPolicy, capture ...bool) (*Account, bool) {
 	if s == nil || id == 0 {
 		return nil, false
 	}
@@ -7513,7 +7540,7 @@ func (s *Store) takeByIDModeWithCapacity(id int64, apiKeyID int64, exclude map[i
 		if limit <= 0 {
 			return nil, false
 		}
-		acquired, failure := s.tryAcquireAccountWithFailure(target, limit, true)
+		acquired, failure := s.tryAcquireAccountWithFailure(target, limit, true, capture...)
 		if !acquired {
 			return nil, failure == accountAcquireFailureCapacity
 		}
@@ -7533,7 +7560,7 @@ func (s *Store) takeByIDModeWithCapacity(id int64, apiKeyID int64, exclude map[i
 	if s.tryReclaimSessionSlot(target, sessionKey, true) {
 		return target, false
 	}
-	acquired, failure := s.tryAcquireAccountWithFailure(target, limit, true)
+	acquired, failure := s.tryAcquireAccountWithFailure(target, limit, true, capture...)
 	if !acquired {
 		return nil, failure == accountAcquireFailureCapacity
 	}
@@ -8123,6 +8150,11 @@ func (s *Store) tryReclaimSessionSlot(acc *Account, sessionKey string, updateSch
 		return false
 	}
 	sessionKey = strings.TrimSpace(sessionKey)
+	acc.stateAdmissionMu.Lock()
+	if acc.stateBusinessLimit > 0 && atomic.LoadInt64(&acc.ActiveRequests)-acc.stateCaptureRequests >= acc.stateBusinessLimit {
+		acc.stateAdmissionMu.Unlock()
+		return false
+	}
 
 	reclaimed := false
 	s.sessionMu.Lock()
@@ -8143,6 +8175,7 @@ func (s *Store) tryReclaimSessionSlot(acc *Account, sessionKey string, updateSch
 		}
 	}
 	s.sessionMu.Unlock()
+	acc.stateAdmissionMu.Unlock()
 	if !reclaimed {
 		return false
 	}
@@ -9093,6 +9126,7 @@ func (s *Store) AddAccounts(accounts []*Account) {
 		}
 		acc.mu.Lock()
 		acc.grokRuntimeSink = s
+		acc.attachCodexRouteDB(s.db)
 		acc.recomputeEffectiveIgnoreUsageLimitStatus(ignoreUsageLimit)
 		acc.recomputeEffectiveGroupBaseConcurrency(s)
 		acc.recomputeSchedulerLocked(maxConcurrency)
@@ -9909,14 +9943,18 @@ func (s *Store) MarkResponsesRateLimited(acc *Account, duration time.Duration) {
 		return
 	}
 	now := time.Now()
-	acc.mu.RLock()
-	alreadyLimited := acc.Status == StatusCooldown &&
-		acc.CooldownReason == ResponsesRateLimitedCooldownReason &&
-		(acc.CooldownUtil.IsZero() || now.Before(acc.CooldownUtil))
-	acc.mu.RUnlock()
-
-	s.MarkCooldown(acc, duration, ResponsesRateLimitedCooldownReason)
-	if !alreadyLimited {
+	probe := false
+	_ = acc.ApplyUsageObservation(now, func() {
+		acc.mu.RLock()
+		alreadyLimited := acc.Status == StatusCooldown &&
+			acc.CooldownReason == ResponsesRateLimitedCooldownReason &&
+			!acc.isTransientRateLimitCooldownLocked() &&
+			(acc.CooldownUtil.IsZero() || now.Before(acc.CooldownUtil))
+		acc.mu.RUnlock()
+		s.MarkCooldown(acc, duration, ResponsesRateLimitedCooldownReason)
+		probe = !alreadyLimited
+	})
+	if probe {
 		s.TriggerUsageProbeForAccountAsync(acc)
 	}
 }
@@ -10043,9 +10081,17 @@ func (s *Store) markCooldown(acc *Account, duration time.Duration, reason string
 	if errorMsg != "" {
 		acc.ErrorMsg = errorMsg
 	}
-	acc.recomputeSchedulerLocked(atomic.LoadInt64(&s.maxConcurrency))
 	until := now.Add(duration)
+	if isUsageLimitCooldownReason(reason) && acc.Status == StatusCooldown &&
+		acc.CooldownReason == ResponsesRateLimitedCooldownReason && !acc.isTransientRateLimitCooldownLocked() &&
+		acc.CooldownUtil.After(now) {
+		reason = ResponsesRateLimitedCooldownReason
+		if acc.CooldownUtil.After(until) {
+			until = acc.CooldownUtil
+		}
+	}
 	acc.setCooldownUntilLocked(until, reason)
+	acc.recomputeSchedulerLocked(atomic.LoadInt64(&s.maxConcurrency))
 	acc.mu.Unlock()
 	s.fastSchedulerUpdate(acc)
 	s.setCachedAccountCooldown(acc.DBID, reason, until)
@@ -10456,6 +10502,16 @@ func (s *Store) ReleaseUsageWindowCooldownForCredits(acc *Account) bool {
 // was already present when observedAt was captured. Authentication failures,
 // generic errors, disabled states, and newer cooldowns are left untouched.
 func (s *Store) ClearUsageLimitCooldownSince(acc *Account, observedAt time.Time) bool {
+	return s.clearUsageLimitCooldownSince(acc, observedAt, true)
+}
+
+// ClearUsageWindowCooldownSince accepts metadata-only recovery evidence.
+// A healthy WHAM window does not prove a rejected Responses request is usable.
+func (s *Store) ClearUsageWindowCooldownSince(acc *Account, observedAt time.Time) bool {
+	return s.clearUsageLimitCooldownSince(acc, observedAt, false)
+}
+
+func (s *Store) clearUsageLimitCooldownSince(acc *Account, observedAt time.Time, responsesSuccess bool) bool {
 	if s == nil || acc == nil {
 		return false
 	}
@@ -10465,6 +10521,7 @@ func (s *Store) ClearUsageLimitCooldownSince(acc *Account, observedAt time.Time)
 
 	acc.mu.Lock()
 	if acc.Status != StatusCooldown || !isUsageLimitCooldownReason(acc.CooldownReason) ||
+		(!responsesSuccess && acc.CooldownReason == ResponsesRateLimitedCooldownReason) ||
 		(!acc.LastRateLimitedAt.IsZero() && acc.LastRateLimitedAt.After(observedAt)) {
 		acc.mu.Unlock()
 		return false

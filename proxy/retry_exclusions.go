@@ -546,8 +546,8 @@ func (h *Handler) nextRetryAccountWithGuard(ctx context.Context, affinityKey str
 	defer cancelSelection()
 	filter = selectionFilterWithContext(ctx, filter)
 	for {
-		if ctx.Err() != nil {
-			return nil, "", auth.SessionAffinityGuard{}, ctx.Err()
+		if err := codexRouteBudgetError(ctx); err != nil {
+			return nil, "", auth.SessionAffinityGuard{}, err
 		}
 		exclude := exclusions.ForSelection()
 		var account *auth.Account
@@ -561,12 +561,22 @@ func (h *Handler) nextRetryAccountWithGuard(ctx context.Context, affinityKey str
 		if account != nil {
 			if ctx.Err() != nil {
 				h.store.Release(account)
-				return nil, "", auth.SessionAffinityGuard{}, ctx.Err()
+				return nil, "", auth.SessionAffinityGuard{}, nil
+			}
+			if d := codexRouteFromContext(ctx); d != nil {
+				d.mu.Lock()
+				d.schedulerSelected = true
+				d.mu.Unlock()
 			}
 			return account, stickyProxyURL, guard, nil
 		}
-		if ctx.Err() != nil {
-			return nil, "", auth.SessionAffinityGuard{}, ctx.Err()
+		if d := codexRouteFromContext(ctx); d != nil {
+			d.mu.Lock()
+			initial := !d.schedulerSelected && d.routeConstrained
+			d.mu.Unlock()
+			if initial && !h.codexRouteHasCandidates(ctx, apiKeyID, filter) {
+				return nil, "", auth.SessionAffinityGuard{}, h.codexRouteNoCandidatesError(ctx, apiKeyID, filter)
+			}
 		}
 		h.store.TriggerDispatchStateReconcileAsync()
 		// When this request's own soft/transient exclusions are all that stand
@@ -583,6 +593,11 @@ func (h *Handler) nextRetryAccountWithGuard(ctx context.Context, affinityKey str
 				if ctx.Err() != nil {
 					h.store.Release(account)
 					return nil, "", auth.SessionAffinityGuard{}, ctx.Err()
+				}
+				if d := codexRouteFromContext(ctx); d != nil {
+					d.mu.Lock()
+					d.schedulerSelected = true
+					d.mu.Unlock()
 				}
 				return account, stickyProxyURL, guard, nil
 			}

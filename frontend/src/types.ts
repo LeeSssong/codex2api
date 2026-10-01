@@ -252,6 +252,7 @@ export interface StatsChannelCounts {
 }
 
 export interface StatsResponse {
+  state_summary?: import('./lib/accountStateModels').StateSummary
   total: number
   available: number
   rate_limited: number
@@ -357,7 +358,27 @@ export interface SubscriptionRefreshResponse {
   subscription_expires_at?: ISODateString
 }
 
+export type { AccountStateModel } from './lib/accountStateModels'
+import type { AccountStateModel } from './lib/accountStateModels'
+
+export type CodexRoutePolicy = 'inherit' | 'codex_only' | 'basispoints_only' | 'basispoints_prefer' | 'codex_prefer' | 'basispoints_models_only'
+export type CodexCapabilityFilter = 'any' | 'supported' | 'dual_supported' | 'codex_supported' | 'basispoints_supported'
+export interface CodexPathSnapshot {
+  upstream: 'codex' | 'basispoints'
+  model: string
+  allowed: boolean
+  capability: 'unknown' | 'supported' | 'unsupported'
+  source?: string
+  reason?: string
+  observed_at?: number
+  health: 'ready' | 'cooldown' | 'recovering' | 'probe_ready' | 'unavailable'
+  cooldown_until?: string
+  health_reason?: string
+}
 export interface AccountRow {
+  account_href?: string
+  codex_paths?: CodexPathSnapshot[]
+  state_models?: AccountStateModel[]
   codex_last_refresh_at?: string
   codex_refresh_error?: string
   upstream_request_id_header?: string | null
@@ -429,9 +450,13 @@ export interface AccountRow {
   /** True once the OAuth usage probe has run for this row (even with no windows). */
   claude_usage_windows_probed?: boolean
   timezone?: string
-  /** 账号页跳转地址;空值回退打开 base_url(api-base)。 */
-  account_href?: string
   custom_headers?: Record<string, string> | null
+  /** Forced X-Codex-Turn-State injected on every outbound Codex request; empty = off. */
+  codex_turn_state?: string
+  /** Comma-separated model scope for the injection; empty = all models. */
+  codex_turn_state_models?: string
+  /** RFC3339 timestamp of the last time the injected value changed; absent = unknown. */
+  codex_turn_state_set_at?: string
   health_tier?: string
   scheduler_score?: number
   dispatch_score?: number
@@ -590,6 +615,7 @@ export interface AccountEmailDomainFacet {
 }
 
 export interface AccountsPageResponse extends AccountsResponse {
+  state_summary?: import('./lib/accountStateModels').StateSummary
   page: number
   page_size: number
   total: number
@@ -619,13 +645,9 @@ export interface AccountPageStatsResponse {
 }
 
 export interface AccountLiveStateResponse {
-  accounts: Record<string, {
-    active_requests: number
-    occupied_requests: number
-    // 调度器当前实际执行的并发上限与配置值；旧后端不返回时保留列表里的值。
-    dynamic_concurrency_limit?: number
-    base_concurrency_effective?: number
-  }>
+  state_summary?: import('./lib/accountStateModels').StateSummary
+  server_time?: number
+  accounts: Record<string, { active_requests: number; occupied_requests: number; state_models?: AccountStateModel[]; dynamic_concurrency_limit?: number; base_concurrency_effective?: number }>
   session_slot_buffer_enabled: boolean
 }
 
@@ -655,6 +677,10 @@ export const SUBSCRIPTION_FILTER_OPTIONS: SubscriptionFilter[] = [
 ]
 
 export interface AccountsPageParams {
+  capability?: string
+  capabilityModel?: string
+  state?: 'all' | 'valid' | 'available' | 'missing'
+  stateModel?: string
   channel?: UpstreamChannel
   page: number
   pageSize: number
@@ -745,6 +771,10 @@ export interface AccountAnalysisResponse {
 }
 
 export interface AccountOperationSelector {
+  capability?: string
+  capability_model?: string
+  state?: 'valid' | 'available' | 'missing'
+  state_model?: string
   channel: UpstreamChannel
   search?: string
   status?: string
@@ -1542,6 +1572,7 @@ export interface GrokBatchImportResponse {
 }
 
 export interface UpdateAccountSchedulerRequest {
+  account_href?: string | null
   upstream_request_id_header?: string | null
   score_bias_override?: number | null
   base_concurrency_override?: number | null
@@ -1564,7 +1595,8 @@ export interface UpdateAccountSchedulerRequest {
   claude_version_policy?: 'passthrough' | 'fixed' | 'minimum' | null
   claude_client_version?: string | null
   timezone?: string | null
-  account_href?: string | null
+  codex_turn_state?: string | null
+  codex_turn_state_models?: string | null
 }
 
 export interface BatchUpdateAccountsRequest extends UpdateAccountSchedulerRequest {
@@ -2152,6 +2184,7 @@ export interface SystemSettings {
   proxy_pool_enabled: boolean
   fast_scheduler_enabled: boolean
   scheduler_engine: 'legacy' | 'shadow' | 'indexed'
+  codex_basispoints_enabled: boolean
   codex_force_websocket: boolean
   codex_telemetry_enabled: boolean
   codex_telemetry_timing_debug: boolean
@@ -3821,6 +3854,8 @@ export interface APIKeyModelRequestUsage {
 }
 
 export interface APIKeyLimits {
+  codex_route_policy?: CodexRoutePolicy
+  codex_capability_filter?: CodexCapabilityFilter
   model_allow?: string[]
   model_deny?: string[]
   plan_allow?: string[]

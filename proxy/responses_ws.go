@@ -509,8 +509,8 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 		defer releaseAPIKeyConcurrency()
 	}
 
-	accountFilter := accountFilterForResponsesWebSocket(effectiveModel)
-	accountFilter = h.withModelCooldownFilter(c.Request.Context(), effectiveModel, accountFilter)
+	accountFilter := accountFilterForModel(effectiveModel)
+	accountFilter = h.withCodexRouteFilter(c, logModel, effectiveModel, codexBody, accountFilter)
 	accountFilter = applyAffinityGroupRouting(c, sessionIdentity, accountFilter)
 	accountFilter = h.applyScopeBudgetFilter(c, accountFilter)
 	// resolveCompactionAffinity 只在已知来源相互冲突时报错；缓存故障按未知
@@ -649,10 +649,14 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 			if c.Request.Context().Err() != nil {
 				return errResponsesWSClientGone
 			}
-			if selectionAPIError := schedulerSelectionAPIError(selectionErr); selectionAPIError != nil {
-				apiErr = selectionAPIError
-			} else if compactionAffinity.Known {
-				apiErr = compactionUpstreamUnavailableAPIError()
+			if codexRouteSelectionError(selectionErr) {
+				routeErr := selectionErr.(*Error)
+				if d := codexRouteFromContext(c.Request.Context()); d != nil && d.recordSelectionError != nil {
+					d.recordSelectionError(routeErr)
+				}
+				apiErr = api.NewAPIError(api.ErrorCode(routeErr.Code), routeErr.Message, routeAPIErrorType(routeErr))
+			} else if errors.Is(selectionErr, auth.ErrSchedulerQueueFull) {
+				apiErr = schedulerQueueFullAPIError()
 			} else if lastRetryableUpstreamErr != nil {
 				apiErr = responsesWSClientUpstreamAPIError(lastRetryableUpstreamErr, hideUpstreamErrors)
 			} else if lastStatusCode == http.StatusTooManyRequests && len(lastBody) > 0 {
@@ -663,8 +667,8 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 			} else if limited := h.store.UsageLimitedCandidateSummary(apiKeyID, retryExclusions.ForSelection(), accountFilter, dispatchPolicy); limited.Found {
 				// WS 帧没有 Retry-After 头，瞬时 throttle 的等待秒数写进文案。
 				apiErr = api.NewAPIError(api.ErrCodeRateLimitReached, usageLimitedPoolMessages(limited).Chinese, api.ErrorTypeRateLimit)
-			} else if h.accountPoolConcurrencySaturated(apiKeyID, retryExclusions.ForSelection(), accountFilter, dispatchPolicy) {
-				apiErr = api.NewAPIError(api.ErrorCode(ErrorCodeAccountPoolConcurrencySaturated), concurrencySaturatedMessageZH, api.ErrorTypeServer)
+			} else if compactionAffinity.Known {
+				apiErr = compactionUpstreamUnavailableAPIError()
 			} else {
 				apiErr = api.NewAPIError(api.ErrCodeServiceUnavailable, noAvailableAccountMessage(effectiveModel), api.ErrorTypeServer)
 			}
@@ -707,7 +711,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 		upstreamCtx = WithPayloadRuleIdentity(upstreamCtx, attemptIdentity)
 		lastUpstreamCancel = upstreamCancel
 		ttftGuard := newFirstTokenTimeoutGuard(firstTokenTimeoutForRequest(currentFirstTokenTimeout(), bodySignalCompact), upstreamCancel)
-		useWebsocket := !wsHTTPFallback.ForceHTTP()
+		useWebsocket := !CurrentRuntimeSettings().CodexBasispointsEnabled && !wsHTTPFallback.ForceHTTP()
 		// 生图请求改走 HTTP 上游（客户端仍是 WS）：WebSocket 上游传输大体积
 		// 图片数据会卡死（issue #220）；自然语言生图意图也需保留图片工具（issue #288）。
 		if useWebsocket && (responsesBodyRequestsImageGeneration(rawBody) || naturalImageIntent) {
@@ -747,7 +751,15 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 				attemptReplay = nil
 			}
 		}
-		if gjson.GetBytes(rawBody, "store").Type == gjson.False {
+		// BPS always uses stateless HTTP with upstream store=false, so a WS
+		// continuation needs the existing owner-isolated, bounded local replay
+		// cache even when the client disables upstream response storage.
+		// Native Codex WS retains its existing no-local-storage behavior.
+		if CurrentRuntimeSettings().CodexBasispointsEnabled && !account.IsRelayStyle() {
+			// Admit the root response under on_demand too: this transport cannot
+			// retrieve the previous response from upstream on the next WS turn.
+			markResponseCacheChainOwnerIfOnDemand(respCacheOwner)
+		} else if gjson.GetBytes(rawBody, "store").Type == gjson.False {
 			attemptReplay = nil
 		}
 		// service_tier 记账按 payload 规则改写后的值归因（覆写 service_tier 的规则才生效）。
@@ -776,6 +788,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 		}
 
 		if reqErr != nil {
+			h.logBasispointsPreparationFailure(c, account, reqErr, logModel, reasoningEffort, durationMs, attempt, true)
 			if quotaErr := apiKeyModelRequestError(reqErr); quotaErr != nil {
 				ttftGuard.Stop()
 				h.store.Release(account)
@@ -826,6 +839,14 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 			if !retryable {
 				if !claimContinuousRetrySuccessContext(c.Request.Context()) {
 					return errResponsesWSClientGone
+				}
+				var localFailure *Error
+				if errors.As(reqErr, &localFailure) && localFailure.Code == ErrorCodeBasispointsInvalidRequest {
+					clientErr := api.NewAPIErrorWithDetails(api.ErrorCode(localFailure.Code), localFailure.Message, api.ErrorTypeInvalidRequest, map[string]string{
+						"stage": "prepare", "category": basispointsPreparationCategory(localFailure),
+					})
+					_ = writeResponsesWSError(conn, clientErr)
+					return newResponsesWSCloseError(websocket.ClosePolicyViolation, clientErr.Message, reqErr)
 				}
 				apiErr = api.NewAPIError(api.ErrCodeUpstreamError, reqErr.Error(), api.ErrorTypeUpstream)
 				clientErr := responsesWSClientUpstreamAPIError(apiErr, hideUpstreamErrors)
@@ -911,7 +932,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 				continue
 			}
 
-			if kind := classifyHTTPFailure(resp.StatusCode); kind != "" {
+			if kind := classifyHTTPFailure(resp.StatusCode, errBody); kind != "" {
 				h.store.ReportRequestFailure(account, kind, time.Duration(durationMs)*time.Millisecond)
 			}
 			SyncCodexUsageState(h.store, account, resp)
@@ -937,7 +958,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 				EffectiveModel:         logEffectiveModel,
 				StatusCode:             resp.StatusCode,
 				DurationMs:             durationMs,
-				ReasoningEffort:        reasoningEffort,
+				ReasoningEffort:        effectiveReasoningEffortForAccount(account, reasoningEffort, c.Request.Context()),
 				InboundEndpoint:        "/v1/responses",
 				UpstreamEndpoint:       "/v1/responses",
 				Stream:                 true,
@@ -1439,8 +1460,8 @@ func (h *Handler) streamResponsesWSUpstream(
 		clearNewAPIUpstreamCyberPolicyDecision(c)
 		h.logPromptPolicyRetryUsage(c, database.UsageLogInput{
 			AccountID: account.ID(), Endpoint: "/v1/responses", Model: model, EffectiveModel: logEffectiveModel,
-			StatusCode: outcome.logStatusCode, DurationMs: totalDuration, FirstTokenMs: firstTokenMs, ReasoningEffort: reasoningEffort,
-			InboundEndpoint: "/v1/responses", UpstreamEndpoint: upstreamEndpoint, Stream: true, ViaWebsocket: viaWebsocket,
+			StatusCode: outcome.logStatusCode, DurationMs: totalDuration, FirstTokenMs: firstTokenMs, ReasoningEffort: effectiveReasoningEffortForAccount(account, reasoningEffort, c.Request.Context()),
+			InboundEndpoint: "/v1/responses", UpstreamEndpoint: "/v1/responses", Stream: true, ViaWebsocket: viaWebsocket,
 			AttemptIndex: fallbackAttempt, UpstreamErrorKind: outcome.failureKind,
 			ErrorMessage: usageLogFailureMessage(outcome.logStatusCode, outcome.failureMessage),
 		}, promptPolicyIncidentID)
@@ -1525,7 +1546,7 @@ func (h *Handler) streamResponsesWSUpstream(
 		StatusCode:             outcome.logStatusCode,
 		DurationMs:             totalDuration,
 		FirstTokenMs:           firstTokenMs,
-		ReasoningEffort:        reasoningEffort,
+		ReasoningEffort:        effectiveReasoningEffortForAccount(account, reasoningEffort, c.Request.Context()),
 		InboundEndpoint:        "/v1/responses",
 		UpstreamEndpoint:       upstreamEndpoint,
 		Stream:                 true,
@@ -1597,6 +1618,11 @@ func (h *Handler) streamResponsesWSUpstream(
 		// 首 token 前上游失败且未向客户端写过任何帧:发结构化 error 帧后按错误类别
 		// 关闭连接,避免下游把"正常收尾的会话"当成功并按预估 input token 计费。
 		apiErr := api.NewAPIError(api.ErrCodeUpstreamError, outcome.failureMessage, api.ErrorTypeUpstream)
+		clientStatus := outcome.logStatusCode
+		if IsUsageLimitReachedError(terminalFailurePayload) {
+			apiErr = responsesWSUpstreamAPIError(clientStatus, terminalFailurePayload)
+			clientStatus = http.StatusTooManyRequests
+		}
 		preserveErrorCode := isPreviousResponseNotFoundBody(terminalFailurePayload)
 		if preserveErrorCode {
 			// This is deterministic continuation state, not an infrastructure error.
@@ -1612,7 +1638,7 @@ func (h *Handler) streamResponsesWSUpstream(
 			return errResponsesWSClientGone
 		}
 		_ = writeResponsesWSError(conn, clientErr)
-		return newResponsesWSCloseError(responsesWSCloseCodeForStatus(outcome.logStatusCode), clientErr.Message, apiErr)
+		return newResponsesWSCloseError(responsesWSCloseCodeForStatus(clientStatus), clientErr.Message, apiErr)
 	}
 	if outcome.logStatusCode != http.StatusOK && !hideUpstreamErrors && len(terminalFailureClientPayload) > 0 && !downstreamWrote {
 		// An unselected selective-mode failure still ends the logical turn. Its
@@ -1784,6 +1810,9 @@ func responsesWSClientUpstreamAPIError(apiErr *api.APIError, hideUpstreamErrors 
 	if !hideUpstreamErrors {
 		return apiErr
 	}
+	if apiErr != nil && apiErr.Code == api.ErrorCode(ErrorCodeAccountPoolUsageLimit) {
+		return api.NewAPIError(apiErr.Code, usageWindowExhaustedMessageEN, api.ErrorTypeRateLimit)
+	}
 	return api.NewAPIError(api.ErrCodeUpstreamError, responsesWSFriendlyUpstreamErr, api.ErrorTypeUpstream)
 }
 
@@ -1838,8 +1867,14 @@ func responsesWSCloseCodeForStatus(statusCode int) int {
 }
 
 func responsesWSUpstreamAPIError(statusCode int, body []byte) *api.APIError {
+	if basispointsRequestErrorCode(body) != "" {
+		return api.NewAPIError(api.ErrCodeInvalidRequest, usageLogErrorMessage(statusCode, body), api.ErrorTypeInvalidRequest)
+	}
 	if isExplicitUpstreamCyberPolicy(body) {
 		return api.NewAPIError(api.ErrCodeInvalidRequest, upstreamCyberPolicyUserMessage, api.ErrorTypeInvalidRequest)
+	}
+	if IsUsageLimitReachedError(body) {
+		return api.NewAPIError(api.ErrorCode(ErrorCodeAccountPoolUsageLimit), usageWindowExhaustedMessageEN, api.ErrorTypeRateLimit)
 	}
 	message := usageLogErrorMessage(statusCode, body)
 	if strings.TrimSpace(message) == "" {

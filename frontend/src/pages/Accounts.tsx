@@ -1,3 +1,4 @@
+import { CodexRouteBadges, CodexRouteManager } from "../components/CodexRoutes";
 import type { ChangeEvent, DragEvent, ReactNode } from "react";
 import { memo, useCallback, useEffect, useRef, useState, useMemo } from "react";
 import "./accounts-cards.css";
@@ -6,6 +7,11 @@ import { api, getAdminKey, resetAdminAuthState } from "../api";
 import type { ProxyRow } from "../api";
 import { ProxyField } from "../components/ProxyField";
 import AccountProxyBadge from "../components/AccountProxyBadge";
+import AccountStateModels from "../components/AccountStateModels";
+import StateCoverage from "../components/StateCoverage";
+import type { StateSummary } from "../lib/accountStateModels";
+import { useStateFilters } from "../hooks/useStateFilters";
+import { STATE_MODEL_LABELS } from "../lib/statePool";
 import AccountProxyQuickEditor from "../components/AccountProxyQuickEditor";
 import AccountHrefQuickEditor, {
   openAccountHref,
@@ -136,6 +142,10 @@ import {
   applyOptionalWorkspaceRouteHeader,
   applyWorkspaceRouteHeader,
 } from "../lib/workspaceRoute";
+import {
+  computeCodexTurnStateTtl,
+  formatCodexTurnStateCountdown,
+} from "../lib/codexTurnState";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -408,6 +418,7 @@ const ACCOUNT_TABLE_COLUMNS = [
   "priority",
   "plan",
   "subscription",
+  "state",
   "status",
   "today",
   "requests",
@@ -1511,6 +1522,7 @@ const AccountTableRow = memo(function AccountTableRow({
                                 />
                               </TableCell>
                             )}
+                            {visibleColumns.state && <TableCell><AccountStateModels states={account.state_models} accountID={account.id} /><CodexRouteBadges paths={account.codex_paths} /></TableCell>}
                             {visibleColumns.status && (
                               <TableCell data-account-state-cell="status">
                                 {tableOverlay ?? (
@@ -1861,6 +1873,17 @@ export default function Accounts() {
     20,
     pageSizeOptions,
   );
+  const { state: stateFilter, model: stateModelFilter, update: updateStateFilters } = useStateFilters();
+  const [capabilityFilter, setCapabilityFilter] = useState("all");
+  const [capabilityModel, setCapabilityModel] = useState("");
+  const [stateSummary, setStateSummary] = useState<StateSummary>();
+  const stateRevision = useRef('');
+  useEffect(() => {
+    if (stateSummary && stateModelFilter && !stateSummary.models.some(item => item.model === stateModelFilter)) {
+      updateStateFilters({ model: '' });
+      setPage(1);
+    }
+  }, [stateSummary, stateModelFilter, updateStateFilters]);
   const [statusFilter, setStatusFilter] = useState<
     | "all"
     | "normal"
@@ -2009,6 +2032,11 @@ export default function Accounts() {
     useState<CodexFingerprintMode>("off");
   const [editTimezone, setEditTimezone] = useState("");
   const [editTimezoneCustom, setEditTimezoneCustom] = useState(false);
+  // Turn State 强制注入:注入值 + 限定模型(逗号分隔)。仅 Codex 官方账号下发。
+  const [editCodexTurnState, setEditCodexTurnState] = useState("");
+  const [editCodexTurnStateModels, setEditCodexTurnStateModels] = useState("");
+  // 时效倒计时的时钟源:编辑弹窗打开期间每秒推进一次,关闭即停。
+  const [turnStateNow, setTurnStateNow] = useState(() => Date.now());
   // 代理池条目：账号表单里"从代理池选择"下拉的数据源。加载失败静默留空
   // （选择器为空时自动隐藏，不影响手动填代理）。
   const [proxyPool, setProxyPool] = useState<ProxyRow[]>([]);
@@ -2369,6 +2397,73 @@ export default function Accounts() {
       </p>
     </div>
   );
+
+  // Turn State 时效:只在编辑弹窗打开且该账号已保存注入值时每秒重算;弹窗关闭清掉 interval。
+  const savedCodexTurnState = editingAccount?.codex_turn_state ?? "";
+  const turnStateTtlVisible =
+    editingAccount !== null &&
+    isCodexOfficialAccount(editingAccount) &&
+    savedCodexTurnState !== "" &&
+    editCodexTurnState === savedCodexTurnState;
+  useEffect(() => {
+    if (!turnStateTtlVisible) return;
+    setTurnStateNow(Date.now());
+    const timer = window.setInterval(() => setTurnStateNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [turnStateTtlVisible]);
+
+  const renderCodexTurnStateTtl = () => {
+    if (!turnStateTtlVisible) return null;
+    const ttl = computeCodexTurnStateTtl(
+      editingAccount?.codex_turn_state_set_at,
+      turnStateNow,
+    );
+    if (ttl.kind === "unknown") {
+      return (
+        <p className="mt-1.5 text-xs text-muted-foreground">
+          {t("accounts.codexTurnStateTtlUnknown")}
+        </p>
+      );
+    }
+    if (ttl.kind === "expired") {
+      return (
+        <div className="mt-1.5 space-y-0.5">
+          <p className="flex items-center gap-1.5 text-xs font-medium text-red-600 dark:text-red-400">
+            <Timer className="size-3.5" />
+            {t("accounts.codexTurnStateTtlExpired")}
+          </p>
+          <p className="text-xs text-muted-foreground">
+            {t("accounts.codexTurnStateTtlExpiredHint")}
+          </p>
+        </div>
+      );
+    }
+    const barColor = ttl.warning ? "bg-amber-500" : "bg-emerald-500";
+    const textColor = ttl.warning
+      ? "text-amber-600 dark:text-amber-400"
+      : "text-emerald-600 dark:text-emerald-400";
+    return (
+      <div className="mt-1.5 space-y-1">
+        <p
+          className={cn(
+            "flex items-center gap-1.5 text-xs font-medium tabular-nums",
+            textColor,
+          )}
+        >
+          <Timer className="size-3.5" />
+          {t("accounts.codexTurnStateTtlRemaining", {
+            time: formatCodexTurnStateCountdown(ttl.remainingMs),
+          })}
+        </p>
+        <div className="h-1 w-full overflow-hidden rounded-full bg-muted">
+          <div
+            className={cn("h-full rounded-full transition-[width]", barColor)}
+            style={{ width: `${Math.round(ttl.ratio * 100)}%` }}
+          />
+        </div>
+      </div>
+    );
+  };
 
   const renderWorkspaceRouteInput = ({
     value = workspaceRouteID,
@@ -2746,6 +2841,10 @@ export default function Accounts() {
       pageSize,
       search: debouncedSearchQuery,
       status: statusFilter,
+      state: stateFilter,
+      stateModel: stateModelFilter,
+      capability: capabilityFilter,
+      capabilityModel,
       plan: planFilter,
       subscription: subscriptionFilter,
       authKind: authFilter,
@@ -2761,6 +2860,10 @@ export default function Accounts() {
           : sortKey ?? undefined,
       order: sortDir,
     }, controller.signal);
+    if (!controller.signal.aborted && accountsResponse.state_summary) {
+      setStateSummary(accountsResponse.state_summary);
+      stateRevision.current = accountsResponse.state_summary.revision;
+    }
     return {
       accounts: accountsResponse.accounts ?? [],
       total: accountsResponse.total,
@@ -2771,7 +2874,7 @@ export default function Accounts() {
       statsState: accountsResponse.stats_state,
       disabledSorts: accountsResponse.disabled_sorts ?? [],
     };
-  }, [authFilter, debouncedSearchQuery, domainFilter, groupFilter.exclude, groupFilter.include, groupFilter.ungrouped, page, pageSize, planFilter, sortDir, sortKey, statusFilter, subscriptionFilter, tagFilter]);
+  }, [authFilter, debouncedSearchQuery, domainFilter, groupFilter.exclude, groupFilter.include, groupFilter.ungrouped, page, pageSize, planFilter, sortDir, sortKey, statusFilter, subscriptionFilter, tagFilter, stateFilter, stateModelFilter, capabilityFilter, capabilityModel]);
 
   const loadAccountAnalysis = useCallback(async (opts?: { silent?: boolean }) => {
     accountAnalysisAbortRef.current?.abort();
@@ -2975,11 +3078,17 @@ export default function Accounts() {
     };
   }, [providerView, refreshChannelMonitorBilling, responsesAccountIDsKey]);
   const applyAccountLiveState = useCallback((response: AccountLiveStateResponse) => {
+    if (response.state_summary) {
+      const summary = response.state_summary;
+      setStateSummary(current => current?.revision === summary.revision ? current : summary);
+      if (stateRevision.current && stateRevision.current !== summary.revision) void reloadSilently();
+      stateRevision.current = summary.revision;
+    }
     setData((current) => {
       const accounts = mergeAccountLiveState(current.accounts, response);
       return accounts === current.accounts ? current : { ...current, accounts };
     });
-  }, [setData]);
+  }, [setData, reloadSilently]);
   useAccountLiveState(visibleAccountIDs, applyAccountLiveState, providerView === "codex");
   const loadAccountDetail = useCallback(
     (account: AccountRow) =>
@@ -3350,6 +3459,10 @@ export default function Accounts() {
     channel: "codex",
     search: debouncedSearchQuery || undefined,
     status: statusFilter === "all" ? undefined : statusFilter,
+    state: stateFilter === 'all' ? undefined : stateFilter,
+    state_model: stateModelFilter || undefined,
+    capability: capabilityFilter === 'all' ? undefined : capabilityFilter,
+    capability_model: capabilityModel || undefined,
     plan: planFilter === "all" ? undefined : planFilter,
     subscription: subscriptionFilter === "all" ? undefined : subscriptionFilter,
     auth_kind: authFilter === "all" ? undefined : authFilter,
@@ -3358,7 +3471,7 @@ export default function Accounts() {
     group_include: groupFilter.include.length > 0 ? groupFilter.include : undefined,
     group_exclude: groupFilter.exclude.length > 0 ? groupFilter.exclude : undefined,
     ungrouped: groupFilter.ungrouped || undefined,
-  }), [authFilter, debouncedSearchQuery, domainFilter, groupFilter.exclude, groupFilter.include, groupFilter.ungrouped, planFilter, statusFilter, subscriptionFilter, tagFilter]);
+  }), [authFilter, debouncedSearchQuery, domainFilter, groupFilter.exclude, groupFilter.include, groupFilter.ungrouped, planFilter, statusFilter, subscriptionFilter, tagFilter, stateFilter, stateModelFilter, capabilityFilter, capabilityModel]);
 
   // 服务端已完成全池筛选、排序和分页。
   const filteredAccounts = accounts;
@@ -3389,7 +3502,6 @@ export default function Accounts() {
   const openAccountDetail = useCallback((account: AccountRow) => {
     setDetailAccountData(account);
     setDetailAccountId(account.id);
-    setQuickConfigAccount(account);
   }, []);
   const closeAccountDetail = useCallback(() => {
     setDetailAccountId(null);
@@ -5752,6 +5864,8 @@ export default function Accounts() {
     setEditTimezoneCustom(
       Boolean(account.timezone && !findClaudeTimezoneOption(account.timezone)),
     );
+    setEditCodexTurnState(account.codex_turn_state ?? "");
+    setEditCodexTurnStateModels(account.codex_turn_state_models ?? "");
     setEditTags(account.tags ?? []);
     setEditGroupIds(account.group_ids ?? []);
     setEditOpenAIForm({
@@ -5813,6 +5927,8 @@ export default function Accounts() {
     setEditCodexFingerprintMode("off");
     setEditTimezone("");
     setEditTimezoneCustom(false);
+    setEditCodexTurnState("");
+    setEditCodexTurnStateModels("");
     setEditTags([]);
     setEditGroupIds([]);
     setEditOpenAIForm({
@@ -5975,6 +6091,8 @@ export default function Accounts() {
           ? {
               codex_fingerprint_mode: editCodexFingerprintMode,
               timezone: editTimezone.trim(),
+              codex_turn_state: editCodexTurnState.trim(),
+              codex_turn_state_models: editCodexTurnStateModels.trim(),
             }
           : {}),
       };
@@ -6688,15 +6806,16 @@ export default function Accounts() {
               {loading ? t("common.loading") : t("accounts.statsWarming")}
             </div>
           ) : null}
-          <div className="mb-4 grid grid-cols-2 gap-2 sm:gap-3 xl:grid-cols-5">
+          <div className="mb-4 grid grid-cols-2 gap-2 sm:gap-3 md:grid-cols-3 xl:grid-cols-6">
             <CompactStat
               label={t("accounts.totalAccounts")}
               chipLabel={t("accounts.filterAll")}
               value={totalAccounts}
               tone="neutral"
-              active={statusFilter === "all"}
+              active={statusFilter === "all" && stateFilter === "all"}
               onClick={() => {
                 setStatusFilter("all");
+                updateStateFilters({ state: "all", model: "" });
                 setPage(1);
               }}
             />
@@ -6712,13 +6831,26 @@ export default function Accounts() {
               }}
             />
             <CompactStat
-              label={t("accounts.schedulingAccounts")}
-              chipLabel={t("accounts.filterScheduling")}
+              label={t("accounts.schedulableAccounts")}
+              chipLabel={t("accounts.filterSchedulable")}
               value={schedulingAccounts}
               tone="warning"
               active={statusFilter === "scheduling"}
               onClick={() => {
                 setStatusFilter("scheduling");
+                setPage(1);
+              }}
+            />
+            <CompactStat
+              label={t("ipv6State.reuseAccounts")}
+              chipLabel={null}
+              value={stateSummary?.reuse_accounts ?? 0}
+              description={t(stateSummary?.enabled === false ? "ipv6State.statDetailOff" : "ipv6State.statDetail", { available: stateSummary?.available_accounts ?? 0, pairs: stateSummary?.valid_combinations ?? 0 })}
+              tone="success"
+              active={stateFilter === "valid" && !stateModelFilter}
+              onClick={() => {
+                setStatusFilter("all");
+                updateStateFilters({ state: "valid", model: "" });
                 setPage(1);
               }}
             />
@@ -6753,6 +6885,8 @@ export default function Accounts() {
               }}
             />
           </div>
+
+          {unsampledAccounts > 0 ? <p className="mb-4 text-xs leading-relaxed text-muted-foreground">{t("accounts.usageSamplingIndependent", { count: unsampledAccounts })}</p> : null}
 
           {showAnalysisCharts && accountAnalysis ? (
             <div className="mb-4 grid items-stretch gap-4 xl:grid-cols-2">
@@ -6807,7 +6941,7 @@ export default function Accounts() {
                   ["normal", t("accounts.filterNormal"), normalAccounts],
                   [
                     "scheduling",
-                    t("accounts.filterScheduling"),
+                    t("accounts.filterSchedulable"),
                     schedulingAccounts,
                   ],
                   [
@@ -6936,7 +7070,12 @@ export default function Accounts() {
                 ))}
               </div>
 
+              <div className="basis-full py-2"><StateCoverage summary={stateSummary} target="state-pool" includeSaved /></div>
               <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center sm:gap-2">
+                <Select className="w-full min-w-0 sm:w-44" compact aria-label={t('ipv6State.stateFilter')} value={stateFilter} onValueChange={value => { updateStateFilters({ state: value }); setPage(1); }} options={['all', 'valid', 'available', 'missing'].map(value => ({ value, label: t(`ipv6State.stateFilter_${value}`) }))} />
+                <Input className="w-full min-w-0 sm:w-44" aria-label={t('codexRoutes.model')} placeholder={t('codexRoutes.model')} value={capabilityModel} onChange={event => { setCapabilityModel(event.target.value); if (!event.target.value.trim()) setCapabilityFilter('all'); setPage(1); }} />
+                <Select className="w-full min-w-0 sm:w-48" compact aria-label={t('codexRoutes.capability')} disabled={!capabilityModel.trim()} value={capabilityFilter} onValueChange={value => { setCapabilityFilter(value); setPage(1); }} options={['all', 'bps_supported', 'bps_unsupported', 'bps_unknown', 'dual_supported', 'codex_only_supported', 'bps_only_supported', 'cooldown', 'admin_disabled'].map(value => ({ value, label: t(`codexRoutes.filters.${value}`) }))} />
+                <Select className="w-full min-w-0 sm:w-44" compact aria-label={t('ipv6State.modelFilter')} value={stateModelFilter || 'all'} onValueChange={value => { updateStateFilters({ model: value === 'all' ? '' : value, state: value !== 'all' && stateFilter === 'all' ? 'valid' : stateFilter }); setPage(1); }} options={[{ value: 'all', label: t('ipv6State.anyModel') }, ...(stateSummary?.models ?? []).map(({ model }) => ({ value: model, label: STATE_MODEL_LABELS[model] || model }))]} />
                 <Select
                   className="w-full min-w-0 sm:w-32"
                   compact
@@ -7237,6 +7376,7 @@ export default function Accounts() {
                         proxy: t("accounts.proxyColumn"),
                         priority: t("accounts.schedulerPriorityColumn"),
                         status: t("accounts.status"),
+                        state: t("ipv6State.accountColumn"),
                         today: t("accounts.todayStats"),
                         requests: t("accounts.requests"),
                         usage: t("accounts.usage"),
@@ -7253,13 +7393,14 @@ export default function Accounts() {
 
             </div>
 
-            {(statusFilter !== "all" ||
+            {(capabilityFilter !== 'all' || stateFilter !== 'all' || stateModelFilter !== '' || statusFilter !== "all" ||
               planFilter !== "all" ||
               subscriptionFilter !== "all" ||
               Boolean(tagFilter) ||
               Boolean(domainFilter) ||
               !isAccountGroupFilterEmpty(groupFilter)) && (
               <div className="flex flex-wrap items-center gap-1.5 border-t border-border/60 pt-2">
+                {capabilityFilter !== 'all' && <Button type="button" variant="ghost" size="sm" onClick={() => { setCapabilityFilter('all'); setCapabilityModel(''); setPage(1); }}>{t(`codexRoutes.filters.${capabilityFilter}`)} · {capabilityModel}<X className="size-3" aria-hidden="true" /></Button>}
                 {statusFilter !== "all" && (
                   <button
                     type="button"
@@ -7272,7 +7413,7 @@ export default function Accounts() {
                     {statusFilter === "normal"
                       ? t("accounts.filterNormal")
                       : statusFilter === "scheduling"
-                        ? t("accounts.filterScheduling")
+                        ? t("accounts.filterSchedulable")
                       : statusFilter === "rate_limited"
                         ? t("accounts.filterRateLimited")
                         : statusFilter === "abnormal"
@@ -7364,6 +7505,9 @@ export default function Accounts() {
                   type="button"
                   onClick={() => {
                     setStatusFilter("all");
+                    setCapabilityFilter('all');
+                    setCapabilityModel('');
+                    updateStateFilters({ state: 'all', model: '' });
                     setPlanFilter("all");
                     setSubscriptionFilter("all");
                     setTagFilter("");
@@ -7379,6 +7523,8 @@ export default function Accounts() {
               </div>
             )}
           </div>
+
+          {selected.size > 0 && <div className="mb-3"><CodexRouteManager ids={[...selected]} onChanged={() => { void reloadSilently(); }} /></div>}
 
           {selected.size > 0 && (
             <div className="sticky top-2 z-20 mb-4 flex items-center justify-between gap-3 rounded-xl border border-primary/20 bg-card/95 px-3 py-2 text-sm shadow-lg backdrop-blur-sm max-lg:flex-col max-lg:items-stretch">
@@ -7690,6 +7836,7 @@ export default function Accounts() {
                             {t("accounts.subscriptionColumn")}
                           </TableHead>
                         )}
+                        {visibleColumns.state && <TableHead>{t('ipv6State.accountColumn')}</TableHead>}
                         {visibleColumns.status && (
                           <TableHead className="text-[13px] font-semibold">
                             {t("accounts.status")}
@@ -10197,6 +10344,68 @@ export default function Accounts() {
                               onChange: setEditTimezone,
                               onCustomChange: setEditTimezoneCustom,
                             })}
+                          </div>
+                        ) : null}
+
+                        {/* Turn State 强制注入 */}
+                        {isCodexOfficialAccount(editingAccount) ? (
+                          <div className="rounded-xl border border-border/70 bg-card p-4.5 shadow-2xs hover:border-border/90 transition-colors md:col-span-2">
+                            <div className="flex items-center gap-2 font-semibold text-foreground text-sm">
+                              <Hourglass className="size-4 text-amber-500" />
+                              <span>{t("accounts.codexTurnStateTitle")}</span>
+                            </div>
+                            <p className="mt-1 text-xs text-muted-foreground leading-relaxed">
+                              {t("accounts.codexTurnStateHint")}
+                            </p>
+                            <div className="mt-3">
+                              <div className="flex items-center justify-between mb-2">
+                                <label className="block text-sm font-semibold text-muted-foreground">
+                                  {t("accounts.codexTurnStateValueLabel")}
+                                </label>
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="sm"
+                                  disabled={!editCodexTurnState}
+                                  onClick={() => setEditCodexTurnState("")}
+                                >
+                                  {t("accounts.codexTurnStateClear")}
+                                </Button>
+                              </div>
+                              <textarea
+                                className="w-full min-h-[80px] p-3 border border-input rounded-xl bg-background text-sm resize-y font-mono focus:outline-none focus:ring-2 focus:ring-ring"
+                                placeholder={t(
+                                  "accounts.codexTurnStateValuePlaceholder",
+                                )}
+                                value={editCodexTurnState}
+                                onChange={(
+                                  event: ChangeEvent<HTMLTextAreaElement>,
+                                ) => setEditCodexTurnState(event.target.value)}
+                                rows={3}
+                                spellCheck={false}
+                              />
+                              {renderCodexTurnStateTtl()}
+                            </div>
+                            <div className="mt-3">
+                              <label className="block text-sm font-semibold text-muted-foreground mb-2">
+                                {t("accounts.codexTurnStateModelsLabel")}
+                              </label>
+                              <Input
+                                value={editCodexTurnStateModels}
+                                placeholder={t(
+                                  "accounts.codexTurnStateModelsPlaceholder",
+                                )}
+                                onChange={(
+                                  event: ChangeEvent<HTMLInputElement>,
+                                ) =>
+                                  setEditCodexTurnStateModels(event.target.value)
+                                }
+                                spellCheck={false}
+                              />
+                              <p className="mt-1.5 text-xs text-muted-foreground">
+                                {t("accounts.codexTurnStateModelsHint")}
+                              </p>
+                            </div>
                           </div>
                         ) : null}
 
@@ -14084,6 +14293,7 @@ function AccountMobileCard({
         </div>
       </header>
 
+      {showColumn('state') ? <div className="px-4 py-2"><AccountStateModels states={account.state_models} accountID={account.id} /><CodexRouteBadges paths={account.codex_paths} /></div> : null}
       <div className="codex-account-card__notices">
         {overlayKind === "overload" && (
           <div className="codex-account-card__notice">

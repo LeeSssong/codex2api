@@ -6,6 +6,7 @@ import { formatBeijingTime } from '../utils/time'
 import DisplayTimezoneSelect from '../components/DisplayTimezoneSelect'
 import PageHeader from '../components/PageHeader'
 import StateShell from '../components/StateShell'
+import StatePolicySettings from '../components/StatePolicySettings'
 import { useDataLoader } from '../hooks/useDataLoader'
 import { useToast } from '../hooks/useToast'
 import type { AntigravityOAuthClientSetting, AntigravitySettingsResponse, ChannelTestSettings, CodexUserAgentCatalog, CodexUserAgentPreview, HealthResponse, ModelInfo, SiteBranding, SystemSettings, UpstreamChannel } from '../types'
@@ -220,6 +221,7 @@ const isSettingsTabKey = (value: string | null): value is SettingsTabKey =>
   value !== null && (SETTINGS_TAB_KEYS as readonly string[]).includes(value)
 // 旧版单页锚点 → Tab 映射，保证外部深链不失效。
 const LEGACY_SECTION_TABS: Record<string, SettingsTabKey> = {
+  'settings-codex-state': 'codex',
   'settings-overview': 'general',
   'settings-traffic': 'general',
   'settings-runtime': 'general',
@@ -240,6 +242,7 @@ const LEGACY_SECTION_TABS: Record<string, SettingsTabKey> = {
 // icon 与对应 SettingsSection 的图标保持一致，目录项和分区标题才能互相对上。
 const SETTINGS_TAB_SECTION_INDEX: Record<SettingsTabKey, ReadonlyArray<{ id: string; labelKey: string; icon: ReactNode }>> = {
   codex: [
+    { id: 'settings-codex-state', labelKey: 'ipv6State.accountColumn', icon: <Layers /> },
     { id: 'settings-codex-quota', labelKey: 'settings.nav.codexQuota', icon: <Gauge /> },
     { id: 'settings-codex-transport', labelKey: 'settings.nav.codexTransport', icon: <Wifi /> },
     { id: 'settings-codex-client', labelKey: 'settings.nav.codexClient', icon: <Terminal /> },
@@ -2537,6 +2540,7 @@ export default function Settings() {
     auto_reset_credits_enabled: false,
     auto_reset_credits_before_expiry_min: 60,
     auto_activate_5h_window_enabled: false,
+    codex_basispoints_enabled: false,
     codex_force_websocket: false,
     codex_telemetry_enabled: false,
     codex_telemetry_timing_debug: false,
@@ -3685,6 +3689,9 @@ export default function Settings() {
           <div className="min-w-0 space-y-7">
           {activeTab === 'codex' ? (
             <>
+              <SettingsSection id="settings-codex-state" title={t('ipv6State.accountColumn')} description={t('ipv6State.systemSettingsHint')} icon={<Layers className="size-4" />}>
+                <SettingsCard title={t('ipv6State.callPolicy')} icon={<Layers className="size-4" />}><StatePolicySettings /></SettingsCard>
+              </SettingsSection>
               <SettingsSection id="settings-codex-quota" title={t('settings.nav.codexQuota')} description={t('settings.nav.codexQuotaDesc')} icon={<Gauge className="size-4" />}>
               <div className={SETTINGS_CARD_GRID_2}>
                 <SettingsCard title={t('settings.probeScheduling')} icon={<RefreshCw className="size-4" />}>
@@ -4041,6 +4048,17 @@ export default function Settings() {
               </SettingsSection>
 
               <SettingsSection id="settings-codex-transport" title={t('settings.nav.codexTransport')} description={t('settings.nav.codexTransportDesc')} icon={<Wifi className="size-4" />}>
+              <SettingsCard title={t('settings.codexBasispoints')} description={t('settings.codexBasispointsDesc')} icon={<Wifi className="size-4" />}>
+                <div className={SETTINGS_SWITCH_ROW}>
+                  <SettingField label={t('settings.codexBasispointsEnabled')} description={t('settings.codexBasispointsEnabledDesc')} layout="switch">
+                    <Switch
+                      aria-label={t('settings.codexBasispointsEnabled')}
+                      checked={settingsForm.codex_basispoints_enabled}
+                      onCheckedChange={(checked) => autoSaveBooleanField('codex_basispoints_enabled', checked)}
+                    />
+                  </SettingField>
+                </div>
+              </SettingsCard>
               <SettingsCard title={t('settings.codexWebsocket')} description={t('settings.codexWebsocketDesc')} icon={<Wifi className="size-4" />}>
                 <div className="space-y-4">
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">

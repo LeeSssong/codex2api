@@ -11,7 +11,7 @@ const (
 	// TransientRateLimitBackoffBase is the first account-wide freeze after a
 	// Codex throttle that is not usage_limit / 5h / 7d exhaustion.
 	TransientRateLimitBackoffBase = 15 * time.Second
-	// TransientRateLimitBackoffMax caps Retry-After and the exponential ladder.
+	// TransientRateLimitBackoffMax caps the local exponential ladder only.
 	TransientRateLimitBackoffMax = 5 * time.Minute
 	// transientRateLimitStableReset is how long an account must stay free of
 	// new upstream 429s after LastRateLimitedAt before the backoff ladder
@@ -21,7 +21,7 @@ const (
 )
 
 // nextTransientRateLimitCooldown returns the freeze duration for the given
-// backoff level, never shorter than Retry-After and never longer than the cap.
+// backoff level, never shorter than a valid upstream Retry-After.
 func nextTransientRateLimitCooldown(level int, retryAfter time.Duration) time.Duration {
 	if level < 0 {
 		level = 0
@@ -30,11 +30,11 @@ func nextTransientRateLimitCooldown(level int, retryAfter time.Duration) time.Du
 	for step := 0; step < level && cooldown < TransientRateLimitBackoffMax; step++ {
 		cooldown *= 2
 	}
-	if retryAfter > cooldown {
-		cooldown = retryAfter
-	}
 	if cooldown > TransientRateLimitBackoffMax {
 		cooldown = TransientRateLimitBackoffMax
+	}
+	if retryAfter > cooldown {
+		cooldown = retryAfter
 	}
 	if cooldown < TransientRateLimitBackoffBase {
 		cooldown = TransientRateLimitBackoffBase
@@ -67,7 +67,7 @@ func (s *Store) MarkTransientRateLimited(acc *Account, retryAfter time.Duration)
 			return remaining
 		}
 		acc.LastRateLimitedAt = now
-		extension := now.Add(min(retryAfter, TransientRateLimitBackoffMax))
+		extension := now.Add(retryAfter)
 		if retryAfter <= 0 || !extension.After(until) {
 			acc.mu.Unlock()
 			return remaining

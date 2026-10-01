@@ -1,0 +1,159 @@
+.state-pool { width: 100%; min-width: 0; letter-spacing: 0; }
+.state-pool h2 { letter-spacing: 0; }
+.state-pool-setup { display: grid; grid-template-columns: minmax(240px, 0.8fr) minmax(360px, 1.2fr); gap: 32px; padding: 8px 0 26px; border-bottom: 1px solid var(--color-border); }
+.state-pool-section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.state-pool h3 { font-size: 14px; font-weight: 600; }
+.state-pool-meta, .state-pool small { color: var(--color-muted-foreground); font-size: 12px; }
+.state-pool small { display: block; line-height: 1.6; overflow-wrap: anywhere; }
+.state-pool-account-list { max-height: 208px; overflow-y: auto; margin-top: 10px; }
+.state-pool-account { display: flex; align-items: center; gap: 10px; min-height: 50px; padding: 7px 4px; cursor: pointer; }
+.state-pool-account > span:nth-child(2) { flex: 1; min-width: 0; }
+.state-pool-account strong { display: block; font-size: 13px; font-weight: 500; overflow-wrap: anywhere; }
+.state-pool-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--color-muted-foreground); }
+.state-pool-dot.is-ready { background: #059669; }
+.state-pool-models { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 20px; }
+.state-pool-models > label { display: flex; align-items: center; gap: 10px; min-height: 48px; cursor: pointer; font-size: 14px; font-weight: 500; }
+.state-pool-models small { font-size: 11px; font-weight: 400; }
+.state-pool-limits { display: flex; align-items: end; gap: 12px; padding-top: 18px; }
+.state-pool-limits label { display: grid; gap: 6px; font-size: 12px; color: var(--color-muted-foreground); flex: 1; max-width: 160px; }
+.state-pool-limits input { height: 36px; }
+.state-pool-proxy-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin: 20px 0 12px; }
+.state-pool-proxy-heading a { color: var(--color-primary); font-size: 12px; }
+.state-pool-proxy-list { max-height: 160px; overflow: auto; margin: 10px 0; }
+.state-pool-forward { display: grid; min-width: 0; gap: 6px; margin-top: 14px; font-size: 12px; color: var(--color-muted-foreground); }
+.state-pool-strategy { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 16px; align-items: end; margin-top: 24px; }
+.state-pool-strategy > label { display: grid; gap: 6px; font-size: 12px; color: var(--color-muted-foreground); width: 128px; }
+.state-pool-group { border-bottom: 1px solid var(--color-border); padding-bottom: 12px; }
+.state-pool-group .state-pool-job { border-bottom: 0; padding-bottom: 8px; }
+.state-pool-candidate-details summary { cursor: pointer; width: fit-content; font-size: 12px; color: var(--color-muted-foreground); padding: 4px 0; }
+.state-pool-candidate { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 10px 0; font-size: 12px; }
+.state-pool-candidate .state-pool-status, .state-pool-import-preview .state-pool-status { display: block; white-space: normal; overflow-wrap: anywhere; }
+.state-pool-import-preview { max-height: 240px; overflow: auto; }
+.state-pool-import-preview > div { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--color-border); font-size: 12px; }
+.state-pool-switches { display: flex; flex-wrap: wrap; gap: 14px 24px; margin: 18px 0; }
+.state-pool-switches label { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer; }
+.state-pool-start { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 12px; font-size: 12px; color: var(--color-muted-foreground); }
+.state-pool-toolbar { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; padding: 22px 0 16px; }
+.state-pool-toolbar > div:last-child { display: flex; gap: 6px; align-items: center; }
+.state-pool-table-wrap { width: 100%; overflow-x: auto; }
+.state-pool-table { width: 100%; min-width: 780px; border-collapse: collapse; text-align: left; font-size: 13px; }
+.state-pool-table th { font-weight: 500; color: var(--color-muted-foreground); font-size: 12px; padding: 12px 10px; border-bottom: 1px solid var(--color-border); white-space: nowrap; }
+.state-pool-table td { padding: 15px 10px; border-bottom: 1px solid var(--color-border); vertical-align: middle; }
+.state-pool-table td:nth-child(2) { min-width: 180px; }
+.state-pool-table strong { font-weight: 600; }
+.state-pool-table code { display: block; font-size: 11px; color: var(--color-muted-foreground); margin-top: 5px; }
+.state-pool-row-actions { display: flex; align-items: center; gap: 2px; }
+.state-pool-countdown { font-size: 16px; font-variant-numeric: tabular-nums; }
+.state-pool-status { display: inline-flex; gap: 5px; align-items: center; font-size: 12px; white-space: nowrap; }
+.state-pool-status.is-ready, .state-pool-status.is-completed { color: #047857; }
+.state-pool-status.is-running, .state-pool-status.is-queued { color: #0369a1; }
+.state-pool-status.is-failed, .state-pool-status.is-identity_changed, .state-pool-error-text { color: var(--color-destructive); }
+.state-pool-status.is-expired, .state-pool-status.is-disabled, .state-pool-status.is-cancelled, .state-pool-status.is-interrupted { color: var(--color-muted-foreground); }
+.dark .state-pool-status.is-ready, .dark .state-pool-status.is-completed { color: #6ee7b7; }
+.dark .state-pool-status.is-running, .dark .state-pool-status.is-queued { color: #7dd3fc; }
+.state-pool-empty { padding: 48px 20px; text-align: center; font-size: 14px; color: var(--color-muted-foreground); }
+.state-pool-error { padding: 12px 0; color: var(--color-destructive); font-size: 13px; overflow-wrap: anywhere; }
+.state-pool-job { display: grid; grid-template-columns: minmax(150px, 1fr) minmax(125px, .8fr) minmax(140px, 1.3fr) auto; align-items: center; gap: 16px; padding: 16px 0; border-bottom: 1px solid var(--color-border); font-size: 13px; }
+.state-pool-job-result { min-width: 0; overflow-wrap: anywhere; }
+.state-pool-dialog { width: min(720px, calc(100vw - 24px)); max-width: 720px; max-height: calc(100dvh - 32px); overflow-y: auto; }
+.state-pool-import-fields { display: grid; gap: 12px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.state-pool-import-fields label { min-width: 0; display: grid; gap: 6px; font-size: 12px; }
+.state-pool-import-fields label > div, .state-pool-import-fields button { min-width: 0; max-width: 100%; }
+.state-pool-import-fields button > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.state-pool-import-fields label:last-child { grid-column: 1 / -1; }
+.state-pool-secret { min-height: 190px; max-height: 45dvh; font-family: ui-monospace, monospace; font-size: 12px; overflow-wrap: anywhere; }
+.state-pool-evidence section + section { border-top: 1px solid var(--color-border); padding-top: 20px; margin-top: 20px; }
+.state-pool-evidence pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; line-height: 1.7; margin-top: 12px; max-height: 40dvh; overflow-y: auto; }
+@media (max-width: 900px) { .state-pool-setup { grid-template-columns: 1fr; gap: 22px; } .state-pool-account-list { max-height: 155px; } }
+@media (max-width: 600px) { .state-pool-job { grid-template-columns: minmax(0, 1fr) auto; gap: 10px; } .state-pool-job-result { grid-column: 1; } .state-pool-switches { gap: 14px; } .state-pool-models { gap: 8px; } .state-pool-models label { font-size: 13px; } .state-pool-import-fields { grid-template-columns: minmax(0, 1fr); } }
+.state-pool-mode { margin-bottom: 24px; }
+.ipv6-state-plugin { min-width: 0; }
+.ipv6-state-control { display: flex; justify-content: space-between; align-items: center; gap: 24px; padding: 18px 20px; background: var(--color-muted); border-radius: 12px; }
+.ipv6-state-control h3 { margin-bottom: 5px; }
+.ipv6-state-enable, .ipv6-state-choices label { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+.ipv6-state-control > label { flex-shrink: 0; }
+.ipv6-state-toolbar { display: flex; justify-content: space-between; gap: 16px; align-items: center; flex-wrap: wrap; padding: 26px 0 18px; }
+.ipv6-state-summary { display: flex; flex-direction: column; gap: 5px; font-size: 14px; }
+.ipv6-state-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ipv6-state-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-bottom: 18px; }
+.ipv6-state-filters > input { width: 280px; max-width: 65%; }
+.ipv6-state-filters > div { width: 170px; }
+.ipv6-state-matrix table { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 13px; text-align: left; }
+.ipv6-state-matrix th, .ipv6-state-matrix td { border-bottom: 1px solid var(--color-border); padding: 10px 8px; }
+.ipv6-state-matrix thead th { font-size: 12px; color: var(--color-muted-foreground); font-weight: 500; padding: 10px 18px; }
+.ipv6-state-matrix th:first-child { width: 32%; padding-left: 4px; }
+.ipv6-state-account { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.ipv6-state-account > div { min-width: 0; }
+.ipv6-state-account strong { font-weight: 500; overflow-wrap: anywhere; }
+.ipv6-state-account small { font-weight: 400; margin-top: 4px; }
+.ipv6-state-cell { width: 100%; height: auto; min-height: 86px; padding: 8px 10px; justify-content: space-between; text-align: left; font-weight: 400; font-size: 12px; white-space: normal; overflow-wrap: anywhere; }
+.ipv6-state-cell-status { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.state-pool .ipv6-state-task { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; min-height: 32px; line-height: 1.5; }
+.ipv6-state-cell small { font-variant-numeric: tabular-nums; margin-top: 4px; }
+.ipv6-state-cell > svg { opacity: 0; }
+.ipv6-state-cell:hover > svg, .ipv6-state-cell:focus-visible > svg { opacity: 1; }
+.ipv6-state-cell.is-ready { color: #047857; }
+.ipv6-state-cell.is-collecting { color: #0369a1; }
+.ipv6-state-cell.is-account_unavailable, .ipv6-state-cell.is-retrying { color: var(--color-destructive); }
+.ipv6-state-cell.is-paused, .ipv6-state-cell.is-waiting, .ipv6-state-cell.is-expired { color: var(--color-muted-foreground); }
+.dark .ipv6-state-cell.is-ready { color: #6ee7b7; }
+.dark .ipv6-state-cell.is-collecting { color: #7dd3fc; }
+.dark .ipv6-state-cell.is-account_unavailable, .dark .ipv6-state-cell.is-retrying { color: #fca5a5; }
+.ipv6-state-dot { width: 5px; height: 5px; flex-shrink: 0; background: currentColor; border-radius: 50%; }
+.ipv6-state-mobile-model { display: none; }
+.ipv6-state-footnote { color: var(--color-muted-foreground); font-size: 12px; line-height: 1.7; padding: 18px 0; }
+.ipv6-state-dialog { font-size: 13px; }
+.ipv6-state-settings { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; gap: 0; padding: 0; overflow: hidden; }
+.ipv6-state-settings > [data-slot="dialog-header"] { padding: 20px 48px 16px 24px; text-align: left; border-bottom: 1px solid var(--color-border); }
+.ipv6-state-settings-body { min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding: 20px 24px; }
+.ipv6-state-settings-footer { padding: 14px 24px; border-top: 1px solid var(--color-border); background: var(--color-background); }
+.ipv6-state-settings-footer .state-pool-error { padding: 0 0 10px; }
+.ipv6-state-settings-body > section + section { margin-top: 20px; }
+.ipv6-state-choices.ipv6-state-model-choices { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.ipv6-state-model-choices label { min-height: 44px; align-items: center; }
+.ipv6-state-setting-section { padding: 4px 0 16px; border-bottom: 1px solid var(--color-border); }
+.ipv6-state-setting-section h3 { font-size: 13px; font-weight: 600; margin-bottom: 14px; }
+.ipv6-state-rule-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
+.ipv6-state-rule-fields > div { display: grid; align-content: start; gap: 8px; min-width: 0; }
+.ipv6-state-rule-fields label { font-weight: 500; }
+.ipv6-state-rule-fields p { line-height: 1.7; }
+.ipv6-state-choices { display: flex; flex-wrap: wrap; gap: 10px 24px; margin-top: 14px; }
+.ipv6-state-choices label { min-width: 0; min-height: 32px; }
+.ipv6-state-choices label span { overflow-wrap: anywhere; }
+.ipv6-state-account-choices { display: grid; max-height: 200px; overflow: auto; }
+.ipv6-state-manage { padding-left: 0; margin-top: 4px; }
+.ipv6-state-source-field { display: grid; gap: 8px; margin-top: 16px; }
+.ipv6-state-addresses { display: flex; flex-direction: column; gap: 3px; font-size: 12px; overflow-wrap: anywhere; }
+.ipv6-state-advanced summary { cursor: pointer; width: fit-content; min-height: 32px; padding: 6px 0; color: var(--color-muted-foreground); }
+.ipv6-state-advanced-fields { display: grid; gap: 12px; padding: 12px 0; }
+.ipv6-state-interval { display: flex; justify-content: space-between; gap: 12px; align-items: center; }
+.ipv6-state-interval input { width: 96px; }
+.ipv6-state-details > div { display: grid; grid-template-columns: 100px minmax(0, 1fr); gap: 16px; padding: 10px 0; border-bottom: 1px solid var(--color-border); }
+.ipv6-state-details dt { color: var(--color-muted-foreground); }
+.ipv6-state-details dd { overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.ipv6-state-detail-status { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.ipv6-state-import-error { white-space: pre-wrap; max-height: 200px; overflow: auto; }
+@media (max-width: 1100px) { .ipv6-state-matrix th:first-child { width: 28%; } .ipv6-state-matrix th, .ipv6-state-matrix td { padding-inline: 2px; } .ipv6-state-cell { padding-inline: 6px; } }
+@media (max-width: 700px) {
+  .ipv6-state-settings > [data-slot="dialog-header"] { padding: 18px 44px 16px 18px; }
+  .ipv6-state-settings-body { padding: 16px 18px; }
+  .ipv6-state-settings-footer { padding: 12px 18px; }
+  .ipv6-state-rule-fields { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+  .ipv6-state-control { align-items: flex-start; padding: 16px; gap: 12px; }
+  .ipv6-state-control > label > span { display: none; }
+  .ipv6-state-control .state-pool-meta { line-height: 1.7; }
+  .ipv6-state-toolbar { gap: 16px; padding-top: 22px; }
+  .ipv6-state-actions { width: 100%; }
+  .ipv6-state-actions > button { flex: 1; padding-inline: 10px; }
+  .ipv6-state-filters > input { min-width: 0; width: 100%; max-width: none; }
+  .ipv6-state-filters > div { flex-shrink: 0; width: 130px; }
+  .ipv6-state-matrix table, .ipv6-state-matrix tbody { display: block; }
+  .ipv6-state-matrix thead { display: none; }
+  .ipv6-state-matrix tr { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 12px; border-bottom: 1px solid var(--color-border); padding: 14px 0; }
+  .ipv6-state-matrix th, .ipv6-state-matrix td { border: 0; padding: 4px 0; }
+  .ipv6-state-matrix th:first-child { grid-column: 1 / -1; width: auto; padding: 0 0 6px; }
+  .ipv6-state-mobile-model { display: block; font-size: 12px; padding-left: 6px; font-weight: 500; }
+  .ipv6-state-cell > svg { opacity: 1; }
+  .ipv6-state-cell { min-height: 86px; }
+}
+@media (prefers-reduced-motion: reduce) { .ipv6-state-plugin .animate-spin { animation: none; } }

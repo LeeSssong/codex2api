@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strconv"
+	"strings"
 
 	"github.com/codex2api/api"
 	"github.com/codex2api/auth"
@@ -31,6 +33,33 @@ func schedulerSelectionAPIError(err error) *api.APIError {
 // Queue overload and selection timeout are local retryable capacity errors.
 // Neither should start another quota scan or overwrite committed SSE.
 func writeSchedulerQueueError(c *gin.Context, err error, protocol continuousRetryHTTPProtocol) bool {
+	var routeErr *Error
+	if errors.As(err, &routeErr) && strings.HasPrefix(routeErr.Code, "codex_route_") {
+		if !claimContinuousRetryTerminal(c, protocol) || c.Request.Context().Err() != nil {
+			return true
+		}
+		if d := codexRouteFromContext(c.Request.Context()); d != nil && d.recordSelectionError != nil {
+			d.recordSelectionError(routeErr)
+		}
+		if routeErr.RetryAfterSeconds > 0 && !c.Writer.Written() {
+			c.Header("Retry-After", strconv.Itoa(routeErr.RetryAfterSeconds))
+		}
+		switch protocol {
+		case continuousRetryProtocolAnthropic:
+			if !writeCommittedAnthropicRetryError(c, "overloaded_error", routeErr.Message) {
+				sendAnthropicError(c, routeErr.HTTPStatus, "overloaded_error", routeErr.Message)
+			}
+		case continuousRetryProtocolChat:
+			if !writeCommittedChatRetryError(c, routeErr.Message) {
+				c.JSON(routeErr.HTTPStatus, gin.H{"error": api.NewAPIError(api.ErrorCode(routeErr.Code), routeErr.Message, routeAPIErrorType(routeErr))})
+			}
+		default:
+			if !writeCommittedResponsesRetryError(c, routeErr.Message) {
+				c.JSON(routeErr.HTTPStatus, gin.H{"error": api.NewAPIError(api.ErrorCode(routeErr.Code), routeErr.Message, routeAPIErrorType(routeErr))})
+			}
+		}
+		return true
+	}
 	apiErr := schedulerSelectionAPIError(err)
 	if apiErr == nil {
 		return false

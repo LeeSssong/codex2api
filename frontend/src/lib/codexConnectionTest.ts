@@ -1,5 +1,5 @@
-// Codex/Responses 测连诊断的类型与纯展示逻辑。与 Claude 的 claudeConnectionTest.ts
-// 平行但独立:字段语义按 Responses API 与 x-codex-* 用量头定义。
+// Codex/Responses diagnostics and presentation helpers, independent of the
+// Claude diagnostics. Field meanings follow Responses and x-codex-* headers.
 
 export interface CodexTestWindow {
   used_percent?: number;
@@ -28,6 +28,8 @@ export interface CodexTestDiagnostics {
   response_id?: string;
   cf_ray?: string;
   plan_type?: string;
+  turn_state_length?: number;
+  turn_state_source?: 'http_headers' | 'ws_handshake' | 'response_metadata';
   safety_buffering_enabled?: boolean;
   safety_buffering_faster_model?: string;
   safety_buffered?: boolean;
@@ -45,7 +47,18 @@ export interface CodexTestDiagnostics {
 
 export type CodexTestWindowKind = "5h" | "7d" | "short" | "unknown";
 
-// 与后端 windowMinutesToCooldown 同口径:>= 1 天算 7d,>= 1 小时算 5h。
+export function codexTestTurnState(diagnostics?: CodexTestDiagnostics | null, running = false) {
+  const length = diagnostics?.turn_state_length;
+  if (typeof length !== 'number' || !Number.isSafeInteger(length) || length < 0) {
+    return { status: running ? 'pending' : 'unknown', length: undefined } as const;
+  }
+  if (length === 0) {
+    return { status: running && diagnostics?.transport === 'websocket' ? 'pending' : 'missing', length } as const;
+  }
+  return { status: length === 292 ? 'matched' : 'different', length } as const;
+}
+
+// Match backend windowMinutesToCooldown thresholds: one day / one hour.
 export function codexTestWindowKind(window?: CodexTestWindow): CodexTestWindowKind {
   const minutes = window?.window_minutes;
   if (typeof minutes !== "number" || !Number.isFinite(minutes) || minutes <= 0) return "unknown";
@@ -83,7 +96,7 @@ export function codexTestTokenMetrics(usage?: CodexTestUsage) {
   return metrics.map((item) => ({ ...item, percent: item.value === null ? 0 : (item.value / max) * 100 }));
 }
 
-// 首帧诊断只有响应头信息;带 duration_ms 的才是流结束后的最终帧。
+// Initial diagnostics contain headers; duration_ms identifies the final frame.
 export function isFinalCodexTestDiagnostics(diagnostics?: CodexTestDiagnostics | null): boolean {
   return typeof diagnostics?.duration_ms === "number";
 }

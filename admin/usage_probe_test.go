@@ -525,6 +525,30 @@ func TestProbeUsageSnapshotResponsesSuccessRecoversIgnoredUsageCooldown(t *testi
 	store.Release(continued)
 }
 
+func TestWhamHealthySnapshotDoesNotUndoExplicitQuota(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"plan_type":"plus","rate_limit":{"allowed":true,"limit_reached":false,"primary_window":{"used_percent":0,"limit_window_seconds":18000,"reset_after_seconds":1800}}}`))
+	}))
+	defer server.Close()
+	restore := proxy.SetWhamUsageURLForTest(server.URL)
+	defer restore()
+	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, LazyMode: true})
+	t.Cleanup(store.Stop)
+	store.SetUsageProbeResponsesFallbackEnabled(false)
+	a := &auth.Account{DBID: 98730, AccessToken: "token", PlanType: "plus", Status: auth.StatusReady}
+	store.AddAccount(a)
+	store.MarkResponsesRateLimited(a, time.Hour)
+	_, deadline := a.GetCooldownSnapshot()
+	h := &Handler{store: store}
+	if err := h.ProbeUsageSnapshot(context.Background(), a); err != nil {
+		t.Fatal(err)
+	}
+	if reason, until := a.GetCooldownSnapshot(); reason != auth.ResponsesRateLimitedCooldownReason || !until.Equal(deadline) || a.IsAvailable() {
+		t.Fatalf("healthy metadata undid quota: %s %v", reason, until)
+	}
+}
+
 func TestProbeUsageSnapshotResponsesFailureInsideHTTP200PreservesCooldown(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

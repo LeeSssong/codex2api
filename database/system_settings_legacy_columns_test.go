@@ -25,7 +25,6 @@ func TestSQLiteSystemSettingsIgnoresRetiredColumnsAfterRestart(t *testing.T) {
 		name string
 		ddl  string
 	}{
-		{"codex_basispoints_enabled", "INTEGER DEFAULT 0"},
 		{"codex_basispoints_models", "TEXT DEFAULT ''"},
 		{"codex_basispoints_403_pause_disabled", "INTEGER DEFAULT 0"},
 		{"codex_basispoints_403_probe_interval_minutes", "INTEGER DEFAULT 1"},
@@ -96,7 +95,7 @@ func TestSQLiteSystemSettingsIgnoresRetiredColumnsAfterRestart(t *testing.T) {
 		FROM system_settings WHERE id = 1`).Scan(&enabled, &models, &pauseDisabled, &probeMinutes, &cooldownSeconds, &cacheAsInput); err != nil {
 		t.Fatalf("read preserved legacy columns: %v", err)
 	}
-	if enabled != 1 || models != "retired-model" || pauseDisabled != 1 || probeMinutes != 60 || cooldownSeconds != 90 || cacheAsInput != 1 {
+	if !settings.CodexBasispointsEnabled || enabled != 1 || models != "retired-model" || pauseDisabled != 1 || probeMinutes != 60 || cooldownSeconds != 90 || cacheAsInput != 1 {
 		t.Fatalf("legacy data changed: enabled=%d models=%q pause=%d probe=%d cooldown=%d cache=%d", enabled, models, pauseDisabled, probeMinutes, cooldownSeconds, cacheAsInput)
 	}
 }

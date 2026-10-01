@@ -6,6 +6,7 @@ import (
 
 	"github.com/codex2api/auth"
 	"github.com/codex2api/database"
+	"github.com/codex2api/ipv6state"
 	"github.com/codex2api/proxy"
 	"github.com/codex2api/security"
 	"github.com/gin-gonic/gin"
@@ -20,11 +21,12 @@ type messageResponse struct {
 }
 
 type statsResponse struct {
-	Total         int   `json:"total"`
-	Available     int   `json:"available"`
-	RateLimited   int   `json:"rate_limited"`
-	Error         int   `json:"error"`
-	TodayRequests int64 `json:"today_requests"`
+	State         ipv6state.Summary `json:"state_summary"`
+	Total         int               `json:"total"`
+	Available     int               `json:"available"`
+	RateLimited   int               `json:"rate_limited"`
+	Error         int               `json:"error"`
+	TodayRequests int64             `json:"today_requests"`
 	// Channels 按上游渠道（codex/grok/antigravity/claude）拆分的账号与今日请求计数，
 	// 供仪表盘在「全部」视图并列展示、渠道视图切换主数字。
 	Channels map[string]statsChannelCounts `json:"channels,omitempty"`

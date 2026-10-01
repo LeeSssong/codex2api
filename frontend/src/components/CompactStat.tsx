@@ -1,4 +1,5 @@
 import { cn } from '../lib/utils'
+import { Button } from './ui/button'
 
 export type CompactStatTone = 'neutral' | 'success' | 'warning' | 'danger'
 
@@ -10,13 +11,12 @@ const TONE_STYLE: Record<CompactStatTone, { chip: string; dot: string }> = {
 }
 
 /**
- * 可点击的账号筛选统计磁贴（数值 + 状态芯片 + 可选明细列），
- * 从 Accounts/GrokAccounts 的两份本地实现合并而来。
- * 标签排版跟随 house 磁贴规格（uppercase tracking-wider 小标签）。
+ * Shared account-filter tile with a count, optional chip and supporting details.
  */
 export function CompactStat({
   label,
   chipLabel,
+  description,
   value,
   tone,
   details,
@@ -24,7 +24,8 @@ export function CompactStat({
   onClick,
 }: {
   label: string
-  chipLabel?: string
+  chipLabel?: string | null
+  description?: string
   value: number
   tone: CompactStatTone
   details?: Array<{ label: string; value: number }>
@@ -45,46 +46,49 @@ export function CompactStat({
   const content = (
     <>
       <div className="min-w-0">
-        <div className="truncate text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+        <div className={cn('text-[11px] font-semibold uppercase tracking-wider text-muted-foreground', description ? 'whitespace-normal' : 'truncate')}>
           {label}
         </div>
         <div className="mt-1.5 text-[22px] font-semibold leading-none tabular-nums tracking-tight text-foreground sm:text-[26px]">
           {value}
         </div>
+        {description ? <div className="mt-2 whitespace-normal text-[11px] leading-relaxed text-muted-foreground">{description}</div> : null}
       </div>
-      <div className="flex min-h-[48px] shrink-0 flex-col items-end gap-1 sm:min-h-[54px] sm:gap-1.5">
-        <div
-          className={cn(
-            'inline-flex items-center gap-1.5 rounded-full px-1.5 py-0.5 text-[11px] font-medium sm:px-2 sm:py-1 sm:text-[12px]',
-            toneStyle.chip,
+      {chipLabel !== null || details?.length ? (
+        <div className="flex min-h-[48px] shrink-0 flex-col items-end gap-1 sm:min-h-[54px] sm:gap-1.5">
+          {chipLabel !== null ? <div
+            className={cn(
+              'inline-flex items-center gap-1.5 rounded-full px-1.5 py-0.5 text-[11px] font-medium sm:px-2 sm:py-1 sm:text-[12px]',
+              toneStyle.chip,
+            )}
+          >
+            <span className={cn('size-1.5 rounded-full sm:size-1.5', toneStyle.dot)} />
+            <span className="max-w-[4.5rem] truncate sm:max-w-none">{chipLabel ?? label}</span>
+          </div> : null}
+          {details && details.length > 0 && (
+            <div className="flex flex-col items-end gap-0.5 text-[11px] font-medium leading-4 text-muted-foreground">
+              {details.map((item) => (
+                <div
+                  key={item.label}
+                  className="grid grid-cols-[max-content_auto_max-content] items-center gap-x-0.5 whitespace-nowrap tabular-nums"
+                >
+                  <span className="justify-self-start">{item.label}</span>
+                  <span className="justify-self-center">：</span>
+                  <span className="justify-self-end text-foreground">{item.value}</span>
+                </div>
+              ))}
+            </div>
           )}
-        >
-          <span className={cn('size-1.5 rounded-full sm:size-1.5', toneStyle.dot)} />
-          <span className="max-w-[4.5rem] truncate sm:max-w-none">{chipLabel ?? label}</span>
         </div>
-        {details && details.length > 0 && (
-          <div className="flex flex-col items-end gap-0.5 text-[11px] font-medium leading-4 text-muted-foreground">
-            {details.map((item) => (
-              <div
-                key={item.label}
-                className="grid grid-cols-[max-content_auto_max-content] items-center gap-x-0.5 whitespace-nowrap tabular-nums"
-              >
-                <span className="justify-self-start">{item.label}</span>
-                <span className="justify-self-center">：</span>
-                <span className="justify-self-end text-foreground">{item.value}</span>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
+      ) : null}
     </>
   )
 
   if (onClick) {
     return (
-      <button type="button" onClick={onClick} aria-pressed={active} className={className}>
+      <Button type="button" variant="ghost" onClick={onClick} aria-pressed={active} className={cn('h-auto whitespace-normal', className)}>
         {content}
-      </button>
+      </Button>
     )
   }
 

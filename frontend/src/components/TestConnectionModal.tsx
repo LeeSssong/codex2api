@@ -1,19 +1,16 @@
-// 账号测连弹窗:Codex、Claude(经 Codex 诊断帧)、Grok/Responses、Antigravity 共用。
-// 消费 GET /api/admin/accounts/:id/test 的 SSE:test_start → content* → diagnostics /
-// test_complete / error;codex_diagnostics 可能挂在任意事件上,读到 SSE 关闭再刷新列表。
+// Shared connection test dialog for Codex, Claude, Grok/Responses, and Antigravity.
+// Diagnostics can accompany any SSE event; refresh accounts after the stream closes.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Activity,
   CheckCircle,
   ChevronDown,
-  CircleAlert,
   Copy,
   Gauge,
   Loader2,
   RefreshCw,
   RotateCcw,
-  ShieldCheck,
   XCircle,
 } from "lucide-react";
 import { api, getAdminKey } from "../api";
@@ -22,10 +19,10 @@ import type { CodexTestDiagnostics, CodexTestWindow } from "../lib/codexConnecti
 import {
   clampCodexTestPercent,
   codexTestTokenMetrics,
+  codexTestTurnState,
   codexTestWindowKind,
   formatCodexTestMS,
   formatCodexTestReset,
-  isCodexVersionGatedError,
   isFinalCodexTestDiagnostics,
 } from "../lib/codexConnectionTest";
 import {
@@ -41,7 +38,6 @@ import { orderAntigravityTestModels } from "../lib/antigravityModels";
 import { cn } from "@/lib/utils";
 import { useToast } from "../hooks/useToast";
 import Modal from "./Modal";
-import ModelDetectorModal from "./ModelDetectorModal";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
@@ -77,8 +73,7 @@ interface TestEvent {
   model?: string;
   success?: boolean;
   error?: string;
-  // Codex/Responses 测连诊断:首帧只有响应头信息,流结束后的最终帧带 duration_ms,
-  // 且可能出现在 test_complete/error 之后,因此要读到 SSE 关闭再刷新列表。
+  // Final diagnostics include duration_ms and can follow a terminal event.
   codex_diagnostics?: CodexTestDiagnostics;
 }
 
@@ -99,8 +94,8 @@ export default function TestConnectionModal({
   const { showToast } = useToast();
   const [output, setOutput] = useState<string[]>([]);
   const [status, setStatus] = useState<
-    "idle" | "connecting" | "streaming" | "success" | "error"
-  >("idle");
+    "connecting" | "streaming" | "success" | "error"
+  >("connecting");
   const [errorMsg, setErrorMsg] = useState("");
   const [model, setModel] = useState("");
   const [selectedModel, setSelectedModel] = useState("");
@@ -110,14 +105,7 @@ export default function TestConnectionModal({
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [headersOpen, setHeadersOpen] = useState(false);
   const [rawOpen, setRawOpen] = useState(false);
-  const [detectorOpen, setDetectorOpen] = useState(false);
-  const [testContent, setTestContent] = useState("hi");
-  // 跨重测保留:同步后自动重测仍被拒时,据此提示"已同步仍失败"而不是再次引导同步。
-  const [versionSync, setVersionSync] = useState<{
-    status: "idle" | "syncing" | "updated" | "latest" | "error";
-    cliVersion?: string;
-    error?: string;
-  }>({ status: "idle" });
+  const [attempt, setAttempt] = useState(0);
   const abortRef = useRef<AbortController | null>(null);
   const outputEndRef = useRef<HTMLDivElement>(null);
   const settledRef = useRef(false);
@@ -131,16 +119,13 @@ export default function TestConnectionModal({
   }, []);
 
   const isClaudeAccount = Boolean(account.claude_api);
-  // Antigravity 账号行携带的 models 已是对外发布的固定档位 ID,默认模型取系统设置里
-  // 该渠道的测试模型,否则取版本最新的 flash 低档(目录里会残留已下线旧版)。
+  // Antigravity models already use public tier IDs. Prefer the channel setting,
+  // falling back to the newest Flash model rather than obsolete catalog entries.
   const isAntigravityAccount = Boolean(account.antigravity_api);
-  // Grok 与 openai_responses 同属"账号自带模型清单"的 relay 风格账号，
-  // Claude 也使用账号级原生 Messages 模型清单，但走独立分支。
+  // Relay accounts provide their own model catalog; Claude uses a separate branch.
   const isOpenAIResponsesAccount = Boolean(
     account.openai_responses_api || account.grok_api,
   );
-  const isCodexOAuthAccount = !isClaudeAccount && !isOpenAIResponsesAccount && !isAntigravityAccount;
-  const supportsModelDetector = isCodexOAuthAccount || isClaudeAccount || Boolean(account.openai_responses_api && !account.grok_api);
 
   const modelSelectOptions = useMemo(
     () =>
@@ -160,12 +145,9 @@ export default function TestConnectionModal({
         if (isAntigravityAccount) {
           let preferred = "";
           try {
-            const settings = await api.getChannelTestSettings();
-            if (!active) return;
-            preferred = settings.antigravity.test_model ?? "";
-            setTestContent(settings.antigravity.test_content || settings.default_test_content || "hi");
+            preferred = (await api.getChannelTestSettings()).antigravity.test_model ?? "";
           } catch {
-            /* 渠道测试设置读不到就按目录自动选 */
+            /* Fall back to the catalog when channel settings are unavailable. */
           }
           if (!active) return;
           const ordered = orderAntigravityTestModels(account.models ?? [], preferred);
@@ -176,7 +158,6 @@ export default function TestConnectionModal({
 
         const settings = await api.getSettings();
         if (!active) return;
-        setTestContent(settings.test_content || "hi");
 
         if (isClaudeAccount) {
           const accountModels = (account.models ?? []).filter(
@@ -284,16 +265,10 @@ export default function TestConnectionModal({
     };
   }, [account.claude_api, account.model_mapping, account.models, isAntigravityAccount, isClaudeAccount, isOpenAIResponsesAccount]);
 
-  useEffect(() => () => abortRef.current?.abort(), []);
-
   useEffect(() => {
-    setVersionSync({ status: "idle" });
-  }, [selectedModel]);
+    if (!modelOptionsReady || !selectedModel) return;
 
-  const startTest = () => {
-    if (!modelOptionsReady || !selectedModel || !testContent.trim() || running) return;
-
-    abortRef.current?.abort();
+    // Reset previous results, including StrictMode remounts.
     setOutput([]);
     setStatus("connecting");
     setErrorMsg("");
@@ -308,7 +283,7 @@ export default function TestConnectionModal({
       if (controller.signal.aborted) return;
 
       try {
-        const params = new URLSearchParams({ model: selectedModel, prompt: testContent });
+        const params = new URLSearchParams({ model: selectedModel });
         if (restoreOnSuccess) {
           params.set("restore_on_success", "true");
         }
@@ -354,8 +329,7 @@ export default function TestConnectionModal({
 
             try {
               const event: TestEvent = JSON.parse(trimmed.slice(6));
-              // 请求阶段失败时后端不单发 diagnostics 帧,而是把诊断挂在 error 事件上,
-              // 因此不分事件类型,带了就收。
+              // Transport errors attach diagnostics directly to the error event.
               if (event.codex_diagnostics) {
                 setDiagnostics(event.codex_diagnostics);
               }
@@ -406,8 +380,7 @@ export default function TestConnectionModal({
         }
 
         if (receivedTerminalEvent) {
-          // 等服务端关闭 SSE 后再刷新列表：后端会在连接结束时提交状态并失效
-          // 账号快照，提前刷新会重新读到“未采样”的旧缓存。
+          // Wait for SSE closure so committed account state replaces cached snapshots.
           markSettled();
         } else {
           setStatus("error");
@@ -424,22 +397,36 @@ export default function TestConnectionModal({
       }
     };
 
-    void run();
-  };
+    // Allow StrictMode cleanup to abort before starting the request.
+    const timer = window.setTimeout(() => {
+      void run();
+    }, 50);
+
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [
+    account.id,
+    attempt,
+    markSettled,
+    modelOptionsReady,
+    restoreOnSuccess,
+    selectedModel,
+    t,
+  ]);
 
   useEffect(() => {
     outputEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [output]);
 
   const statusText = {
-    idle: t("accounts.testReady"),
     connecting: t("accounts.connecting"),
     streaming: t("accounts.receivingResponse"),
     success: t("accounts.testSuccess"),
     error: t("accounts.testFailed"),
   }[status];
   const StatusIcon = {
-    idle: Activity,
     connecting: Loader2,
     streaming: Loader2,
     success: CheckCircle,
@@ -448,7 +435,6 @@ export default function TestConnectionModal({
   const statusIconSpin = status === "connecting" || status === "streaming";
 
   const statusColor = {
-    idle: "text-muted-foreground",
     connecting: "text-muted-foreground",
     streaming: "text-blue-500",
     success: "text-emerald-500",
@@ -464,36 +450,9 @@ export default function TestConnectionModal({
     }
   };
   const running = status === "connecting" || status === "streaming";
-  const versionGated =
-    isCodexOAuthAccount &&
-    status === "error" &&
-    isCodexVersionGatedError(errorMsg, diagnostics?.response_body);
-  const handleSyncClientVersions = async () => {
-    setVersionSync({ status: "syncing" });
-    try {
-      const result = await api.syncCodexClientVersions();
-      const cliVersion = result.cli.effective_version;
-      const sources = [result.cli, result.desktop_mac, result.desktop_windows, result.vscode];
-      if (sources.some((source) => source.updated)) {
-        setVersionSync({ status: "updated", cliVersion });
-        showToast(t("accounts.testVersionGateUpdated", { version: cliVersion }));
-        startTest();
-        return;
-      }
-      const errors = sources.map((source) => source.error).filter(Boolean);
-      setVersionSync(
-        errors.length > 0
-          ? { status: "error", cliVersion, error: errors.join("; ") }
-          : { status: "latest", cliVersion },
-      );
-    } catch (err: unknown) {
-      setVersionSync({
-        status: "error",
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-  };
   const diagnosticsFinal = isFinalCodexTestDiagnostics(diagnostics);
+  const turnState = codexTestTurnState(diagnostics, running);
+  const showTurnState = !isClaudeAccount && !isAntigravityAccount && !account.grok_api;
   const handleCopyDiagnostics = async () => {
     try {
       await copyTextToClipboard(
@@ -549,8 +508,7 @@ export default function TestConnectionModal({
       percent: clampCodexTestPercent(window.used_percent),
       reset: formatCodexTestReset(window.reset_after_seconds),
     }));
-  // 安全缓冲单独成行:x-codex-safety-buffering-faster-model 只是官方 CLI 的备用切换
-  // 目标,混在响应头表里容易被误读成"实际回答模型"。
+  // Keep the CLI fallback model separate from the actual response model.
   const safetyBuffering = (() => {
     if (!diagnostics) return undefined;
     const enabled = diagnostics.safety_buffering_enabled;
@@ -593,7 +551,6 @@ export default function TestConnectionModal({
   const monoStyle = { fontFamily: "var(--font-geist-mono)" } as const;
 
   return (
-    <>
     <Modal
       show={true}
       title={t("accounts.testConnectionTitle", {
@@ -605,32 +562,19 @@ export default function TestConnectionModal({
       }}
       footer={
         <div className="flex w-full flex-wrap items-center justify-end gap-2">
-          <div className="mr-auto flex flex-wrap items-center gap-2">
-            {diagnostics ? (
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                disabled={running}
-                onClick={() => void handleCopyDiagnostics()}
-              >
-                <Copy className="size-3.5" />
-                {t("accounts.testDiagCopy")}
-              </Button>
-            ) : null}
-            {supportsModelDetector ? (
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                disabled={running || !modelOptionsReady || !selectedModel}
-                onClick={() => setDetectorOpen(true)}
-              >
-                <ShieldCheck className="size-3.5" />
-                {t("accounts.detectorOpen")}
-              </Button>
-            ) : null}
-          </div>
+          {diagnostics ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="mr-auto"
+              disabled={running}
+              onClick={() => void handleCopyDiagnostics()}
+            >
+              <Copy className="size-3.5" />
+              {t("accounts.testDiagCopy")}
+            </Button>
+          ) : null}
           <Button
             variant="outline"
             onClick={() => {
@@ -642,11 +586,11 @@ export default function TestConnectionModal({
           </Button>
           <Button
             type="button"
-            disabled={running || !modelOptionsReady || !selectedModel || !testContent.trim()}
-            onClick={startTest}
+            disabled={running || !modelOptionsReady || !selectedModel}
+            onClick={() => setAttempt((value) => value + 1)}
           >
             <RefreshCw className={cn("size-3.5", running && "animate-spin")} />
-            {t(status === "idle" ? "accounts.testStart" : "accounts.testDiagRetry")}
+            {t("accounts.testDiagRetry")}
           </Button>
         </div>
       }
@@ -669,22 +613,7 @@ export default function TestConnectionModal({
             onValueChange={setSelectedModel}
             options={modelSelectOptions}
             placeholder={model || t("settings.testModel")}
-            disabled={running || !modelOptionsReady || modelSelectOptions.length === 0}
-            aria-label={t("settings.testModel")}
-          />
-        </div>
-
-        <div className="space-y-2">
-          <label htmlFor="account-test-content" className="text-sm font-medium">
-            {t("settings.testContent")}
-          </label>
-          <textarea
-            className="w-full resize-y rounded-xl border border-input bg-background p-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-50"
-            id="account-test-content"
-            rows={4}
-            value={testContent}
-            onChange={(event) => setTestContent(event.target.value)}
-            disabled={running || !modelOptionsReady}
+            disabled={!modelOptionsReady || modelSelectOptions.length === 0}
           />
         </div>
 
@@ -701,6 +630,19 @@ export default function TestConnectionModal({
                 </div>
               </div>
             ))}
+          </div>
+        )}
+
+        {showTurnState && (
+          <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 rounded-lg border border-border px-3 py-2.5 text-xs" role="status" aria-live="polite" data-testid="connection-turn-state">
+            <div className="min-w-0">
+              <div className="font-medium">{t("accounts.testDiagTurnState")}</div>
+              <div className="mt-1 text-muted-foreground">{t("accounts.testDiagTurnStateHint")}</div>
+              {diagnostics?.turn_state_source === 'ws_handshake' && turnState.length ? <div className="mt-1 text-amber-700 dark:text-amber-300">{t("accounts.testDiagTurnStateHandshake")}</div> : null}
+            </div>
+            <span className={cn("shrink-0 font-semibold tabular-nums", turnState.status === 'matched' ? "text-emerald-700 dark:text-emerald-300" : turnState.status === 'different' ? "text-amber-700 dark:text-amber-300" : "text-muted-foreground")}>
+              {t(`accounts.testDiagTurnState_${turnState.status}`, { count: turnState.length })}
+            </span>
           </div>
         )}
 
@@ -785,42 +727,6 @@ export default function TestConnectionModal({
             >
               {formattedErrorMsg}
             </pre>
-          </div>
-        )}
-
-        {versionGated && (
-          <div className="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 p-3.5 text-amber-800 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-300">
-            <CircleAlert className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-            <div className="min-w-0 flex-1 space-y-2">
-              <div className="text-sm font-semibold">{t("accounts.testVersionGateTitle")}</div>
-              <p className="text-xs leading-relaxed">
-                {versionSync.status === "updated"
-                  ? t("accounts.testVersionGateStillRejected", { version: versionSync.cliVersion })
-                  : versionSync.status === "latest"
-                    ? t("accounts.testVersionGateLatest", { version: versionSync.cliVersion })
-                    : t("accounts.testVersionGateDesc")}
-              </p>
-              {versionSync.status === "error" && versionSync.error ? (
-                <p className="break-all text-xs leading-relaxed text-red-600 dark:text-red-400">
-                  {t("accounts.testVersionGateFailed", { error: versionSync.error })}
-                </p>
-              ) : null}
-              {versionSync.status === "idle" || versionSync.status === "syncing" || versionSync.status === "error" ? (
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  className="border-amber-300 bg-transparent text-amber-800 hover:bg-amber-100 dark:border-amber-800 dark:text-amber-300 dark:hover:bg-amber-900/40"
-                  disabled={versionSync.status === "syncing"}
-                  onClick={() => void handleSyncClientVersions()}
-                >
-                  <RefreshCw className={cn("size-3.5", versionSync.status === "syncing" && "animate-spin")} />
-                  {versionSync.status === "syncing"
-                    ? t("accounts.testVersionGateSyncing")
-                    : t("accounts.testVersionGateSync")}
-                </Button>
-              ) : null}
-            </div>
           </div>
         )}
 
@@ -982,14 +888,5 @@ export default function TestConnectionModal({
         )}
       </div>
     </Modal>
-    {detectorOpen ? (
-      <ModelDetectorModal
-        account={account}
-        requestModels={modelSelectOptions.map((option) => option.value)}
-        defaultModel={selectedModel}
-        onClose={() => setDetectorOpen(false)}
-      />
-    ) : null}
-    </>
   );
 }

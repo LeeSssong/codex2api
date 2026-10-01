@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"context"
 	"encoding/json"
 	"strconv"
 	"strings"
@@ -216,6 +217,7 @@ func (h *Handler) buildAccountResponse(
 		allowedAPIKeyIDs = row.GetCredentialInt64Slice("allowed_api_key_ids")
 	}
 	resp := accountResponse{
+		StateModels:                  h.accountStateModels(runtimeAccount),
 		DetailLoaded:                 includeDetails,
 		ID:                           row.ID,
 		Name:                         row.Name,
@@ -275,6 +277,9 @@ func (h *Handler) buildAccountResponse(
 		ClaudeClientVersionOverride:  claudeClientVersionOverride,
 		Timezone:                     accountTimezone,
 		AccountHref:                  strings.TrimSpace(row.GetCredential(auth.AccountHrefCredentialKey)),
+		CodexTurnState:               strings.TrimSpace(row.GetCredential(auth.CodexTurnStateCredentialKey)),
+		CodexTurnStateModels:         auth.NormalizeCodexTurnStateModels(row.GetCredential(auth.CodexTurnStateModelsCredentialKey)),
+		CodexTurnStateSetAt:          strings.TrimSpace(row.GetCredential(auth.CodexTurnStateSetAtCredentialKey)),
 		CustomHeaders:                customHeaders,
 		UpstreamRequestIDHeader:      row.GetCredential(auth.UpstreamRequestIDHeaderCredentialKey),
 		ProxyURL:                     row.ProxyURL,
@@ -500,6 +505,12 @@ func (h *Handler) buildAccountResponse(
 	}
 	if !includeDetails {
 		stripAccountDetailFields(&resp)
+	}
+	if h.db != nil && row.GetCredential("auth_mode") != auth.CodexAuthModeAgentIdentity && !isOpenAIResponsesAccount && !isGrokAccount && !isAntigravityAccount && !isClaudeAccount {
+		paths, facts, err := h.db.GetCodexRoutes(context.Background(), row.ID)
+		if err == nil {
+			resp.CodexPaths = codexViewsFromRecords(&database.CodexRouteRecords{Paths: paths, Facts: facts}, "", runtimeAccount, time.Now())
+		}
 	}
 	return resp
 }

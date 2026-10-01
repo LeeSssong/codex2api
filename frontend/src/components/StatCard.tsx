@@ -9,6 +9,7 @@ interface StatCardProps {
   value: number | string
   sub?: string
   className?: string
+  wrapLabel?: boolean
 }
 
 const iconColors: Record<string, string> = {
@@ -19,27 +20,27 @@ const iconColors: Record<string, string> = {
   purple: 'bg-primary/10 text-primary ring-primary/20',
 }
 
-export default function StatCard({ icon, iconClass, label, value, sub, className }: StatCardProps) {
+export default function StatCard({ icon, iconClass, label, value, sub, className, wrapLabel }: StatCardProps) {
   return (
     <Card
       className={cn(
-        'group relative overflow-hidden py-0 border-border/70 bg-card shadow-2xs transition-all duration-200 hover:-translate-y-0.5 hover:border-border hover:shadow-xs',
+        'group relative min-h-24 overflow-hidden rounded-lg py-0 border-border/70 bg-card shadow-2xs transition-colors duration-200 hover:border-border motion-reduce:transition-none',
         className,
       )}
     >
       <CardContent className="relative flex flex-col justify-between gap-1.5 p-3.5 sm:p-5">
         <div className="flex items-center justify-between gap-2">
           <div className="min-w-0">
-            <label className="block truncate text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/90 sm:text-[11px]">
+            <span className={cn('block text-[11px] font-medium leading-relaxed text-muted-foreground', wrapLabel ? 'whitespace-normal break-words' : 'truncate')}>
               {label}
-            </label>
-            <div className="mt-1 text-[22px] font-extrabold leading-none tabular-nums tracking-tight text-foreground sm:mt-2 sm:text-[28px]">
+            </span>
+            <div className="mt-1 text-[22px] font-semibold leading-none tabular-nums text-foreground sm:mt-2 sm:text-[28px]">
               {value}
             </div>
           </div>
           <div
             className={cn(
-              'flex size-9 shrink-0 items-center justify-center rounded-xl ring-1 ring-inset transition-transform duration-200 group-hover:scale-105 sm:size-11.5',
+              'flex size-9 shrink-0 items-center justify-center rounded-lg ring-1 ring-inset sm:size-10',
               iconColors[iconClass] || iconColors.purple,
             )}
             aria-hidden="true"
@@ -48,7 +49,7 @@ export default function StatCard({ icon, iconClass, label, value, sub, className
           </div>
         </div>
         {sub ? (
-          <div className="border-t border-border/60 pt-2 text-[12px] text-muted-foreground">
+          <div className="border-t border-border/60 pt-2 text-xs leading-relaxed tabular-nums text-muted-foreground">
             {sub}
           </div>
         ) : null}

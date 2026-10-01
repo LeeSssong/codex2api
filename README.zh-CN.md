@@ -1,3 +1,17 @@
+# hlool · 自部署 AI 号池程序
+
+**学 AI，上 L 站。** [Linux.do · hlool](https://linux.do/u/hlool)
+
+这是由 [hlool](https://linux.do/u/hlool) 维护的自部署号池程序，基于 [Codex2API](https://github.com/james-6-23/codex2api) 开发。把自己的账号、代理、API Key 和调用记录集中到一个管理后台，保留 State 号池管理，并新增可选的 Basispoints 上游。
+
+## hlool Docker 部署
+
+镜像名称：**`ghcr.io/hloolx/codex2api:basispoints`**，`latest` 同步包含本次功能。开关位于 **系统设置 → Codex → 传输 → 启用 Basispoints（实验）**，默认关闭；开启后，全部 Codex OAuth 号池账号走 Basispoints。`max` 转为 `xhigh`，响应和日志标注实际档位。
+
+已实测 `gpt-5.6-sol` 的文本、函数工具调用和工具结果回传。模型可用性由上游决定，不能保证原 Codex 模型全部可用。完整的新建部署、保留数据库升级和离线包使用步骤见 [Docker 部署说明](docs/BASISPOINTS_DEPLOY_CN.md)。
+
+---
+
 <p align="center">
   <img src="assets/banner.svg" alt="Codex2API" width="100%">
 </p>
@@ -117,7 +131,7 @@ bash <(curl -sSL https://raw.githubusercontent.com/james-6-23/codex2api/main/dep
 **场景 2：已经 `git clone` 到本地**
 
 ```bash
-git clone https://github.com/james-6-23/codex2api.git
+git clone https://github.com/hloolx/codex2api.git
 cd codex2api
 bash deploy.sh
 ```
@@ -155,7 +169,7 @@ bash deploy.sh
 标准镜像版：
 
 ```bash
-git clone https://github.com/james-6-23/codex2api.git
+git clone https://github.com/hloolx/codex2api.git
 cd codex2api
 cp .env.example .env
 docker compose pull

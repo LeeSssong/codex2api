@@ -36,9 +36,11 @@ import (
 	"github.com/codex2api/database"
 	"github.com/codex2api/internal/imagestore"
 	"github.com/codex2api/internal/openaiidentity"
+	"github.com/codex2api/ipv6state"
 	"github.com/codex2api/proxy"
 	"github.com/codex2api/security"
 	"github.com/codex2api/security/promptfilter"
+	"github.com/codex2api/statepool"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 )
@@ -46,6 +48,8 @@ import (
 // Handler 管理后台 API 处理器
 type Handler struct {
 	imageQueue         *imageJobQueue
+	ipv6State          *ipv6state.Manager
+	statePool          *statepool.Manager
 	qualityTestContext context.Context
 	qualityTestWG      sync.WaitGroup
 	store              *auth.Store
@@ -61,6 +65,11 @@ type Handler struct {
 	systemUpdateOnce   sync.Once
 	refreshAccount     func(context.Context, int64) error
 	probeUsage         func(context.Context, *auth.Account) error
+
+	codexCapabilityProbe func(context.Context, *auth.Account, proxy.CodexCapabilityProbeOptions) proxy.CodexProbeResult
+	codexProbeMu         sync.Mutex
+	codexProbeSlots      chan struct{}
+	codexProbeRunning    map[int64]bool
 
 	codexUsageRefreshRunning atomic.Bool
 
@@ -171,23 +180,21 @@ type Handler struct {
 
 	// 「主动重置次数」消耗操作的工作区级互斥锁（workspace -> *sync.Mutex），
 	// 串行化同一上游工作区的并发重置，避免重复消耗与次数计数竞态。
-	resetCreditLocks               sync.Map
-	resetCreditLastSuccess         sync.Map
-	resetCreditSuccessfulIDs       sync.Map
-	autoResetCreditsWake           chan struct{}
-	codexTurnStateRenewalStartOnce sync.Once
-	codexTurnStateRenewalWG        sync.WaitGroup
-	autoResetCreditsStartOnce      sync.Once
-	autoResetCreditsWG             sync.WaitGroup
-	autoActivate5hWake             chan struct{}
-	autoActivate5hStartOnce        sync.Once
-	autoActivate5hWG               sync.WaitGroup
-	resetCreditPostMu              sync.Mutex
-	resetCreditPostWG              sync.WaitGroup
-	resetCreditPostCtx             context.Context
-	resetCreditPostCancel          context.CancelFunc
-	resetCreditPostClosed          bool
-	settingsUpdateMu               sync.Mutex
+	resetCreditLocks          sync.Map
+	resetCreditLastSuccess    sync.Map
+	resetCreditSuccessfulIDs  sync.Map
+	autoResetCreditsWake      chan struct{}
+	autoResetCreditsStartOnce sync.Once
+	autoResetCreditsWG        sync.WaitGroup
+	autoActivate5hWake        chan struct{}
+	autoActivate5hStartOnce   sync.Once
+	autoActivate5hWG          sync.WaitGroup
+	resetCreditPostMu         sync.Mutex
+	resetCreditPostWG         sync.WaitGroup
+	resetCreditPostCtx        context.Context
+	resetCreditPostCancel     context.CancelFunc
+	resetCreditPostClosed     bool
+	settingsUpdateMu          sync.Mutex
 
 	// 重复账号合并互斥锁：串行化 mergeRefreshedDuplicateIntoExisting，
 	// 防止并发导入同一身份的多个账号时互相合并、把双方都软删（账号丢失）。
@@ -1131,6 +1138,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.GET("/accounts/page-stats", h.GetAccountPageStats)
 	api.GET("/accounts/live", h.GetAccountLiveState)
 	api.GET("/accounts/:id", h.GetAccount)
+	api.GET("/accounts/:id/codex-routes", h.GetCodexRoutes)
+	api.GET("/accounts/:id/codex-probes", h.GetCodexProbes)
+	api.POST("/accounts/codex/probe", h.ProbeCodexAccounts)
+	api.POST("/accounts/codex/routes", h.UpdateCodexRoutes)
 	api.POST("/accounts", h.AddAccount)
 	api.POST("/accounts/at", h.AddATAccount)
 	api.POST("/accounts/codex/agent-identity", h.ImportCodexAgentIdentity)
@@ -1222,6 +1233,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.GET("/accounts/:id/quality-test/options", h.QualityTestOptions)
 	api.POST("/accounts/:id/quality-test", h.CreateQualityTestJob)
 	api.GET("/quality-tests", h.ListQualityTests)
+	h.registerStatePoolRoutes(api)
 	api.GET("/quality-tests/:id", h.GetQualityTest)
 	api.POST("/quality-tests/:id/cancel", h.CancelQualityTest)
 	api.GET("/quality-test-prompts", h.ListQualityTestPrompts)
@@ -1503,6 +1515,7 @@ func (h *Handler) GetStats(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, statsResponse{
+		State:         h.stateSnapshot().Summary,
 		Total:         accountCounts.total,
 		Available:     accountCounts.normal,
 		RateLimited:   accountCounts.rateLimited,
@@ -1651,20 +1664,22 @@ func isDashboardRateLimitedAccount(status string, cooldownReason string) bool {
 // ==================== Accounts ====================
 
 type accountResponse struct {
-	CodexLastRefreshAt      string `json:"codex_last_refresh_at,omitempty"`
-	CodexRefreshError       string `json:"codex_refresh_error,omitempty"`
-	UpstreamRequestIDHeader string `json:"upstream_request_id_header"`
-	DetailLoaded            bool   `json:"detail_loaded,omitempty"`
-	ID                      int64  `json:"id"`
-	Name                    string `json:"name"`
-	Email                   string `json:"email"`
-	EmailDomain             string `json:"email_domain,omitempty"`
-	ChatGPTAccountID        string `json:"chatgpt_account_id,omitempty"`
-	TokenWorkspaceID        string `json:"token_workspace_id,omitempty"`
-	WorkspaceIDOverride     string `json:"workspace_id_override,omitempty"`
-	EffectiveWorkspaceID    string `json:"effective_workspace_id,omitempty"`
-	PlanType                string `json:"plan_type"`
-	SubscriptionExpiresAt   string `json:"subscription_expires_at,omitempty"`
+	CodexPaths              []auth.CodexPathSnapshot `json:"codex_paths,omitempty"`
+	StateModels             []accountStateModel      `json:"state_models,omitempty"`
+	CodexLastRefreshAt      string                   `json:"codex_last_refresh_at,omitempty"`
+	CodexRefreshError       string                   `json:"codex_refresh_error,omitempty"`
+	UpstreamRequestIDHeader string                   `json:"upstream_request_id_header"`
+	DetailLoaded            bool                     `json:"detail_loaded,omitempty"`
+	ID                      int64                    `json:"id"`
+	Name                    string                   `json:"name"`
+	Email                   string                   `json:"email"`
+	EmailDomain             string                   `json:"email_domain,omitempty"`
+	ChatGPTAccountID        string                   `json:"chatgpt_account_id,omitempty"`
+	TokenWorkspaceID        string                   `json:"token_workspace_id,omitempty"`
+	WorkspaceIDOverride     string                   `json:"workspace_id_override,omitempty"`
+	EffectiveWorkspaceID    string                   `json:"effective_workspace_id,omitempty"`
+	PlanType                string                   `json:"plan_type"`
+	SubscriptionExpiresAt   string                   `json:"subscription_expires_at,omitempty"`
 	// Subscription 服务端计算的订阅状态对象（业务状态 + 同步状态）；不跟踪订阅的
 	// 套餐（api/无到期时间的 free）为空。
 	Subscription          *auth.SubscriptionStatusView `json:"subscription,omitempty"`
@@ -1717,6 +1732,9 @@ type accountResponse struct {
 	ClaudeVersionPolicyOverride   string                      `json:"claude_version_policy_override,omitempty"`
 	ClaudeClientVersionOverride   string                      `json:"claude_client_version_override,omitempty"`
 	Timezone                      string                      `json:"timezone,omitempty"`
+	CodexTurnState                string                      `json:"codex_turn_state,omitempty"`
+	CodexTurnStateModels          string                      `json:"codex_turn_state_models,omitempty"`
+	CodexTurnStateSetAt           string                      `json:"codex_turn_state_set_at,omitempty"`
 	AccountHref                   string                      `json:"account_href,omitempty"`
 	CustomHeaders                 map[string]string           `json:"custom_headers,omitempty"`
 	HealthTier                    string                      `json:"health_tier"`
@@ -2011,9 +2029,13 @@ func (h *Handler) ListAccounts(c *gin.Context) {
 	}
 
 	if pageSelection != nil {
+		for i := range accounts {
+			accounts[i].StateModels = pageSelection.State.Accounts[accounts[i].ID]
+		}
 		c.JSON(http.StatusOK, accountsPageResponse{
-			Accounts: accounts,
-			Page:     pageSelection.Page, PageSize: pageSelection.PageSize, Total: pageSelection.Total,
+			StateSummary: pageSelection.State.Summary,
+			Accounts:     accounts,
+			Page:         pageSelection.Page, PageSize: pageSelection.PageSize, Total: pageSelection.Total,
 			Summary: pageSelection.Summary, Facets: pageSelection.Facets,
 			SnapshotAt: pageSelection.SnapshotAt.Format(time.RFC3339), StatsState: pageSelection.StatsState,
 			DisabledSorts: pageSelection.DisabledSorts,
@@ -2188,6 +2210,8 @@ type updateAccountSchedulerReq struct {
 	ClaudeVersionPolicy     json.RawMessage `json:"claude_version_policy"`
 	ClaudeClientVersion     json.RawMessage `json:"claude_client_version"`
 	Timezone                json.RawMessage `json:"timezone"`
+	CodexTurnState          json.RawMessage `json:"codex_turn_state"`
+	CodexTurnStateModels    json.RawMessage `json:"codex_turn_state_models"`
 	AccountHref             json.RawMessage `json:"account_href"`
 }
 
@@ -2213,6 +2237,8 @@ type accountSchedulerUpdate struct {
 	ClaudeVersionPolicy     database.OptionalString
 	ClaudeClientVersion     database.OptionalString
 	Timezone                database.OptionalString
+	CodexTurnState          database.OptionalString
+	CodexTurnStateModels    database.OptionalString
 	AccountHref             database.OptionalString
 	CredentialUpdates       map[string]interface{}
 }
@@ -2320,6 +2346,17 @@ func parseAccountSchedulerUpdate(req updateAccountSchedulerReq) (accountSchedule
 	if err != nil {
 		return accountSchedulerUpdate{}, err
 	}
+	codexTurnStateField, err := parseOptionalStringField(req.CodexTurnState, "codex_turn_state", auth.ValidateCodexTurnState)
+	if err != nil {
+		return accountSchedulerUpdate{}, err
+	}
+	codexTurnStateModelsField, err := parseOptionalStringField(req.CodexTurnStateModels, "codex_turn_state_models", auth.ValidateCodexTurnStateModels)
+	if err != nil {
+		return accountSchedulerUpdate{}, err
+	}
+	if codexTurnStateModelsField.Set {
+		codexTurnStateModelsField.Value = auth.NormalizeCodexTurnStateModels(codexTurnStateModelsField.Value)
+	}
 	accountHref, err := parseOptionalStringField(req.AccountHref, "account_href", validateAccountHref)
 	if err != nil {
 		return accountSchedulerUpdate{}, err
@@ -2332,6 +2369,13 @@ func parseAccountSchedulerUpdate(req updateAccountSchedulerReq) (accountSchedule
 		return accountSchedulerUpdate{}, err
 	}
 	credentialUpdates := make(map[string]interface{})
+	if accountHref.Set {
+		normalized, err := auth.NormalizeAccountHref(accountHref.Value)
+		if err != nil {
+			return accountSchedulerUpdate{}, err
+		}
+		credentialUpdates[auth.AccountHrefCredentialKey] = normalized
+	}
 	if requestIDHeader.Set {
 		credentialUpdates[auth.UpstreamRequestIDHeaderCredentialKey] = strings.TrimSpace(requestIDHeader.Value)
 	}
@@ -2356,12 +2400,18 @@ func parseAccountSchedulerUpdate(req updateAccountSchedulerReq) (accountSchedule
 	if timezoneField.Set {
 		credentialUpdates[auth.AccountTimezoneCredentialKey] = strings.TrimSpace(timezoneField.Value)
 	}
-	if accountHref.Set {
-		normalized, err := auth.NormalizeAccountHref(accountHref.Value)
-		if err != nil {
-			return accountSchedulerUpdate{}, err
+	if codexTurnStateField.Set {
+		credentialUpdates[auth.CodexTurnStateCredentialKey] = codexTurnStateField.Value
+		// 时效起点默认随值一起刷新（批量接口拿不到逐账号旧值，只能按"换了新值"处理）；
+		// 单账号接口在值未变且已有起点时保留旧起点，见 refineCodexTurnStateSetAt。
+		setAt := ""
+		if codexTurnStateField.Value != "" {
+			setAt = time.Now().UTC().Format(time.RFC3339)
 		}
-		credentialUpdates[auth.AccountHrefCredentialKey] = normalized
+		credentialUpdates[auth.CodexTurnStateSetAtCredentialKey] = setAt
+	}
+	if codexTurnStateModelsField.Set {
+		credentialUpdates[auth.CodexTurnStateModelsCredentialKey] = codexTurnStateModelsField.Value
 	}
 	if autoPause5hThreshold.Set {
 		credentialUpdates["auto_pause_5h_threshold"] = autoPause5hThreshold.Value
@@ -2422,6 +2472,8 @@ func parseAccountSchedulerUpdate(req updateAccountSchedulerReq) (accountSchedule
 		ClaudeVersionPolicy:     claudeVersionPolicy,
 		ClaudeClientVersion:     claudeClientVersion,
 		Timezone:                timezoneField,
+		CodexTurnState:          codexTurnStateField,
+		CodexTurnStateModels:    codexTurnStateModelsField,
 		AccountHref:             accountHref,
 		CredentialUpdates:       credentialUpdates,
 	}, nil
@@ -2474,8 +2526,6 @@ func validateAccountTimezone(value string) error {
 	return nil
 }
 
-// validateAccountHref 允许空串(=清除跳转地址,回退 api-base),其余必须是
-// http/https 绝对地址;归一化在写库前由 auth.NormalizeAccountHref 完成。
 func validateAccountHref(value string) error {
 	_, err := auth.NormalizeAccountHref(value)
 	return err
@@ -2486,11 +2536,27 @@ func validateCodexFingerprintMode(value string) error {
 	if value == "" || auth.IsValidCodexFingerprintMode(value) {
 		return nil
 	}
-	return errors.New("必须是 off、device、session、single_machine_multi_window 或 full")
+	return errors.New("必须是 off、device、session 或 full")
+}
+
+// refineCodexTurnStateSetAt 让时效起点只在注入值真正换掉时重置：原样重提同一个值不
+// 重置（它还是上游那时候签发的那一个 state）；存量行没有起点时补一次，让倒计时能从
+// 这一刻开始走，而不是逼用户先清空再粘贴一遍。
+func refineCodexTurnStateSetAt(row *database.AccountRow, update accountSchedulerUpdate) {
+	if row == nil || !update.CodexTurnState.Set || update.CodexTurnState.Value == "" {
+		return
+	}
+	current := strings.TrimSpace(row.GetCredential(auth.CodexTurnStateCredentialKey))
+	currentSetAt := strings.TrimSpace(row.GetCredential(auth.CodexTurnStateSetAtCredentialKey))
+	if current == update.CodexTurnState.Value && currentSetAt != "" {
+		delete(update.CredentialUpdates, auth.CodexTurnStateSetAtCredentialKey)
+	}
 }
 
 func (u accountSchedulerUpdate) hasChanges() bool {
 	return u.ScoreBiasOverride.Set ||
+		u.CodexTurnState.Set ||
+		u.CodexTurnStateModels.Set ||
 		u.BaseConcurrencyOverride.Set ||
 		u.SkipWarmTier.Set ||
 		u.AllowedAPIKeyIDs.Set ||
@@ -2594,6 +2660,18 @@ func (h *Handler) UpdateAccountScheduler(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
 
+	if update.CodexTurnState.Set && update.CodexTurnState.Value != "" {
+		row, err := h.db.GetAccountByID(ctx, id)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				writeError(c, http.StatusNotFound, "账号不存在")
+				return
+			}
+			writeError(c, http.StatusInternalServerError, "读取账号失败: "+err.Error())
+			return
+		}
+		refineCodexTurnStateSetAt(row, update)
+	}
 	if update.AllowedAPIKeyIDs.Set {
 		missingAPIKeyIDs, err := h.findMissingAPIKeyIDs(ctx, update.AllowedAPIKeyIDs.Values)
 		if err != nil {
@@ -2785,6 +2863,21 @@ func (h *Handler) applyAccountSchedulerRuntimeUpdate(id int64, update accountSch
 	}
 	if value, ok := update.CredentialUpdates[auth.UpstreamRequestIDHeaderCredentialKey].(string); ok {
 		h.store.ApplyAccountUpstreamRequestIDHeader(id, value)
+	}
+	if update.CodexTurnState.Set || update.CodexTurnStateModels.Set {
+		if account := h.store.FindByID(id); account != nil {
+			value, models, setAt := account.CodexTurnStateConfig()
+			if update.CodexTurnState.Set {
+				value = update.CodexTurnState.Value
+			}
+			if update.CodexTurnStateModels.Set {
+				models = update.CodexTurnStateModels.Value
+			}
+			if raw, ok := update.CredentialUpdates[auth.CodexTurnStateSetAtCredentialKey].(string); ok {
+				setAt = auth.ParseCodexTurnStateSetAt(raw)
+			}
+			h.store.ApplyAccountCodexTurnState(id, value, models, setAt)
+		}
 	}
 	if update.CustomHeaders.Set {
 		h.store.ApplyAccountCustomHeaders(id, update.CustomHeaders.Values)
@@ -8659,6 +8752,10 @@ func (h *Handler) CreateAPIKey(c *gin.Context) {
 
 	var limits database.APIKeyLimits
 	if req.Limits != nil {
+		if err := req.Limits.ValidateCodexRouting(); err != nil {
+			writeError(c, http.StatusBadRequest, err.Error())
+			return
+		}
 		limits = sanitizeAPIKeyLimits(*req.Limits)
 		limits.ModelRequestLimits, err = normalizeAdminAPIKeyModelRequestLimits(req.Limits.ModelRequestLimits, nil)
 		if err != nil {
@@ -8828,6 +8925,10 @@ func (h *Handler) UpdateAPIKey(c *gin.Context) {
 		update.EnabledSet = true
 	}
 	if req.Limits != nil {
+		if err := req.Limits.ValidateCodexRouting(); err != nil {
+			writeError(c, http.StatusBadRequest, err.Error())
+			return
+		}
 		update.Limits = sanitizeAPIKeyLimits(*req.Limits)
 		update.Limits.ModelRequestLimits, err = normalizeAdminAPIKeyModelRequestLimits(req.Limits.ModelRequestLimits, row.Limits.ModelRequestLimits)
 		if err != nil {
@@ -8890,6 +8991,8 @@ func sanitizeAPIKeyLimits(in database.APIKeyLimits) database.APIKeyLimits {
 		return out
 	}
 	out := database.APIKeyLimits{
+		CodexRoutePolicy:       in.CodexRoutePolicy,
+		CodexCapabilityFilter:  in.CodexCapabilityFilter,
 		ModelAllow:             clean(in.ModelAllow),
 		ModelDeny:              clean(in.ModelDeny),
 		PlanAllow:              cleanPlanAllow(in.PlanAllow),
@@ -9211,6 +9314,7 @@ type settingsResponse struct {
 	FastSchedulerEnabled                bool   `json:"fast_scheduler_enabled"`
 	SchedulerEngine                     string `json:"scheduler_engine"`
 	CodexForceWebsocket                 bool   `json:"codex_force_websocket"`
+	CodexBasispointsEnabled             bool   `json:"codex_basispoints_enabled"`
 	CodexRequestCompression             bool   `json:"codex_request_compression"`
 	CodexWSWeakNetworkMode              bool   `json:"codex_ws_weak_network_mode"`
 	CodexWSKeepaliveEnabled             bool   `json:"codex_ws_keepalive_enabled"`
@@ -9401,6 +9505,7 @@ type updateSettingsReq struct {
 	FastSchedulerEnabled                *bool                            `json:"fast_scheduler_enabled"`
 	SchedulerEngine                     *string                          `json:"scheduler_engine"`
 	CodexForceWebsocket                 *bool                            `json:"codex_force_websocket"`
+	CodexBasispointsEnabled             *bool                            `json:"codex_basispoints_enabled"`
 	CodexRequestCompression             *bool                            `json:"codex_request_compression"`
 	CodexWSWeakNetworkMode              *bool                            `json:"codex_ws_weak_network_mode"`
 	CodexWSKeepaliveEnabled             *bool                            `json:"codex_ws_keepalive_enabled"`
@@ -10234,6 +10339,7 @@ func (h *Handler) GetSettings(c *gin.Context) {
 		FastSchedulerEnabled:                h.store.FastSchedulerEnabled(),
 		SchedulerEngine:                     h.store.SchedulerEngine(),
 		CodexForceWebsocket:                 h.store.CodexForceWebsocket(),
+		CodexBasispointsEnabled:             h.store.CodexBasispointsEnabled(),
 		CodexRequestCompression:             h.store.CodexRequestCompression(),
 		CodexWSWeakNetworkMode:              runtimeCfg.CodexWSWeakNetworkMode,
 		CodexWSKeepaliveEnabled:             h.store.CodexWSKeepaliveEnabled(),
@@ -10964,6 +11070,11 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		log.Printf("设置已更新: fast_scheduler_enabled = %t", *req.FastSchedulerEnabled)
 	}
 
+	if req.CodexBasispointsEnabled != nil {
+		h.store.SetCodexBasispointsEnabled(*req.CodexBasispointsEnabled)
+		runtimeCfg.CodexBasispointsEnabled = *req.CodexBasispointsEnabled
+		log.Printf("设置已更新: codex_basispoints_enabled = %t", *req.CodexBasispointsEnabled)
+	}
 	if req.CodexForceWebsocket != nil {
 		h.store.SetCodexForceWebsocket(*req.CodexForceWebsocket)
 		runtimeCfg.CodexForceWebsocket = *req.CodexForceWebsocket
@@ -11767,6 +11878,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		FastSchedulerEnabled:                h.store.FastSchedulerEnabled(),
 		SchedulerEngine:                     h.store.SchedulerEngine(),
 		CodexForceWebsocket:                 h.store.CodexForceWebsocket(),
+		CodexBasispointsEnabled:             h.store.CodexBasispointsEnabled(),
 		CodexRequestCompression:             h.store.CodexRequestCompression(),
 		CodexWSWeakNetworkMode:              runtimeCfg.CodexWSWeakNetworkMode,
 		CodexWSKeepaliveEnabled:             h.store.CodexWSKeepaliveEnabled(),
@@ -12102,6 +12214,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		FastSchedulerEnabled:                h.store.FastSchedulerEnabled(),
 		SchedulerEngine:                     h.store.SchedulerEngine(),
 		CodexForceWebsocket:                 h.store.CodexForceWebsocket(),
+		CodexBasispointsEnabled:             h.store.CodexBasispointsEnabled(),
 		CodexRequestCompression:             h.store.CodexRequestCompression(),
 		CodexWSWeakNetworkMode:              runtimeCfg.CodexWSWeakNetworkMode,
 		CodexWSKeepaliveEnabled:             h.store.CodexWSKeepaliveEnabled(),

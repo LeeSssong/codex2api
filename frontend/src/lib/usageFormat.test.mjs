@@ -55,7 +55,7 @@ test("Claude probe failures remain unsampled and are not eligible for OpenAI bil
   assert.equal(needsOfficialCostReload(failed), false);
 });
 
-test("unsampled quota accounts are not treated as available", () => {
+test("Codex usage samples do not replace healthy status badges", () => {
   assert.equal(isUnsampledQuotaAccount({ status: "active" }), true);
   assert.equal(
     isUnsampledQuotaAccount({ status: "active", usage_percent_5h: 8 }),
@@ -73,7 +73,9 @@ test("unsampled quota accounts are not treated as available", () => {
     isUnsampledQuotaAccount({ status: "active", openai_responses_api: true }),
     false,
   );
-  assert.equal(getAccountStatusBadgeStatus({ status: "active" }), "unsampled");
+  assert.equal(getAccountStatusBadgeStatus({ status: "active" }), "active");
+  assert.equal(getAccountStatusBadgeStatus({ status: "active", claude_api: true }), "unsampled");
+  assert.equal(getAccountStatusBadgeStatus({ status: "active", antigravity_api: true }), "unsampled");
   assert.equal(
     getAccountStatusBadgeStatus({ status: "active", usage_percent_7d: 12 }),
     "active",

@@ -1,4 +1,9 @@
+import type { CodexPathSnapshot } from "./types"
+import { readCodexProbeEvents, type CodexProbeBatch, type CodexProbeEvent, type CodexProbeLevel, type CodexProbeResult } from './lib/codexProbe.ts'
 import { qualityTestFilterQuery, type QualityTestJob, type QualityTestJobsFilter, type QualityTestJobsResponse, type QualityTestPrompt } from './lib/qualityTest.ts'
+import type { StateImportPreview, StatePackage, StatePoolData } from './lib/statePool.ts'
+import type { IPv6StateConfig, IPv6StateStatus, IPv6StatePackage } from './lib/ipv6State.ts'
+import { notifyStateChange } from './lib/stateSync.ts'
 import type {
   AccountEventTrendPoint,
   AccountPortalAuthURLResponse,
@@ -542,6 +547,21 @@ export function buildUsageLogSearchParams(params: UsageLogQueryParams) {
 }
 
 export const api = {
+  getIPv6State: (signal?: AbortSignal) => request<IPv6StateStatus>('/state-pool/ipv6', { signal }),
+  configureIPv6State: (body: IPv6StateConfig) => request<IPv6StateStatus>('/state-pool/ipv6', { method: 'PUT', body: JSON.stringify(body) }).then(notifyStateChange),
+  configureStatePolicy: (require_valid_state: boolean) => request<IPv6StateStatus>('/state-pool/ipv6/policy', { method: 'PATCH', body: JSON.stringify({ require_valid_state }) }).then(notifyStateChange),
+  exportIPv6State: (account_id: number, model: string) => request<IPv6StatePackage>('/state-pool/ipv6/export', { method: 'POST', body: JSON.stringify({ account_id, model }) }),
+  importIPv6State: (body: IPv6StatePackage) => request<IPv6StateStatus>('/state-pool/ipv6/import', { method: 'POST', body: JSON.stringify(body) }).then(notifyStateChange),
+  getStatePool: (signal?: AbortSignal) => request<StatePoolData>('/state-pool', { signal }),
+  setStatePoolLimits: (body: StatePoolData['limits']) => request('/state-pool/limits', { method: 'PUT', body: JSON.stringify(body) }),
+  captureStates: (body: { account_ids: number[]; models: string[]; enable: boolean; strict: boolean; proxy_ids: number[]; candidates: number; strategy: string; distinct_ips: boolean; new_session: boolean; forward_proxy_id: number }) => request<{ job_ids: string[] }>('/state-pool/capture', { method: 'POST', body: JSON.stringify(body) }),
+  previewStateImport: (body: StatePackage, signal?: AbortSignal) => request<{ items: StateImportPreview[] }>('/state-pool/import/preview', { method: 'POST', body: JSON.stringify(body), signal }),
+  importStates: (body: { package?: StatePackage; account_id?: number; model?: string; value?: string; captured_at?: number; enable: boolean; strict: boolean; allow_partial?: boolean }) => request<{ job_ids: string[]; items?: StateImportPreview[] }>('/state-pool/import', { method: 'POST', body: JSON.stringify(body) }),
+  exportStates: (ids: string[]) => request<StatePackage>('/state-pool/export', { method: 'POST', body: JSON.stringify({ ids }) }),
+  configureState: (id: string, body: { enabled: boolean; strict: boolean }) => request(`/state-pool/entries/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  deleteState: (id: string) => request(`/state-pool/entries/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  cancelStateJob: (id: string) => request(`/state-pool/jobs/${encodeURIComponent(id)}/cancel`, { method: 'POST' }),
+  cancelStateGroup: (id: string) => request(`/state-pool/groups/${encodeURIComponent(id)}/cancel`, { method: 'POST' }),
   getBranding: () => requestPublic<SiteBranding>('/api/branding'),
   // 公开账号自助门户:生成 OpenAI 授权链接(无鉴权)。
   generateAccountPortalAuthURL: (data: { contact_email: string }) =>
@@ -613,6 +633,27 @@ export const api = {
     const qs = searchParams.toString()
     return request<AccountsResponse>(`/accounts${qs ? `?${qs}` : ''}`)
   },
+  getCodexRoutes: (id: number, model?: string, signal?: AbortSignal) => request<{ paths: CodexPathSnapshot[]; probes?: CodexProbeResult[] }>(`/accounts/${id}/codex-routes${model ? `?model=${encodeURIComponent(model)}` : ''}`, { signal }),
+  probeCodexAccounts: async (data: { ids: number[]; model: string; level: CodexProbeLevel }, onEvent: (event: CodexProbeEvent) => void, signal: AbortSignal): Promise<CodexProbeBatch> => {
+    const adminKey = getAdminKey()
+    const response = await fetch(`${BASE}/accounts/codex/probe?stream=true`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream', ...(adminKey ? { 'X-Admin-Key': adminKey } : {}) },
+      body: JSON.stringify(data),
+      signal,
+    })
+    if (!response.ok) {
+      if (response.status === 401) resetAdminAuthState()
+      throw new AdminAPIError(response.status, extractAdminErrorMessage(await response.text(), response.status))
+    }
+    if (response.headers.get('content-type')?.includes('text/event-stream')) {
+      if (!response.body) throw new Error('Missing probe stream')
+      return readCodexProbeEvents(response.body, onEvent)
+    }
+    return response.json() as Promise<CodexProbeBatch>
+  },
+  updateCodexRoutes: (data: { ids: number[]; upstream: string; allowed?: boolean; reset_observations?: boolean }) =>
+    request<{ updated: number }>('/accounts/codex/routes', { method: 'POST', body: JSON.stringify(data) }),
   getAccountsPage: (params: AccountsPageParams, signal?: AbortSignal) => {
     const searchParams = new URLSearchParams({
       view: 'page',
@@ -633,6 +674,10 @@ export const api = {
     if (params.proxyUrl) searchParams.set('proxy_url', params.proxyUrl)
     if (params.proxyFilter && params.proxyFilter !== 'all') searchParams.set('proxy_filter', params.proxyFilter)
     if (params.subscription && params.subscription !== 'all') searchParams.set('subscription', params.subscription)
+    if (params.state && params.state !== 'all') searchParams.set('state', params.state)
+    if (params.stateModel) searchParams.set('state_model', params.stateModel)
+    if (params.capability && params.capability !== 'all') searchParams.set('capability', params.capability)
+    if (params.capabilityModel?.trim()) searchParams.set('capability_model', params.capabilityModel.trim())
     if (params.sort) searchParams.set('sort', params.sort)
     if (params.order) searchParams.set('order', params.order)
     return request<AccountsPageResponse>(`/accounts?${searchParams.toString()}`, { signal })

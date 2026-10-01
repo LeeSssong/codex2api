@@ -2,6 +2,7 @@ name: Build Docker Image
 
 on:
   push:
+    branches: [main]
     tags:
       - 'v*'
   workflow_dispatch:
@@ -52,6 +53,117 @@ jobs:
             type=semver,pattern={{version}},value=${{ inputs.build_version || github.ref_name }},enable=${{ inputs.build_version != '' || startsWith(github.ref, 'refs/tags/v') }}
             type=semver,pattern={{major}}.{{minor}},value=${{ inputs.build_version || github.ref_name }},enable=${{ inputs.build_version != '' || startsWith(github.ref, 'refs/tags/v') }}
             type=raw,value=latest
+            type=raw,value=basispoints,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' }}
+            type=sha,format=long
+
+      - name: Build an image for the deployment smoke test
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          load: true
+          tags: codex2api:smoke
+          build-args: |
+            BUILD_VERSION=${{ inputs.build_version || github.ref_name }}
+          cache-from: type=gha
+
+      - name: Verify single-container startup, state API, and persistence
+        shell: bash
+        run: |
+          set -euo pipefail
+          admin_secret="$(openssl rand -hex 24)"
+          echo "::add-mask::$admin_secret"
+          export SMOKE_ADMIN_SECRET="$admin_secret"
+          ADMIN_SECRET="$admin_secret" docker compose -f compose.state.yml config -q
+          ADMIN_SECRET="$admin_secret" docker compose -f docker-compose.basispoints.yml config -q
+          docker run -d --name codex2api-smoke \
+            -p 127.0.0.1:18080:8080 \
+            -e ADMIN_SECRET="$admin_secret" \
+            -e DATABASE_DRIVER=sqlite -e DATABASE_PATH=/data/codex2api.db \
+            -e CACHE_DRIVER=memory \
+            -v codex2api-smoke-data:/data codex2api:smoke
+          trap 'docker rm -f codex2api-smoke >/dev/null; docker volume rm codex2api-smoke-data >/dev/null' EXIT
+          wait_ready() {
+            for attempt in $(seq 1 60); do
+              if curl --fail --silent http://127.0.0.1:18080/health >/dev/null; then return; fi
+              sleep 2
+            done
+            docker logs codex2api-smoke
+            return 1
+          }
+          wait_ready
+          curl --fail --silent http://127.0.0.1:18080/admin/state-pool | grep -iq '<!doctype html>'
+          node --input-type=commonjs <<'NODE'
+          const assert = require('node:assert/strict');
+          (async () => {
+            const base = 'http://127.0.0.1:18080/api/admin/state-pool';
+            const headers = { 'X-Admin-Key': process.env.SMOKE_ADMIN_SECRET, 'Content-Type': 'application/json' };
+            const settingsURL = 'http://127.0.0.1:18080/api/admin/settings';
+            const settings = await fetch(settingsURL, { headers });
+            assert.equal(settings.status, 200);
+            assert.equal((await settings.json()).codex_basispoints_enabled, false);
+            const updatedSettings = await fetch(settingsURL, { method: 'PUT', headers, body: JSON.stringify({ codex_basispoints_enabled: true }) });
+            assert.equal(updatedSettings.status, 200);
+            const response = await fetch(base, { headers });
+            assert.equal(response.status, 200);
+            const data = await response.json();
+            assert.deepEqual(data.models, ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-6-astra']);
+            assert.deepEqual(data.entries, []);
+            const changed = await fetch(base + '/limits', { method: 'PUT', headers, body: JSON.stringify({ concurrency: 2, per_account: 1, per_proxy: 1 }) });
+            assert.equal(changed.status, 200);
+            const unauthorized = await fetch(base + '/ipv6');
+            assert.equal(unauthorized.status, 401);
+            const pluginResponse = await fetch(base + '/ipv6', { headers });
+            assert.equal(pluginResponse.status, 200);
+            const plugin = await pluginResponse.json();
+            assert.equal(plugin.config.enabled, false);
+            assert.equal(plugin.config.capture_mode, 'proxy');
+            assert.deepEqual(plugin.config.models, data.models);
+            assert.deepEqual(plugin.entries, []);
+            assert.equal(plugin.summary.reuse_accounts, 0);
+            assert.equal(plugin.summary.available_accounts, 0);
+            assert.equal(plugin.summary.valid_combinations, 0);
+            const savedPlugin = await fetch(base + '/ipv6', {
+              method: 'PUT', headers,
+              body: JSON.stringify({ ...plugin.config, interval_seconds: 7,
+                models: ['gpt-5.6-sol', 'gpt-5.6-luna'], capture_mode: 'mixed',
+                refresh_before_minutes: 30, staged_concurrency: true,
+                urgent_before_minutes: 10, early_concurrency: 1,
+                urgent_concurrency: 3, expired_concurrency: 10, urgent_business_concurrency: 1 }),
+            });
+            assert.equal(savedPlugin.status, 200);
+            const saved = await savedPlugin.json();
+            assert.equal(saved.config.enabled, false);
+            assert.deepEqual(saved.summary.models.map(item => item.model), ['gpt-5.6-sol', 'gpt-5.6-luna']);
+          })().catch(error => { console.error(error); process.exitCode = 1; });
+          NODE
+          docker restart codex2api-smoke >/dev/null
+          wait_ready
+          node --input-type=commonjs <<'NODE'
+          const assert = require('node:assert/strict');
+          (async () => {
+            const response = await fetch('http://127.0.0.1:18080/api/admin/state-pool', { headers: { 'X-Admin-Key': process.env.SMOKE_ADMIN_SECRET } });
+            const settings = await fetch('http://127.0.0.1:18080/api/admin/settings', { headers: { 'X-Admin-Key': process.env.SMOKE_ADMIN_SECRET } });
+            assert.equal(settings.status, 200);
+            assert.equal((await settings.json()).codex_basispoints_enabled, true);
+            assert.equal(response.status, 200);
+            assert.deepEqual((await response.json()).limits, { concurrency: 2, per_account: 1, per_proxy: 1 });
+            const pluginResponse = await fetch('http://127.0.0.1:18080/api/admin/state-pool/ipv6', { headers: { 'X-Admin-Key': process.env.SMOKE_ADMIN_SECRET } });
+            assert.equal(pluginResponse.status, 200);
+            const plugin = await pluginResponse.json();
+            assert.equal(plugin.config.enabled, false);
+            assert.equal(plugin.config.interval_seconds, 7);
+            assert.equal(plugin.config.refresh_before_minutes, 30);
+            assert.equal(plugin.config.staged_concurrency, true);
+            assert.equal(plugin.config.expired_concurrency, 10);
+            assert.equal(plugin.config.capture_mode, 'mixed');
+            assert.deepEqual(plugin.summary.models.map(item => item.model), ['gpt-5.6-sol', 'gpt-5.6-luna']);
+            assert.equal(plugin.running, false);
+            assert.deepEqual(plugin.entries, []);
+          })().catch(error => { console.error(error); process.exitCode = 1; });
+          NODE
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v6
@@ -67,3 +179,43 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
           provenance: false
+
+      - name: Pull published images and verify their source revision
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for platform in linux/amd64 linux/arm64; do
+            docker pull --platform "$platform" "$IMAGE:sha-$GITHUB_SHA"
+            revision="$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$IMAGE:sha-$GITHUB_SHA")"
+            test "$revision" = "$GITHUB_SHA"
+          done
+
+      - name: Export offline AMD64 Docker package
+        if: github.ref == 'refs/heads/main'
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+        run: |
+          docker pull --platform linux/amd64 "$IMAGE:sha-$GITHUB_SHA"
+          docker tag "$IMAGE:sha-$GITHUB_SHA" "$IMAGE:basispoints"
+          docker save "$IMAGE:basispoints" "$IMAGE:sha-$GITHUB_SHA" | gzip > codex2api-basispoints-linux-amd64.tar.gz
+          sha256sum codex2api-basispoints-linux-amd64.tar.gz > SHA256SUMS
+
+      - uses: actions/upload-artifact@v4
+        if: github.ref == 'refs/heads/main'
+        with:
+          name: codex2api-basispoints-linux-amd64
+          path: |
+            codex2api-basispoints-linux-amd64.tar.gz
+            SHA256SUMS
+          compression-level: 0
+          retention-days: 14
+
+      - name: Deployment summary
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+        run: |
+          echo "Published image: \`$IMAGE:latest\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "Pinned image: \`$IMAGE:sha-$GITHUB_SHA\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "Platforms: linux/amd64, linux/arm64. SQLite startup, authenticated State APIs, and persistent state settings verified; 292 capture stays disabled by default." >> "$GITHUB_STEP_SUMMARY"
