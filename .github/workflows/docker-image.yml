@@ -26,6 +26,8 @@ env:
 
 jobs:
   docker:
+    # Production uses the verified local build and deployment controller.
+    if: github.repository == 'hloolx/codex2api'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

@@ -1,0 +1,13 @@
+FROM alpine:3.19
+ARG SOURCE_REVISION
+ARG SOURCE_TREE
+ARG UPSTREAM_REVISION
+LABEL org.opencontainers.image.revision=${SOURCE_REVISION} \
+      io.xingqiao.source-tree=${SOURCE_TREE} \
+      io.xingqiao.upstream-revision=${UPSTREAM_REVISION} \
+      org.opencontainers.image.source="https://github.com/LeeSssong/codex2api"
+RUN apk --no-cache add ca-certificates tzdata
+WORKDIR /app
+COPY codex2api /usr/local/bin/codex2api
+EXPOSE 8080
+ENTRYPOINT ["/usr/local/bin/codex2api"]
