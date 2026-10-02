@@ -2,6 +2,12 @@ import copy
 import unittest
 
 class RuntimeComposeTests(unittest.TestCase):
+ def test_optional_session_studio_is_app_only(self):
+  from credential_runtime_release import environment_values, APP_SECRET_KEYS, APP_OPTIONAL_KEYS
+  text='CODEX2API_CREDENTIAL_OPS_KEY='+'k'*32+'\nCODEX2API_CREDENTIAL_OPS_WORKER_TOKEN='+'t'*32+'\nCODEX2API_CREDENTIAL_OPS_SESSION_STUDIO_ENDPOINT=https://login.example.test\nCODEX2API_CREDENTIAL_OPS_SESSION_STUDIO_HEADERS={"Authorization":"synthetic"}'
+  self.assertIn('CODEX2API_CREDENTIAL_OPS_SESSION_STUDIO_ENDPOINT',environment_values(text,APP_SECRET_KEYS,APP_OPTIONAL_KEYS))
+  with self.assertRaises(ValueError):environment_values(text,{'CODEX2API_CREDENTIAL_OPS_WORKER_TOKEN'})
+  with self.assertRaises(ValueError):environment_values(text.replace('https://','http://'),APP_SECRET_KEYS,APP_OPTIONAL_KEYS)
  def fixture(self):
   return {'services':{'codex2api':{'image':'old','environment':{'CODEX_PORT':'18080'},'env_file':[{'path':'existing.env','required':True}],'networks':{'codex2api-net':None}},'postgres':{'image':'postgres:18'},'redis':{'image':'redis:7'}},'networks':{'codex2api-net':{'name':'codex2api-net'}}}
  def test_only_codex_application_and_new_private_worker_change(self):

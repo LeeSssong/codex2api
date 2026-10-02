@@ -1,8 +1,30 @@
 """Codex-only credential worker compose boundary. Contains no secret values."""
 import copy
 import pathlib
+import json
+import urllib.parse
 
 APP_SECRET_KEYS={'CODEX2API_CREDENTIAL_OPS_KEY','CODEX2API_CREDENTIAL_OPS_WORKER_TOKEN'}
+APP_OPTIONAL_KEYS={'CODEX2API_CREDENTIAL_OPS_SESSION_STUDIO_ENDPOINT','CODEX2API_CREDENTIAL_OPS_SESSION_STUDIO_HEADERS'}
+
+def environment_values(text,required,optional=frozenset()):
+ result={}
+ for line in text.splitlines():
+  if not line.strip() or line.lstrip().startswith('#'):continue
+  key,sep,value=line.partition('=')
+  if not sep or key not in required|optional or key in result:raise ValueError('invalid dedicated credential environment')
+  if key in required and len(value)<32:raise ValueError('credential secret is too short')
+  result[key]=value
+ if not required.issubset(result):raise ValueError('missing dedicated credential environment')
+ endpoint=result.get('CODEX2API_CREDENTIAL_OPS_SESSION_STUDIO_ENDPOINT','')
+ if endpoint:
+  parsed=urllib.parse.urlsplit(endpoint)
+  if parsed.scheme!='https' or not parsed.hostname or parsed.username or parsed.password:raise ValueError('Session Studio requires an explicit HTTPS endpoint')
+ headers=result.get('CODEX2API_CREDENTIAL_OPS_SESSION_STUDIO_HEADERS','')
+ if headers:
+  value=json.loads(headers)
+  if not endpoint or not isinstance(value,dict) or any(not isinstance(k,str) or not isinstance(v,str) or '\r' in v or '\n' in v for k,v in value.items()):raise ValueError('invalid Session Studio headers')
+ return result
 
 def runtime_compose(config,image,app_env,worker_env):
  for raw in (app_env,worker_env):
@@ -13,7 +35,7 @@ def runtime_compose(config,image,app_env,worker_env):
  result=copy.deepcopy(config)
  app=result['services']['codex2api']
  environment=app.get('environment',{})
- if APP_SECRET_KEYS.intersection(environment):raise ValueError('compose overrides credential secret files')
+ if (APP_SECRET_KEYS|APP_OPTIONAL_KEYS).intersection(environment):raise ValueError('compose overrides credential secret files')
  port=int(environment.get('CODEX_PORT',18080))
  if not 1<=port<=65535:raise ValueError('invalid Codex application port')
  networks=app.get('networks',{})

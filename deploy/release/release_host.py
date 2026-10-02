@@ -4,7 +4,7 @@ Only the codex app is stopped/recreated. PostgreSQL, Redis and Sub stay running.
 An image built from verified/pushed clean main is mandatory. No credentials print.
 """
 import argparse, copy, fcntl, ipaddress, json, os, pathlib, re, shutil, subprocess, time, urllib.request, urllib.error, stat, tempfile, types
-from credential_runtime_release import runtime_compose, APP_SECRET_KEYS
+from credential_runtime_release import runtime_compose, APP_SECRET_KEYS, APP_OPTIONAL_KEYS, environment_values
 
 def codex_route(config):
  matches=[]
@@ -279,16 +279,8 @@ class Release:
   if image['Config'].get('Labels',{}).get('io.xingqiao.plugin-sdk')!='plugins/v1':raise ValueError('credential runtime SDK incompatible')
   app_path,_=checked_file(self.args.credential_app_env,private=True)
   worker_path,_=checked_file(self.args.credential_worker_env,private=True)
-  def values(path,allowed):
-   result={}
-   for line in path.read_text().splitlines():
-    if not line.strip() or line.lstrip().startswith('#'):continue
-    key,sep,value=line.partition('=')
-    if not sep or key not in allowed or key in result or len(value)<32:raise ValueError('invalid dedicated credential environment')
-    result[key]=value
-   if set(result)!=allowed:raise ValueError('missing dedicated credential environment')
-   return result
-  app=values(app_path,APP_SECRET_KEYS);worker=values(worker_path,{'CODEX2API_CREDENTIAL_OPS_WORKER_TOKEN'})
+  app=environment_values(app_path.read_text(),APP_SECRET_KEYS,APP_OPTIONAL_KEYS)
+  worker=environment_values(worker_path.read_text(),{'CODEX2API_CREDENTIAL_OPS_WORKER_TOKEN'})
   if app['CODEX2API_CREDENTIAL_OPS_WORKER_TOKEN']!=worker['CODEX2API_CREDENTIAL_OPS_WORKER_TOKEN']:raise ValueError('credential worker token mismatch')
   effective=json.loads(self.dc('config','--format','json','--no-env-resolution'))
   effective['services']['codex2api']['image']=self.args.image
