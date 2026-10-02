@@ -85,6 +85,8 @@ class RollbackDecisionTests(unittest.TestCase):
     if p.endswith('/settings'):return 200,{},b'{"codex_basispoints_enabled":false}'
     return 200,{},b'<html></html>'
    def restore_route(self):self.maintenance=False
+   def start_credential_runtime(self):
+    self.calls.append(('runtime-start',self.gated,self.opened,self.maintenance))
    def rollback(self,preserve_database=False):self.calls.append(('rollback',preserve_database))
   return Fake()
  def test_failed_migration_restores_database_before_traffic(self):
@@ -95,6 +97,9 @@ class RollbackDecisionTests(unittest.TestCase):
   r=self.fake('public')
   with self.assertRaises(RuntimeError):r.execute()
   self.assertIn(('rollback',True),r.calls);self.assertTrue(r.opened)
+ def test_worker_starts_after_private_gate_opens_before_public_route(self):
+  r=self.fake('none');r.execute()
+  self.assertIn(('runtime-start',False,True,True),r.calls)
 
 class MigratorCleanupTests(unittest.TestCase):
  def test_orphan_migrator_removed_before_recovery(self):

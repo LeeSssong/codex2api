@@ -478,7 +478,6 @@ class Release:
    self.dc('up','-d','--no-deps','codex2api');self.ready()
    if self.inspect('codex2api')['Image']!=self.args.digest:raise RuntimeError('running image mismatch')
    self.feature_smoke()
-   self.start_credential_runtime()
    settings=json.loads(self.request('/api/admin/settings',True)[2])
    for key in ['codex_basispoints_enabled']:
     if key in self.original_settings and settings.get(key)!=self.original_settings.get(key):raise RuntimeError('existing setting changed: '+key)
@@ -486,7 +485,9 @@ class Release:
     if b'<html' not in self.request(path)[2].lower():raise RuntimeError('admin UI shell missing')
    self.verify_protected_containers()
    self.event('internal-feature-smoke-passed')
-   self.opened=True;self.network_gate(False);self.restore_route();self.event('traffic-restored')
+   self.opened=True;self.network_gate(False)
+   self.start_credential_runtime()
+   self.restore_route();self.event('traffic-restored')
    self.request('/health',public=True)
    self.feature_smoke(public=True)
    self.verify_protected_containers()
