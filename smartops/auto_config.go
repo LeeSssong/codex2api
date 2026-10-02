@@ -56,7 +56,7 @@ func DefaultOAuthAutoConfig() OAuthAutoConfig {
 		ModelBilling: ModelBillingConfig{Rules: []ModelBillingRule{{Model: "gpt-6-luna*", Multiplier: 10}}},
 		GroupIDs:     []int64{}, ModelMappings: []ModelMapping{{From: "gpt-5.4", To: "gpt-5.5"}},
 		SuccessesPerStep: 20, UpgradeStep: 1, MaxConcurrency: 100, CooldownSeconds: 60,
-		BPS: BPSDefaults{TargetGroupID: -1, CacheCreationAsInput: true, Models: []string{"gpt-6-astra", "gpt-5.6-sol"}, IgnoreEncryptedContent: true, AutoDisableOn403: true, RecoveryIntervalMinutes: 60, ProxySource: "mihomo"}}
+		BPS: BPSDefaults{TargetGroupID: -1, CacheCreationAsInput: true, Models: []string{"gpt-6-astra", "gpt-5.6-sol"}, IgnoreEncryptedContent: true, AutoDisableOn403: true, RecoveryIntervalMinutes: 60, ProxySource: "ip_pool"}}
 }
 
 func ValidateOAuthAutoConfig(c OAuthAutoConfig) error {

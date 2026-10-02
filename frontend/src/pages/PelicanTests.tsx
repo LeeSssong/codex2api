@@ -88,7 +88,7 @@ export default function PelicanTests() {
     {selected && <SmartOpsSection title={`${t('smartOps.results')} #${selected.id}`}>
       {selected.error && <p className="text-sm text-destructive">{selected.error}</p>}
       {selected.results.map(r => <div key={r.sample} className="space-y-3 border-b border-border pb-4">
-        <div className="flex flex-wrap gap-4 text-sm"><span>{t('smartOps.account')}: {r.account_id}</span><span>{t('smartOps.latency')}: {Math.round(r.latency / 1000000)}</span><span>{t('smartOps.tokens')}: {r.input_tokens ?? 0} / {r.output_tokens ?? 0}</span><span>{t(`smartOps.statuses.${r.status}`)}</span></div>
+        <div className="flex flex-wrap gap-4 text-sm"><span>{t('smartOps.account')}: {r.account_id}</span><span>{t('smartOps.latency')}: {Math.round(r.latency / 1000000)}</span><span>{t('smartOps.tokenUsage')}: {r.input_tokens ?? 0} / {r.output_tokens ?? 0}</span><span>{t(`smartOps.statuses.${r.status}`)}</span></div>
         <p className="text-sm">{t('smartOps.cost')}: {r.cost_usd === undefined ? t('smartOps.incomplete') : `$${r.cost_usd.toFixed(6)}`}{r.cost_incomplete && ` (${t('smartOps.incomplete')})`}</p>
         {r.error && <p className="text-sm text-destructive">{r.error}</p>}
         {r.output && <details><summary className="cursor-pointer text-sm">{t('smartOps.output')}</summary><pre className="mt-2 max-h-96 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted p-4 text-xs">{r.output}</pre></details>}

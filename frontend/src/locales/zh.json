@@ -7971,7 +7971,7 @@
     "description": "围绕现有账号，管理质量检测、异常通知与凭证恢复。",
     "quality": "质量守护",
     "alerts": "账号告警",
-    "tokens": "输入 / 输出 Token",
+    "tokens": "凭证守护",
     "savedRules": "已保存 {{count}} 条规则",
     "ruleNumber": "规则 {{id}}",
     "accountRule": "#{{account}} · 规则 {{rule}}",
@@ -8088,6 +8088,7 @@
       "cancelled": "已取消",
       "interrupted": "已中断",
       "success": "成功"
-    }
+    },
+    "tokenUsage": "输入 / 输出 Token"
   }
 }

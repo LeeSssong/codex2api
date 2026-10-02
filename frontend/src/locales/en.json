@@ -7974,7 +7974,7 @@
     "description": "Manage quality checks, failure alerts and credential recovery for existing accounts.",
     "quality": "Quality guard",
     "alerts": "Account alerts",
-    "tokens": "Input / Output Tokens",
+    "tokens": "Credential guard",
     "savedRules": "Saved {{count}} rules",
     "ruleNumber": "Rule {{id}}",
     "accountRule": "#{{account}} · Rule {{rule}}",
@@ -8091,6 +8091,7 @@
       "cancelled": "Cancelled",
       "interrupted": "Interrupted",
       "success": "Success"
-    }
+    },
+    "tokenUsage": "Input / Output Tokens"
   }
 }

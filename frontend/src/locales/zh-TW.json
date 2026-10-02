@@ -3027,7 +3027,7 @@
     "description": "管理現有帳號的品質檢測、異常通知與憑證恢復。",
     "quality": "品質守護",
     "alerts": "帳號告警",
-    "tokens": "輸入 / 輸出 Token",
+    "tokens": "憑證守護",
     "savedRules": "已儲存 {{count}} 條規則",
     "ruleNumber": "規則 {{id}}",
     "accountRule": "#{{account}} · 規則 {{rule}}",
@@ -3144,6 +3144,7 @@
       "cancelled": "已取消",
       "interrupted": "已中斷",
       "success": "成功"
-    }
+    },
+    "tokenUsage": "輸入 / 輸出 Token"
   }
 }
