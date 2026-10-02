@@ -16,6 +16,18 @@ export interface QualityBPSPolicy {
   hold_on_usage: boolean;
   all_models: boolean;
   models: string[];
+  omit_unsupported_tools?: boolean;
+  ignore_encrypted_content?: boolean;
+  auto_disable_on_403?: boolean;
+  auto_recover_on_403?: boolean;
+  recovery_interval_minutes?: number;
+  auto_move_on_403?: boolean;
+  target_group_id?: number;
+  session_proxy?: boolean;
+  proxy_source?: string;
+  cache_creation_as_input?: boolean;
+  ws_sse_acceleration?: boolean;
+  auto_enable_on_degradation?: boolean;
 }
 export interface AccountQualityPlan {
   id: number;
@@ -98,7 +110,10 @@ export interface AccountOpsEvent {
   next_send_at: string;
   attempts: number;
 }
-export function newQualityPlan(): AccountQualityPlan {
+export function qualityBPSFromTemplate(template?: Partial<QualityBPSPolicy>): QualityBPSPolicy {
+  return { failure_threshold:1,usage_percent:0,require_all:false,pass_threshold:1,hold_on_usage:false,all_models:true,...template,models:[...(template?.models ?? [])] };
+}
+export function newQualityPlan(template?: Partial<QualityBPSPolicy>): AccountQualityPlan {
   return {
     id: 0,
     account_id: 0,
@@ -110,7 +125,8 @@ export function newQualityPlan(): AccountQualityPlan {
     samples: 1,
     max_results: 100,
     expected_answer: "21",
-    action: "remove_groups",
+    action: template?.auto_enable_on_degradation ? "enable_bps" : "remove_groups",
+    ...(template?.auto_enable_on_degradation ? {bps:qualityBPSFromTemplate(template)} : {}),
     remove_group_ids: [],
     auto_restore: false,
     judge: {

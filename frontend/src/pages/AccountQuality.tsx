@@ -8,7 +8,7 @@ import {
   type FormEvent,
 } from "react";
 import SmartOpsNav from "../components/SmartOpsNav";
-import { api } from "../api";
+import { api, getSmartOpsConfig } from "../api";
 import type { AccountRow, AccountGroup } from "../types";
 import { Button } from "../components/ui/button";
 import { Select } from "../components/ui/select";
@@ -24,6 +24,8 @@ import {
   date,
   formatQualityAction,
   newQualityPlan,
+  qualityBPSFromTemplate,
+  type QualityBPSPolicy,
   type AccountQualityPlan,
   type AccountQualityRound,
 } from "../lib/accountOps";
@@ -54,17 +56,20 @@ export default function AccountQuality() {
       { id: number; name: string; prompt: string }[]
     >([]);
   const paginated = useRef(false);
+  const [bpsTemplate, setBPSTemplate] = useState<Partial<QualityBPSPolicy>>();
   const fail = (e: unknown) =>
     setError(e instanceof Error ? e.message : String(e));
   const load = useCallback(async () => {
     try {
-      const [module, p, h, a, g] = await Promise.all([
+      const [module, p, h, a, g, smartConfig] = await Promise.all([
         api.getPlugins(),
         api.getAccountQualityPlans(),
         api.getAccountQualityHistory(),
         api.getAccounts({ view: "lite" }),
         api.listAccountGroups(),
+        getSmartOpsConfig(),
       ]);
+      setBPSTemplate((smartConfig as {oauth_auto_config?:{bps?:Partial<QualityBPSPolicy>}}).oauth_auto_config?.bps);
       setEnabled(module.plugins.find((p) => p.id === "quality-ops")?.enabled ?? false);
       setPlans(p.items);
       setRounds(h.items);
@@ -172,7 +177,7 @@ export default function AccountQuality() {
     }
   };
   const edit = (p?: AccountQualityPlan) => {
-    setForm(p ? structuredClone(p) : newQualityPlan());
+    setForm(p ? structuredClone(p) : newQualityPlan(bpsTemplate));
     setSelectedAccounts([]);
     setAccountSearch("");
     setError("");
@@ -776,7 +781,7 @@ export default function AccountQuality() {
                     />
                     {t("smartOps.copy.disableAccount")}
                   </label>
-                  <label className="ops-check"><input type="radio" name="action" checked={form.action === "enable_bps"} onChange={() => patch({ action:"enable_bps", bps:form.bps ?? { failure_threshold:1, usage_percent:0, require_all:false, pass_threshold:1, hold_on_usage:false, all_models:true, models:[] } })} />{t("smartOps.bps.enable")}</label>
+                  <label className="ops-check"><input type="radio" name="action" checked={form.action === "enable_bps"} onChange={() => patch({ action:"enable_bps", bps:form.bps ?? qualityBPSFromTemplate(bpsTemplate) })} />{t("smartOps.bps.enable")}</label>
                   {form.action === "enable_bps" && form.bps && <div className="ops-fields">
                     <label>{t("smartOps.bps.failureCount")}<input type="number" min="0" max="100" value={form.bps.failure_threshold} onChange={(e) => patch({ bps:{...form.bps!, failure_threshold:Number(e.target.value)} })} /></label>
                     <label>{t("smartOps.bps.usagePercent")}<input type="number" min="0" max="100" value={form.bps.usage_percent} onChange={(e) => patch({ bps:{...form.bps!, usage_percent:Number(e.target.value)} })} /></label>
