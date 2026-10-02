@@ -200,6 +200,25 @@ test("source account quality and alert pages save, trigger, inspect and paginate
         "/quality-desktop.png",
       fullPage: true,
     });
+    await page.getByRole("button", { name:"编辑", exact:true }).click();
+    await page.getByRole("radio", { name:"降智后开启 BPS", exact:true }).check();
+    await page.getByLabel("连续降智轮数", {exact:true}).fill("3");
+    await page.getByLabel("关闭 BPS 前连续满血轮数", {exact:true}).fill("2");
+    await page.getByRole("checkbox", {name:"全部 BPS 支持的模型",exact:true}).uncheck();
+    await page.getByLabel("指定模型（逗号分隔）", {exact:true}).fill("gpt-6-astra");
+    await page.setViewportSize({width:390,height:844});
+    await page.getByLabel("连续降智轮数", {exact:true}).scrollIntoViewIfNeeded();
+    assert.equal(await page.locator("[role=dialog]").evaluate((node)=>node.scrollWidth<=node.clientWidth),true);
+    const dialogBox=await page.locator("[role=dialog]").boundingBox();
+    assert.ok(dialogBox.x>=0 && dialogBox.x+dialogBox.width<=390 && dialogBox.y>=0 && dialogBox.y+dialogBox.height<=844);
+    await page.screenshot({path:(process.env.SMART_OPS_ARTIFACT_DIR || "/tmp/smart-ops-ui")+"/quality-bps-mobile.png",fullPage:false});
+    await page.getByRole("button", {name:"保存规则",exact:true}).click();
+    await page.waitForFunction(()=>!document.querySelector("[role=dialog]"));
+    assert.equal(plans[0].action,"enable_bps");
+    assert.equal(plans[0].bps.failure_threshold,3);
+    assert.equal(plans[0].bps.pass_threshold,2);
+    assert.deepEqual(plans[0].bps.models,["gpt-6-astra"]);
+    await page.setViewportSize({width:1440,height:1000});
     await page
       .locator(".ops-tabs")
       .getByRole("link", { name: "账号告警" })

@@ -193,7 +193,7 @@ func (h *Handler) testConnection(c *gin.Context, quality *qualityTestRequest) {
 	// Record recycle-bin test results; restore_on_success restores successful accounts.
 	restoreOnSuccess := isTransient && strings.EqualFold(strings.TrimSpace(c.Query("restore_on_success")), "true")
 	transientOutcome := "failed"
-	if isTransient {
+	if isTransient && (quality == nil || !quality.ObservationOnly) {
 		defer func() {
 			h.persistRecycleBinTestResult(id, transientOutcome)
 		}()
