@@ -1,0 +1,3 @@
+import { useState } from 'react'
+import TwoFAImport from '../components/TwoFAImport'
+export default function CredentialOps(){ const [id,setID]=useState(''); const accountId=Number(id); return <main className="mx-auto max-w-3xl space-y-6 p-6"><header><h1 className="text-2xl font-semibold">Credential Operations</h1><p className="text-sm text-muted-foreground">Encrypted account-first login configuration and worker controls.</p></header><input className="h-9 w-full rounded-md border bg-background px-3 text-sm" value={id} onChange={e=>setID(e.target.value)} placeholder="Account ID" inputMode="numeric"/>{accountId>0&&<TwoFAImport accountId={accountId}/>}</main> }
