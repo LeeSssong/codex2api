@@ -29,6 +29,15 @@ class ReleaseTests(unittest.TestCase):
   self.assertEqual(routes[0],original['apps']['http']['servers']['srv0']['routes'][0]);self.assertEqual(routes[1]['handle'][0]['status_code'],503)
  def test_missing_route_fails_closed(self):
   with self.assertRaises(ValueError):maintenance_config({'apps':{'http':{'servers':{}}}})
+ def test_mixed_application_route_is_rejected(self):
+  config={'apps':{'http':{'servers':{'s':{'routes':[{'match':[{'host':['api.xingqiaolab.top','codex.xingqiaolab.top']}],'handle':[]}]}}}}}
+  with self.assertRaises(ValueError):maintenance_config(config)
+ def test_configuration_guard_rejects_non_codex_change(self):
+  from release_host import assert_codex_only_config
+  before={'apps':{'http':{'servers':{'s':{'routes':[{'match':[{'host':['codex.xingqiaolab.top']}],'handle':[]},{'match':[{'host':['api.xingqiaolab.top']}],'handle':[{'handler':'reverse_proxy'}]}]}}}}}
+  assert_codex_only_config(before,maintenance_config(before))
+  after=maintenance_config(before);after['apps']['http']['servers']['s']['routes'][1]['handle']=[]
+  with self.assertRaises(RuntimeError):assert_codex_only_config(before,after)
  def test_compose_changes_only_app_image(self):
   before='services:\n  codex2api:\n    image: old\n    env_file: .env\n  postgres:\n    image: postgres:18\n'
   self.assertEqual(replace_image(before,'new'),before.replace('image: old','image: new'))

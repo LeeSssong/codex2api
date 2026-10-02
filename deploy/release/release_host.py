@@ -10,7 +10,9 @@ def codex_route(config):
  for server in config.get('apps',{}).get('http',{}).get('servers',{}).values():
   for route in server.get('routes',[]):
    hosts=[h for m in route.get('match',[]) for h in m.get('host',[])]
-   if 'codex.xingqiaolab.top' in hosts: matches.append(route)
+   if 'codex.xingqiaolab.top' in hosts:
+    if 'api.xingqiaolab.top' in hosts:raise ValueError('Codex route must not also serve Sub2API')
+    matches.append(route)
  if len(matches)!=1: raise ValueError('expected exactly one Codex route')
  return matches[0]
 
@@ -18,6 +20,11 @@ def maintenance_config(config):
  result=copy.deepcopy(config)
  codex_route(result)['handle']=[{'handler':'static_response','status_code':503,'body':'Codex2API is being updated. Please retry shortly.','headers':{'Retry-After':['120'],'Content-Type':['text/plain; charset=utf-8']}}]
  return result
+
+def assert_codex_only_config(before,after):
+ left=copy.deepcopy(before);right=copy.deepcopy(after)
+ codex_route(left)['handle']=[];codex_route(right)['handle']=[]
+ if left!=right:raise RuntimeError('release would change non-Codex ingress configuration')
 
 def replace_image(compose,image):
  if compose.lstrip().startswith('{'):
@@ -140,6 +147,7 @@ class Release:
   self.run(['docker','exec','-i','codex2api-postgres','pg_restore','--list'],path.read_bytes())
  def caddy(self):return json.loads(self.run(['docker','exec','sub2api-caddy-1','wget','-qO-','http://127.0.0.1:2019/config/']))
  def load_caddy(self,config):
+  assert_codex_only_config(self.caddy(),config)
   self.run(['docker','exec','-i','sub2api-caddy-1','wget','-qO-','--header=Content-Type:application/json','--post-file=/dev/stdin','http://127.0.0.1:2019/load'],json.dumps(config).encode())
  def network_gate(self,enable):
   if self.gated==enable:return
