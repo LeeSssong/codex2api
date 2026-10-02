@@ -55,7 +55,7 @@ func (h *Handler) StartAccountOps(ctx context.Context) {
 					log.Printf("[account-ops] history cleanup: %v", e)
 				}
 				h.refreshAccountOpsModule(ctx)
-				if !r.enabled.Load() {
+				if !r.enabled.Load() || !h.PluginEnabled(ctx, "quality-ops") {
 					continue
 				}
 				for i := 0; i < database.QualityTestConcurrency; i++ {
@@ -81,7 +81,7 @@ func (h *Handler) WaitAccountOps() {
 }
 func (h *Handler) refreshAccountOpsModule(ctx context.Context) {
 	raw, e := database.NewAccountOpsSettings(h.db).GetValue(ctx, "module_enabled")
-	enabled := e == nil && raw == "true" && h.PluginEnabled(ctx, "account-ops") && h.PluginEnabled(ctx, "quality-ops")
+	enabled := e == nil && raw == "true" && h.PluginEnabled(ctx, "account-ops")
 	h.accountOps.enabled.Store(enabled)
 	if enabled {
 		proxy.SetAccountOpsObserver(h.accountOps.alerts)
@@ -377,6 +377,7 @@ func (h *Handler) runAccountQualityRound(parent context.Context, p accountops.Pl
 				defer h.store.Release(account)
 				return h.runAccountOpsText(ctx, p.AccountID, p.Model, p.Prompt+"\n\n只输出最终答案，不要解释。", p.ReasoningEffort, &r.ExecutionEvidence)
 			}()
+			r.CredentialGeneration = p.CredentialGeneration
 			r.Output = output
 			if err != nil {
 				r.Error = err.Error()

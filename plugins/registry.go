@@ -33,7 +33,7 @@ type Registry struct {
 	defaults map[string]Setting
 	mu       sync.RWMutex
 	cache    map[string]Setting
-	loadedAt time.Time
+	cacheAt  map[string]time.Time
 }
 
 var defaultSettings = []Setting{
@@ -51,7 +51,7 @@ func NewRegistry(store Store) *Registry {
 	for _, setting := range defaultSettings {
 		defaults[setting.ID] = setting
 	}
-	return &Registry{store: store, defaults: defaults, cache: make(map[string]Setting)}
+	return &Registry{store: store, defaults: defaults, cache: make(map[string]Setting), cacheAt: make(map[string]time.Time)}
 }
 
 func (r *Registry) IDs() []string {
@@ -73,7 +73,7 @@ func (r *Registry) Get(ctx context.Context, id string) (Setting, error) {
 	}
 	r.mu.RLock()
 	cached, cachedOK := r.cache[id]
-	fresh := time.Since(r.loadedAt) < 30*time.Second
+	fresh := time.Since(r.cacheAt[id]) < 30*time.Second
 	r.mu.RUnlock()
 	if cachedOK && fresh {
 		return cloneSetting(cached), nil
@@ -99,7 +99,7 @@ func (r *Registry) Get(ctx context.Context, id string) (Setting, error) {
 	setting = normalize(setting)
 	r.mu.Lock()
 	r.cache[id] = setting
-	r.loadedAt = time.Now()
+	r.cacheAt[id] = time.Now()
 	r.mu.Unlock()
 	return setting, nil
 }
@@ -139,7 +139,7 @@ func (r *Registry) Set(ctx context.Context, setting Setting) error {
 	}
 	r.mu.Lock()
 	r.cache[setting.ID] = setting
-	r.loadedAt = time.Now()
+	r.cacheAt[setting.ID] = time.Now()
 	r.mu.Unlock()
 	return nil
 }

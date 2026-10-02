@@ -97,7 +97,8 @@ func antigravityOAuthEndpointList() []string {
 
 // ExecuteAntigravityResponsesRequest adapts an OpenAI Responses request to the
 // Cloud Code v1internal Gemini envelope used by both Antigravity projects.
-func ExecuteAntigravityResponsesRequest(ctx context.Context, account *auth.Account, model string, body []byte, stream bool, proxyURL string) (*http.Response, error) {
+func ExecuteAntigravityResponsesRequest(ctx context.Context, account *auth.Account, model string, body []byte, stream bool, proxyURL string) (opsResponse *http.Response, opsErr error) {
+	defer func() { observeAccountOpsResponse(account, opsResponse) }()
 	resetUpstreamAttemptTrace(ctx)
 	if account == nil {
 		return nil, fmt.Errorf("antigravity account is nil")
