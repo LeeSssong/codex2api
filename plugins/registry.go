@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"sort"
+	"sync"
+	"time"
 )
 
 var ErrNotFound = errors.New("plugin setting not found")
@@ -29,16 +31,19 @@ type Store interface {
 type Registry struct {
 	store    Store
 	defaults map[string]Setting
+	mu       sync.RWMutex
+	cache    map[string]Setting
+	loadedAt time.Time
 }
 
 var defaultSettings = []Setting{
-	{ID: "auto-config", Version: "1.0.0", SourceSHA: "native", SDKCompatibility: "plugins/v1", UpdateMode: "compiled", Enabled: true},
-	{ID: "priority-scheduling", Version: "1.0.0", SourceSHA: "native", SDKCompatibility: "plugins/v1", UpdateMode: "compiled", Enabled: true},
-	{ID: "quality-ops", Version: "1.0.0", SourceSHA: "native", SDKCompatibility: "plugins/v1", UpdateMode: "compiled", Enabled: true},
-	{ID: "account-ops", Version: "1.0.0", SourceSHA: "native", SDKCompatibility: "plugins/v1", UpdateMode: "compiled", Enabled: true},
-	{ID: "token-guard", Version: "1.0.0", SourceSHA: "native", SDKCompatibility: "plugins/v1", UpdateMode: "compiled", Enabled: true},
-	{ID: "credential-ops", Version: "1.0.0", SourceSHA: "native", SDKCompatibility: "plugins/v1", UpdateMode: "compiled", Enabled: true},
-	{ID: "pelican-tests", Version: "1.0.0", SourceSHA: "native", SDKCompatibility: "plugins/v1", UpdateMode: "compiled", Enabled: true},
+	{ID: "auto-config", Version: "1.0.0", SourceSHA: "2a0948c4bb", SDKCompatibility: "plugins/v1", UpdateMode: "compiled", Enabled: true},
+	{ID: "priority-scheduling", Version: "1.0.0", SourceSHA: "2a0948c4bb", SDKCompatibility: "plugins/v1", UpdateMode: "compiled", Enabled: true},
+	{ID: "quality-ops", Version: "1.0.0", SourceSHA: "e557d171", SDKCompatibility: "plugins/v1", UpdateMode: "compiled", Enabled: true},
+	{ID: "account-ops", Version: "1.0.0", SourceSHA: "e557d171", SDKCompatibility: "plugins/v1", UpdateMode: "compiled", Enabled: true},
+	{ID: "token-guard", Version: "1.0.0", SourceSHA: "e557d171", SDKCompatibility: "plugins/v1", UpdateMode: "compiled", Enabled: true},
+	{ID: "credential-ops", Version: "1.0.0", SourceSHA: "2a0948c4bb", SDKCompatibility: "plugins/v1", UpdateMode: "compiled", Enabled: true},
+	{ID: "pelican-tests", Version: "1.0.0", SourceSHA: "2a0948c4bb", SDKCompatibility: "plugins/v1", UpdateMode: "compiled", Enabled: true},
 }
 
 func NewRegistry(store Store) *Registry {
@@ -46,7 +51,7 @@ func NewRegistry(store Store) *Registry {
 	for _, setting := range defaultSettings {
 		defaults[setting.ID] = setting
 	}
-	return &Registry{store: store, defaults: defaults}
+	return &Registry{store: store, defaults: defaults, cache: make(map[string]Setting)}
 }
 
 func (r *Registry) IDs() []string {
@@ -64,13 +69,19 @@ func (r *Registry) Get(ctx context.Context, id string) (Setting, error) {
 		return Setting{}, ErrUnknownPlugin
 	}
 	if r.store == nil {
-		return cloneSetting(defaultSetting), nil
+		return Setting{}, errors.New("plugin store is not configured")
+	}
+	r.mu.RLock()
+	cached, cachedOK := r.cache[id]
+	fresh := time.Since(r.loadedAt) < 30*time.Second
+	r.mu.RUnlock()
+	if cachedOK && fresh {
+		return cloneSetting(cached), nil
 	}
 	setting, err := r.store.Get(ctx, id)
 	if errors.Is(err, ErrNotFound) {
-		return cloneSetting(defaultSetting), nil
-	}
-	if err != nil {
+		setting = cloneSetting(defaultSetting)
+	} else if err != nil {
 		return Setting{}, err
 	}
 	if setting.Version == "" {
@@ -85,7 +96,12 @@ func (r *Registry) Get(ctx context.Context, id string) (Setting, error) {
 	if setting.UpdateMode == "" {
 		setting.UpdateMode = defaultSetting.UpdateMode
 	}
-	return normalize(setting), nil
+	setting = normalize(setting)
+	r.mu.Lock()
+	r.cache[id] = setting
+	r.loadedAt = time.Now()
+	r.mu.Unlock()
+	return setting, nil
 }
 
 func (r *Registry) List(ctx context.Context) ([]Setting, error) {
@@ -118,7 +134,14 @@ func (r *Registry) Set(ctx context.Context, setting Setting) error {
 	if r.store == nil {
 		return errors.New("plugin store is not configured")
 	}
-	return r.store.Put(ctx, setting)
+	if err := r.store.Put(ctx, setting); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	r.cache[setting.ID] = setting
+	r.loadedAt = time.Now()
+	r.mu.Unlock()
+	return nil
 }
 
 func normalize(setting Setting) Setting {

@@ -515,6 +515,26 @@ func New(driver string, dsn string, schema ...string) (*DB, error) {
 		_ = conn.Close()
 		return nil, fmt.Errorf("initialize plugin settings schema: %w", err)
 	}
+	if err := db.ensureAccountControlSchema(ctx); err != nil {
+		backgroundTaskCancel()
+		_ = conn.Close()
+		return nil, fmt.Errorf("initialize account control revision: %w", err)
+	}
+	if err := db.ensureAccountOpsSchema(ctx); err != nil {
+		backgroundTaskCancel()
+		_ = conn.Close()
+		return nil, fmt.Errorf("initialize account operations schema: %w", err)
+	}
+	if err := db.ensureAccountQualityOwnershipTriggers(ctx); err != nil {
+		backgroundTaskCancel()
+		_ = conn.Close()
+		return nil, fmt.Errorf("initialize account quality schema: %w", err)
+	}
+	if err := db.ensureTokenGuardSchema(ctx); err != nil {
+		backgroundTaskCancel()
+		_ = conn.Close()
+		return nil, fmt.Errorf("initialize token guard schema: %w", err)
+	}
 	if err := db.ensureProxyRiskScoringTables(ctx); err != nil {
 		return nil, fmt.Errorf("创建代理风险评分表失败: %w", err)
 	}

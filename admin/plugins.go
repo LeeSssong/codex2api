@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/codex2api/database"
 	"github.com/codex2api/plugins"
 	"github.com/gin-gonic/gin"
 )
@@ -43,16 +44,12 @@ func (h *Handler) UpdatePlugin(c *gin.Context) {
 		return
 	}
 	var req struct {
-		Version *string         `json:"version"`
 		Enabled *bool           `json:"enabled"`
 		Flags   map[string]bool `json:"flags"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid plugin setting"})
 		return
-	}
-	if req.Version != nil {
-		current.Version = *req.Version
 	}
 	if req.Enabled != nil {
 		current.Enabled = *req.Enabled
@@ -63,6 +60,16 @@ func (h *Handler) UpdatePlugin(c *gin.Context) {
 	if err := h.pluginRegistry.Set(c.Request.Context(), current); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save plugin setting"})
 		return
+	}
+	// The ported account quality and token guard workers use the legacy module
+	// fence as their durable cancellation boundary. Turning either capability
+	// off increments that fence and cancels queued/running guarded work.
+	if !current.Enabled && (id == "account-ops" || id == "quality-ops" || id == "token-guard") {
+		if err := database.NewAccountOpsSettings(h.db).Set(c.Request.Context(), "module_enabled", "false"); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fence plugin work"})
+			return
+		}
+		h.refreshAccountOpsModule(c.Request.Context())
 	}
 	c.JSON(http.StatusOK, current)
 }

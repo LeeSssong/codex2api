@@ -43,12 +43,15 @@ import (
 	"github.com/codex2api/security"
 	"github.com/codex2api/security/promptfilter"
 	"github.com/codex2api/statepool"
+	"github.com/codex2api/tokenguard"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 )
 
 // Handler 管理后台 API 处理器
 type Handler struct {
+	tokenGuard         *tokenguard.Service
+	accountOps         *accountOpsRuntime
 	imageQueue         *imageJobQueue
 	ipv6State          *ipv6state.Manager
 	statePool          *statepool.Manager
@@ -1241,6 +1244,18 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.DELETE("/modeltrace/bank", h.ResetModelTraceBank)
 	api.GET("/accounts/:id/quality-test/options", h.QualityTestOptions)
 	api.POST("/accounts/:id/quality-test", h.CreateQualityTestJob)
+	api.GET("/account-ops/module", h.GetAccountOpsModule)
+	api.PUT("/account-ops/module", h.SaveAccountOpsModule)
+	api.GET("/account-ops/config", h.GetAccountOpsConfig)
+	api.PUT("/account-ops/config", h.SaveAccountOpsConfig)
+	api.GET("/account-ops/alerts", h.ListAccountOpsAlerts)
+	api.GET("/quality-ops/plans", h.ListAccountQualityPlans)
+	api.POST("/quality-ops/plans", h.SaveAccountQualityPlan)
+	api.DELETE("/quality-ops/plans/:id", h.DeleteAccountQualityPlan)
+	api.POST("/quality-ops/plans/:id/trigger", h.TriggerAccountQualityPlan)
+	api.GET("/quality-ops/history", h.ListAccountQualityHistory)
+	api.GET("/quality-ops/history/:id", h.GetAccountQualityRound)
+	h.RegisterTokenGuardRoutes(api)
 	api.GET("/quality-tests", h.ListQualityTests)
 	h.registerStatePoolRoutes(api)
 	api.GET("/quality-tests/:id", h.GetQualityTest)

@@ -38,6 +38,7 @@ addEventListener('message', function receive(event) {
 }
 
 type qualityTestRequest struct {
+	TextOnly        bool   `json:"-"`
 	Model           string `json:"model"`
 	Prompt          string `json:"prompt"`
 	ReasoningEffort string `json:"reasoning_effort"`
