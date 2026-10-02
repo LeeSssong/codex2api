@@ -35,6 +35,7 @@ func (db *DB) EnsureCredentialOpsSchema(ctx context.Context) error {
 }
 
 type CredentialOpsLoginConfigRow struct {
+	Automatic                                            bool `json:"automatic,omitempty"`
 	Name                                                 string
 	AccountID                                            int64
 	LoginEmail, CredentialMode, Engine, ProxySource      string

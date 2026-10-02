@@ -28,6 +28,15 @@ func (db *DB) FailCredentialOpsTask(ctx context.Context, id int64, owner string,
 }
 
 func (db *DB) CreateCredentialOpsTaskWithConfig(ctx context.Context, accountID, generation int64, cfg CredentialOpsLoginConfigRow) (*CredentialOpsTaskRow, error) {
+	return db.createCredentialOpsTaskWithConfig(ctx, accountID, generation, cfg, false, "")
+}
+
+func (db *DB) CreateCredentialOpsAutoTaskWithConfig(ctx context.Context, accountID, generation int64, cfg CredentialOpsLoginConfigRow, probeLease string) (*CredentialOpsTaskRow, error) {
+	return db.createCredentialOpsTaskWithConfig(ctx, accountID, generation, cfg, true, probeLease)
+}
+
+func (db *DB) createCredentialOpsTaskWithConfig(ctx context.Context, accountID, generation int64, cfg CredentialOpsLoginConfigRow, automatic bool, probeLease string) (*CredentialOpsTaskRow, error) {
+	cfg.Automatic = automatic
 	var task *CredentialOpsTaskRow
 	err := db.withSQLiteWriteLock(ctx, func() error {
 		tx, err := db.conn.BeginTx(ctx, nil)
@@ -41,6 +50,27 @@ func (db *DB) CreateCredentialOpsTaskWithConfig(ctx context.Context, accountID, 
 		}
 		if !enabled {
 			return ErrCredentialOpsDisabled
+		}
+		if automatic {
+			if probeLease == "" {
+				return ErrCredentialOpsStale
+			}
+			q := `SELECT m.enabled,m.auto_relogin_enabled,m.probe_state,m.fail_streak,r.failure_threshold FROM credential_ops_monitors m JOIN credential_ops_rules r ON r.account_id=m.account_id WHERE m.account_id=$1 AND m.lease_owner=$2 AND m.lease_until IS NULL`
+			if !db.isSQLite() {
+				q += ` FOR UPDATE OF m`
+			}
+			var monitorEnabled, autoEnabled bool
+			var state string
+			var streak, threshold int
+			if err = tx.QueryRowContext(ctx, q, accountID, probeLease).Scan(&monitorEnabled, &autoEnabled, &state, &streak, &threshold); err != nil {
+				return ErrCredentialOpsStale
+			}
+			if !monitorEnabled || !autoEnabled || state != "auth" || streak < threshold {
+				return ErrCredentialOpsStale
+			}
+			if _, err = tx.ExecContext(ctx, `UPDATE credential_ops_monitors SET lease_owner='' WHERE account_id=$1 AND lease_owner=$2`, accountID, probeLease); err != nil {
+				return err
+			}
 		}
 		if accountID > 0 {
 			var count int

@@ -103,7 +103,7 @@ func (h *Handler) runCredentialProbe(ctx context.Context, m database.CredentialO
 	if err != nil || row == nil {
 		return
 	}
-	_, _ = h.db.CreateCredentialOpsTaskWithConfig(ctx, m.AccountID, row.CredentialGeneration, *cfg)
+	_, _ = h.db.CreateCredentialOpsAutoTaskWithConfig(ctx, m.AccountID, row.CredentialGeneration, *cfg, m.LeaseOwner)
 }
 func (h *Handler) StartCredentialOpsScheduler(ctx context.Context) {
 	state := &credentialSchedulerState{done: make(chan struct{})}

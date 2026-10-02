@@ -50,6 +50,13 @@ The scheduler uses native usage probes and queues login only after
 confirmed authorization failures reach the configured threshold. Transient
 network failures do not increment the authorization failure streak.
 
+Saving account monitor rules revokes active probe leases. Automatic login queues
+consume a unique completed-probe authorization under the monitor lock, so a rule
+edit or disable between probe completion and queuing rejects the old result.
+Disabling a monitor or automatic login cancels its marked automatic jobs while
+preserving manual jobs and history. Historical jobs without an automatic-origin
+marker are retained because their origin cannot safely be inferred.
+
 Local verification:
 
 ```sh
