@@ -107,6 +107,9 @@ func (s *PluginStore) Put(ctx context.Context, setting plugins.Setting) error {
 			_, err = tx.ExecContext(ctx, `UPDATE account_token_guard_jobs SET state='cancelled',cancellation=TRUE,fence=fence+1 WHERE state IN ('queued','running','cancelling')`)
 		case "quality-ops":
 			_, err = tx.ExecContext(ctx, `UPDATE account_quality_plans SET lease='',lease_until=NULL,version=version+1 WHERE lease<>''`)
+			if err == nil {
+				_, err = tx.ExecContext(ctx, `UPDATE account_codex_paths SET quality_bps_recovery_epoch=quality_bps_recovery_epoch+1 WHERE upstream='basispoints'`)
+			}
 		case "credential-ops":
 			for table, query := range map[string]string{
 				"credential_ops_tasks":    `UPDATE credential_ops_tasks SET status='cancelled',stage='cancelled',lease_owner='',lease_until=NULL,finished_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE status IN ('queued','running')`,

@@ -11,6 +11,21 @@ import (
 	"github.com/codex2api/accountops"
 )
 
+func (db *DB) validateQualityBPSGroupTx(ctx context.Context, tx *sql.Tx, id int64) error {
+	query := `SELECT COALESCE(channel,'codex') FROM account_groups WHERE id=$1`
+	if !db.isSQLite() {
+		query += ` FOR SHARE`
+	}
+	var channel string
+	if err := tx.QueryRowContext(ctx, query, id).Scan(&channel); err != nil {
+		return fmt.Errorf("BPS target group unavailable: %w", err)
+	}
+	if NormalizeAccountGroupChannel(channel) != AccountGroupChannelCodex {
+		return fmt.Errorf("BPS target group must use the Codex channel")
+	}
+	return nil
+}
+
 func (db *DB) applyQualityBPSOutcomeTx(ctx context.Context, tx *sql.Tx, p accountops.Plan, outcome, status string, revision int64, baseline qualityRecovery, owned bool) (string, error) {
 	var failed, passed int
 	if err := tx.QueryRowContext(ctx, `SELECT failure_streak,pass_streak FROM account_quality_plans WHERE id=$1`, p.ID).Scan(&failed, &passed); err != nil {

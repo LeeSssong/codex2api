@@ -58,7 +58,9 @@ func (db *DB) SaveAccountQualityPlan(ctx context.Context, p accountops.Plan) (ac
 			groups = append(groups, p.Judge.GroupID)
 		}
 		if p.Action == "enable_bps" && p.BPS != nil && p.BPS.AutoMoveOn403 && p.BPS.TargetGroupID > 0 {
-			groups = append(groups, p.BPS.TargetGroupID)
+			if err := db.validateQualityBPSGroupTx(ctx, tx, p.BPS.TargetGroupID); err != nil {
+				return err
+			}
 		}
 		for _, id := range groups {
 			if e := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM account_groups WHERE id=$1)`, id).Scan(&exists); e != nil {

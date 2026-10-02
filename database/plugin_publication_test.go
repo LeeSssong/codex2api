@@ -10,6 +10,40 @@ import (
 	"github.com/codex2api/plugins"
 )
 
+func TestLegacyAccountOpsToggleDoesNotCancelIndependentTokenGuard(t *testing.T) {
+	for _, driver := range []string{"sqlite", "postgres"} {
+		t.Run(driver, func(t *testing.T) {
+			db := guardTestDB(t, driver)
+			ctx := context.Background()
+			settings := NewAccountOpsSettings(db)
+			if err := settings.Set(ctx, "module_enabled", "false"); err != nil {
+				t.Fatal(err)
+			}
+			_, version, err := db.TokenGuardConfig(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = db.CreateTokenGuardJob(ctx, "cycle", 0, version); err != nil {
+				t.Fatal(err)
+			}
+			job, err := db.ClaimTokenGuardJob(ctx, "independent-token", time.Now())
+			if err != nil || job == nil {
+				t.Fatal(err)
+			}
+			if err = settings.Set(ctx, "module_enabled", "true"); err != nil {
+				t.Fatal(err)
+			}
+			if err = db.RenewTokenGuardJob(ctx, *job, time.Now()); err != nil {
+				t.Fatalf("unrelated alert toggle cancelled token guard: %v", err)
+			}
+			_, next, err := db.TokenGuardConfig(ctx)
+			if err != nil || next != version {
+				t.Fatal("unrelated alert toggle changed credential config", next, err)
+			}
+		})
+	}
+}
+
 func TestPluginDisableFencesBackgroundPublicationsIndependently(t *testing.T) {
 	for _, driver := range []string{"sqlite", "postgres"} {
 		t.Run(driver, func(t *testing.T) {

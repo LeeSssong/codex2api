@@ -85,7 +85,7 @@ func (db *DB) ensureCodexRoutesSchema(ctx context.Context) error {
 			return fmt.Errorf("initialize Codex routes: %w", err)
 		}
 	}
-	for name, ddl := range map[string]string{"quality_bps": "TEXT NOT NULL DEFAULT ''", "quality_bps_disabled_at": "BIGINT NOT NULL DEFAULT 0", "quality_bps_recovery_at": "BIGINT NOT NULL DEFAULT 0", "quality_bps_owner_revision": "BIGINT NOT NULL DEFAULT 0"} {
+	for name, ddl := range map[string]string{"quality_bps": "TEXT NOT NULL DEFAULT ''", "quality_bps_disabled_at": "BIGINT NOT NULL DEFAULT 0", "quality_bps_recovery_at": "BIGINT NOT NULL DEFAULT 0", "quality_bps_owner_revision": "BIGINT NOT NULL DEFAULT 0", "quality_bps_recovery_epoch": "BIGINT NOT NULL DEFAULT 0"} {
 		if db.isSQLite() {
 			if err := db.ensureSQLiteColumn(ctx, "account_codex_paths", name, ddl); err != nil {
 				return err

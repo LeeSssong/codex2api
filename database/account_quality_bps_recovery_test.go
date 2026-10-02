@@ -12,7 +12,7 @@ import (
 func TestQualityBPS403RecoveryOwnsOnlyUnchangedAccountAndPath(t *testing.T) {
 	for _, driver := range []string{"sqlite", "postgres"} {
 		t.Run(driver, func(t *testing.T) {
-			for _, mode := range []string{"recover", "manual_bps", "credential", "group", "disabled_plugin"} {
+			for _, mode := range []string{"recover", "manual_bps", "credential", "group", "disabled_plugin", "plugin_aba"} {
 				t.Run(mode, func(t *testing.T) {
 					db := guardTestDB(t, driver)
 					ctx := context.Background()
@@ -64,9 +64,14 @@ func TestQualityBPS403RecoveryOwnsOnlyUnchangedAccountAndPath(t *testing.T) {
 						if err := db.SetAccountGroups(ctx, p.AccountID, []int64{group}); err != nil {
 							t.Fatal(err)
 						}
-					case "disabled_plugin":
+					case "disabled_plugin", "plugin_aba":
 						if err := NewPluginStore(db).Put(ctx, plugins.Setting{ID: "quality-ops", Enabled: false}); err != nil {
 							t.Fatal(err)
+						}
+						if mode == "plugin_aba" {
+							if err := NewPluginStore(db).Put(ctx, plugins.Setting{ID: "quality-ops", Enabled: true}); err != nil {
+								t.Fatal(err)
+							}
 						}
 					}
 					changed, err := db.CompleteQualityBPSRecovery(ctx, *candidate)
@@ -86,6 +91,15 @@ func TestQualityBPS403RecoveryOwnsOnlyUnchangedAccountAndPath(t *testing.T) {
 					if mode == "recover" {
 						if action, err := db.ApplyAccountQualityOutcome(ctx, p, "passed"); err != nil || action != "restored" {
 							t.Fatal("quality recovery after BPS recovery", action, err)
+						}
+					}
+					if mode == "plugin_aba" {
+						fresh, err := db.ClaimQualityBPSRecovery(ctx, time.Now().Add(4*time.Hour))
+						if err != nil || fresh == nil {
+							t.Fatal("fresh recovery", err)
+						}
+						if applied, err := db.CompleteQualityBPSRecovery(ctx, *fresh); err != nil || !applied {
+							t.Fatal("fresh recovery should still work", applied, err)
 						}
 					}
 				})

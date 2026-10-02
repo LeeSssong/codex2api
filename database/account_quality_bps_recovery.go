@@ -11,11 +11,12 @@ import (
 )
 
 type QualityBPSRecoveryCandidate struct {
-	AccountID  int64
-	Generation int64
-	Revision   int64
-	DisabledAt int64
-	Policy     accountops.QualityBPSPolicy
+	AccountID     int64
+	Generation    int64
+	Revision      int64
+	DisabledAt    int64
+	RecoveryEpoch int64
+	Policy        accountops.QualityBPSPolicy
 }
 
 func bpsRecoveryInterval(p accountops.QualityBPSPolicy) time.Duration {
@@ -60,12 +61,8 @@ func (db *DB) DisableQualityBPSOn403(ctx context.Context, id, generation int64) 
 		}
 		if policy.AutoMoveOn403 {
 			if policy.TargetGroupID > 0 {
-				var exists bool
-				if e := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM account_groups WHERE id=$1)`, policy.TargetGroupID).Scan(&exists); e != nil {
+				if e := db.validateQualityBPSGroupTx(ctx, tx, policy.TargetGroupID); e != nil {
 					return e
-				}
-				if !exists {
-					return nil
 				}
 			}
 			if _, e := tx.ExecContext(ctx, `DELETE FROM account_group_members WHERE account_id=$1`, id); e != nil {
@@ -152,13 +149,13 @@ func (db *DB) ClaimQualityBPSRecovery(ctx context.Context, now time.Time) (candi
 		if e != nil || !enabled {
 			return e
 		}
-		q := `SELECT a.id,a.credential_generation,a.control_revision,p.quality_bps_disabled_at,p.quality_bps FROM accounts a JOIN account_codex_paths p ON p.account_id=a.id WHERE a.status='active' AND a.enabled=TRUE AND a.control_revision=p.quality_bps_owner_revision AND p.upstream='basispoints' AND p.allowed=0 AND p.quality_bps_disabled_at>0 AND p.quality_bps_recovery_at<=$1 ORDER BY p.quality_bps_recovery_at LIMIT 1`
+		q := `SELECT a.id,a.credential_generation,a.control_revision,p.quality_bps_disabled_at,p.quality_bps,p.quality_bps_recovery_epoch FROM accounts a JOIN account_codex_paths p ON p.account_id=a.id WHERE a.status='active' AND a.enabled=TRUE AND a.control_revision=p.quality_bps_owner_revision AND p.upstream='basispoints' AND p.allowed=0 AND p.quality_bps_disabled_at>0 AND p.quality_bps_recovery_at<=$1 ORDER BY p.quality_bps_recovery_at LIMIT 1`
 		if !db.isSQLite() {
 			q += ` FOR UPDATE SKIP LOCKED`
 		}
 		var c QualityBPSRecoveryCandidate
 		var raw string
-		e = tx.QueryRowContext(ctx, q, now.Unix()).Scan(&c.AccountID, &c.Generation, &c.Revision, &c.DisabledAt, &raw)
+		e = tx.QueryRowContext(ctx, q, now.Unix()).Scan(&c.AccountID, &c.Generation, &c.Revision, &c.DisabledAt, &raw, &c.RecoveryEpoch)
 		if errors.Is(e, sql.ErrNoRows) {
 			return nil
 		}
@@ -168,7 +165,8 @@ func (db *DB) ClaimQualityBPSRecovery(ctx context.Context, now time.Time) (candi
 		if e := json.Unmarshal([]byte(raw), &c.Policy); e != nil {
 			return e
 		}
-		if _, e := tx.ExecContext(ctx, `UPDATE account_codex_paths SET quality_bps_recovery_at=$1 WHERE account_id=$2 AND upstream='basispoints'`, now.Add(bpsRecoveryInterval(c.Policy)).Unix(), c.AccountID); e != nil {
+		c.RecoveryEpoch++
+		if _, e := tx.ExecContext(ctx, `UPDATE account_codex_paths SET quality_bps_recovery_at=$1,quality_bps_recovery_epoch=$3 WHERE account_id=$2 AND upstream='basispoints'`, now.Add(bpsRecoveryInterval(c.Policy)).Unix(), c.AccountID, c.RecoveryEpoch); e != nil {
 			return e
 		}
 		if c.Policy.AutoDisableOn403 && c.Policy.AutoRecoverOn403 {
@@ -201,7 +199,7 @@ func (db *DB) CompleteQualityBPSRecovery(ctx context.Context, c QualityBPSRecove
 		if generation != c.Generation {
 			return nil
 		}
-		result, e := tx.ExecContext(ctx, `UPDATE account_codex_paths SET allowed=1,quality_bps_disabled_at=0,quality_bps_recovery_at=0 WHERE account_id=$1 AND upstream='basispoints' AND allowed=0 AND quality_bps_disabled_at=$2`, c.AccountID, c.DisabledAt)
+		result, e := tx.ExecContext(ctx, `UPDATE account_codex_paths SET allowed=1,quality_bps_disabled_at=0,quality_bps_recovery_at=0 WHERE account_id=$1 AND upstream='basispoints' AND allowed=0 AND quality_bps_disabled_at=$2 AND quality_bps_recovery_epoch=$3`, c.AccountID, c.DisabledAt, c.RecoveryEpoch)
 		if e != nil {
 			return e
 		}

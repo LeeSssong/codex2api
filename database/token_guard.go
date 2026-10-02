@@ -57,14 +57,12 @@ func (db *DB) ensureTokenGuardSchema(ctx context.Context) error {
 		}
 	}
 	if db.isSQLite() {
-		_, err := db.conn.ExecContext(ctx, "CREATE TRIGGER IF NOT EXISTS token_guard_module_fence AFTER UPDATE ON account_ops_settings WHEN NEW.key='module_enabled' AND NEW.value IS NOT OLD.value BEGIN UPDATE account_token_guard_config SET revision=revision+1 WHERE id=1; UPDATE account_token_guard_jobs SET state='cancelled',cancellation=TRUE,fence=fence+1,message='模块配置已变更' WHERE state IN ('queued','running','cancelling'); END")
+		_, err := db.conn.ExecContext(ctx, "DROP TRIGGER IF EXISTS token_guard_module_fence")
 		return err
 	}
 	return db.withWriteTx(ctx, func(tx *sql.Tx) error {
 		for _, statement := range []string{
-			"CREATE OR REPLACE FUNCTION token_guard_module_fence() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.key='module_enabled' AND NEW.value IS DISTINCT FROM OLD.value THEN UPDATE account_token_guard_config SET revision=revision+1 WHERE id=1; UPDATE account_token_guard_jobs SET state='cancelled',cancellation=TRUE,fence=fence+1,message='模块配置已变更' WHERE state IN ('queued','running','cancelling'); END IF; RETURN NULL; END $$",
 			"DROP TRIGGER IF EXISTS token_guard_module_fence ON account_ops_settings",
-			"CREATE TRIGGER token_guard_module_fence AFTER UPDATE ON account_ops_settings FOR EACH ROW EXECUTE FUNCTION token_guard_module_fence()",
 		} {
 			if _, err := tx.ExecContext(ctx, statement); err != nil {
 				return err
