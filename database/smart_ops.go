@@ -3,9 +3,52 @@ package database
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"time"
+
+	"github.com/codex2api/smartops"
 )
+
+func (db *DB) GetSmartOpsConfig(ctx context.Context, key string, target any) error {
+	if err := db.EnsureSmartOpsSchema(ctx); err != nil {
+		return err
+	}
+	var raw string
+	err := db.conn.QueryRowContext(ctx, `SELECT value FROM smart_ops_settings WHERE key=$1`, key).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal([]byte(raw), target)
+}
+func (db *DB) PutSmartOpsConfig(ctx context.Context, key string, value any) error {
+	if err := db.EnsureSmartOpsSchema(ctx); err != nil {
+		return err
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	_, err = db.conn.ExecContext(ctx, `INSERT INTO smart_ops_settings(key,value,updated_at) VALUES($1,$2,CURRENT_TIMESTAMP) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=CURRENT_TIMESTAMP`, key, string(raw))
+	return err
+}
+func (db *DB) LoadOAuthAutoConfig(ctx context.Context) (smartops.OAuthAutoConfig, error) {
+	c := smartops.DefaultOAuthAutoConfig()
+	return c, db.GetSmartOpsConfig(ctx, "oauth_auto_config", &c)
+}
+func (db *DB) SaveOAuthAutoConfig(ctx context.Context, c smartops.OAuthAutoConfig) error {
+	return db.PutSmartOpsConfig(ctx, "oauth_auto_config", c)
+}
+func (db *DB) LoadPriorityScheduling(ctx context.Context) (smartops.PriorityConfig, error) {
+	c := smartops.DefaultPriorityConfig()
+	return c, db.GetSmartOpsConfig(ctx, "priority_scheduling", &c)
+}
+func (db *DB) SavePriorityScheduling(ctx context.Context, c smartops.PriorityConfig) error {
+	return db.PutSmartOpsConfig(ctx, "priority_scheduling", c)
+}
 
 // SmartOpsJob is the durable lease boundary used by the Pelican adapter.
 // Account lookup, eligibility, billing and probe execution remain native.
@@ -22,6 +65,67 @@ type SmartOpsJob struct {
 	Attempts   int
 }
 
+func (db *DB) CreateSmartOpsPelicanJob(ctx context.Context, j SmartOpsJob) (int64, error) {
+	if err := db.EnsureSmartOpsSchema(ctx); err != nil {
+		return 0, err
+	}
+	if j.Samples < 1 {
+		j.Samples = 1
+	}
+	if j.Parallel < 1 {
+		j.Parallel = 1
+	}
+	if j.DueAt.IsZero() {
+		j.DueAt = time.Now().UTC()
+	}
+	if db.isSQLite() {
+		r, e := db.conn.ExecContext(ctx, `INSERT INTO smart_ops_pelican_jobs(account_id,model,samples,parallel,retries,due_at) VALUES($1,$2,$3,$4,$5,$6)`, j.AccountID, j.Model, j.Samples, j.Parallel, j.Retries, j.DueAt)
+		if e != nil {
+			return 0, e
+		}
+		return r.LastInsertId()
+	}
+	var id int64
+	err := db.conn.QueryRowContext(ctx, `INSERT INTO smart_ops_pelican_jobs(account_id,model,samples,parallel,retries,due_at) VALUES($1,$2,$3,$4,$5,$6) RETURNING id`, j.AccountID, j.Model, j.Samples, j.Parallel, j.Retries, j.DueAt).Scan(&id)
+	return id, err
+}
+func (db *DB) ListSmartOpsPelicanJobs(ctx context.Context, limit int) ([]SmartOpsJob, error) {
+	if err := db.EnsureSmartOpsSchema(ctx); err != nil {
+		return nil, err
+	}
+	if limit < 1 || limit > 500 {
+		limit = 100
+	}
+	rows, err := db.conn.QueryContext(ctx, `SELECT id,account_id,model,samples,parallel,retries,due_at,lease_owner,lease_until,attempts FROM smart_ops_pelican_jobs ORDER BY id DESC LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []SmartOpsJob
+	for rows.Next() {
+		var j SmartOpsJob
+		if err = rows.Scan(&j.ID, &j.AccountID, &j.Model, &j.Samples, &j.Parallel, &j.Retries, &j.DueAt, &j.LeaseOwner, &j.LeaseUntil, &j.Attempts); err != nil {
+			return nil, err
+		}
+		out = append(out, j)
+	}
+	return out, rows.Err()
+}
+func (db *DB) CancelSmartOpsPelicanJob(ctx context.Context, id int64) error {
+	if err := db.EnsureSmartOpsSchema(ctx); err != nil {
+		return err
+	}
+	r, err := db.conn.ExecContext(ctx, `DELETE FROM smart_ops_pelican_jobs WHERE id=$1 AND lease_until IS NULL`, id)
+	if err != nil {
+		return err
+	}
+	n, _ := r.RowsAffected()
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
 func (db *DB) EnsureSmartOpsSchema(ctx context.Context) error {
 	if db == nil || db.conn == nil {
 		return errors.New("database is not initialized")
@@ -32,6 +136,9 @@ func (db *DB) EnsureSmartOpsSchema(ctx context.Context) error {
 	}
 	_, err := db.conn.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS smart_ops_pelican_jobs (id `+id+`, account_id BIGINT NOT NULL, model TEXT NOT NULL DEFAULT '', samples INTEGER NOT NULL DEFAULT 1, parallel INTEGER NOT NULL DEFAULT 1, retries INTEGER NOT NULL DEFAULT 1, due_at TIMESTAMP NOT NULL, lease_owner TEXT NOT NULL DEFAULT '', lease_until TIMESTAMP NULL, attempts INTEGER NOT NULL DEFAULT 0, updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)`)
 	if err != nil {
+		return err
+	}
+	if _, err = db.conn.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS smart_ops_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '{}', updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)`); err != nil {
 		return err
 	}
 	rid := "INTEGER PRIMARY KEY AUTOINCREMENT"
