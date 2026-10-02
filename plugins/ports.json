@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "application": "codex2api",
+  "source_commit": "2a0948c4bb7f74e4a960cca60cec67db857fc843",
+  "runtime_dependency_on_source": false,
+  "modules": {
+    "auto-config": ["upstream/sub2api/backend/internal/service/oauth_auto_config", "upstream/sub2api/backend/internal/service/auto_config_events", "upstream/sub2api/frontend/src/views/admin/OAuthAutoConfig"],
+    "priority-scheduling": ["upstream/sub2api/backend/internal/service/priority_scheduling", "upstream/sub2api/frontend/src/views/admin/PriorityScheduling"],
+    "quality-ops": ["upstream/sub2api/backend/internal/service/account_quality", "upstream/sub2api/backend/internal/service/quality_judge", "upstream/sub2api/backend/internal/repository/account_quality", "upstream/sub2api/frontend/src/views/admin/AccountQuality"],
+    "account-ops": ["upstream/sub2api/backend/internal/service/account_ops", "upstream/sub2api/backend/internal/repository/account_ops", "upstream/sub2api/frontend/src/views/admin/AccountOps"],
+    "token-guard": ["upstream/sub2api/backend/internal/service/account_token_guard", "upstream/sub2api/backend/internal/handler/admin/account_token_guard", "upstream/sub2api/frontend/src/views/admin/ops/TokenGuard"],
+    "credential-ops": ["upstream/sub2api/backend/internal/service/openai_two_fa", "upstream/sub2api/backend/internal/service/openai_oauth_reauth", "upstream/sub2api/backend/internal/service/account_token_guard_v2", "upstream/sub2api/backend/internal/repository/openai_oauth_reauth", "upstream/sub2api/tools/openai_oauth_reauth_worker", "upstream/sub2api/tools/reauth-runtime", "upstream/sub2api/frontend/src/views/admin/ops/TokenGuardV2", "upstream/sub2api/frontend/src/components/account/CreateAccountModal.vue"],
+    "pelican-tests": ["upstream/sub2api/backend/internal/service/pelican", "upstream/sub2api/backend/internal/repository/pelican", "upstream/sub2api/frontend/src/views/admin/PelicanTests"]
+  }
+}
