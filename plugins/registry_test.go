@@ -36,9 +36,48 @@ func TestRegistryDefaultsAndIndependentFlags(t *testing.T) {
 		t.Fatal("changing one plugin changed another")
 	}
 	setting, err := registry.Get(context.Background(), "quality-ops")
-	if err != nil || setting.Version != "2.1.0" || !setting.Flags["alerts"] {
+	if err != nil || setting.Version != registry.defaults["quality-ops"].Version || !setting.Flags["alerts"] {
 		t.Fatalf("stored setting = %+v, err=%v", setting, err)
 	}
+}
+
+func TestRegistryInstalledMetadataOverridesPersistedAndSubmittedVersions(t *testing.T) {
+	ctx := context.Background()
+	store := &memoryStore{values: map[string]Setting{"quality-ops": {ID: "quality-ops", Version: "old", SourceSHA: "old-source", SDKCompatibility: "old-sdk", UpdateMode: "old-mode", Enabled: false, Flags: map[string]bool{"alerts": true}}}}
+	registry := NewRegistry(store)
+	installed := registry.defaults["quality-ops"]
+	installed.Version = "2.0.0"
+	installed.SourceSHA = "new-installed-source"
+	installed.SDKCompatibility = "plugins/v2"
+	installed.UpdateMode = "new-mode"
+	registry.defaults[installed.ID] = installed
+	assertInstalled := func(s Setting) {
+		t.Helper()
+		if s.ID != installed.ID || s.Version != installed.Version || s.SourceSHA != installed.SourceSHA || s.SDKCompatibility != installed.SDKCompatibility || s.UpdateMode != installed.UpdateMode {
+			t.Fatalf("metadata did not match installed build: %+v", s)
+		}
+		if s.Enabled || !s.Flags["alerts"] {
+			t.Fatal("metadata normalization discarded controls")
+		}
+	}
+	setting, err := registry.Get(ctx, installed.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertInstalled(setting)
+	setting.Version = "forged"
+	setting.SourceSHA = "forged"
+	setting.SDKCompatibility = "forged"
+	setting.UpdateMode = "forged"
+	if err := registry.Set(ctx, setting); err != nil {
+		t.Fatal(err)
+	}
+	assertInstalled(store.values[installed.ID])
+	setting, err = registry.Get(ctx, installed.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertInstalled(setting)
 }
 
 func TestRegistryRejectsUnknownIDs(t *testing.T) {

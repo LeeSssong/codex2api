@@ -102,7 +102,7 @@ async function setup(page, { lang = "en", moduleEnabled = true } = {}) {
     let data = {},
       status = 200;
     if (path.endsWith("/bootstrap-status")) data = { needs_bootstrap: false };
-    else if (path.endsWith("/health")) data = { status: "ok" };
+    else if (path.endsWith("/health")) data = { status: "ok", build_version:"v3.0.0" };
     else if (path.endsWith("/api-keys")) data = { keys: [{ id: 1 }] };
     else if (path.endsWith("/branding")) data = { site_name: "Codex2API" };
     else if (path.endsWith("/settings/visible-channels"))
@@ -465,18 +465,17 @@ test("TokenGuard honours independent plugin disable and renders all supported la
   }
 });
 
-test('source-managed version popover identifies unknown checks and the upstream repository',async()=>{
+test('version popover uses the running release and current official update display',async()=>{
   const browser=await chromium.launch({headless:true,channel:process.env.PLAYWRIGHT_CHANNEL||'chrome'})
   const page=await browser.newPage({viewport:{width:1440,height:1000}})
   try {
     await setup(page);await page.goto(base+'/admin/smart-ops/tokens')
     await page.getByRole('heading',{name:'Credential checks',exact:true}).waitFor()
-    await page.getByRole('button',{name:/^v\d+\.\d+/}).click()
-    await page.getByText('Upstream version unconfirmed',{exact:true}).waitFor()
-    await page.getByText('Source: hloolx/codex2api',{exact:true}).waitFor()
-    await page.getByText('Local revision: abcdef012345',{exact:true}).waitFor()
-    await page.getByText('Use the reviewed source release workflow',{exact:true}).waitFor()
-    assert.equal(await page.getByRole('link',{name:'View upstream commits',exact:true}).getAttribute('href'),'https://github.com/hloolx/codex2api/commits/main')
+    await page.getByRole('button',{name:'v3.0.0',exact:true}).click()
+    const popover=page.locator('#version-details')
+    await popover.getByText('You are on the latest version',{exact:true}).waitFor()
+    await popover.getByText('Current version: v3.0.0',{exact:true}).waitFor()
+    await popover.getByText('Latest version: v3.0.0',{exact:true}).waitFor()
     assert.equal(await page.getByRole('button',{name:'Update now',exact:true}).count(),0)
     await page.screenshot({path:artifacts+'/managed-version-desktop.png',fullPage:false})
   } finally {await browser.close()}

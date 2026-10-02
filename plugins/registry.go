@@ -94,19 +94,7 @@ func (r *Registry) Get(ctx context.Context, id string) (Setting, error) {
 	} else if err != nil {
 		return Setting{}, err
 	}
-	if setting.Version == "" {
-		setting.Version = defaultSetting.Version
-	}
-	if setting.SourceSHA == "" {
-		setting.SourceSHA = defaultSetting.SourceSHA
-	}
-	if setting.SDKCompatibility == "" {
-		setting.SDKCompatibility = defaultSetting.SDKCompatibility
-	}
-	if setting.UpdateMode == "" {
-		setting.UpdateMode = defaultSetting.UpdateMode
-	}
-	setting = normalize(setting)
+	setting = installedSetting(defaultSetting, setting)
 	r.mu.Lock()
 	r.cache[id] = setting
 	r.cacheAt[id] = time.Now()
@@ -139,10 +127,7 @@ func (r *Registry) Set(ctx context.Context, setting Setting) error {
 	if _, ok := r.defaults[setting.ID]; !ok {
 		return ErrUnknownPlugin
 	}
-	setting = normalize(setting)
-	if setting.Version == "" {
-		setting.Version = r.defaults[setting.ID].Version
-	}
+	setting = installedSetting(r.defaults[setting.ID], setting)
 	if r.store == nil {
 		return errors.New("plugin store is not configured")
 	}
@@ -161,6 +146,14 @@ func normalize(setting Setting) Setting {
 		setting.Flags = map[string]bool{}
 	}
 	return cloneSetting(setting)
+}
+
+// Only controls are durable user state. Installed versions and compatibility
+// come from the running build, including after upgrading an existing database.
+func installedSetting(installed, controls Setting) Setting {
+	installed.Enabled = controls.Enabled
+	installed.Flags = controls.Flags
+	return normalize(installed)
 }
 
 func cloneSetting(setting Setting) Setting {
