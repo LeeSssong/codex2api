@@ -1857,6 +1857,7 @@ export interface AdminErrorResponse {
 
 export interface HealthResponse {
   status: 'ok' | string
+  build_version?: string
   available: number
   total: number
 }
