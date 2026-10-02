@@ -186,7 +186,7 @@ func (d *CodexRouteDecision) pathIneligibleReason(account *auth.Account, path, m
 			return "basispoints_unavailable"
 		}
 		if len(body) > 0 {
-			if reason := basispoints.NativeCodexReason(body, basispointsImageHostAvailable()); reason != "" {
+			if reason := basispoints.NativeCodexReason(smartOpsBPSBody(account, body), basispointsImageHostAvailable()); reason != "" {
 				return "requires_native_" + reason
 			}
 		}

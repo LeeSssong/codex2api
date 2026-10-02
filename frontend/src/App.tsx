@@ -36,6 +36,9 @@ const AccountOps = lazy(() => import('./pages/AccountOps'))
 const AccountQuality = lazy(() => import('./pages/AccountQuality'))
 const TokenGuard = lazy(() => import('./pages/TokenGuard'))
 const CredentialOps = lazy(() => import('./pages/CredentialOps'))
+const AutoConfig = lazy(() => import('./pages/AutoConfig'))
+const PriorityScheduling = lazy(() => import('./pages/PriorityScheduling'))
+const PelicanTests = lazy(() => import('./pages/PelicanTests'))
 
 export default function App() {
   return (
@@ -84,6 +87,9 @@ function AdminApp() {
           <Route path="/smart-ops/alerts" element={<AccountOps />} />
           <Route path="/smart-ops/tokens" element={<TokenGuard />} />
           <Route path="/smart-ops/credentials" element={<CredentialOps />} />
+          <Route path="/smart-ops/auto-config" element={<AutoConfig />} />
+          <Route path="/smart-ops/priority" element={<PriorityScheduling />} />
+          <Route path="/smart-ops/pelican" element={<PelicanTests />} />
           <Route path="/state-pool" element={<StatePool />} />
           <Route path="/prompt-filter" element={<Navigate to="/prompt-filter/overview" replace />} />
           <Route path="/prompt-filter/:view" element={<PromptFilter />} />

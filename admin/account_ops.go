@@ -248,6 +248,37 @@ func (h *Handler) ListAccountQualityPlans(c *gin.Context) {
 	}
 	c.JSON(200, gin.H{"items": items})
 }
+func (h *Handler) prepareQualityBPSPolicy(ctx context.Context, p *accountops.Plan) error {
+	if p.Action != "enable_bps" {
+		return nil
+	}
+	if p.BPS == nil {
+		config, err := h.db.LoadOAuthAutoConfig(ctx)
+		if err != nil {
+			return err
+		}
+		raw, err := json.Marshal(config.BPS)
+		if err != nil {
+			return err
+		}
+		p.BPS = &accountops.QualityBPSPolicy{FailureThreshold: 1, PassThreshold: 1}
+		if err = json.Unmarshal(raw, p.BPS); err != nil {
+			return err
+		}
+	}
+	if err := accountops.ValidateQualityBPSPolicy(p.BPS); err != nil {
+		return err
+	}
+	if !p.BPS.AllModels {
+		for _, model := range p.BPS.Models {
+			if !proxy.BasispointsModelSupported(model) {
+				return fmt.Errorf("BPS model %q is not supported by the native transport", model)
+			}
+		}
+	}
+	return nil
+}
+
 func (h *Handler) SaveAccountQualityPlan(c *gin.Context) {
 	if !h.requireQualityOps(c) {
 		return
@@ -256,6 +287,10 @@ func (h *Handler) SaveAccountQualityPlan(c *gin.Context) {
 	var p accountops.Plan
 	if e := c.ShouldBindJSON(&p); e != nil {
 		c.JSON(400, gin.H{"error": "无效规则"})
+		return
+	}
+	if err := h.prepareQualityBPSPolicy(c.Request.Context(), &p); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
 

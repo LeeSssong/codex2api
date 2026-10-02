@@ -1259,6 +1259,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.GET("/quality-ops/history/:id", h.GetAccountQualityRound)
 	h.RegisterTokenGuardRoutes(api)
 	h.RegisterCredentialOpsRoutes(api)
+	h.RegisterSmartOps(api)
 	api.GET("/quality-tests", h.ListQualityTests)
 	h.registerStatePoolRoutes(api)
 	api.GET("/quality-tests/:id", h.GetQualityTest)

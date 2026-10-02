@@ -62,6 +62,9 @@ func main() {
 	if err := db.EnsureCredentialOpsSchema(context.Background()); err != nil {
 		log.Fatalf("credential operations schema initialization failed: %v", err)
 	}
+	if err := db.EnsureSmartOpsSchema(context.Background()); err != nil {
+		log.Fatalf("smart operations schema initialization failed: %v", err)
+	}
 	if migrateOnlyEnabled() {
 		log.Println("数据库迁移完成，CODEX_MIGRATE_ONLY 已启用，进程退出")
 		return
@@ -362,6 +365,10 @@ func main() {
 	store.TriggerAutoCleanupAsync()
 	defer store.Stop()
 	backgroundCtx, cancelBackground := context.WithCancel(context.Background())
+	if err := adminHandler.InitSmartOps(backgroundCtx); err != nil {
+		cancelBackground()
+		log.Fatalf("smart operations startup failed: %v", err)
+	}
 	adminHandler.StartQualityTests(backgroundCtx)
 	adminHandler.StartAccountOps(backgroundCtx)
 	adminHandler.StartTokenGuard(backgroundCtx)
@@ -679,6 +686,7 @@ func main() {
 	adminHandler.WaitAutoActivate5hWindow()
 	adminHandler.WaitQualityTests()
 	adminHandler.WaitAccountOps()
+	adminHandler.WaitSmartOps()
 	if err := adminHandler.WaitCredentialOpsScheduler(shutdownCtx); err != nil {
 		log.Printf("credential operations shutdown: %v", err)
 	}
