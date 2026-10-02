@@ -4,6 +4,7 @@ Only the codex app is stopped/recreated. PostgreSQL, Redis and Sub stay running.
 An image built from verified/pushed clean main is mandatory. No credentials print.
 """
 import argparse, copy, fcntl, ipaddress, json, os, pathlib, re, shutil, subprocess, time, urllib.request, urllib.error, stat, tempfile, types
+from credential_runtime_release import runtime_compose, APP_SECRET_KEYS
 
 def codex_route(config):
  matches=[]
@@ -118,8 +119,10 @@ class Release:
   self.dir=self.root/'backups'/args.release_id; self.dir.mkdir(mode=0o700,parents=True,exist_ok=False)
   self.events=[]; self.started=time.monotonic(); self.maintenance=False; self.stopped=False; self.migrated=False; self.opened=False; self.app_started=False; self.gated=False
   self.bps=bool(getattr(args,'bps_release',False)); self.new_compose=None
+  self.credentials=bool(getattr(args,'credential_runtime_image',None));self.runtime_started=False
   self.report={'root':str(self.root),'compose':str(self.compose),'bps_release':self.bps,'revision':args.revision,'tree':args.tree,'image':args.image,'digest':args.digest,'release_id':args.release_id,'events':self.events}
   self.before=self.compose.read_text(); (self.dir/'compose.before.yml').write_text(self.before)
+  self.old_runtime='credential-runtime' in json.loads(self.before).get('services',{}) if self.before.lstrip().startswith('{') else False
   self.old=self.inspect('codex2api'); self.rollback_compose=image_pinned_compose(self.before,self.old); (self.dir/'compose.rollback.yml').write_text(self.rollback_compose); self.env=dict(v.split('=',1) for v in self.old['Config']['Env']); self.port=int(self.env.get('CODEX_PORT','18080'))
   if self.bps:
    (self.dir/'old-container.json').write_text(json.dumps(self.old));(self.dir/'old-container.json').chmod(0o600)
@@ -183,6 +186,7 @@ class Release:
   result={}
   for name in names:
    if name=='codex2api' or name.startswith(('codex2api-rehearsal-','codex2api-migrate-')):continue
+   if getattr(self,'credentials',False) and name=='codex2api-credential-runtime':continue
    container=self.inspect(name)
    result[name]={'id':container['Id'],'started_at':container['State']['StartedAt']}
   return result
@@ -243,6 +247,7 @@ class Release:
   self.route_before=copy.deepcopy(codex_route(self.caddy())['handle'])
   (self.dir/'caddy-handle.before.json').write_text(json.dumps(self.route_before))
   if self.bps:self.prepare_bps_release()
+  if self.credentials:self.prepare_credential_runtime()
   snapshot=self.dir/'preflight.dump';self.dump(snapshot)
   scratch='codex_release_verify_'+re.sub('[^a-z0-9]','',self.args.release_id.lower())[-24:]
   self.run(['docker','exec','codex2api-postgres','sh','-c','exec createdb -U "$POSTGRES_USER" -O "$POSTGRES_USER" "$1"','sh',scratch])
@@ -262,6 +267,40 @@ class Release:
     rehearsal_env.unlink(missing_ok=True)
   finally:self.run(['docker','exec','codex2api-postgres','sh','-c','exec dropdb -U "$POSTGRES_USER" "$1"','sh',scratch])
   self.event('preflight-and-restore-rehearsal-passed')
+ def prepare_credential_runtime(self):
+  image=json.loads(self.run(['docker','image','inspect',self.args.credential_runtime_image]))[0]
+  if image['Id']!=self.args.credential_runtime_digest or image['Architecture']!='amd64':raise ValueError('credential runtime identity mismatch')
+  check_source(image['Config'].get('Labels') or {},self.args.revision,self.args.tree)
+  app_path,_=checked_file(self.args.credential_app_env,private=True)
+  worker_path,_=checked_file(self.args.credential_worker_env,private=True)
+  def values(path,allowed):
+   result={}
+   for line in path.read_text().splitlines():
+    if not line.strip() or line.lstrip().startswith('#'):continue
+    key,sep,value=line.partition('=')
+    if not sep or key not in allowed or key in result or len(value)<32:raise ValueError('invalid dedicated credential environment')
+    result[key]=value
+   if set(result)!=allowed:raise ValueError('missing dedicated credential environment')
+   return result
+  app=values(app_path,APP_SECRET_KEYS);worker=values(worker_path,{'CODEX2API_CREDENTIAL_OPS_WORKER_TOKEN'})
+  if app['CODEX2API_CREDENTIAL_OPS_WORKER_TOKEN']!=worker['CODEX2API_CREDENTIAL_OPS_WORKER_TOKEN']:raise ValueError('credential worker token mismatch')
+  effective=json.loads(self.dc('config','--format','json','--no-env-resolution'))
+  effective['services']['codex2api']['image']=self.args.image
+  self.new_compose=json.dumps(runtime_compose(effective,image['Id'],str(app_path),str(worker_path)),indent=2)+'\n'
+  self.report['credential_runtime_digest']=image['Id'];self.save()
+  self.run(['docker','run','--rm','--network','none','--memory','256m','--cpus','0.5',image['Id'],'--check'],timeout=60)
+ def start_credential_runtime(self):
+  if not getattr(self,'credentials',False):return
+  self.runtime_started=True
+  self.dc('up','-d','--no-deps','credential-runtime')
+  deadline=time.monotonic()+90
+  while time.monotonic()<deadline:
+   runtime=self.inspect('codex2api-credential-runtime')
+   if runtime['Image']!=self.args.credential_runtime_digest:raise RuntimeError('credential runtime image mismatch')
+   if runtime['State'].get('Health',{}).get('Status')=='healthy':
+    self.event('credential-runtime-ready');return
+   time.sleep(1)
+  raise RuntimeError('credential runtime readiness timeout')
  def verify_bps_schema(self,db):
   expected={'system_settings':['basispoints_config','basispoints_image_relay_epoch'], 'account_codex_paths':['model_scope','models_json','auto_disable_on_403','cache_creation_as_input','policy_revision','disabled_by','disabled_reason','disabled_at'], 'image_assets':['relay_expires_at','relay_scope_hash','relay_epoch','relay_digest','relay_state','relay_request','relay_cleanup_next_attempt'],'image_relay_lock':['revision','rejections','cleanup_errors'],'image_relay_reservations':['token','bytes','assets','expires_at']}
   for table,columns in expected.items():
@@ -397,6 +436,7 @@ class Release:
   if self.run(query).strip():raise RuntimeError("migration container still exists; database recovery blocked")
  def rollback(self,preserve_database=False):
   self.event('rollback-started')
+  if getattr(self,'runtime_started',False):self.dc('stop','-t','300','credential-runtime',timeout=330)
   self.stop_migrator()
   if not self.stopped:return
   if preserve_database:
@@ -415,6 +455,7 @@ class Release:
    self.run(['docker','exec','-i','codex2api-postgres','sh','-c','exec pg_restore --exit-on-error --no-owner -U "$POSTGRES_USER" -d "$POSTGRES_DB"'],(self.dir/'stopped.dump').read_bytes())
   if getattr(self,'bps',False):self.quarantine_bps_assets()
   self.dc('up','-d','--no-deps','codex2api');self.ready()
+  if getattr(self,'old_runtime',False) and getattr(self,'credentials',False):self.dc('up','-d','--no-deps','credential-runtime')
   self.verify_protected_containers() if getattr(self,'bps',False) else None
   self.network_gate(False)
   if self.maintenance:self.restore_route()
@@ -425,6 +466,7 @@ class Release:
    self.network_gate(True)
    self.maintenance=True;self.load_caddy(maintenance_config(self.caddy()));self.event('maintenance-on')
    self.drain()
+   if getattr(self,'credentials',False) and getattr(self,'old_runtime',False):self.dc('stop','-t','300','credential-runtime',timeout=330)
    self.stopped=True;stop_grace=max(0,int(300-(time.monotonic()-self.drain_started)));self.dc('stop','-t',str(stop_grace),'codex2api',timeout=stop_grace+30);self.event('app-stopped')
    self.dump(self.dir/'stopped.dump');self.event('consistent-backup-completed')
    self.original_counts={table:self.sql('SELECT count(*) FROM '+table+';') for table in ['accounts','api_keys']}
@@ -436,6 +478,7 @@ class Release:
    self.dc('up','-d','--no-deps','codex2api');self.ready()
    if self.inspect('codex2api')['Image']!=self.args.digest:raise RuntimeError('running image mismatch')
    self.feature_smoke()
+   self.start_credential_runtime()
    settings=json.loads(self.request('/api/admin/settings',True)[2])
    for key in ['codex_basispoints_enabled']:
     if key in self.original_settings and settings.get(key)!=self.original_settings.get(key):raise RuntimeError('existing setting changed: '+key)
@@ -466,6 +509,7 @@ def main():
  parser=argparse.ArgumentParser()
  for name in ['image','digest','revision','tree','release-id']:parser.add_argument('--'+name)
  parser.add_argument('--bps-release',action='store_true');parser.add_argument('--bps-signing-env');parser.add_argument('--rollback-existing')
+ for name in ['credential-runtime-image','credential-runtime-digest','credential-app-env','credential-worker-env']:parser.add_argument('--'+name)
  args=parser.parse_args()
  if args.rollback_existing:
   if args.bps_signing_env or any(getattr(args,n) for n in ['image','digest','revision','tree','release_id']):parser.error('rollback-existing cannot be combined with new-release parameters')
@@ -473,6 +517,9 @@ def main():
   if not all(getattr(args,n) for n in ['image','digest','revision','tree','release_id']):parser.error('new release requires image/digest/revision/tree/release-id')
   if not re.fullmatch(r'[a-zA-Z0-9._-]+',args.release_id):parser.error('invalid release ID')
   if args.bps_signing_env and not args.bps_release:parser.error('signing env requires bps-release')
+  credential_args=[args.credential_runtime_image,args.credential_runtime_digest,args.credential_app_env,args.credential_worker_env]
+  if any(credential_args) and not all(credential_args):parser.error('credential release requires image/digest/app-env/worker-env')
+  if any(credential_args) and args.bps_release:parser.error('credential and BPS configuration migrations must be separate releases')
  os.umask(0o077)
  with open('/var/lock/codex2api-release.lock','w') as lock:
   fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
