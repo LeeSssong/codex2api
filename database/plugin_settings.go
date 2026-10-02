@@ -107,6 +107,25 @@ func (s *PluginStore) Put(ctx context.Context, setting plugins.Setting) error {
 			_, err = tx.ExecContext(ctx, `UPDATE account_token_guard_jobs SET state='cancelled',cancellation=TRUE,fence=fence+1 WHERE state IN ('queued','running','cancelling')`)
 		case "quality-ops":
 			_, err = tx.ExecContext(ctx, `UPDATE account_quality_plans SET lease='',lease_until=NULL,version=version+1 WHERE lease<>''`)
+		case "credential-ops":
+			for table, query := range map[string]string{
+				"credential_ops_tasks":    `UPDATE credential_ops_tasks SET status='cancelled',stage='cancelled',lease_owner='',lease_until=NULL,finished_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE status IN ('queued','running')`,
+				"credential_ops_monitors": `UPDATE credential_ops_monitors SET lease_owner='',lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE lease_owner<>''`,
+			} {
+				var exists bool
+				lookup := `SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=$1)`
+				if !s.db.isSQLite() {
+					lookup = `SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_schema=current_schema() AND table_name=$1)`
+				}
+				if err = tx.QueryRowContext(ctx, lookup, table).Scan(&exists); err != nil {
+					return err
+				}
+				if exists {
+					if _, err = tx.ExecContext(ctx, query); err != nil {
+						return err
+					}
+				}
+			}
 		}
 		return err
 	})
