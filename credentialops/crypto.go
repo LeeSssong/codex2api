@@ -14,7 +14,7 @@ import (
 
 func EnvCrypto() (func(string) (string, error), func(string) (string, error)) {
 	keyText := strings.TrimSpace(os.Getenv("CODEX2API_CREDENTIAL_OPS_KEY"))
-	if keyText == "" {
+	if len(keyText) < 32 {
 		return func(string) (string, error) { return "", ErrEncryptionUnavailable }, func(string) (string, error) { return "", ErrEncryptionUnavailable }
 	}
 	sum := sha256.Sum256([]byte(keyText))
@@ -35,6 +35,9 @@ func EnvCrypto() (func(string) (string, error), func(string) (string, error)) {
 		return "enc:v1:" + base64.RawURLEncoding.EncodeToString(g.Seal(n, n, []byte(v), nil)), nil
 	}
 	dec := func(v string) (string, error) {
+		if v == "" {
+			return "", nil
+		}
 		if !strings.HasPrefix(v, "enc:v1:") {
 			return "", errors.New("invalid encrypted credential")
 		}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -24,10 +25,17 @@ func (db *DB) EnsureCredentialOpsSchema(ctx context.Context) error {
 			return fmt.Errorf("credential ops schema: %w", err)
 		}
 	}
+	if _, err := db.conn.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS credential_ops_task_inputs (task_id BIGINT PRIMARY KEY, config_json TEXT NOT NULL)`); err != nil {
+		return err
+	}
+	if _, err := db.conn.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS credential_ops_rules (account_id BIGINT PRIMARY KEY, interval_seconds INTEGER NOT NULL DEFAULT 1800, failure_threshold INTEGER NOT NULL DEFAULT 2, cooldown_seconds INTEGER NOT NULL DEFAULT 3600)`); err != nil {
+		return err
+	}
 	return nil
 }
 
 type CredentialOpsLoginConfigRow struct {
+	Name                                                 string
 	AccountID                                            int64
 	LoginEmail, CredentialMode, Engine, ProxySource      string
 	PasswordCiphertext, TOTPCiphertext, OTPURLCiphertext string
@@ -85,7 +93,10 @@ func (db *DB) claimCredentialOpsTaskSQLite(ctx context.Context, owner string, le
 	return &r, err
 }
 func (db *DB) CompleteCredentialOpsTask(ctx context.Context, id int64, owner, stage, status, reason string) error {
-	q := `UPDATE credential_ops_tasks SET status=$3,stage=$4,error_message=$5,lease_owner='',lease_until=NULL,finished_at=CASE WHEN $3 IN ('succeeded','failed','cancelled') THEN CURRENT_TIMESTAMP ELSE NULL END,updated_at=CURRENT_TIMESTAMP WHERE id=$1 AND lease_owner=$2`
+	if status != "failed" && status != "succeeded" {
+		return errors.New("invalid terminal status")
+	}
+	q := `UPDATE credential_ops_tasks SET status=$3,stage=$4,error_message=$5,lease_owner='',lease_until=NULL,finished_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=$1 AND lease_owner=$2 AND status='running' AND lease_until>CURRENT_TIMESTAMP`
 	res, err := db.conn.ExecContext(ctx, q, id, owner, status, stage, reason)
 	if err != nil {
 		return err

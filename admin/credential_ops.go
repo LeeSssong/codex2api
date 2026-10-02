@@ -1,150 +1,178 @@
 package admin
 
 import (
-	"context"
+	"crypto/subtle"
+	"encoding/json"
+	"errors"
+	"github.com/codex2api/auth"
+	"github.com/codex2api/credentialops"
+	"github.com/codex2api/database"
+	"github.com/codex2api/internal/openaiidentity"
+	"github.com/gin-gonic/gin"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
-	"sync"
-
-	"github.com/codex2api/credentialops"
-	"github.com/codex2api/database"
-	"github.com/gin-gonic/gin"
+	"time"
 )
 
-var credentialOpsManagers sync.Map // one manager per database pointer; no shared Sub2API service state
-func (h *Handler) credentialOpsManager() *credentialops.Manager {
-	if v, ok := credentialOpsManagers.Load(h.db); ok {
-		return v.(*credentialops.Manager)
-	}
-	e, d := credentialops.EnvCrypto()
-	m := credentialops.NewManager(credentialops.ManagerConfig{Encrypt: e, Decrypt: d})
-	actual, _ := credentialOpsManagers.LoadOrStore(h.db, m)
-	return actual.(*credentialops.Manager)
-}
-
 type credentialOpsConfigRequest struct {
-	Email, Mode, Engine, ProxySource, Password, TOTPSecret, OTPURL string
-	ClearPassword, ClearTOTP                                       bool
+	Name          string `json:"name"`
+	Email         string `json:"email"`
+	Mode          string `json:"mode"`
+	Engine        string `json:"engine"`
+	ProxySource   string `json:"proxy_source"`
+	Password      string `json:"password"`
+	TOTPSecret    string `json:"totp_secret"`
+	OTPURL        string `json:"otp_url"`
+	ClearPassword bool   `json:"clear_password"`
+	ClearTOTP     bool   `json:"clear_totp"`
+	ClearOTPURL   bool   `json:"clear_otp_url"`
 }
 
-// StartCredentialOpsImport creates or reuses a native OAuth account before queuing
-// the real login runner. Identity dedup uses the same account table as routing.
-func (h *Handler) StartCredentialOpsImport(c *gin.Context) {
-	var in credentialOpsConfigRequest
-	if c.ShouldBindJSON(&in) != nil || in.Email == "" {
-		c.JSON(400, gin.H{"error": "email is required"})
-		return
-	}
-	ctx := c.Request.Context()
-	email := strings.ToLower(strings.TrimSpace(in.Email))
-	id, err := h.db.FindActiveAccountByOAuthIdentity(ctx, email, "")
-	if err != nil {
-		c.JSON(500, gin.H{"error": "identity lookup failed"})
-		return
-	}
-	if id == 0 {
-		id, err = h.db.InsertAccountWithCredentials(ctx, email, map[string]any{"upstream_type": "openai", "email": email}, "")
+func configView(cfg *database.CredentialOpsLoginConfigRow) gin.H {
+	return gin.H{"account_id": cfg.AccountID, "email": cfg.LoginEmail, "mode": cfg.CredentialMode, "engine": cfg.Engine, "proxy_source": cfg.ProxySource, "password_configured": cfg.PasswordCiphertext != "", "totp_configured": cfg.TOTPCiphertext != "", "otp_url_configured": cfg.OTPURLCiphertext != "", "updated_at": cfg.UpdatedAt}
+}
+func (h *Handler) prepareCredentialConfig(c *gin.Context, id int64, in credentialOpsConfigRequest) (database.CredentialOpsLoginConfigRow, error) {
+	old := credentialops.LoginConfig{}
+	if id > 0 {
+		row, err := h.db.GetAccountByID(c.Request.Context(), id)
+		if err != nil || row == nil || row.Status == "deleted" {
+			return database.CredentialOpsLoginConfigRow{}, errors.New("account not found")
+		}
+		if row.Platform != "" && row.Platform != "openai" {
+			return database.CredentialOpsLoginConfigRow{}, errors.New("only OpenAI accounts support credential operations")
+		}
+		cfg, err := h.db.GetCredentialOpsLoginConfig(c.Request.Context(), id)
 		if err != nil {
-			c.JSON(500, gin.H{"error": "native account create failed"})
-			return
+			return database.CredentialOpsLoginConfigRow{}, err
+		}
+		if cfg != nil {
+			old = credentialops.LoginConfig{AccountID: id, Email: cfg.LoginEmail, Mode: cfg.CredentialMode, Engine: cfg.Engine, ProxySource: cfg.ProxySource, PasswordCiphertext: cfg.PasswordCiphertext, TOTPCiphertext: cfg.TOTPCiphertext, OTPURLCiphertext: cfg.OTPURLCiphertext}
+		}
+		if old.Email == "" {
+			old.Email, _ = row.Credentials["email"].(string)
 		}
 	}
-	c.Params = append(c.Params, gin.Param{Key: "id", Value: strconv.FormatInt(id, 10)})
-	h.StartCredentialOpsLogin(c)
+	cfg, err := credentialops.PrepareConfig(credentialops.LoginConfigInput{AccountID: id, Email: in.Email, Mode: in.Mode, Engine: in.Engine, ProxySource: in.ProxySource, Password: in.Password, TOTPSecret: in.TOTPSecret, OTPURL: in.OTPURL, ClearPassword: in.ClearPassword, ClearTOTP: in.ClearTOTP, ClearOTPURL: in.ClearOTPURL}, old)
+	if err == nil && cfg.Engine == "session_studio" {
+		u, e := url.Parse(os.Getenv("CODEX2API_CREDENTIAL_OPS_SESSION_STUDIO_ENDPOINT"))
+		if e != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+			err = errors.New("Session Studio endpoint is not configured")
+		}
+	}
+	if len(in.Name) > 200 {
+		err = errors.New("account name exceeds 200 characters")
+	}
+	return database.CredentialOpsLoginConfigRow{AccountID: id, Name: strings.TrimSpace(in.Name), LoginEmail: cfg.Email, CredentialMode: cfg.Mode, Engine: cfg.Engine, ProxySource: cfg.ProxySource, PasswordCiphertext: cfg.PasswordCiphertext, TOTPCiphertext: cfg.TOTPCiphertext, OTPURLCiphertext: cfg.OTPURLCiphertext}, err
 }
-
-func (h *Handler) SaveCredentialOpsConfig(c *gin.Context) {
-	id, _ := strconv.ParseInt(c.Param("id"), 10, 64)
-	var in credentialOpsConfigRequest
-	if c.ShouldBindJSON(&in) != nil || id <= 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid credential operations config"})
-		return
-	}
-	if err := h.db.EnsureCredentialOpsSchema(c.Request.Context()); err != nil {
-		c.JSON(500, gin.H{"error": "credential operations unavailable"})
-		return
-	}
-	cfg, err := h.credentialOpsManager().SaveLoginConfig(c.Request.Context(), credentialops.LoginConfigInput{AccountID: id, Email: in.Email, Mode: in.Mode, Engine: in.Engine, ProxySource: in.ProxySource, Password: in.Password, TOTPSecret: in.TOTPSecret, OTPURL: in.OTPURL, ClearPassword: in.ClearPassword, ClearTOTP: in.ClearTOTP})
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-	_ = h.db.UpsertCredentialOpsLoginConfig(context.Background(), database.CredentialOpsLoginConfigRow{AccountID: id, LoginEmail: cfg.Email, CredentialMode: cfg.Mode, Engine: cfg.Engine, ProxySource: cfg.ProxySource, PasswordCiphertext: cfg.PasswordCiphertext, TOTPCiphertext: cfg.TOTPCiphertext, OTPURLCiphertext: cfg.OTPURLCiphertext})
-	c.JSON(http.StatusOK, gin.H{"account_id": id, "login_email": cfg.Email, "credential_mode": cfg.Mode, "engine": cfg.Engine, "proxy_source": cfg.ProxySource, "password_configured": cfg.PasswordCiphertext != "", "totp_configured": cfg.TOTPCiphertext != "", "otp_url_configured": cfg.OTPURLCiphertext != ""})
-}
-
-func (h *Handler) GetCredentialOpsConfig(c *gin.Context) {
-	id, _ := strconv.ParseInt(c.Param("id"), 10, 64)
-	cfg, ok := h.credentialOpsManager().LoginConfig(id)
-	if !ok {
-		c.JSON(http.StatusNotFound, gin.H{"error": "credential config not found"})
-		return
-	}
-	c.JSON(http.StatusOK, cfg)
-}
-
+func (h *Handler) StartCredentialOpsImport(c *gin.Context) { h.queueCredentialLogin(c, 0) }
 func (h *Handler) StartCredentialOpsLogin(c *gin.Context) {
 	id, _ := strconv.ParseInt(c.Param("id"), 10, 64)
+	if id <= 0 {
+		c.Status(400)
+		return
+	}
+	h.queueCredentialLogin(c, id)
+}
+func (h *Handler) queueCredentialLogin(c *gin.Context, id int64) {
 	var in credentialOpsConfigRequest
 	if c.ShouldBindJSON(&in) != nil {
 		c.JSON(400, gin.H{"error": "invalid login request"})
 		return
 	}
-	row, err := h.db.GetAccountByID(c.Request.Context(), id)
-	if err != nil || row == nil {
-		c.JSON(404, gin.H{"error": "account not found"})
-		return
-	}
-	_, err = h.credentialOpsManager().SaveLoginConfig(c.Request.Context(), credentialops.LoginConfigInput{AccountID: id, Email: in.Email, Mode: in.Mode, Engine: in.Engine, ProxySource: in.ProxySource, Password: in.Password, TOTPSecret: in.TOTPSecret, OTPURL: in.OTPURL})
+	cfg, err := h.prepareCredentialConfig(c, id, in)
 	if err != nil {
 		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
-	if err := h.db.EnsureCredentialOpsSchema(c.Request.Context()); err != nil {
-		c.JSON(500, gin.H{"error": "credential operations unavailable"})
+	if (cfg.CredentialMode == "password_totp" && cfg.PasswordCiphertext == "") || (cfg.CredentialMode == "email_otp_url" && cfg.OTPURLCiphertext == "") {
+		c.JSON(400, gin.H{"error": "configured login secret is required"})
 		return
 	}
-	job, err := h.db.CreateCredentialOpsTask(c.Request.Context(), id, row.CredentialGeneration)
+	var generation int64
+	if id > 0 {
+		row, err := h.db.GetAccountByID(c.Request.Context(), id)
+		if err != nil || row == nil {
+			c.Status(404)
+			return
+		}
+		generation = row.CredentialGeneration
+	}
+	job, err := h.db.CreateCredentialOpsTaskWithConfig(c.Request.Context(), id, generation, cfg)
 	if err != nil {
-		c.JSON(500, gin.H{"error": "could not queue login"})
+		c.JSON(409, gin.H{"error": err.Error()})
 		return
 	}
 	c.JSON(202, job)
 }
-func (h *Handler) GetCredentialOpsLogin(c *gin.Context) {
-	id, _ := strconv.ParseInt(c.Param("job_id"), 10, 64)
-	job, err := h.db.GetCredentialOpsTask(c.Request.Context(), id)
-	if err != nil || job == nil {
-		c.JSON(404, gin.H{"error": "login job not found"})
-		return
-	}
-	c.JSON(200, job)
-}
-func (h *Handler) CancelCredentialOpsLogin(c *gin.Context) {
-	id, _ := strconv.ParseInt(c.Param("job_id"), 10, 64)
-	_ = h.db.CancelCredentialOpsTask(c.Request.Context(), id)
-	c.Status(204)
-}
-
-func credentialOpsWorkerAuthorized(c *gin.Context) bool {
-	token := os.Getenv("CODEX2API_CREDENTIAL_OPS_WORKER_TOKEN")
-	return len(token) >= 32 && c.GetHeader("X-Codex2API-Credential-Worker") == token
-}
-func (h *Handler) ClaimCredentialOpsWorker(c *gin.Context) {
-	if !credentialOpsWorkerAuthorized(c) {
-		c.Status(403)
-		return
-	}
-	var req struct {
-		WorkerID string `json:"worker_id"`
-	}
-	if c.ShouldBindJSON(&req) != nil || req.WorkerID == "" {
+func (h *Handler) SaveCredentialOpsConfig(c *gin.Context) {
+	id, _ := strconv.ParseInt(c.Param("id"), 10, 64)
+	var in credentialOpsConfigRequest
+	if id <= 0 || c.ShouldBindJSON(&in) != nil {
 		c.Status(400)
 		return
 	}
-	task, err := h.db.ClaimCredentialOpsTask(c.Request.Context(), req.WorkerID, 2*60*1000000000)
+	cfg, err := h.prepareCredentialConfig(c, id, in)
+	if err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	if err = h.db.UpsertCredentialOpsLoginConfig(c.Request.Context(), cfg); err != nil {
+		c.JSON(500, gin.H{"error": "config persistence failed"})
+		return
+	}
+	c.JSON(200, configView(&cfg))
+}
+func (h *Handler) GetCredentialOpsConfig(c *gin.Context) {
+	id, _ := strconv.ParseInt(c.Param("id"), 10, 64)
+	cfg, err := h.db.GetCredentialOpsLoginConfig(c.Request.Context(), id)
+	if err != nil {
+		c.Status(500)
+		return
+	}
+	if cfg == nil {
+		c.Status(404)
+		return
+	}
+	c.JSON(200, configView(cfg))
+}
+func (h *Handler) GetCredentialOpsLogin(c *gin.Context) {
+	id, _ := strconv.ParseInt(c.Param("job_id"), 10, 64)
+	task, err := h.db.GetCredentialOpsTask(c.Request.Context(), id)
+	if err != nil {
+		c.Status(500)
+		return
+	}
+	if task == nil {
+		c.Status(404)
+		return
+	}
+	c.JSON(200, task)
+}
+func (h *Handler) CancelCredentialOpsLogin(c *gin.Context) {
+	id, _ := strconv.ParseInt(c.Param("job_id"), 10, 64)
+	if h.db.CancelCredentialOpsTask(c.Request.Context(), id) != nil {
+		c.Status(500)
+		return
+	}
+	c.Status(204)
+}
+func credentialOpsWorkerAuthorized(c *gin.Context) bool {
+	want := os.Getenv("CODEX2API_CREDENTIAL_OPS_WORKER_TOKEN")
+	got := c.GetHeader("X-Codex2API-Credential-Worker")
+	return len(want) >= 32 && subtle.ConstantTimeCompare([]byte(want), []byte(got)) == 1
+}
+func (h *Handler) ClaimCredentialOpsWorker(c *gin.Context) {
+	var req struct {
+		WorkerID string `json:"worker_id"`
+	}
+	if c.ShouldBindJSON(&req) != nil || req.WorkerID == "" || len(req.WorkerID) > 128 {
+		c.Status(400)
+		return
+	}
+	task, err := h.db.ClaimCredentialOpsTask(c.Request.Context(), req.WorkerID, 2*time.Minute)
 	if err != nil {
 		c.Status(500)
 		return
@@ -153,9 +181,9 @@ func (h *Handler) ClaimCredentialOpsWorker(c *gin.Context) {
 		c.Status(204)
 		return
 	}
-	cfg, err := h.db.GetCredentialOpsLoginConfig(c.Request.Context(), task.AccountID)
+	cfg, err := h.db.CredentialOpsTaskConfig(c.Request.Context(), task.ID)
 	if err != nil || cfg == nil {
-		_ = h.db.CompleteCredentialOpsTask(c.Request.Context(), task.ID, req.WorkerID, "failed", "failed", "missing config")
+		_ = h.db.CompleteCredentialOpsTask(c.Request.Context(), task.ID, req.WorkerID, "failed", "failed", "missing encrypted config")
 		c.Status(204)
 		return
 	}
@@ -163,54 +191,168 @@ func (h *Handler) ClaimCredentialOpsWorker(c *gin.Context) {
 	pw, e1 := dec(cfg.PasswordCiphertext)
 	totp, e2 := dec(cfg.TOTPCiphertext)
 	otp, e3 := dec(cfg.OTPURLCiphertext)
-	if e1 != nil || e2 != nil || e3 != nil {
+	if e1 != nil || e2 != nil || e3 != nil || (cfg.CredentialMode == "password_totp" && pw == "") || (cfg.CredentialMode == "email_otp_url" && otp == "") {
 		_ = h.db.CompleteCredentialOpsTask(c.Request.Context(), task.ID, req.WorkerID, "failed", "failed", "encrypted config unavailable")
 		c.Status(204)
 		return
 	}
-	c.JSON(200, gin.H{"task": task, "login": gin.H{"email": cfg.LoginEmail, "mode": cfg.CredentialMode, "password": pw, "totp_secret": totp, "otp_url": otp}})
+	proxyURL := ""
+	if h.store != nil && (cfg.ProxySource == "global" || (cfg.ProxySource == "account" && task.AccountID == 0)) {
+		proxyURL = h.store.GetProxyURL()
+	}
+	if task.AccountID > 0 && cfg.ProxySource == "account" {
+		row, e := h.db.GetAccountByID(c.Request.Context(), task.AccountID)
+		if e != nil || row == nil {
+			c.Status(500)
+			return
+		}
+		proxyURL = row.ProxyURL
+		if proxyURL == "" && h.store != nil {
+			proxyURL = h.store.GetProxyURL()
+		}
+	}
+	login := gin.H{"email": cfg.LoginEmail, "mode": cfg.CredentialMode, "engine": cfg.Engine, "password": pw, "totp_secret": totp, "otp_url": otp, "proxy_url": proxyURL}
+	if cfg.Engine == "session_studio" {
+		login["relogin_endpoint"] = os.Getenv("CODEX2API_CREDENTIAL_OPS_SESSION_STUDIO_ENDPOINT")
+		var headers map[string]string
+		if value := os.Getenv("CODEX2API_CREDENTIAL_OPS_SESSION_STUDIO_HEADERS"); value != "" {
+			if json.Unmarshal([]byte(value), &headers) != nil {
+				_ = h.db.FailCredentialOpsTask(c.Request.Context(), task.ID, req.WorkerID, task.Attempt)
+				c.Status(204)
+				return
+			}
+		}
+		login["relogin_headers"] = headers
+	}
+	c.JSON(200, gin.H{"task": task, "login": login})
 }
-func (h *Handler) CompleteCredentialOpsWorker(c *gin.Context) {
-	if !credentialOpsWorkerAuthorized(c) {
-		c.Status(403)
+
+type credentialWorkerRequest struct {
+	WorkerID   string         `json:"worker_id"`
+	Attempt    int            `json:"attempt"`
+	Status     string         `json:"status"`
+	Stage      string         `json:"stage"`
+	Credential map[string]any `json:"credential"`
+}
+
+func (h *Handler) RenewCredentialOpsWorker(c *gin.Context) {
+	var req credentialWorkerRequest
+	id, _ := strconv.ParseInt(c.Param("job_id"), 10, 64)
+	if c.ShouldBindJSON(&req) != nil || req.WorkerID == "" || req.Attempt <= 0 {
+		c.Status(400)
 		return
 	}
-	var req struct {
-		WorkerID   string         `json:"worker_id"`
-		Status     string         `json:"status"`
-		Stage      string         `json:"stage"`
-		Credential map[string]any `json:"credential"`
+	if req.Stage == "" {
+		req.Stage = "protocol_login"
 	}
+	if len(req.Stage) > 64 {
+		c.Status(400)
+		return
+	}
+	if h.db.RenewCredentialOpsTask(c.Request.Context(), id, req.WorkerID, req.Attempt, req.Stage) != nil {
+		c.Status(409)
+		return
+	}
+	c.Status(204)
+}
+func (h *Handler) CompleteCredentialOpsWorker(c *gin.Context) {
+	var req credentialWorkerRequest
 	id, _ := strconv.ParseInt(c.Param("job_id"), 10, 64)
-	if c.ShouldBindJSON(&req) != nil {
+	if c.ShouldBindJSON(&req) != nil || req.WorkerID == "" || req.Attempt <= 0 {
 		c.Status(400)
 		return
 	}
 	task, err := h.db.GetCredentialOpsTask(c.Request.Context(), id)
-	if err != nil || task == nil || task.LeaseOwner != req.WorkerID {
+	if err != nil || task == nil || task.Status != "running" || task.LeaseOwner != req.WorkerID || task.Attempt != req.Attempt || task.LeaseUntil == nil || !task.LeaseUntil.After(time.Now()) {
 		c.Status(409)
 		return
 	}
-	if req.Status == "succeeded" {
-		_, ok, err := h.db.UpdateAccountCredentialsCAS(c.Request.Context(), task.AccountID, task.ExpectedGeneration, req.Credential)
-		if err != nil || !ok {
-			_ = h.db.CompleteCredentialOpsTask(c.Request.Context(), id, req.WorkerID, "failed", "failed", "stale credential callback")
+	if req.Status == "failed" {
+		if h.db.FailCredentialOpsTask(c.Request.Context(), id, req.WorkerID, req.Attempt) != nil {
 			c.Status(409)
 			return
 		}
+		c.Status(204)
+		return
 	}
-	_ = h.db.CompleteCredentialOpsTask(c.Request.Context(), id, req.WorkerID, req.Stage, req.Status, "")
-	c.Status(204)
+	if req.Status != "succeeded" {
+		c.Status(400)
+		return
+	}
+	cfg, err := h.db.CredentialOpsTaskConfig(c.Request.Context(), id)
+	if err != nil {
+		c.Status(500)
+		return
+	}
+	str := func(k string) string { v, _ := req.Credential[k].(string); return strings.TrimSpace(v) }
+	email, workspace := openaiidentity.TokenIdentity(str("id_token"), str("access_token"))
+	if email == "" || workspace == "" || !strings.EqualFold(email, cfg.LoginEmail) || str("refresh_token") == "" || str("access_token") == "" || str("id_token") == "" {
+		_ = h.db.FailCredentialOpsTask(c.Request.Context(), id, req.WorkerID, req.Attempt)
+		c.JSON(400, gin.H{"error": "incomplete or mismatched OAuth identity"})
+		return
+	}
+	access := auth.ParseAccessToken(str("access_token"))
+	if access == nil || access.ExpiresAt.IsZero() || !access.ExpiresAt.After(time.Now()) {
+		_ = h.db.FailCredentialOpsTask(c.Request.Context(), id, req.WorkerID, req.Attempt)
+		c.JSON(400, gin.H{"error": "invalid or expired access token"})
+		return
+	}
+	accessEmail, accessWorkspace := openaiidentity.TokenIdentity("", str("access_token"))
+	if accessEmail != "" && (!strings.EqualFold(accessEmail, email) || accessWorkspace != workspace) {
+		_ = h.db.FailCredentialOpsTask(c.Request.Context(), id, req.WorkerID, req.Attempt)
+		c.JSON(400, gin.H{"error": "OAuth token identities disagree"})
+		return
+	}
+	seed := normalizeTokenCredentialSeed(tokenCredentialSeed{refreshToken: str("refresh_token"), accessToken: str("access_token"), idToken: str("id_token"), email: email, workspaceID: workspace, expiresAtRaw: str("expires_at")})
+	if !seed.expiresAt.After(time.Now()) {
+		_ = h.db.FailCredentialOpsTask(c.Request.Context(), id, req.WorkerID, req.Attempt)
+		c.JSON(400, gin.H{"error": "expired OAuth token"})
+		return
+	}
+	if !h.PluginEnabled(c.Request.Context(), "credential-ops") {
+		c.Status(409)
+		return
+	}
+	accountID, err := h.db.CommitCredentialOpsLogin(c.Request.Context(), id, req.WorkerID, req.Attempt, tokenCredentialMap(seed), h.newCodexAccountCredentials(seed))
+	if err != nil {
+		_ = h.db.FailCredentialOpsTask(c.Request.Context(), id, req.WorkerID, req.Attempt)
+		c.JSON(409, gin.H{"error": err.Error()})
+		return
+	}
+	if err = h.reloadTokenAccount(c.Request.Context(), accountID, "credential_ops"); err != nil {
+		c.JSON(503, gin.H{"error": "credentials committed; runtime reload pending", "account_id": accountID})
+		return
+	}
+	h.db.InsertAccountEventAsync(accountID, "updated", "credential_ops")
+	c.JSON(200, gin.H{"status": "succeeded", "account_id": accountID})
 }
-
-// RegisterCredentialOpsRoutes is called by the root route owner to avoid broad handler.go edits.
+func (h *Handler) credentialOpsGate(c *gin.Context) {
+	if !h.PluginEnabled(c.Request.Context(), "credential-ops") {
+		c.AbortWithStatusJSON(409, gin.H{"error": "credential operations plugin is disabled"})
+		return
+	}
+	c.Next()
+}
 func (h *Handler) RegisterCredentialOpsRoutes(api *gin.RouterGroup) {
 	api.GET("/accounts/:id/credential-ops/config", h.GetCredentialOpsConfig)
-	api.PUT("/accounts/:id/credential-ops/config", h.SaveCredentialOpsConfig)
-	api.POST("/accounts/:id/credential-ops/login", h.StartCredentialOpsLogin)
-	api.POST("/credential-ops/import", h.StartCredentialOpsImport)
+	api.PUT("/accounts/:id/credential-ops/config", h.credentialOpsGate, h.SaveCredentialOpsConfig)
+	api.POST("/accounts/:id/credential-ops/login", h.credentialOpsGate, h.StartCredentialOpsLogin)
+	api.POST("/credential-ops/import", h.credentialOpsGate, h.StartCredentialOpsImport)
 	api.GET("/credential-ops/login/:job_id", h.GetCredentialOpsLogin)
 	api.DELETE("/credential-ops/login/:job_id", h.CancelCredentialOpsLogin)
-	api.POST("/internal/credential-ops/claim", h.ClaimCredentialOpsWorker)
-	api.POST("/internal/credential-ops/login/:job_id/complete", h.CompleteCredentialOpsWorker)
+	h.registerCredentialMonitorRoutes(api)
+}
+
+// Register outside the admin group: the dedicated worker token is sufficient.
+func (h *Handler) RegisterCredentialOpsWorkerRoutes(router *gin.Engine) {
+	g := router.Group("/api/internal/credential-ops", func(c *gin.Context) {
+		if !credentialOpsWorkerAuthorized(c) {
+			c.AbortWithStatus(http.StatusForbidden)
+			return
+		}
+		c.Next()
+	}, h.credentialOpsGate)
+	g.POST("/claim", h.ClaimCredentialOpsWorker)
+	g.POST("/login/:job_id/renew", h.RenewCredentialOpsWorker)
+	g.POST("/login/:job_id/complete", h.CompleteCredentialOpsWorker)
 }

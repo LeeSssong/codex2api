@@ -1,4 +1,5 @@
 import { CodexRouteBadges, CodexRouteManager } from "../components/CodexRoutes";
+import TwoFAImport from "../components/TwoFAImport";
 import type { ChangeEvent, DragEvent, ReactNode } from "react";
 import { memo, useCallback, useEffect, useRef, useState, useMemo } from "react";
 import "./accounts-cards.css";
@@ -2132,7 +2133,7 @@ export default function Accounts() {
     ids: [],
   });
   const [addMethod, setAddMethod] = useState<
-    "rt" | "st" | "at" | "session" | "openai" | "oauth" | "agentIdentity"
+    "rt" | "st" | "at" | "session" | "openai" | "oauth" | "agentIdentity" | "twofa"
   >("oauth");
   const [agentIdentityJson, setAgentIdentityJson] = useState("");
   const [agentIdentityProxyUrl, setAgentIdentityProxyUrl] = useState("");
@@ -8131,7 +8132,7 @@ export default function Accounts() {
                       ? t("accounts.adding")
                       : t("accounts.agentIdentityImportBtn")}
                   </Button>
-                ) : oauthStep === "generate" ? (
+                ) : addMethod === "twofa" ? null : oauthStep === "generate" ? (
                   <Button
                     onClick={() => void handleOAuthGenerate()}
                     disabled={oauthGenerating}
@@ -8155,6 +8156,9 @@ export default function Accounts() {
           >
             {/* Tab switcher */}
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-1 p-1 mb-5 rounded-xl bg-muted/50 border border-border">
+              <Button type="button" variant="ghost" onClick={() => setAddMethod("twofa")} className={cn("min-w-0 gap-1.5",addMethod === "twofa" && "bg-background shadow-sm")}>
+                <KeyRound className="size-3.5" />{t("accounts.addMethodTwoFA")}
+              </Button>
               <button
                 onClick={() => {
                   setAddMethod("oauth");
@@ -8239,7 +8243,9 @@ export default function Accounts() {
               </button>
             </div>
 
-            {addMethod === "rt" ? (
+            {addMethod === "twofa" ? (
+              <TwoFAImport accountId={0} onSaved={() => void reloadSilently()} />
+            ) : addMethod === "rt" ? (
               <div className="space-y-4">
                 <div>
                   <label className="block mb-2 text-sm font-semibold text-muted-foreground">
