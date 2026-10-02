@@ -1,6 +1,17 @@
 import pathlib, subprocess, tempfile, unittest
 from release_build import verify_source
 
+class DockerTargetTests(unittest.TestCase):
+ def test_local_target(self):
+  from release_build import docker_command
+  self.assertEqual(docker_command(None,'image','inspect','image'),['docker','image','inspect','image'])
+ def test_ssh_target_is_explicit(self):
+  from release_build import docker_command
+  self.assertEqual(docker_command('ssh://sub2api-prod','image','inspect','image'),['docker','--host','ssh://sub2api-prod','image','inspect','image'])
+ def test_arbitrary_remote_daemon_rejected(self):
+  from release_build import docker_command
+  with self.assertRaises(ValueError):docker_command('tcp://remote:2375','image','inspect','image')
+
 class SourceTests(unittest.TestCase):
  def setUp(self):
   self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup);self.root=pathlib.Path(self.tmp.name)/'repo';self.root.mkdir();remote=pathlib.Path(self.tmp.name)/'remote.git'
