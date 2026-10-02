@@ -530,54 +530,65 @@ func (db *DB) EnqueueDuePelicanPlans(ctx context.Context, now time.Time) error {
 		if !p.Enabled || p.NextRunAt.After(now) {
 			continue
 		}
-		nextRun := now.Add(time.Duration(p.IntervalMinutes) * time.Minute)
-		if p.CronExpression != "" {
-			schedule, e := cron.ParseStandard(p.CronExpression)
-			if e != nil {
-				return e
-			}
-			nextRun = schedule.Next(now)
-		}
-		tx, e := db.conn.BeginTx(ctx, nil)
-		if e != nil {
-			return e
-		}
-		enabled, e := db.PluginEnabledTx(ctx, tx, smartops.PluginPelicanTests)
-		if e != nil {
-			tx.Rollback()
-			return e
-		}
-		if !enabled {
-			tx.Rollback()
-			return nil
-		}
-		var active int
-		if e = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM smart_ops_test_jobs WHERE plan_id=$1 AND status IN ('queued','running')`, p.ID).Scan(&active); e != nil {
-			tx.Rollback()
-			return e
-		}
-		if active > 0 {
-			tx.Rollback()
-			continue
-		}
-		res, e := tx.ExecContext(ctx, `UPDATE smart_ops_test_plans SET next_run=$1 WHERE id=$2 AND enabled=$3 AND next_run<=$4`, nextRun.UnixMilli(), p.ID, true, now.UnixMilli())
-		if e != nil {
-			tx.Rollback()
-			return e
-		}
-		n, _ := res.RowsAffected()
-		if n == 1 {
-			_, e = db.insertPelicanTx(ctx, tx, p.Job, p.ID)
-		}
-		if e != nil {
-			tx.Rollback()
-			return e
-		}
-		if e = tx.Commit(); e != nil {
+		if e = db.enqueueDuePelicanPlan(ctx, p.ID, now); e != nil {
 			return e
 		}
 	}
 	return nil
+}
+
+func (db *DB) enqueueDuePelicanPlan(ctx context.Context, id int64, now time.Time) error {
+	return db.withWriteTx(ctx, func(tx *sql.Tx) error {
+		enabled, e := db.PluginEnabledTx(ctx, tx, smartops.PluginPelicanTests)
+		if e != nil {
+			return e
+		}
+		if !enabled {
+			return nil
+		}
+		q := `SELECT payload,enabled,next_run,interval_minutes FROM smart_ops_test_plans WHERE id=$1`
+		if !db.isSQLite() {
+			q += ` FOR UPDATE`
+		}
+		var raw string
+		var due int64
+		var interval int
+		var on bool
+		e = tx.QueryRowContext(ctx, q, id).Scan(&raw, &on, &due, &interval)
+		if e == sql.ErrNoRows {
+			return nil
+		}
+		if e != nil {
+			return e
+		}
+		if !on || due > now.UnixMilli() {
+			return nil
+		}
+		var plan smartops.PelicanPlan
+		if e = json.Unmarshal([]byte(raw), &plan); e != nil {
+			return e
+		}
+		var active int
+		if e = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM smart_ops_test_jobs WHERE plan_id=$1 AND status IN ('queued','running')`, id).Scan(&active); e != nil {
+			return e
+		}
+		if active > 0 {
+			return nil
+		}
+		next := now.Add(time.Duration(interval) * time.Minute)
+		if plan.CronExpression != "" {
+			schedule, e := cron.ParseStandard(plan.CronExpression)
+			if e != nil {
+				return e
+			}
+			next = schedule.Next(now)
+		}
+		if _, e = tx.ExecContext(ctx, `UPDATE smart_ops_test_plans SET next_run=$1 WHERE id=$2`, next.UnixMilli(), id); e != nil {
+			return e
+		}
+		_, e = db.insertPelicanTx(ctx, tx, plan.Job, id)
+		return e
+	})
 }
 
 func (db *DB) RecordSmartOpsConcurrency(ctx context.Context, id int64, c smartops.OAuthAutoConfig, success bool, observedEpoch ...int64) (int64, bool, error) {

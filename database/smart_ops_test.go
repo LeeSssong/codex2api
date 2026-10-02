@@ -35,6 +35,32 @@ func smartOpsDB(t *testing.T) *DB {
 	return db
 }
 
+func TestSmartOpsDuePlanRereadsEditedPayloadBeforeDispatch(t *testing.T) {
+	db := smartOpsDB(t)
+	ctx := context.Background()
+	plan, e := db.SavePelicanPlan(ctx, smartops.PelicanPlan{Name: "original", Enabled: true, IntervalMinutes: 60, NextRunAt: time.Now().Add(-time.Minute), Job: smartops.PelicanJob{AccountID: 1, Model: "old-model", Prompt: "old question", Samples: 1, Parallel: 1}})
+	if e != nil {
+		t.Fatal(e)
+	}
+	snapshot, e := db.ListPelicanPlans(ctx)
+	if e != nil {
+		t.Fatal(e)
+	}
+	plan.Job.Model = "new-model"
+	plan.Job.Prompt = "new question"
+	plan.Job.AccountID = 2
+	if _, e = db.SavePelicanPlan(ctx, plan); e != nil {
+		t.Fatal(e)
+	}
+	if e = db.enqueueDuePelicanPlan(ctx, snapshot[0].ID, time.Now()); e != nil {
+		t.Fatal(e)
+	}
+	jobs, e := db.ListPelicanJobs(ctx)
+	if e != nil || len(jobs) != 1 || jobs[0].Model != "new-model" || jobs[0].AccountID != 2 || jobs[0].Prompt != "new question" {
+		t.Fatalf("stale plan dispatched: %+v %v", jobs, e)
+	}
+}
+
 func TestSmartOpsPluginDisableABAFencesResultsAndObservations(t *testing.T) {
 	db := smartOpsDB(t)
 	ctx := context.Background()
