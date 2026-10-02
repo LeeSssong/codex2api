@@ -316,6 +316,7 @@ func (h *Handler) newCodexAccountCredentials(seed tokenCredentialSeed) map[strin
 func (h *Handler) newCodexAccountFromSeed(id int64, proxyURL string, seed tokenCredentialSeed) *auth.Account {
 	account := accountFromCredentialSeed(id, proxyURL, seed)
 	account.CodexFingerprintMode = h.defaultCodexFingerprintModeForNewAccount()
+	if h.store!=nil {h.store.ApplySmartOpsAccountRow(account)}
 	return account
 }
 

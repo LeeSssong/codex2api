@@ -399,6 +399,7 @@ func (h *Handler) createGrokOAuthAccount(ctx context.Context, in createGrokOAuth
 		RefreshToken:      in.Token.RefreshToken,
 		ExpiresAt:         in.Token.ExpiresAt,
 	}
+	h.store.ApplySmartOpsAccountRow(acc)
 	h.store.AddAccount(acc)
 
 	security.SecurityAuditLog("GROK_ACCOUNT_ADDED", fmt.Sprintf("account_id=%d auth_kind=oauth source=%s", id, source))

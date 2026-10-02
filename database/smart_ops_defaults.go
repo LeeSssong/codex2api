@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/codex2api/smartops"
+	"strings"
 	"sync"
 )
 
@@ -22,6 +23,28 @@ func (db *DB) SetSmartOpsOAuthDefaultsProvider(provider SmartOpsDefaultsProvider
 		smartOpsDefaultProviders.Store(db, provider)
 	}
 }
+func smartOpsOAuthPlatform(credentials map[string]interface{}) string {
+	str := func(key string) string { v, _ := credentials[key].(string); return strings.TrimSpace(v) }
+	switch str("upstream_type") {
+	case "claude":
+		if kind := str("claude_auth_kind"); kind == "" || kind == "oauth" {
+			return "claude"
+		}
+	case "antigravity":
+		if str("refresh_token") != "" {
+			return "antigravity"
+		}
+	case "grok":
+		if str("refresh_token") != "" || str("grok_client_id") != "" {
+			return "grok"
+		}
+	case "":
+		if str("api_key") == "" && (str("access_token") != "" || str("refresh_token") != "") {
+			return "openai"
+		}
+	}
+	return ""
+}
 func (db *DB) ApplySmartOpsOAuthDefaultsTx(ctx context.Context, tx *sql.Tx, accountID int64, platform string) error {
 	provider, ok := smartOpsDefaultProviders.Load(db)
 	if !ok {
@@ -34,6 +57,13 @@ func (db *DB) ApplySmartOpsOAuthDefaultsTx(ctx context.Context, tx *sql.Tx, acco
 	return db.applySmartOpsDefaultsTx(ctx, tx, accountID, c)
 }
 func (db *DB) applySmartOpsDefaultsTx(ctx context.Context, tx *sql.Tx, id int64, c smartops.OAuthAutoConfig) error {
+	enabled, e := db.PluginEnabledTx(ctx, tx, smartops.PluginAutoConfig)
+	if e != nil {
+		return e
+	}
+	if !enabled {
+		return nil
+	}
 	if e := smartops.ValidateOAuthAutoConfig(c); e != nil {
 		return e
 	}
@@ -48,11 +78,7 @@ func (db *DB) applySmartOpsDefaultsTx(ctx context.Context, tx *sql.Tx, id int64,
 			return e
 		}
 	}
-	for _, rule := range c.ModelMappings {
-		if value, exists := mapping[rule.From]; !exists || value == rule.From {
-			mapping[rule.From] = rule.To
-		}
-	}
+	mapping = smartops.ApplyModelMappings(mapping, c.ModelMappings)
 	m, e := json.Marshal(mapping)
 	if e != nil {
 		return e

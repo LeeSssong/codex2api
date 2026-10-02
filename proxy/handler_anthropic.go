@@ -512,6 +512,7 @@ func (h *Handler) Messages(c *gin.Context) {
 	rememberDaybreakRequest(c, canonicalBody)
 	originalModel := model
 	effectiveModel := effectiveRequestModel(routingBody, model)
+	c.Request=c.Request.WithContext(auth.WithPrioritySchedulingModel(c.Request.Context(),effectiveModel))
 	if isMediaOnlyModel(effectiveModel) {
 		sendAnthropicError(c, http.StatusServiceUnavailable, "overloaded_error", fmt.Sprintf("model %s is only supported on %s", effectiveModel, mediaOnlyModelEndpoints(effectiveModel)))
 		return

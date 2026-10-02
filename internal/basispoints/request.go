@@ -17,6 +17,7 @@ const ResponsesURL = "https://bps.openai.com/basispoints/api/responses"
 type object = map[string]any
 
 type Bridge struct {
+	CacheCreationAsInput bool
 	RequestedEffort  string
 	Effort           string
 	Warnings         []string

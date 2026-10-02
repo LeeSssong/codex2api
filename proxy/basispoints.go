@@ -74,6 +74,7 @@ func basispointsModelAllowed(model string) bool {
 	}
 	return false
 }
+func BasispointsModelSupported(model string)bool{return basispointsModelAllowed(model)}
 
 // basispointsActiveForModel is the per-request truth: the switch is on and this
 // model is one Basispoints serves. Every request-scoped Basispoints decision
@@ -179,6 +180,8 @@ func executeBasispointsRequest(ctx context.Context, account *auth.Account, reque
 	}
 	// Native stateless session IDs change per request; they cannot identify a tool loop.
 	explicitSessionID := ResolveExplicitSessionID(headers, requestBody)
+	bpsPolicy,bpsActive:=activeSmartOpsBPS(account)
+	if bpsActive{requestBody=prepareSmartOpsBPSBody(bpsPolicy,requestBody);identity:=explicitSessionID;if identity==""{identity=sessionID};if bpsPolicy.SessionProxy{chosen,e:=smartOpsBPSSessionProxy(account,bpsPolicy,identity);if e!=nil{return nil,newBasispointsPreparationError(e)};proxyURL=chosen}}
 	if explicitSessionID != "" {
 		requestBody, _ = sjson.SetBytes(requestBody, "prompt_cache_key", explicitSessionID)
 	}
@@ -200,6 +203,7 @@ func executeBasispointsRequest(ctx context.Context, account *auth.Account, reque
 		log.Printf("[Basispoints] stage=prepare result=rejected code=%s category=%s account=%d", ErrorCodeBasispointsInvalidRequest, basispointsPreparationCategory(err), account.ID())
 		return nil, newBasispointsPreparationError(err)
 	}
+	bridge.CacheCreationAsInput=bpsActive&&bpsPolicy.CacheCreationAsInput
 	endpoint := basispoints.ResponsesURL
 	client, err := getBasispointsClient(account, proxyURL)
 	if err != nil {

@@ -24,6 +24,7 @@ import (
 	"github.com/codex2api/database"
 	"github.com/codex2api/internal/openaiidentity"
 	"github.com/codex2api/security/promptfilter"
+	"github.com/codex2api/smartops"
 )
 
 // AccountStatus 账号状态
@@ -156,6 +157,9 @@ func NormalizeTestContent(content string) string {
 
 // Account 运行时账号状态
 type Account struct {
+	smartOpsLoadFactor int
+	smartOpsBPS smartops.BPSDefaults
+	smartOpsBPSSet bool
 	daybreak                  database.DaybreakSnapshot
 	codexRoutes               codexAccountRoutes
 	stateAdmissionMu          sync.Mutex
@@ -3505,6 +3509,7 @@ func (a *Account) GetLastUsedAt() time.Time {
 
 // Store 多账号管理器（数据库 + Token 缓存）
 type Store struct {
+	smartOps atomic.Pointer[smartOpsAdapter]
 	proxyAuditLabels                   map[string]ProxyAuditLabel
 	mu                                 sync.RWMutex
 	accountMutationMu                  sync.Mutex // serializes account-set and scheduler mutations without nesting their locks
@@ -4384,6 +4389,7 @@ func (s *Store) configureFastScheduler(scheduler *FastScheduler) {
 	}
 	scheduler.mu.Lock()
 	scheduler.metrics = s.schedulerMetrics
+	scheduler.rankCandidates=s.rankSmartOpsFastCandidates
 	scheduler.mu.Unlock()
 	scheduler.SetGroupCheck(s.APIKeyAllowsAccount)
 	scheduler.SetAcquireFunc(func(acc *Account, concurrencyLimit int64) bool {
@@ -5879,6 +5885,9 @@ func (s *Store) buildAccountFromRow(ctx context.Context, row *database.AccountRo
 	if priority, ok := row.GetCredentialInt64("scheduler_priority"); ok {
 		account.SetSchedulerPriority(priority)
 	}
+	if factor,ok:=row.GetCredentialInt64("smart_ops_load_factor");ok{account.smartOpsLoadFactor=int(factor)}
+	account.smartOpsBPSSet=row.GetCredential("smart_ops_bps_defaults")!=""
+	_ = json.Unmarshal([]byte(row.GetCredential("smart_ops_bps_defaults")),&account.smartOpsBPS)
 	account.recomputeEffectiveAutoPause(s)
 	for _, cooldown := range modelCooldowns[row.ID] {
 		account.RestoreModelCooldown(cooldown.Model, cooldown.Reason, cooldown.ResetAt, cooldown.UpdatedAt)
@@ -6617,9 +6626,10 @@ func (s *Store) tryIndexedMissFallback() bool {
 }
 
 // NextExcludingWithDispatch 按用量策略选号。spark 请求忽略账号级 5h/7d。
-func (s *Store) NextExcludingWithDispatch(apiKeyID int64, exclude map[int64]bool, filter AccountFilter, policy DispatchPolicy) *Account {
+func (s *Store) NextExcludingWithDispatch(apiKeyID int64, exclude map[int64]bool, filter AccountFilter, policy DispatchPolicy,modelScope ...string) *Account {
 	started := time.Now()
 	filter = s.withUsableEgressFilter(filter)
+	if account,used:=s.smartOpsAcquire(apiKeyID,exclude,filter,policy,modelScope...);used{return account}
 	lazyMode := s.GetLazyMode()
 	shadowChecked := false
 	shadowIndexedHit := false
@@ -7075,8 +7085,8 @@ func (s *Store) NextForSessionWithDispatch(key string, apiKeyID int64, exclude m
 // NextForSessionWithDispatchGuard is the binding-aware variant used by proxy
 // request paths. The returned guard must be passed to BindSessionAffinityWithGuard
 // after the attempt is selected or committed.
-func (s *Store) NextForSessionWithDispatchGuard(key string, apiKeyID int64, exclude map[int64]bool, filter AccountFilter, policy DispatchPolicy) (*Account, string, SessionAffinityGuard) {
-	return s.nextForSessionWithFilter(key, apiKeyID, exclude, filter, false, policy)
+func (s *Store) NextForSessionWithDispatchGuard(key string, apiKeyID int64, exclude map[int64]bool, filter AccountFilter, policy DispatchPolicy,modelScope ...string) (*Account, string, SessionAffinityGuard) {
+	return s.nextForSessionWithFilter(key, apiKeyID, exclude, filter, false, policy,modelScope...)
 }
 
 // NextForContinuationWithFilter preserves an existing account binding for a
@@ -7104,13 +7114,13 @@ func (s *Store) NextForContinuationWithDispatch(key string, apiKeyID int64, excl
 //
 // 绑定本身不存在时仍走完整挑号，与普通请求一致；TTL 过期只影响普通请求，
 // preserveBinding=true 的续链请求仍保留原账号。
-func (s *Store) nextForSessionWithFilter(key string, apiKeyID int64, exclude map[int64]bool, filter AccountFilter, preserveBinding bool, policy DispatchPolicy) (*Account, string, SessionAffinityGuard) {
+func (s *Store) nextForSessionWithFilter(key string, apiKeyID int64, exclude map[int64]bool, filter AccountFilter, preserveBinding bool, policy DispatchPolicy,modelScope ...string) (*Account, string, SessionAffinityGuard) {
 	if s == nil {
 		return nil, "", SessionAffinityGuard{}
 	}
 	key = strings.TrimSpace(key)
 	if key == "" {
-		return s.NextExcludingWithDispatch(apiKeyID, exclude, filter, policy), "", SessionAffinityGuard{}
+		return s.NextExcludingWithDispatch(apiKeyID, exclude, filter, policy,modelScope...), "", SessionAffinityGuard{}
 	}
 
 	now := time.Now()
@@ -7170,7 +7180,7 @@ func (s *Store) nextForSessionWithFilter(key string, apiKeyID int64, exclude map
 				return nil, "", SessionAffinityGuard{}
 			}
 			if capacityFull {
-				fallback := s.nextAccountForFreshAffinityWithDispatch(key, apiKeyID, exclude, filter, policy)
+				fallback := s.nextAccountForFreshAffinityWithDispatch(key, apiKeyID, exclude, filter, policy,modelScope...)
 				if fallback == nil {
 					return nil, "", SessionAffinityGuard{}
 				}
@@ -7185,7 +7195,7 @@ func (s *Store) nextForSessionWithFilter(key string, apiKeyID int64, exclude map
 				return s.takeByIDForContinuation(binding.accountID, apiKeyID, exclude, filter, key, policy), "", SessionAffinityGuard{}
 			}
 			s.UnbindSessionAffinity(key, binding.accountID)
-			return s.nextAccountForFreshAffinityWithDispatch(key, apiKeyID, exclude, filter, policy), "", SessionAffinityGuard{}
+			return s.nextAccountForFreshAffinityWithDispatch(key, apiKeyID, exclude, filter, policy,modelScope...), "", SessionAffinityGuard{}
 		}
 		// 跨进程缓存的 binding 也按 bounded 逻辑校验账号健康；Grok 账号套用 Grok 专属模式。
 		cacheMode := mode
@@ -7209,7 +7219,7 @@ func (s *Store) nextForSessionWithFilter(key string, apiKeyID int64, exclude map
 				return nil, "", SessionAffinityGuard{}
 			}
 			if capacityFull {
-				fallback := s.nextAccountForFreshAffinityWithDispatch(key, apiKeyID, exclude, filter, policy)
+				fallback := s.nextAccountForFreshAffinityWithDispatch(key, apiKeyID, exclude, filter, policy,modelScope...)
 				if fallback == nil {
 					return nil, "", SessionAffinityGuard{}
 				}
@@ -7219,7 +7229,7 @@ func (s *Store) nextForSessionWithFilter(key string, apiKeyID int64, exclude map
 		}
 	}
 
-	return s.nextAccountForFreshAffinityWithDispatch(key, apiKeyID, exclude, filter, policy), "", SessionAffinityGuard{}
+	return s.nextAccountForFreshAffinityWithDispatch(key, apiKeyID, exclude, filter, policy,modelScope...), "", SessionAffinityGuard{}
 }
 
 // nextAccountForFreshAffinity 为"新亲和键首次绑定"选号(issue #484)。
@@ -7235,14 +7245,15 @@ func (s *Store) nextAccountForFreshAffinity(key string, apiKeyID int64, exclude 
 	return s.nextAccountForFreshAffinityWithDispatch(key, apiKeyID, exclude, filter, DispatchPolicyStandard)
 }
 
-func (s *Store) nextAccountForFreshAffinityWithDispatch(key string, apiKeyID int64, exclude map[int64]bool, filter AccountFilter, policy DispatchPolicy) *Account {
+func (s *Store) nextAccountForFreshAffinityWithDispatch(key string, apiKeyID int64, exclude map[int64]bool, filter AccountFilter, policy DispatchPolicy,modelScope ...string) *Account {
 	if s == nil {
 		return nil
 	}
 	if !s.GetSessionAffinitySpread() || strings.TrimSpace(key) == "" {
-		return s.NextExcludingWithDispatch(apiKeyID, exclude, filter, policy)
+		return s.NextExcludingWithDispatch(apiKeyID, exclude, filter, policy,modelScope...)
 	}
 	filter = s.withUsableEgressFilter(filter)
+	if account,used:=s.smartOpsAcquire(apiKeyID,exclude,filter,policy,modelScope...);used{return account}
 	if s.SchedulerEngine() == "indexed" {
 		if scheduler := s.routingFastScheduler(apiKeyID); scheduler != nil {
 			started := time.Now()
@@ -7944,7 +7955,7 @@ func (s *Store) waitForSessionAvailableWithFilter(ctx context.Context, key strin
 		if preserveBinding {
 			acc, proxyURL = s.NextForContinuationWithDispatch(key, apiKeyID, exclude, filter, policy)
 		} else {
-			acc, proxyURL, guard = s.NextForSessionWithDispatchGuard(key, apiKeyID, exclude, filter, policy)
+			acc, proxyURL, guard = s.NextForSessionWithDispatchGuard(key, apiKeyID, exclude, filter, policy,PrioritySchedulingModel(ctx))
 		}
 		if acc != nil {
 			if ctx.Err() != nil || !time.Now().Before(expires) {
@@ -10679,6 +10690,7 @@ func (s *Store) ReportRequestSuccess(acc *Account, latency time.Duration) {
 	if acc == nil {
 		return
 	}
+	s.observeSmartOps(acc,true)
 
 	acc.mu.Lock()
 	acc.recordLatencyLocked(latency)
@@ -10717,6 +10729,7 @@ func (s *Store) ReportRequestFailure(acc *Account, kind string, latency time.Dur
 	if acc == nil {
 		return
 	}
+	s.observeSmartOps(acc,false)
 
 	now := time.Now()
 	acc.mu.Lock()

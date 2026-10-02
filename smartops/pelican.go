@@ -1,95 +1,75 @@
 package smartops
 
 import (
-	"context"
 	"errors"
-	"sync"
+	"regexp"
+	"strings"
 	"time"
 )
 
 type PelicanJob struct {
-	ID         int64
-	AccountID  int64
-	Model      string
-	Samples    int
-	Parallel   int
-	Retries    int
-	MaxHistory int
+	ID              int64   `json:"id"`
+	AccountID       int64   `json:"account_id"`
+	GroupIDs        []int64 `json:"group_ids"`
+	Model           string  `json:"model"`
+	Prompt          string  `json:"prompt"`
+	ReasoningEffort string  `json:"reasoning_effort"`
+	Samples         int     `json:"samples"`
+	Parallel        int     `json:"parallel"`
+	Retries         int     `json:"retries"`
+	MaxHistory      int     `json:"max_history"`
 }
 type PelicanResult struct {
-	JobID, AccountID      int64
-	Sample                int
-	Status                string
-	Output                string
-	Error                 string
-	Latency               time.Duration
-	StartedAt, FinishedAt time.Time
+	JobID          int64            `json:"job_id"`
+	AccountID      int64            `json:"account_id"`
+	Sample         int              `json:"sample"`
+	Status         string           `json:"status"`
+	Output         string           `json:"output"`
+	Error          string           `json:"error"`
+	Latency        time.Duration    `json:"latency"`
+	FirstContentMS *int64           `json:"first_content_ms,omitempty"`
+	InputTokens    *int64           `json:"input_tokens,omitempty"`
+	OutputTokens   *int64           `json:"output_tokens,omitempty"`
+	StartedAt      time.Time        `json:"started_at"`
+	FinishedAt     time.Time        `json:"finished_at"`
+	CostUSD        *float64         `json:"cost_usd,omitempty"`
+	CostIncomplete bool             `json:"cost_incomplete"`
+	Attempts       []PelicanAttempt `json:"attempts"`
+	LeaseOwner     string           `json:"-"`
 }
-type PelicanProbe func(context.Context, int64, string) (string, error)
-type PelicanHistory interface {
-	SavePelicanResult(context.Context, PelicanResult) error
+type PelicanAttempt struct {
+	AccountID int64    `json:"account_id"`
+	Error     string   `json:"error"`
+	CostUSD   *float64 `json:"cost_usd,omitempty"`
 }
 
-// RunGroup executes a leased job with bounded parallelism. A failed sample is
-// retried in-place; cancellation stops new attempts while in-flight probes can
-// honor the shared context and terminate promptly.
-func RunGroup(ctx context.Context, job PelicanJob, probe PelicanProbe, history PelicanHistory) ([]PelicanResult, error) {
-	if probe == nil || history == nil {
-		return nil, errors.New("probe and history are required")
+var pelicanHTML = regexp.MustCompile(`(?i)<(?:!doctype\s+html|html|svg)[\s>]`)
+
+func ValidatePelicanOutput(output string) error {
+	if len(output) > 1<<20 {
+		return errors.New("output exceeds 1 MiB")
 	}
-	if job.Samples < 1 {
-		job.Samples = 1
+	if !pelicanHTML.MatchString(output) {
+		return errors.New("model returned no HTML or SVG document")
 	}
-	if job.Parallel < 1 {
-		job.Parallel = 1
+	return nil
+}
+func ValidatePelicanJob(j PelicanJob) error {
+	if j.AccountID < 0 || j.AccountID == 0 && len(j.GroupIDs) == 0 {
+		return errors.New("account or group is required")
 	}
-	if job.Parallel > job.Samples {
-		job.Parallel = job.Samples
+	if strings.TrimSpace(j.Model) == "" || len(j.Model) > 200 || len(j.Prompt) > 16000 || j.Samples < 1 || j.Samples > 100 || j.Parallel < 1 || j.Parallel > 10 || j.Parallel > j.Samples || j.Retries < 0 || j.Retries > 5 {
+		return errors.New("invalid test parameters")
 	}
-	if job.Retries < 0 {
-		job.Retries = 0
+	if j.MaxHistory != 0 && (j.MaxHistory < 1 || j.MaxHistory > 1000) {
+		return errors.New("history limit must be 1-1000")
 	}
-	results := make([]PelicanResult, job.Samples)
-	sem := make(chan struct{}, job.Parallel)
-	var wg sync.WaitGroup
-	for i := 0; i < job.Samples; i++ {
-		select {
-		case <-ctx.Done():
-			return results[:i], ctx.Err()
-		default:
+	seen := map[int64]bool{}
+	for _, id := range j.GroupIDs {
+		if id <= 0 || seen[id] {
+			return errors.New("invalid group")
 		}
-		wg.Add(1)
-		go func(index int) {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			var last error
-			started := time.Now()
-			for attempt := 0; attempt <= job.Retries; attempt++ {
-				if err := ctx.Err(); err != nil {
-					last = err
-					break
-				}
-				output, err := probe(ctx, job.AccountID, job.Model)
-				if err == nil && output == "" {
-					err = errors.New("empty probe output")
-				}
-				if err == nil && output != "" {
-					finished := time.Now()
-					results[index] = PelicanResult{JobID: job.ID, AccountID: job.AccountID, Sample: index, Status: "success", Output: output, Latency: finished.Sub(started), StartedAt: started, FinishedAt: finished}
-					_ = history.SavePelicanResult(ctx, results[index])
-					return
-				}
-				last = err
-			}
-			finished := time.Now()
-			results[index] = PelicanResult{JobID: job.ID, AccountID: job.AccountID, Sample: index, Status: "failed", Error: last.Error(), Latency: finished.Sub(started), StartedAt: started, FinishedAt: finished}
-			_ = history.SavePelicanResult(ctx, results[index])
-		}(i)
+		seen[id] = true
 	}
-	wg.Wait()
-	if err := ctx.Err(); err != nil {
-		return results, err
-	}
-	return results, nil
+	return nil
 }

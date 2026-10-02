@@ -482,6 +482,7 @@ func (h *Handler) waitForRetryAccountAvailableWithGuard(ctx context.Context, aff
 			return step, nil
 		}
 	}
+	if d:=codexRouteFromContext(ctx);d!=nil{ctx=auth.WithPrioritySchedulingModel(ctx,d.EffectiveModel)}
 	account, proxyURL, guard, err := h.store.WaitForDispatchAvailable(ctx, affinityKey, dispatchAccountWaitTimeout, apiKeyID, exclude, filter, preserveBinding, policy, heartbeat)
 	account, proxyURL = guardRetryAccountContext(ctx, h.store.Release, account, proxyURL)
 	if account == nil {
@@ -556,7 +557,8 @@ func (h *Handler) nextRetryAccountWithGuard(ctx context.Context, affinityKey str
 		if preserveBinding {
 			account, stickyProxyURL = h.store.NextForContinuationWithDispatch(affinityKey, apiKeyID, exclude, filter, policy)
 		} else {
-			account, stickyProxyURL, guard = h.nextAccountForSessionWithDispatchGuard(affinityKey, apiKeyID, exclude, filter, policy)
+			model:=auth.PrioritySchedulingModel(ctx);if d:=codexRouteFromContext(ctx);d!=nil{model=d.EffectiveModel}
+			account, stickyProxyURL, guard = h.nextAccountForSessionWithDispatchGuard(affinityKey, apiKeyID, exclude, filter, policy,model)
 		}
 		if account != nil {
 			if ctx.Err() != nil {

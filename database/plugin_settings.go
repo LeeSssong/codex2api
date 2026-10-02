@@ -102,6 +102,9 @@ func (s *PluginStore) Put(ctx context.Context, setting plugins.Setting) error {
 		if err != nil || setting.Enabled {
 			return err
 		}
+		if err = s.db.fenceSmartOpsPluginDisableTx(ctx, tx, setting.ID); err != nil {
+			return err
+		}
 		switch setting.ID {
 		case "token-guard":
 			_, err = tx.ExecContext(ctx, `UPDATE account_token_guard_jobs SET state='cancelled',cancellation=TRUE,fence=fence+1 WHERE state IN ('queued','running','cancelling')`)

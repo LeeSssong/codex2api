@@ -200,6 +200,9 @@ type sqlExecer interface {
 
 // DB PostgreSQL 数据库操作
 type DB struct {
+	smartOpsBilling atomic.Pointer[smartOpsBillingPolicy]
+	smartOpsSchemaMu sync.Mutex
+	smartOpsSchemaReady bool
 	conn           *sql.DB
 	driver         string
 	authCacheScope string
@@ -920,6 +923,7 @@ func applyUsageStatsRollupWithExec(ctx context.Context, execer sqlExecer, batch 
 
 // Close 关闭数据库连接
 func (db *DB) Close() error {
+	db.SetSmartOpsOAuthDefaultsProvider(nil)
 	if !db.DrainBackgroundTasks(2 * time.Second) {
 		log.Printf("数据库后台任务超过优雅关闭窗口，已取消并等待退出")
 	}
@@ -4434,7 +4438,7 @@ func (db *DB) InsertUsageLog(ctx context.Context, log *UsageLogInput) error {
 	if db == nil || log == nil {
 		return nil
 	}
-	log = SnapshotUsageLogBilling(log)
+	log = db.SnapshotSmartOpsBilling(SnapshotUsageLogBilling(log))
 	storeUsageLog := db.shouldStoreUsageLog(log)
 
 	billingServiceTier := usageLogBillingServiceTier(log)
@@ -8612,6 +8616,7 @@ func (db *DB) insertAccountRowWithFamily(ctx context.Context, postgresQuery, sql
 		if _, err = tx.ExecContext(ctx, `UPDATE accounts SET credential_family_id=$1 WHERE id=$2 AND COALESCE(credential_family_id,'')=''`, candidate, returnID); err != nil {
 			return err
 		}
+		if platform:=smartOpsOAuthPlatform(credentials);platform!=""{if err=db.ApplySmartOpsOAuthDefaultsTx(ctx,tx,returnID,platform);err!=nil{return err}}
 		return tx.Commit()
 	})
 	if err != nil {

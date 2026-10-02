@@ -10,24 +10,32 @@ import (
 // OAuthAutoConfig is deliberately provider-neutral; adapters apply it to the
 // native account creation request and remain responsible for eligibility.
 type OAuthAutoConfig struct {
-	Enabled          bool           `json:"enabled"`
-	Platform         string         `json:"platform"`
-	Priority         int            `json:"priority"`
-	LoadFactor       int            `json:"load_factor"`
-	Concurrency      int            `json:"concurrency"`
-	GroupIDs         []int64        `json:"group_ids"`
-	ModelMappings    []ModelMapping `json:"model_mappings"`
-	UpgradeEnabled   bool           `json:"upgrade_enabled"`
-	SuccessesPerStep int            `json:"successes_per_step"`
-	UpgradeStep      int            `json:"upgrade_step"`
-	MaxConcurrency   int            `json:"max_concurrency"`
-	CooldownSeconds  int            `json:"cooldown_seconds"`
-	Revision         string         `json:"revision"`
-	UpdatedAt        time.Time      `json:"updated_at"`
-	BPS              BPSDefaults    `json:"bps"`
+	Enabled          bool               `json:"enabled"`
+	Platform         string             `json:"platform"`
+	Priority         int                `json:"priority"`
+	LoadFactor       int                `json:"load_factor"`
+	Concurrency      int                `json:"concurrency"`
+	GroupIDs         []int64            `json:"group_ids"`
+	UpgradeGroupIDs  []int64            `json:"upgrade_group_ids"`
+	ModelMappings    []ModelMapping     `json:"model_mappings"`
+	UpgradeEnabled   bool               `json:"upgrade_enabled"`
+	SuccessesPerStep int                `json:"successes_per_step"`
+	UpgradeStep      int                `json:"upgrade_step"`
+	MaxConcurrency   int                `json:"max_concurrency"`
+	CooldownSeconds  int                `json:"cooldown_seconds"`
+	Revision         string             `json:"revision"`
+	UpdatedAt        time.Time          `json:"updated_at"`
+	BPS              BPSDefaults        `json:"bps"`
+	ModelBilling     ModelBillingConfig `json:"model_billing"`
 }
 
 type BPSDefaults struct {
+	WSSSEAcceleration       bool     `json:"ws_sse_acceleration"`
+	AutoEnableOnDegradation bool     `json:"auto_enable_on_degradation"`
+	OmitUnsupportedTools    bool     `json:"omit_unsupported_tools"`
+	AutoMoveOn403           bool     `json:"auto_move_on_403"`
+	TargetGroupID           int64    `json:"target_group_id"`
+	CacheCreationAsInput    bool     `json:"cache_creation_as_input"`
 	AllModels               bool     `json:"all_models"`
 	Models                  []string `json:"models"`
 	IgnoreEncryptedContent  bool     `json:"ignore_encrypted_content"`
@@ -45,14 +53,27 @@ type ModelMapping struct {
 
 func DefaultOAuthAutoConfig() OAuthAutoConfig {
 	return OAuthAutoConfig{Platform: "openai", Priority: 50, LoadFactor: 1, Concurrency: 3,
-		GroupIDs: []int64{}, ModelMappings: []ModelMapping{{From: "gpt-5.4", To: "gpt-5.5"}},
+		ModelBilling: ModelBillingConfig{Rules: []ModelBillingRule{{Model: "gpt-6-luna*", Multiplier: 10}}},
+		GroupIDs:     []int64{}, ModelMappings: []ModelMapping{{From: "gpt-5.4", To: "gpt-5.5"}},
 		SuccessesPerStep: 20, UpgradeStep: 1, MaxConcurrency: 100, CooldownSeconds: 60,
-		BPS: BPSDefaults{Models: []string{"gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra"}, IgnoreEncryptedContent: true, AutoDisableOn403: true, RecoveryIntervalMinutes: 60, ProxySource: "mihomo"}}
+		BPS: BPSDefaults{TargetGroupID: -1, CacheCreationAsInput: true, Models: []string{"gpt-6-astra", "gpt-5.6-sol"}, IgnoreEncryptedContent: true, AutoDisableOn403: true, RecoveryIntervalMinutes: 60, ProxySource: "mihomo"}}
 }
 
 func ValidateOAuthAutoConfig(c OAuthAutoConfig) error {
+	if c.BPS.WSSSEAcceleration {
+		return errors.New("Basispoints WS acceleration is unavailable; native SSE transport remains active")
+	}
+	if c.BPS.SessionProxy && c.BPS.ProxySource != "ip_pool" {
+		return errors.New("Mihomo session proxy is unavailable; select native ip_pool")
+	}
+	if e := ValidateModelBilling(c.ModelBilling); e != nil {
+		return e
+	}
 	if c.Platform == "" {
 		return errors.New("platform is required")
+	}
+	if c.Platform != "openai" && c.Platform != "claude" && c.Platform != "grok" && c.Platform != "antigravity" {
+		return errors.New("unsupported OAuth platform")
 	}
 	if c.Priority < 0 || c.Priority > 10000 || c.LoadFactor < 1 || c.LoadFactor > 10000 || c.Concurrency < 1 || c.Concurrency > 10000 {
 		return errors.New("invalid priority, load factor, or concurrency")
@@ -69,6 +90,36 @@ func ValidateOAuthAutoConfig(c OAuthAutoConfig) error {
 			return errors.New("group IDs must be positive and unique")
 		}
 		seen[id] = true
+	}
+	seen = map[int64]bool{}
+	for _, id := range c.UpgradeGroupIDs {
+		if id <= 0 || seen[id] {
+			return errors.New("upgrade groups must be positive and unique")
+		}
+		seen[id] = true
+	}
+	if c.UpgradeEnabled && len(c.UpgradeGroupIDs) == 0 {
+		return errors.New("select concurrency upgrade groups")
+	}
+	if !c.BPS.AllModels && len(c.BPS.Models) == 0 {
+		return errors.New("select BPS models")
+	}
+	if c.BPS.RecoveryIntervalMinutes < 1 || c.BPS.RecoveryIntervalMinutes > 10080 {
+		return errors.New("invalid BPS recovery interval")
+	}
+	if c.BPS.ProxySource != "mihomo" && c.BPS.ProxySource != "ip_pool" {
+		return errors.New("invalid BPS proxy source")
+	}
+	if c.BPS.AutoRecoverOn403 && !c.BPS.AutoDisableOn403 {
+		return errors.New("BPS recovery requires automatic disabling")
+	}
+	if c.BPS.AutoMoveOn403 && c.BPS.TargetGroupID < 0 {
+		return errors.New("select BPS target group")
+	}
+	for _, model := range c.BPS.Models {
+		if strings.TrimSpace(model) == "" || len(model) > 200 {
+			return errors.New("invalid BPS model")
+		}
 	}
 	seenModels := map[string]bool{}
 	for _, m := range c.ModelMappings {

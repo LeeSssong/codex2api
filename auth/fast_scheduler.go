@@ -41,6 +41,7 @@ type fastSchedulerPosition struct {
 // 取号，流量集中在剩余额度最少的账号上；该账号限流/耗尽后自然滑落到下一个，
 // 恢复后按最新用量重新排队。无用量数据的账号退化为固定顺序（dbID 升序）。
 type FastScheduler struct {
+	rankCandidates func([]fastSchedulerCandidate)
 	mu            sync.RWMutex
 	baseLimit     int64
 	schedulerMode string
@@ -650,7 +651,7 @@ func (s *FastScheduler) scanRangeLocked(expectedTier AccountHealthTier, rangeSta
 // filter, group check or admission callback may keep other selections and
 // state updates waiting on this scheduler's lock.
 func (s *FastScheduler) acquireCandidatesOutsideLock(candidates []fastSchedulerCandidate, expectedTier AccountHealthTier, apiKeyID int64, filter AccountFilter, policy DispatchPolicy, inspectOnly bool, stats *fastSelectionStats) (selected *Account, stale bool) {
-	generation, groupCheck, acquire := s.generation, s.groupCheck, s.acquire
+	generation, groupCheck, acquire, rank := s.generation, s.groupCheck, s.acquire,s.rankCandidates
 	s.mu.Unlock()
 	defer func() {
 		started := time.Now()
@@ -661,6 +662,7 @@ func (s *FastScheduler) acquireCandidatesOutsideLock(candidates []fastSchedulerC
 			stats.restarts++
 		}
 	}()
+	if rank!=nil{rank(candidates)}
 	for _, candidate := range candidates {
 		acc := candidate.acc
 		if !acc.AllowsAPIKey(apiKeyID) || groupCheck != nil && !groupCheck(apiKeyID, acc) {

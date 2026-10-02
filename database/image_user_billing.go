@@ -63,7 +63,9 @@ type UserBilling struct {
 
 type usageBillingSnapshot struct {
 	UserBilling
-	accountCost float64
+	accountCost     float64
+	modelMultiplier float64
+	smartOpsApplied bool
 }
 
 // SnapshotUsageLogBilling freezes image pricing before scope counters and the
@@ -128,6 +130,9 @@ func UsageLogUserBilledCost(input *UsageLogInput) float64 {
 	if s := input.billingSnapshot; s != nil {
 		if IsUnitUserBillingMode(s.UserBillingMode) {
 			return float64(s.BilledImageCount) * s.ImageUnitPrice
+		}
+		if s.modelMultiplier > 0 {
+			return s.accountCost * s.modelMultiplier
 		}
 		return s.accountCost
 	}

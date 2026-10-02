@@ -96,6 +96,7 @@ func (b *Bridge) transform(reader io.Reader, writer io.Writer) error {
 		if decode(data, &payload) != nil || payload == nil {
 			return fmt.Errorf("invalid Basispoints SSE event")
 		}
+		if b.CacheCreationAsInput{normalizeCacheCreationAsInput(payload)}
 		kind := text(payload["type"])
 		if kind == "" {
 			kind = event

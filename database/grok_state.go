@@ -599,6 +599,7 @@ func (db *DB) InsertGrokAccountIfAbsent(ctx context.Context, name string, creden
 			accountID = 0
 			return nil
 		}
+		if smartOpsOAuthPlatform(credentials)=="grok"{if err:=db.ApplySmartOpsOAuthDefaultsTx(ctx,tx,accountID,"grok");err!=nil{return err}}
 		return tx.Commit()
 	})
 	return accountID, duplicateAccountID, err

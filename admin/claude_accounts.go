@@ -755,7 +755,7 @@ func (h *Handler) createClaudeAccountWithRefreshLease(ctx context.Context, name,
 	}
 
 	if h.store != nil {
-		h.store.AddAccount(&auth.Account{
+		account := &auth.Account{
 			DBID:                  id,
 			ProxyURL:              proxyURL,
 			HealthTier:            auth.HealthTierHealthy,
@@ -771,7 +771,9 @@ func (h *Handler) createClaudeAccountWithRefreshLease(ctx context.Context, name,
 			ClaudeBaseURL:         baseURL,
 			CustomHeaders:         customHeaders,
 			Models:                claudeModels,
-		})
+		}
+		h.store.ApplySmartOpsAccountRow(account)
+		h.store.AddAccount(account)
 	}
 	warnings := make([]string, 0, 2)
 	if opts != nil {

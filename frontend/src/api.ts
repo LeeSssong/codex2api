@@ -1,4 +1,5 @@
 import type { CodexPathSnapshot } from "./types"
+import type { SmartOpsConfig, OAuthAutoConfig, PriorityConfig, PelicanJob, PelicanRecord, PelicanPlan } from './lib/smartOps'
 import { readCodexProbeEvents, type CodexProbeBatch, type CodexProbeEvent, type CodexProbeLevel, type CodexProbeResult } from './lib/codexProbe.ts'
 import { qualityTestFilterQuery, type QualityTestJob, type QualityTestJobsFilter, type QualityTestJobsResponse, type QualityTestPrompt } from './lib/qualityTest.ts'
 import type { StateImportPreview, StatePackage, StatePoolData } from './lib/statePool.ts'
@@ -166,12 +167,17 @@ import type {
 
 const BASE = '/api/admin'
 
-export const getSmartOpsConfig = () => request('/smart-ops');
-export const putOAuthAutoConfig = (config: unknown) => request('/smart-ops/oauth-auto-config', { method: 'PUT', body: JSON.stringify(config) });
-export const putPriorityScheduling = (config: unknown) => request('/smart-ops/priority-scheduling', { method: 'PUT', body: JSON.stringify(config) });
-export const listPelicanTests = () => request('/smart-ops/pelican-tests');
-export const createPelicanTest = (job: unknown) => request('/smart-ops/pelican-tests', { method: 'POST', body: JSON.stringify(job) });
+export const getSmartOpsConfig = () => request<SmartOpsConfig>('/smart-ops');
+export const putOAuthAutoConfig = (config: OAuthAutoConfig) => request('/smart-ops/oauth-auto-config', { method: 'PUT', body: JSON.stringify(config) });
+export const putPriorityScheduling = (config: PriorityConfig) => request('/smart-ops/priority-scheduling', { method: 'PUT', body: JSON.stringify(config) });
+export const listPelicanTests = () => request<{ jobs: PelicanRecord[] }>('/smart-ops/pelican-tests');
+export const getPelicanTest = (id: number) => request<PelicanRecord>(`/smart-ops/pelican-tests/${id}`);
+export const createPelicanTest = (job: PelicanJob) => request<PelicanRecord>('/smart-ops/pelican-tests', { method: 'POST', body: JSON.stringify(job) });
 export const cancelPelicanTest = (id: number) => request(`/smart-ops/pelican-tests/${id}/cancel`, { method: 'POST' });
+export const listPelicanPlans = () => request<{ plans: PelicanPlan[] }>('/smart-ops/pelican-plans');
+export const savePelicanPlan = (plan: PelicanPlan) => request<PelicanPlan>('/smart-ops/pelican-plans', { method: plan.id ? 'PUT' : 'POST', body: JSON.stringify(plan) });
+export const deletePelicanPlan = (id: number) => request(`/smart-ops/pelican-plans/${id}`, { method: 'DELETE' });
+export const runPelicanPlan = (id: number) => request<PelicanRecord>(`/smart-ops/pelican-plans/${id}/run`, { method: 'POST' });
 export const ADMIN_AUTH_REQUIRED_EVENT = 'codex2api:admin-auth-required'
 const ADMIN_AUTH_RESET_KEY = 'admin_auth_reset_at'
 

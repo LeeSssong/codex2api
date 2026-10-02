@@ -42,6 +42,7 @@ import (
 	"github.com/codex2api/proxy"
 	"github.com/codex2api/security"
 	"github.com/codex2api/security/promptfilter"
+	"github.com/codex2api/smartops"
 	"github.com/codex2api/statepool"
 	"github.com/codex2api/tokenguard"
 	"github.com/gin-gonic/gin"
@@ -52,6 +53,7 @@ import (
 type Handler struct {
 	tokenGuard         *tokenguard.Service
 	accountOps         *accountOpsRuntime
+	smartOps           *smartops.Runtime
 	imageQueue         *imageJobQueue
 	ipv6State          *ipv6state.Manager
 	statePool          *statepool.Manager
