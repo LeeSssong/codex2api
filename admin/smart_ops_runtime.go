@@ -63,11 +63,6 @@ func (h *Handler) insertSmartOpsOAuthAccount(ctx context.Context, name string, c
 	if !h.PluginEnabled(ctx, smartops.PluginAutoConfig) || !cfg.Enabled || cfg.Platform != "openai" {
 		return h.db.InsertAccountWithCredentials(ctx, name, credentials, proxyURL)
 	}
-	// Validate configured groups before creating an identity. Existing identities
-	// never enter this path, so reauthorization preserves administrator overrides.
-	if e = h.db.SaveOAuthAutoConfig(ctx, cfg); e != nil {
-		return 0, e
-	}
 	return h.db.InsertAutoConfiguredOAuthAccount(ctx, name, "openai", "oauth", credentials, proxyURL, cfg)
 }
 

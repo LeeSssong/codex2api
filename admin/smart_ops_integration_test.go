@@ -48,6 +48,62 @@ func TestSmartOpsNativeOAuthDefaultsPersist(t *testing.T) {
 	}
 }
 
+type delayedSmartOpsPluginStore struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (s *delayedSmartOpsPluginStore) Get(ctx context.Context, id string) (plugins.Setting, error) {
+	close(s.started)
+	select {
+	case <-s.release:
+		return plugins.Setting{ID: id, Enabled: true}, nil
+	case <-ctx.Done():
+		return plugins.Setting{}, ctx.Err()
+	}
+}
+func (s *delayedSmartOpsPluginStore) Put(context.Context, plugins.Setting) error { return nil }
+func TestSmartOpsAccountCreationCannotOverwriteConcurrentConfigSave(t *testing.T) {
+	db := newTestAdminDB(t)
+	ctx := context.Background()
+	group, e := db.CreateAccountGroup(ctx, "initial", "", "#334455", 0, 0, sql.NullInt64{})
+	if e != nil {
+		t.Fatal(e)
+	}
+	cfg := smartops.DefaultOAuthAutoConfig()
+	cfg.Enabled = true
+	cfg.GroupIDs = []int64{group}
+	cfg.Priority = 10
+	if e = db.SaveOAuthAutoConfig(ctx, cfg); e != nil {
+		t.Fatal(e)
+	}
+	controls := &delayedSmartOpsPluginStore{started: make(chan struct{}), release: make(chan struct{})}
+	h := &Handler{db: db, pluginRegistry: plugins.NewRegistry(controls)}
+	done := make(chan error, 1)
+	go func() {
+		_, e := h.insertSmartOpsOAuthAccount(ctx, "native", map[string]interface{}{"access_token": "synthetic"}, "")
+		done <- e
+	}()
+	select {
+	case <-controls.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("creation did not read old config")
+	}
+	newer := cfg
+	newer.Priority = 80
+	if e = db.SaveOAuthAutoConfig(ctx, newer); e != nil {
+		t.Fatal(e)
+	}
+	close(controls.release)
+	if e = <-done; e != nil {
+		t.Fatal(e)
+	}
+	saved, e := db.LoadOAuthAutoConfig(ctx)
+	if e != nil || saved.Priority != 80 {
+		t.Fatalf("account creation overwrote admin save: priority=%d err=%v", saved.Priority, e)
+	}
+}
+
 func TestSmartOpsNativeDefaultsWithSingleSQLiteConnection(t *testing.T) {
 	db, e := database.New("sqlite", ":memory:")
 	if e != nil {
