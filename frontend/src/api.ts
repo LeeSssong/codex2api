@@ -575,7 +575,18 @@ export interface ModelTraceBankUpdateResult extends ModelTraceBankStatus {
   removed_models?: string[]
 }
 
+export interface PluginManifest {
+  id: string
+  version: string
+  source_sha: string
+  sdk_compatibility: string
+  update_mode: string
+  enabled: boolean
+}
+
 export const api = {
+  getPlugins: () => request<{ plugins: PluginManifest[] }>('/plugins'),
+  updatePlugin: (id: string, enabled: boolean) => request<PluginManifest>(`/plugins/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify({ enabled }) }),
   getIPv6State: (signal?: AbortSignal) => request<IPv6StateStatus>('/state-pool/ipv6', { signal }),
   configureIPv6State: (body: IPv6StateConfig) => request<IPv6StateStatus>('/state-pool/ipv6', { method: 'PUT', body: JSON.stringify(body) }).then(notifyStateChange),
   configureStatePolicy: (require_valid_state: boolean) => request<IPv6StateStatus>('/state-pool/ipv6/policy', { method: 'PATCH', body: JSON.stringify({ require_valid_state }) }).then(notifyStateChange),
