@@ -17,6 +17,11 @@ func guardTestDB(t *testing.T, driver string) *DB {
 		if dsn == "" {
 			t.Skip("requires isolated CODEX2API_TEST_POSTGRES_DSN")
 		}
+		db, err := newAccountOpsTestDB(t)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return db
 	}
 	db, err := New(driver, dsn)
 	if err != nil {

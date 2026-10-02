@@ -8,6 +8,8 @@ import (
 	"sync"
 	"time"
 
+	"encoding/json"
+	"github.com/codex2api/accountops"
 	"github.com/codex2api/database"
 )
 
@@ -25,6 +27,7 @@ type codexAccountRoutes struct {
 	loadedAt     time.Time
 	loadFailed   bool
 	configs      map[string]bool
+	qualityBPS   *accountops.QualityBPSPolicy
 	facts        map[string]database.CodexCapability
 	health       map[string]codexPathHealth
 	probeRunning bool
@@ -73,14 +76,77 @@ func (a *Account) reloadCodexRoutesLocked(ctx context.Context, now time.Time) er
 		return err
 	}
 	r.configs = make(map[string]bool, len(configs))
+	r.qualityBPS = nil
 	r.facts = make(map[string]database.CodexCapability, len(facts))
 	for _, c := range configs {
 		r.configs[c.Upstream] = c.Allowed
+		if c.Upstream == database.CodexPathBasispoints {
+			r.qualityBPS = c.QualityBPS
+		}
 	}
 	for _, f := range facts {
 		r.facts[codexFactKey(f.Upstream, f.Model)] = f
 	}
 	return nil
+}
+
+func (a *Account) QualityBPSPreferred(model string) bool {
+	a.codexRoutes.mu.Lock()
+	defer a.codexRoutes.mu.Unlock()
+	r := &a.codexRoutes
+	if r.loadFailed || r.qualityBPS == nil {
+		return false
+	}
+	if allowed, exists := r.configs[database.CodexPathBasispoints]; exists && !allowed {
+		return false
+	}
+	if r.qualityBPS.AllModels {
+		return true
+	}
+	for _, m := range r.qualityBPS.Models {
+		if strings.EqualFold(m, model) {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *Account) QualityBPSPolicy() *accountops.QualityBPSPolicy {
+	a.codexRoutes.mu.Lock()
+	defer a.codexRoutes.mu.Unlock()
+	if a.codexRoutes.loadFailed || a.codexRoutes.qualityBPS == nil {
+		return nil
+	}
+	copy := *a.codexRoutes.qualityBPS
+	copy.Models = append([]string(nil), copy.Models...)
+	if copy.RecoveryIntervalMinutes != nil {
+		n := *copy.RecoveryIntervalMinutes
+		copy.RecoveryIntervalMinutes = &n
+	}
+	return &copy
+}
+
+func (a *Account) QualityBPSTransportDefaults() ([]byte, bool) {
+	p := a.QualityBPSPolicy()
+	if p == nil || !a.CodexPathSnapshot(database.CodexPathBasispoints, "", time.Now()).Allowed {
+		return nil, false
+	}
+	raw, err := json.Marshal(p)
+	return raw, err == nil
+}
+
+func (a *Account) DisableQualityBPSOn403(ctx context.Context, generation int64) (bool, error) {
+	a.codexRoutes.mu.Lock()
+	db := a.codexRoutes.db
+	a.codexRoutes.mu.Unlock()
+	if db == nil {
+		return false, nil
+	}
+	changed, err := db.DisableQualityBPSOn403(ctx, a.ID(), generation)
+	if changed && err == nil {
+		err = a.ReloadCodexRoutes(ctx)
+	}
+	return changed, err
 }
 
 func (a *Account) codexPathSnapshotLocked(path, model string, now time.Time, generation int64) CodexPathSnapshot {

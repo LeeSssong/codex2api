@@ -22,26 +22,29 @@ type Judgment struct {
 	ModelID   string `json:"model_id,omitempty"`
 }
 type Plan struct {
-	CredentialGeneration int64        `json:"-"`
-	ControlRevision      int64        `json:"-"`
-	JobID                int64        `json:"-"`
-	ID                   int64        `json:"id"`
-	AccountID            int64        `json:"account_id"`
-	Enabled              bool         `json:"enabled"`
-	Model                string       `json:"model"`
-	Prompt               string       `json:"prompt"`
-	ReasoningEffort      string       `json:"reasoning_effort"`
-	Cron                 string       `json:"cron"`
-	MaxResults           int          `json:"max_results"`
-	Samples              int          `json:"samples"`
-	ExpectedAnswer       string       `json:"expected_answer"`
-	Action               string       `json:"action"`
-	RemoveGroupIDs       []int64      `json:"remove_group_ids"`
-	AutoRestore          bool         `json:"auto_restore"`
-	Judge                *JudgeConfig `json:"judge"`
-	Version              int64        `json:"version"`
-	NextRun              time.Time    `json:"next_run"`
-	Lease                string       `json:"-"`
+	CredentialGeneration int64             `json:"-"`
+	ControlRevision      int64             `json:"-"`
+	JobID                int64             `json:"-"`
+	UsagePercent         float64           `json:"-"`
+	HasUsage             bool              `json:"-"`
+	ID                   int64             `json:"id"`
+	AccountID            int64             `json:"account_id"`
+	Enabled              bool              `json:"enabled"`
+	Model                string            `json:"model"`
+	Prompt               string            `json:"prompt"`
+	ReasoningEffort      string            `json:"reasoning_effort"`
+	Cron                 string            `json:"cron"`
+	MaxResults           int               `json:"max_results"`
+	Samples              int               `json:"samples"`
+	ExpectedAnswer       string            `json:"expected_answer"`
+	Action               string            `json:"action"`
+	BPS                  *QualityBPSPolicy `json:"bps,omitempty"`
+	RemoveGroupIDs       []int64           `json:"remove_group_ids"`
+	AutoRestore          bool              `json:"auto_restore"`
+	Judge                *JudgeConfig      `json:"judge"`
+	Version              int64             `json:"version"`
+	NextRun              time.Time         `json:"next_run"`
+	Lease                string            `json:"-"`
 }
 type ExecutionEvidence struct {
 	Upstream             string `json:"upstream,omitempty"`
@@ -78,8 +81,13 @@ func (p Plan) Next(now time.Time) (time.Time, error) {
 	if strings.TrimSpace(p.ExpectedAnswer) == "" || len(p.ExpectedAnswer) > 4000 {
 		return time.Time{}, fmt.Errorf("reference answer must be 1–4000 bytes")
 	}
-	if p.Action != "remove_groups" && p.Action != "disable_scheduling" {
+	if p.Action != "remove_groups" && p.Action != "disable_scheduling" && p.Action != "enable_bps" {
 		return time.Time{}, fmt.Errorf("invalid action")
+	}
+	if p.Action == "enable_bps" {
+		if err := ValidateQualityBPSPolicy(p.BPS); err != nil {
+			return time.Time{}, err
+		}
 	}
 	if p.Action == "remove_groups" && len(p.RemoveGroupIDs) == 0 {
 		return time.Time{}, fmt.Errorf("select groups to remove")

@@ -29,11 +29,12 @@ type Store interface {
 }
 
 type Registry struct {
-	store    Store
-	defaults map[string]Setting
-	mu       sync.RWMutex
-	cache    map[string]Setting
-	cacheAt  map[string]time.Time
+	store     Store
+	defaults  map[string]Setting
+	mu        sync.RWMutex
+	refreshMu sync.Mutex
+	cache     map[string]Setting
+	cacheAt   map[string]time.Time
 }
 
 var defaultSettings = []Setting{
@@ -78,6 +79,15 @@ func (r *Registry) Get(ctx context.Context, id string) (Setting, error) {
 	if cachedOK && fresh {
 		return cloneSetting(cached), nil
 	}
+	r.refreshMu.Lock()
+	defer r.refreshMu.Unlock()
+	r.mu.RLock()
+	cached, cachedOK = r.cache[id]
+	fresh = time.Since(r.cacheAt[id]) < 30*time.Second
+	r.mu.RUnlock()
+	if cachedOK && fresh {
+		return cloneSetting(cached), nil
+	}
 	setting, err := r.store.Get(ctx, id)
 	if errors.Is(err, ErrNotFound) {
 		setting = cloneSetting(defaultSetting)
@@ -101,7 +111,7 @@ func (r *Registry) Get(ctx context.Context, id string) (Setting, error) {
 	r.cache[id] = setting
 	r.cacheAt[id] = time.Now()
 	r.mu.Unlock()
-	return setting, nil
+	return cloneSetting(setting), nil
 }
 
 func (r *Registry) List(ctx context.Context) ([]Setting, error) {
@@ -124,6 +134,8 @@ func (r *Registry) Enabled(ctx context.Context, id string) bool {
 }
 
 func (r *Registry) Set(ctx context.Context, setting Setting) error {
+	r.refreshMu.Lock()
+	defer r.refreshMu.Unlock()
 	if _, ok := r.defaults[setting.ID]; !ok {
 		return ErrUnknownPlugin
 	}

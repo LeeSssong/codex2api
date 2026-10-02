@@ -22,6 +22,64 @@ type blockedClient struct {
 	credentials map[string]any
 }
 
+func TestPluginDisableWhileReloginRunsNeverPublishes(t *testing.T) {
+	db, store, id, cfg := serviceFixture(t)
+	ctx := context.Background()
+	before, err := db.TokenGuardAccount(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &blockedClient{started: make(chan struct{}), release: make(chan struct{}), credentials: map[string]any{"refresh_token": "new-rt", "access_token": before.Credential("access_token"), "id_token": before.Credential("id_token")}}
+	s := NewService(db, store, client)
+	var enabled atomic.Bool
+	enabled.Store(true)
+	s.SetPluginGate(enabled.Load)
+	if _, err := s.SaveConfig(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	_, v, _ := s.Config(ctx)
+	if _, err := db.CreateTokenGuardJob(ctx, "relogin", id, v); err != nil {
+		t.Fatal(err)
+	}
+	j, err := db.ClaimTokenGuardJob(ctx, "disabled-result-test", time.Now())
+	if err != nil || j == nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() { s.process(ctx, *j, cfg, *before, storedState{}); close(done) }()
+	select {
+	case <-client.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("login not started")
+	}
+	enabled.Store(false)
+	close(client.release)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("result did not finish")
+	}
+	after, err := db.TokenGuardAccount(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Generation != before.Generation || after.Credential("refresh_token") != before.Credential("refresh_token") {
+		t.Fatal("disabled plugin published external result")
+	}
+}
+
+func TestStoppedServiceCannotStartWorker(t *testing.T) {
+	db, store, _, _ := serviceFixture(t)
+	s := NewService(db, store, nil)
+	s.Stop()
+	s.Start(context.Background())
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.cancel != nil {
+		t.Fatal("Stop before Start allowed a worker leak")
+	}
+}
+
 func (c *blockedClient) Probe(context.Context, Config, string) ProbeResult {
 	return ProbeResult{"auth", "探活报告令牌失效", 1}
 }

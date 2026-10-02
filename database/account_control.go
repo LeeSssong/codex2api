@@ -28,6 +28,10 @@ func (db *DB) ensureAccountControlSchema(ctx context.Context) error {
 	var statements []string
 	if db.isSQLite() {
 		statements = []string{
+			"CREATE TRIGGER IF NOT EXISTS account_paths_control_insert AFTER INSERT ON account_codex_paths BEGIN UPDATE accounts SET control_revision=control_revision+1 WHERE id=NEW.account_id; END",
+			"DROP TRIGGER IF EXISTS account_paths_control_update",
+			"CREATE TRIGGER account_paths_control_update AFTER UPDATE OF allowed,quality_bps,quality_bps_disabled_at ON account_codex_paths BEGIN UPDATE accounts SET control_revision=control_revision+1 WHERE id=NEW.account_id; END",
+			"CREATE TRIGGER IF NOT EXISTS account_paths_control_delete AFTER DELETE ON account_codex_paths BEGIN UPDATE accounts SET control_revision=control_revision+1 WHERE id=OLD.account_id; END",
 			"CREATE TRIGGER IF NOT EXISTS accounts_control_revision AFTER UPDATE OF " + fields + " ON accounts BEGIN UPDATE accounts SET control_revision=OLD.control_revision+1 WHERE id=NEW.id; END",
 			"CREATE TRIGGER IF NOT EXISTS account_members_control_insert AFTER INSERT ON account_group_members BEGIN UPDATE accounts SET control_revision=control_revision+1 WHERE id=NEW.account_id; END",
 			"CREATE TRIGGER IF NOT EXISTS account_members_control_delete AFTER DELETE ON account_group_members BEGIN UPDATE accounts SET control_revision=control_revision+1 WHERE id=OLD.account_id; END",
@@ -42,10 +46,22 @@ func (db *DB) ensureAccountControlSchema(ctx context.Context) error {
 			"CREATE OR REPLACE FUNCTION bump_account_member_control_revision() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF TG_OP <> 'INSERT' THEN UPDATE accounts SET control_revision=control_revision+1 WHERE id=OLD.account_id; END IF; IF TG_OP <> 'DELETE' THEN UPDATE accounts SET control_revision=control_revision+1 WHERE id=NEW.account_id; END IF; RETURN NULL; END $$",
 			"DROP TRIGGER IF EXISTS account_members_control_revision ON account_group_members",
 			"CREATE TRIGGER account_members_control_revision AFTER INSERT OR UPDATE OR DELETE ON account_group_members FOR EACH ROW EXECUTE FUNCTION bump_account_member_control_revision()",
+			"DROP TRIGGER IF EXISTS account_paths_control_revision ON account_codex_paths",
+			"CREATE TRIGGER account_paths_control_revision AFTER INSERT OR UPDATE OF allowed,quality_bps,quality_bps_disabled_at OR DELETE ON account_codex_paths FOR EACH ROW EXECUTE FUNCTION bump_account_member_control_revision()",
 			"CREATE OR REPLACE FUNCTION bump_group_account_control_revision() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN UPDATE accounts SET control_revision=control_revision+1 WHERE id IN (SELECT account_id FROM account_group_members WHERE group_id=NEW.id); RETURN NULL; END $$",
 			"DROP TRIGGER IF EXISTS account_groups_control_revision ON account_groups",
 			"CREATE TRIGGER account_groups_control_revision AFTER UPDATE ON account_groups FOR EACH ROW EXECUTE FUNCTION bump_group_account_control_revision()",
 		}
+	}
+	if !db.isSQLite() {
+		return db.withWriteTx(ctx, func(tx *sql.Tx) error {
+			for _, statement := range statements {
+				if _, err := tx.ExecContext(ctx, statement); err != nil {
+					return fmt.Errorf("account control revision: %w", err)
+				}
+			}
+			return nil
+		})
 	}
 	for _, statement := range statements {
 		if _, err := db.conn.ExecContext(ctx, statement); err != nil {

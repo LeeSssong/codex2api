@@ -60,7 +60,7 @@ func guardHTTPError(c *gin.Context, err error, invalid bool) {
 	c.JSON(status, gin.H{"error": message})
 }
 func (h *Handler) GetTokenGuardStatus(c *gin.Context) {
-	s := h.guardService(c)
+	s := h.tokenGuard
 	if s == nil {
 		return
 	}
@@ -72,7 +72,7 @@ func (h *Handler) GetTokenGuardStatus(c *gin.Context) {
 	c.JSON(http.StatusOK, status)
 }
 func (h *Handler) GetTokenGuardConfig(c *gin.Context) {
-	s := h.guardService(c)
+	s := h.tokenGuard
 	if s == nil {
 		return
 	}
@@ -148,7 +148,7 @@ func (h *Handler) CancelTokenGuardJob(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"cancelled": cancelled})
 }
 func (h *Handler) GetTokenGuardEvents(c *gin.Context) {
-	s := h.guardService(c)
+	s := h.tokenGuard
 	if s == nil {
 		return
 	}

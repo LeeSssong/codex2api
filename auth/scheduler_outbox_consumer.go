@@ -402,6 +402,9 @@ func (s *Store) reloadDispatchAccountsByIDs(ctx context.Context, accountIDs []in
 			continue
 		}
 		s.applyPersistentAccountSnapshot(current, fresh, row.Enabled)
+		if err := current.ReloadCodexRoutes(ctx); err != nil {
+			return err
+		}
 	}
 	for _, accountID := range ids {
 		if _, ok := loaded[accountID]; !ok && s.FindByID(accountID) != nil {

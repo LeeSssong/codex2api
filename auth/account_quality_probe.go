@@ -1,6 +1,21 @@
 package auth
 
-import "sync/atomic"
+import (
+	"sync/atomic"
+	"time"
+)
+
+func (a *Account) QualityUsagePercent(now time.Time) (float64, bool) {
+	s := a.GetAccountListRuntimeSnapshot()
+	used, ok := 0.0, s.UsagePercent5hValid || s.UsagePercent7dValid
+	if s.UsagePercent5hValid && (s.Reset5hAt.IsZero() || s.Reset5hAt.After(now)) {
+		used = s.UsagePercent5h
+	}
+	if s.UsagePercent7dValid && (s.Reset7dAt.IsZero() || s.Reset7dAt.After(now)) && s.UsagePercent7d > used {
+		used = s.UsagePercent7d
+	}
+	return used, ok
+}
 
 // TakeAccountQualityProbe reserves a native account slot for an explicit quality
 // sample. Isolated accounts remain probeable, but the request still shares the

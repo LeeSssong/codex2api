@@ -166,7 +166,7 @@ func (s *AccountOpsService) ObserveQuality(accountID int64, accountName, action 
 	}
 	kind := ""
 	switch action {
-	case "groups_removed", "scheduling_disabled":
+	case "groups_removed", "scheduling_disabled", "bps_enabled", "bps_enabled_usage":
 		kind = "quality_degraded"
 	case "restored":
 		kind = "quality_restored"
@@ -319,6 +319,10 @@ func qualityActionLabel(action string) string {
 		return "已移出配置的分组"
 	case "scheduling_disabled":
 		return "已停用账号调度"
+	case "bps_enabled":
+		return "已因降智开启 BPS"
+	case "bps_enabled_usage":
+		return "已因用量开启 BPS"
 	case "restored":
 		return "已自动恢复账号"
 	default:

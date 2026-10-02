@@ -15,6 +15,21 @@ type PluginStore struct{ db *DB }
 
 func NewPluginStore(db *DB) *PluginStore { return &PluginStore{db: db} }
 
+// Pin controls through publication so a disable and old result have a defined
+// transaction order across application instances.
+func (db *DB) PluginEnabledTx(ctx context.Context, tx *sql.Tx, id string) (bool, error) {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO plugin_settings(id,enabled) VALUES($1,TRUE) ON CONFLICT(id) DO NOTHING`, id); err != nil {
+		return false, err
+	}
+	q := `SELECT enabled FROM plugin_settings WHERE id=$1`
+	if !db.isSQLite() {
+		q += ` FOR UPDATE`
+	}
+	var enabled bool
+	err := tx.QueryRowContext(ctx, q, id).Scan(&enabled)
+	return enabled, err
+}
+
 func (db *DB) ensurePluginSettingsSchema(ctx context.Context) error {
 	table := `CREATE TABLE IF NOT EXISTS plugin_settings (
 		id TEXT PRIMARY KEY,
@@ -82,8 +97,17 @@ func (s *PluginStore) Put(ctx context.Context, setting plugins.Setting) error {
 	if err != nil {
 		return err
 	}
-	return s.db.withSQLiteWriteLock(ctx, func() error {
-		_, err := s.db.conn.ExecContext(ctx, `INSERT INTO plugin_settings(id,version,source_sha,sdk_compatibility,update_mode,enabled,flags,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,CURRENT_TIMESTAMP) ON CONFLICT(id) DO UPDATE SET version=EXCLUDED.version,source_sha=EXCLUDED.source_sha,sdk_compatibility=EXCLUDED.sdk_compatibility,update_mode=EXCLUDED.update_mode,enabled=EXCLUDED.enabled,flags=EXCLUDED.flags,updated_at=CURRENT_TIMESTAMP`, setting.ID, setting.Version, setting.SourceSHA, setting.SDKCompatibility, setting.UpdateMode, setting.Enabled, string(flags))
+	return s.db.withWriteTx(ctx, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `INSERT INTO plugin_settings(id,version,source_sha,sdk_compatibility,update_mode,enabled,flags,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,CURRENT_TIMESTAMP) ON CONFLICT(id) DO UPDATE SET version=EXCLUDED.version,source_sha=EXCLUDED.source_sha,sdk_compatibility=EXCLUDED.sdk_compatibility,update_mode=EXCLUDED.update_mode,enabled=EXCLUDED.enabled,flags=EXCLUDED.flags,updated_at=CURRENT_TIMESTAMP`, setting.ID, setting.Version, setting.SourceSHA, setting.SDKCompatibility, setting.UpdateMode, setting.Enabled, string(flags))
+		if err != nil || setting.Enabled {
+			return err
+		}
+		switch setting.ID {
+		case "token-guard":
+			_, err = tx.ExecContext(ctx, `UPDATE account_token_guard_jobs SET state='cancelled',cancellation=TRUE,fence=fence+1 WHERE state IN ('queued','running','cancelling')`)
+		case "quality-ops":
+			_, err = tx.ExecContext(ctx, `UPDATE account_quality_plans SET lease='',lease_until=NULL,version=version+1 WHERE lease<>''`)
+		}
 		return err
 	})
 }

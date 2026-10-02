@@ -27,6 +27,13 @@ type codexRouteShared struct {
 	decision *CodexRouteDecision
 }
 type codexAttemptKey struct{}
+type qualityObservationKey struct{}
+
+// Recovery checks must measure the direct channel even while quality owns BPS.
+func WithNativeQualityProbe(ctx context.Context) context.Context {
+	ctx = context.WithValue(ctx, qualityObservationKey{}, true)
+	return context.WithValue(ctx, codexRouteLimitsKey{}, database.APIKeyLimits{CodexRoutePolicy: database.CodexRouteNativeOnly})
+}
 
 // CodexRouteAttempt describes transport facts without credentials or request text.
 type CodexRouteAttempt struct {
@@ -175,7 +182,7 @@ func (d *CodexRouteDecision) pathIneligibleReason(account *auth.Account, path, m
 		return "route_configuration"
 	}
 	if path == database.CodexPathBasispoints {
-		if !basispointsActiveForModel(model) || account.IsCodexAgentIdentity() || account.GetAccessToken() == "" || account.EffectiveAccountID() == "" {
+		if !(basispointsActiveForModel(model) || account.QualityBPSPreferred(model) && basispointsModelAllowed(model)) || account.IsCodexAgentIdentity() || account.GetAccessToken() == "" || account.EffectiveAccountID() == "" {
 			return "basispoints_unavailable"
 		}
 		if len(body) > 0 {
@@ -236,6 +243,23 @@ func (d *CodexRouteDecision) eligiblePaths() []string {
 	return append([]string(nil), d.Paths...)
 }
 
+func (d *CodexRouteDecision) eligibleAccountPaths(account *auth.Account, model string) []string {
+	paths := d.eligiblePaths()
+	if account == nil {
+		return paths
+	}
+	if err := account.RefreshCodexRoutes(d.client, time.Now()); err != nil {
+		return paths
+	}
+	d.mu.Lock()
+	constrained := d.routeConstrained || d.FinalPath != "" || d.pinnedPath != "" || d.NoSwitch
+	d.mu.Unlock()
+	if !constrained && account.QualityBPSPreferred(model) && basispointsModelAllowed(model) {
+		return []string{database.CodexPathBasispoints, database.CodexPathNative}
+	}
+	return paths
+}
+
 func (h *Handler) withCodexRouteFilter(c *gin.Context, requested, model string, body []byte, filter auth.AccountFilter) auth.AccountFilter {
 	limits := database.APIKeyLimits{}
 	row := apiKeyRowFromContext(c)
@@ -284,7 +308,7 @@ func (h *Handler) withCodexRouteFilter(c *gin.Context, requested, model string, 
 			return true
 		}
 		reasons := []string{}
-		for _, p := range d.eligiblePaths() {
+		for _, p := range d.eligibleAccountPaths(account, model) {
 			reason := d.pathIneligibleReason(account, p, model, body)
 			if reason == "" {
 				d.rememberSelectionReasons(account.ID(), nil)
@@ -408,9 +432,15 @@ func executeCodexRoute(ctx context.Context, account *auth.Account, body []byte, 
 	if d.Preferred == database.CodexPathBasispoints && (account.IsCodexAgentIdentity() || account.GetAccessToken() == "" || account.EffectiveAccountID() == "") {
 		return nil, ErrBadRequest("Basispoints requires a ChatGPT OAuth access token and account ID")
 	}
-	paths := d.Paths
+	paths := d.eligibleAccountPaths(account, model)
+	if len(paths) > 0 && paths[0] == database.CodexPathBasispoints && d.Preferred != paths[0] {
+		d.mu.Lock()
+		d.Paths = paths
+		d.Preferred = paths[0]
+		d.mu.Unlock()
+	}
 	selected := ""
-	for _, path := range d.eligiblePaths() {
+	for _, path := range paths {
 		if d.pathEligible(account, path, model, body) {
 			selected = path
 			break
@@ -602,6 +632,18 @@ func (a *codexRouteAttemptState) recordFailure(f codexRouteFailure) {
 	blocked := d.HistoryLockReason
 	d.mu.Unlock()
 	log.Printf("[CodexRoute] preferred=%s path=%s account=%d http_status=%d reported_status=%d source=%s code=%s reason=%s switch_blocked=%s", d.Preferred, a.path, a.account.ID(), f.HTTPStatus, f.ReportedStatus, f.Source, f.Code, f.Category, blocked)
+	if observation, _ := d.client.Value(qualityObservationKey{}).(bool); observation {
+		return
+	}
+	if a.path == database.CodexPathBasispoints && (f.HTTPStatus == http.StatusForbidden || f.ReportedStatus == http.StatusForbidden) {
+		if changed, err := a.account.DisableQualityBPSOn403(d.client, a.generation); err != nil {
+			log.Printf("[quality-bps] automatic 403 action failed account=%d", a.account.ID())
+		} else if changed {
+			if observer := accountOpsObserver.Load(); observer != nil {
+				observer.ObserveBasispoints(a.account.ID(), a.generation, "auto_403_disabled")
+			}
+		}
+	}
 	if f.Category == "upstream_access" {
 		a.account.SetCodexPathCooldown(a.path, a.model, f.Category, a.started, time.Now().Add(30*time.Second))
 	}

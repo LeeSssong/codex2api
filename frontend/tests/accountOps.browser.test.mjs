@@ -14,7 +14,7 @@ test("source account quality and alert pages save, trigger, inspect and paginate
   const page = await browser.newPage({
     viewport: { width: 1440, height: 1000 },
   });
-  await page.addInitScript(() => localStorage.setItem("lang", "zh"));
+  await page.addInitScript(() => { localStorage.setItem("lang", "zh"); localStorage.setItem("admin_key", "synthetic-browser-key"); localStorage.setItem("codex2api:first_setup_review_done_v1", "1"); });
   await mkdir(process.env.SMART_OPS_ARTIFACT_DIR || "/tmp/smart-ops-ui", {
     recursive: true,
   });
@@ -72,7 +72,11 @@ test("source account quality and alert pages save, trigger, inspect and paginate
     else if (path.endsWith("/branding")) data = { site_name: "Codex2API" };
     else if (path.endsWith("/settings/visible-channels"))
       data = { channels: ["codex"] };
-    else if (path.endsWith("/account-ops/module")) {
+    else if (path.endsWith("/plugins")) data = { plugins: [{id:"quality-ops", enabled:moduleEnabled}] };
+    else if (path.endsWith("/plugins/quality-ops")) {
+      if (post) moduleEnabled = route.request().postDataJSON().enabled;
+      data = { id:"quality-ops", enabled:moduleEnabled };
+    } else if (path.endsWith("/account-ops/module")) {
       if (post) moduleEnabled = route.request().postDataJSON().enabled;
       data = { enabled: moduleEnabled };
     } else if (path.endsWith("/account-ops/config")) {
@@ -151,7 +155,7 @@ test("source account quality and alert pages save, trigger, inspect and paginate
   try {
     await page.goto(
       (process.env.ACCOUNT_OPS_TEST_URL || "http://127.0.0.1:5197") +
-        "/admin/quality-ops",
+        "/admin/smart-ops/quality",
     );
     await page
       .getByRole("heading", { name: "质量守护", exact: true })

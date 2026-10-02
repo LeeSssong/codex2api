@@ -35,7 +35,7 @@ const configFixture = () => ({
 });
 async function setup(page, { lang = "en", moduleEnabled = true } = {}) {
   await page.addInitScript(
-    (language) => localStorage.setItem("lang", language),
+    (language) => { localStorage.setItem("lang", language); localStorage.setItem("admin_key", "synthetic-browser-key"); localStorage.setItem("codex2api:first_setup_review_done_v1", "1"); },
     lang,
   );
   const fixture = {
@@ -122,6 +122,10 @@ async function setup(page, { lang = "en", moduleEnabled = true } = {}) {
         runtime_os: "linux",
         runtime_arch: "amd64",
       };
+    else if (path.endsWith("/plugins/token-guard")) {
+      if (post) fixture.moduleEnabled = req.postDataJSON().enabled;
+      data = {id:"token-guard", enabled:fixture.moduleEnabled};
+    } else if (path.endsWith("/plugins")) data = {plugins:[]};
     else if (path.endsWith("/account-ops/module")) {
       if (post) fixture.moduleEnabled = req.postDataJSON().enabled;
       data = { enabled: fixture.moduleEnabled };
@@ -404,7 +408,7 @@ test("TokenGuard preserves full config, resumes jobs, cancels, paginates and rep
   }
 });
 
-test("TokenGuard honours global disable and renders all supported languages", async () => {
+test("TokenGuard honours independent plugin disable and renders all supported languages", async () => {
   const browser = await chromium.launch({
     headless: true,
     channel: process.env.PLAYWRIGHT_CHANNEL || "chrome",
@@ -424,7 +428,7 @@ test("TokenGuard honours global disable and renders all supported languages", as
         viewport: { width: 390, height: 844 },
       });
       await setup(page, { lang, moduleEnabled: false });
-      await page.goto(base + "/admin/token-guard");
+      await page.goto(base + "/admin/smart-ops/tokens");
       await page.getByRole("heading", { name: title, exact: true }).waitFor();
       assert.equal(
         await page

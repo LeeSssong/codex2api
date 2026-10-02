@@ -365,6 +365,7 @@ export default function TokenGuard() {
         </div>
       </header>
       <AccountOpsModule
+        pluginId="token-guard"
         enabled={remote?.module_enabled ?? false}
         disabled={!remote}
         onChange={(enabled) => {

@@ -29,6 +29,17 @@ func (db *DB) ensureAccountOpsSchema(ctx context.Context) error {
 			return e
 		}
 	}
+	for _, column := range []string{"failure_streak", "pass_streak"} {
+		if db.isSQLite() {
+			if err := db.ensureSQLiteColumn(ctx, "account_quality_plans", column, "INTEGER NOT NULL DEFAULT 0"); err != nil {
+				return err
+			}
+		} else {
+			if _, err := db.conn.ExecContext(ctx, "ALTER TABLE account_quality_plans ADD COLUMN IF NOT EXISTS "+column+" INTEGER NOT NULL DEFAULT 0"); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }
 

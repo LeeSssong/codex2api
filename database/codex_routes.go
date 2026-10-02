@@ -3,7 +3,9 @@ package database
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"github.com/codex2api/accountops"
 	"strings"
 	"time"
 )
@@ -66,8 +68,9 @@ type CodexCapability struct {
 }
 
 type CodexPathConfig struct {
-	Upstream string `json:"upstream"`
-	Allowed  bool   `json:"allowed"`
+	Upstream   string                       `json:"upstream"`
+	Allowed    bool                         `json:"allowed"`
+	QualityBPS *accountops.QualityBPSPolicy `json:"quality_bps,omitempty"`
 }
 
 // Integer timestamps have identical ordering on SQLite and PostgreSQL.
@@ -82,6 +85,15 @@ func (db *DB) ensureCodexRoutesSchema(ctx context.Context) error {
 			return fmt.Errorf("initialize Codex routes: %w", err)
 		}
 	}
+	for name, ddl := range map[string]string{"quality_bps": "TEXT NOT NULL DEFAULT ''", "quality_bps_disabled_at": "BIGINT NOT NULL DEFAULT 0", "quality_bps_recovery_at": "BIGINT NOT NULL DEFAULT 0", "quality_bps_owner_revision": "BIGINT NOT NULL DEFAULT 0"} {
+		if db.isSQLite() {
+			if err := db.ensureSQLiteColumn(ctx, "account_codex_paths", name, ddl); err != nil {
+				return err
+			}
+		} else if _, err := db.conn.ExecContext(ctx, "ALTER TABLE account_codex_paths ADD COLUMN IF NOT EXISTS "+name+" "+ddl); err != nil {
+			return err
+		}
+	}
 	if db.isSQLite() {
 		return db.ensureSQLiteColumn(ctx, "account_codex_capabilities", "credential_generation", "BIGINT NOT NULL DEFAULT 0")
 	}
@@ -92,18 +104,25 @@ func (db *DB) ensureCodexRoutesSchema(ctx context.Context) error {
 func (db *DB) GetCodexRoutes(ctx context.Context, id int64) ([]CodexPathConfig, []CodexCapability, error) {
 	configs := []CodexPathConfig{}
 	facts := []CodexCapability{}
-	rows, err := db.conn.QueryContext(ctx, `SELECT upstream, allowed FROM account_codex_paths WHERE account_id=$1`, id)
+	rows, err := db.conn.QueryContext(ctx, `SELECT upstream, allowed,quality_bps FROM account_codex_paths WHERE account_id=$1`, id)
 	if err != nil {
 		return nil, nil, err
 	}
 	for rows.Next() {
 		var c CodexPathConfig
 		var allowed int
-		if err := rows.Scan(&c.Upstream, &allowed); err != nil {
+		var qualityBPS string
+		if err := rows.Scan(&c.Upstream, &allowed, &qualityBPS); err != nil {
 			rows.Close()
 			return nil, nil, err
 		}
 		c.Allowed = allowed != 0
+		if qualityBPS != "" {
+			if err := json.Unmarshal([]byte(qualityBPS), &c.QualityBPS); err != nil {
+				rows.Close()
+				return nil, nil, err
+			}
+		}
 		configs = append(configs, c)
 	}
 	err = rows.Err()

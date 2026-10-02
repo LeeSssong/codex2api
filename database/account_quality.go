@@ -57,6 +57,9 @@ func (db *DB) SaveAccountQualityPlan(ctx context.Context, p accountops.Plan) (ac
 		if p.Judge != nil {
 			groups = append(groups, p.Judge.GroupID)
 		}
+		if p.Action == "enable_bps" && p.BPS != nil && p.BPS.AutoMoveOn403 && p.BPS.TargetGroupID > 0 {
+			groups = append(groups, p.BPS.TargetGroupID)
+		}
 		for _, id := range groups {
 			if e := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM account_groups WHERE id=$1)`, id).Scan(&exists); e != nil {
 				return e
@@ -204,6 +207,8 @@ func (db *DB) GetAccountQualityRound(ctx context.Context, id int64) (accountops.
 }
 
 type qualityRecovery struct {
+	BPSPrevious      string    `json:"bps_previous,omitempty"`
+	BPSApplied       string    `json:"bps_applied,omitempty"`
 	ControlRevision  int64     `json:"control_revision"`
 	PlanVersion      int64     `json:"plan_version"`
 	Action           string    `json:"action"`
@@ -236,6 +241,14 @@ func qualityTxGroups(ctx context.Context, tx *sql.Tx, id int64) ([]int64, error)
 func (db *DB) ApplyAccountQualityOutcome(ctx context.Context, p accountops.Plan, outcome string) (action string, err error) {
 	action = "no_change"
 	err = db.WithAccountControlTx(ctx, func(tx *sql.Tx) error {
+		pluginEnabled, e := db.PluginEnabledTx(ctx, tx, "quality-ops")
+		if e != nil {
+			return e
+		}
+		if !pluginEnabled {
+			action = "stale_run"
+			return nil
+		}
 		revision, e := db.LockAccountControlTx(ctx, tx, p.AccountID)
 		if errors.Is(e, sql.ErrNoRows) {
 			action = "account_deleted"
@@ -301,7 +314,7 @@ func (db *DB) ApplyAccountQualityOutcome(ctx context.Context, p accountops.Plan,
 			action = "account_changed"
 			return nil
 		}
-		if outcome == "inconclusive" {
+		if outcome == "inconclusive" && p.Action != "enable_bps" {
 			action = "inconclusive"
 			return nil
 		}
@@ -324,6 +337,14 @@ func (db *DB) ApplyAccountQualityOutcome(ctx context.Context, p accountops.Plan,
 			if e = json.Unmarshal([]byte(raw), &baseline); e != nil {
 				return e
 			}
+		}
+		if p.Action == "enable_bps" || has && baseline.Action == "enable_bps" {
+			if has && baseline.Action != "enable_bps" {
+				action = "already_quarantined"
+				return nil
+			}
+			action, e = db.applyQualityBPSOutcomeTx(ctx, tx, p, outcome, status, revision, baseline, has && baseline.Action == "enable_bps")
+			return e
 		}
 		if outcome == "failed" {
 			if has {
@@ -537,6 +558,14 @@ func (db *DB) ensureAccountQualityOwnershipTriggers(ctx context.Context) error {
 			"DROP TRIGGER IF EXISTS account_quality_removed_group_ownership ON account_groups",
 			"CREATE TRIGGER account_quality_removed_group_ownership AFTER UPDATE OR DELETE ON account_groups FOR EACH ROW EXECUTE FUNCTION invalidate_quality_removed_group_ownership()",
 		}
+		return db.withWriteTx(ctx, func(tx *sql.Tx) error {
+			for _, statement := range statements {
+				if _, err := tx.ExecContext(ctx, statement); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
 	}
 	for _, statement := range statements {
 		if _, err := db.conn.ExecContext(ctx, statement); err != nil {

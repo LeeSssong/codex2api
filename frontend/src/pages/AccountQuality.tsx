@@ -59,13 +59,13 @@ export default function AccountQuality() {
   const load = useCallback(async () => {
     try {
       const [module, p, h, a, g] = await Promise.all([
-        api.getAccountOpsModule(),
+        api.getPlugins(),
         api.getAccountQualityPlans(),
         api.getAccountQualityHistory(),
         api.getAccounts({ view: "lite" }),
         api.listAccountGroups(),
       ]);
-      setEnabled(module.enabled);
+      setEnabled(module.plugins.find((p) => p.id === "quality-ops")?.enabled ?? false);
       setPlans(p.items);
       setRounds(h.items);
       setCursor(h.next_cursor);
@@ -222,7 +222,7 @@ export default function AccountQuality() {
           </Button>
         </div>
       </header>
-      <AccountOpsModule enabled={enabled} onChange={setEnabled} />
+      <AccountOpsModule pluginId="quality-ops" enabled={enabled} onChange={setEnabled} />
       {error && (
         <p role="alert" className="ops-error">
           {error}
@@ -316,7 +316,7 @@ export default function AccountQuality() {
                 <p>
                   {p.action === "remove_groups"
                     ? groupNames(p.remove_group_ids)
-                    : t("smartOps.copy.disableScheduling")}
+                    : p.action === "enable_bps" ? t("smartOps.bps.enable") : t("smartOps.copy.disableScheduling")}
                 </p>
                 <small>
                   {t("smartOps.copy.nextCheck")}
@@ -776,6 +776,16 @@ export default function AccountQuality() {
                     />
                     {t("smartOps.copy.disableAccount")}
                   </label>
+                  <label className="ops-check"><input type="radio" name="action" checked={form.action === "enable_bps"} onChange={() => patch({ action:"enable_bps", bps:form.bps ?? { failure_threshold:1, usage_percent:0, require_all:false, pass_threshold:1, hold_on_usage:false, all_models:true, models:[] } })} />{t("smartOps.bps.enable")}</label>
+                  {form.action === "enable_bps" && form.bps && <div className="ops-fields">
+                    <label>{t("smartOps.bps.failureCount")}<input type="number" min="0" max="100" value={form.bps.failure_threshold} onChange={(e) => patch({ bps:{...form.bps!, failure_threshold:Number(e.target.value)} })} /></label>
+                    <label>{t("smartOps.bps.usagePercent")}<input type="number" min="0" max="100" value={form.bps.usage_percent} onChange={(e) => patch({ bps:{...form.bps!, usage_percent:Number(e.target.value)} })} /></label>
+                    <label className="ops-check"><input type="checkbox" checked={form.bps.require_all} onChange={(e) => patch({ bps:{...form.bps!, require_all:e.target.checked} })} />{t("smartOps.bps.requireAll")}</label>
+                    <label>{t("smartOps.bps.passCount")}<input type="number" min="1" max="100" value={form.bps.pass_threshold} onChange={(e) => patch({ bps:{...form.bps!, pass_threshold:Number(e.target.value)} })} /></label>
+                    <label className="ops-check"><input type="checkbox" checked={form.bps.hold_on_usage} onChange={(e) => patch({ bps:{...form.bps!, hold_on_usage:e.target.checked} })} />{t("smartOps.bps.holdUsage")}</label>
+                    <label className="ops-check"><input type="checkbox" checked={form.bps.all_models} onChange={(e) => patch({ bps:{...form.bps!, all_models:e.target.checked} })} />{t("smartOps.bps.allModels")}</label>
+                    {!form.bps.all_models && <label>{t("smartOps.bps.models")}<input value={form.bps.models.join(", ")} onChange={(e) => patch({ bps:{...form.bps!, models:e.target.value.split(",").map((v) => v.trim())} })} /></label>}
+                  </div>}
                 </fieldset>
                 <label className="ops-check">
                   <input

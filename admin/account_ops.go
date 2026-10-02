@@ -56,8 +56,20 @@ func (h *Handler) StartAccountOps(ctx context.Context) {
 					log.Printf("[account-ops] history cleanup: %v", e)
 				}
 				h.refreshAccountOpsModule(ctx)
-				if !r.enabled.Load() || !h.PluginEnabled(ctx, "quality-ops") {
+				if !h.PluginEnabled(ctx, "quality-ops") {
 					continue
+				}
+				for i := 0; i < database.QualityTestConcurrency; i++ {
+					candidate, e := h.db.ClaimQualityBPSRecovery(ctx, time.Now())
+					if e != nil {
+						log.Printf("[quality-bps] recovery claim failed: %v", e)
+						break
+					}
+					if candidate == nil {
+						break
+					}
+					r.wg.Add(1)
+					go func(c database.QualityBPSRecoveryCandidate) { defer r.wg.Done(); h.runQualityBPSRecovery(ctx, c) }(*candidate)
 				}
 				for i := 0; i < database.QualityTestConcurrency; i++ {
 					plan, e := h.db.ClaimAccountQualityPlan(ctx, time.Now().UTC())
@@ -74,6 +86,34 @@ func (h *Handler) StartAccountOps(ctx context.Context) {
 			}
 		}
 	}()
+}
+
+func (h *Handler) runQualityBPSRecovery(parent context.Context, c database.QualityBPSRecoveryCandidate) {
+	ctx, cancel := context.WithTimeout(parent, 90*time.Second)
+	defer cancel()
+	account := h.store.TakeAccountQualityProbe(c.AccountID)
+	if account == nil {
+		return
+	}
+	defer h.store.Release(account)
+	model := "gpt-6-astra"
+	if !c.Policy.AllModels && len(c.Policy.Models) > 0 {
+		model = c.Policy.Models[0]
+	}
+	if !proxy.ProbeQualityBPSRecovery(ctx, account, model, h.store.ResolveProxyForAccount(account)) {
+		return
+	}
+	changed, err := h.db.CompleteQualityBPSRecovery(ctx, c)
+	if err != nil {
+		log.Printf("[quality-bps] recovery publication failed account=%d", c.AccountID)
+		return
+	}
+	if changed {
+		if err := account.ReloadCodexRoutes(ctx); err != nil {
+			log.Printf("[quality-bps] recovery projection pending account=%d", c.AccountID)
+		}
+		h.invalidateAccountSnapshotCaches()
+	}
 }
 func (h *Handler) WaitAccountOps() {
 	if h.accountOps != nil {
@@ -93,6 +133,14 @@ func (h *Handler) refreshAccountOpsModule(ctx context.Context) {
 func (h *Handler) requireAccountOps(c *gin.Context) bool {
 	if h.accountOps == nil || !h.accountOps.enabled.Load() || !h.PluginEnabled(c.Request.Context(), "account-ops") {
 		c.JSON(http.StatusConflict, gin.H{"error": "请先启用账号运维内置模块"})
+		return false
+	}
+	return true
+}
+
+func (h *Handler) requireQualityOps(c *gin.Context) bool {
+	if h.accountOps == nil || !h.PluginEnabled(c.Request.Context(), "quality-ops") {
+		c.JSON(http.StatusConflict, gin.H{"error": "降智运维插件已禁用"})
 		return false
 	}
 	return true
@@ -201,7 +249,7 @@ func (h *Handler) ListAccountQualityPlans(c *gin.Context) {
 	c.JSON(200, gin.H{"items": items})
 }
 func (h *Handler) SaveAccountQualityPlan(c *gin.Context) {
-	if !h.requireAccountOps(c) {
+	if !h.requireQualityOps(c) {
 		return
 	}
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 128*1024)
@@ -227,7 +275,7 @@ func (h *Handler) SaveAccountQualityPlan(c *gin.Context) {
 	c.JSON(200, result)
 }
 func (h *Handler) DeleteAccountQualityPlan(c *gin.Context) {
-	if !h.requireAccountOps(c) {
+	if !h.requireQualityOps(c) {
 		return
 	}
 	id, e := strconv.ParseInt(c.Param("id"), 10, 64)
@@ -242,7 +290,7 @@ func (h *Handler) DeleteAccountQualityPlan(c *gin.Context) {
 	c.JSON(200, gin.H{"ok": true})
 }
 func (h *Handler) TriggerAccountQualityPlan(c *gin.Context) {
-	if !h.requireAccountOps(c) {
+	if !h.requireQualityOps(c) {
 		return
 	}
 	id, e := strconv.ParseInt(c.Param("id"), 10, 64)
@@ -326,6 +374,9 @@ func (h *Handler) runAccountQualityRound(parent context.Context, p accountops.Pl
 		return
 	}
 	p.CredentialGeneration = row.CredentialGeneration
+	if a := h.store.FindByID(p.AccountID); a != nil {
+		p.UsagePercent, p.HasUsage = a.QualityUsagePercent(time.Now())
+	}
 	p.ControlRevision, e = h.db.AccountControlRevision(ctx, p.AccountID)
 	if e != nil {
 		round.Outcome = "inconclusive"
@@ -403,7 +454,7 @@ func (h *Handler) runAccountQualityRound(parent context.Context, p accountops.Pl
 		round.Action = "cancelled"
 		return
 	}
-	if parent.Err() != nil || !h.accountOps.enabled.Load() || !h.PluginEnabled(ctx, "quality-ops") || !h.PluginEnabled(ctx, "account-ops") {
+	if parent.Err() != nil || !h.PluginEnabled(ctx, "quality-ops") {
 		round.Action = "stale_run"
 		return
 	}
@@ -429,6 +480,7 @@ func (h *Handler) runAccountQualityRound(parent context.Context, p accountops.Pl
 func (h *Handler) runAccountOpsText(parent context.Context, id int64, model, prompt, effort string, evidence ...*accountops.ExecutionEvidence) (string, error) {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
+	ctx = proxy.WithNativeQualityProbe(ctx)
 	var mu sync.Mutex
 	var output, message string
 	completed := false
@@ -457,7 +509,7 @@ func (h *Handler) runAccountOpsText(parent context.Context, id int64, model, pro
 	}}
 	router := gin.New()
 	router.POST("/accounts/:id/test", func(c *gin.Context) {
-		h.testConnection(c, &qualityTestRequest{Model: model, Prompt: prompt, ReasoningEffort: effort, TextOnly: true})
+		h.testConnection(c, &qualityTestRequest{Model: model, Prompt: prompt, ReasoningEffort: effort, TextOnly: true, ObservationOnly: true})
 	})
 	request, _ := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("/accounts/%d/test", id), nil)
 	router.ServeHTTP(writer, request)

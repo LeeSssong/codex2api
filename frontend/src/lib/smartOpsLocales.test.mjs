@@ -20,7 +20,7 @@ function flatten(value, prefix = "") {
   );
 }
 test("smart operations translations keep identical keys and interpolation fields in every locale", () => {
-  for (const namespace of ["smartOps", "tokenGuard", "managedVersion"]) {
+  for (const namespace of ["smartOps", "tokenGuard", "pluginManager"]) {
     const sets = resources.map((resource) => flatten(resource[namespace]));
     for (const translated of sets.slice(1)) {
       assert.deepEqual(

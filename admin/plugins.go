@@ -60,5 +60,8 @@ func (h *Handler) UpdatePlugin(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save plugin setting"})
 		return
 	}
+	if id == "account-ops" && h.accountOps != nil {
+		h.refreshAccountOpsModule(c.Request.Context())
+	}
 	c.JSON(http.StatusOK, current)
 }

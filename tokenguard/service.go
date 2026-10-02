@@ -30,6 +30,7 @@ type Service struct {
 	stop       sync.Once
 	mu         sync.Mutex
 	cancel     context.CancelFunc
+	stopped    bool
 	running    map[string]context.CancelFunc
 	wg         sync.WaitGroup
 	wake       chan struct{}
@@ -177,15 +178,21 @@ func (s *Service) Start(parent context.Context) {
 	s.start.Do(func() {
 		ctx, cancel := context.WithCancel(parent)
 		s.mu.Lock()
+		if s.stopped {
+			s.mu.Unlock()
+			cancel()
+			return
+		}
 		s.cancel = cancel
-		s.mu.Unlock()
 		s.wg.Add(1)
+		s.mu.Unlock()
 		go s.loop(ctx)
 	})
 }
 func (s *Service) Stop() {
 	s.stop.Do(func() {
 		s.mu.Lock()
+		s.stopped = true
 		cancel := s.cancel
 		s.mu.Unlock()
 		if cancel != nil {
@@ -465,6 +472,9 @@ func (s *Service) process(ctx context.Context, j database.TokenGuardJob, cfg Con
 		var updates map[string]any
 		if err == nil && s.pluginEnabled() {
 			updates, err = s.client.Relogin(ctx, cfg, entry)
+		}
+		if err == nil && !s.pluginEnabled() {
+			err = database.ErrTokenGuardDisabled
 		}
 		if err == nil && s.publisher == nil {
 			err = errors.New("原生凭据发布器不可用")

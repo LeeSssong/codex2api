@@ -12,6 +12,7 @@ import { useToast } from '../hooks/useToast'
 import { getErrorMessage } from '../utils/error'
 import SecurityBanner from './SecurityBanner'
 import GrokImportProgressHost from './GrokImportProgressHost'
+import { smartOpsLinks } from './SmartOpsNav'
 import { cn } from '@/lib/utils'
 import { CinematicThemeSwitcher } from '@/components/ui/cinematic-theme-switcher'
 
@@ -30,7 +31,7 @@ const navDefs: NavDef[] = [
   { to: '/proxies', labelKey: 'nav.proxies', icon: <Globe className="size-[18px]" /> },
   { to: '/images/studio', labelKey: 'nav.images', icon: <ImageIcon className="size-[18px]" />, activePrefix: '/images' },
   { to: '/quality-test', labelKey: 'nav.qualityTest', icon: <FlaskConical className="size-[18px]" /> },
-  { to: '/smart-ops/plugins', labelKey: 'plugins.title', icon: <Puzzle className="size-[18px]" />, activePrefix: '/smart-ops' },
+  { to: '/smart-ops/plugins', labelKey: 'smartOps.title', icon: <Puzzle className="size-[18px]" />, activePrefix: '/smart-ops' },
   { to: '/state-pool', labelKey: 'statePool.title', icon: <Braces className="size-[18px]" /> },
   { to: '/prompt-filter/overview', labelKey: 'nav.promptFilter', icon: <ShieldAlert className="size-[18px]" />, activePrefix: '/prompt-filter' },
   { to: '/ops/overview', labelKey: 'nav.ops', icon: <Server className="size-[18px]" />, activePrefix: '/ops' },
@@ -76,6 +77,7 @@ export default function Layout({ children }: PropsWithChildren) {
     }
   })
   const [mobileMoreOpen, setMobileMoreOpen] = useState(false)
+  const [smartOpsExpanded, setSmartOpsExpanded] = useState(location.pathname.startsWith('/smart-ops'))
   const toggleSidebarCollapsed = () => {
     setSidebarCollapsed((prev) => {
       const next = !prev
@@ -519,6 +521,16 @@ export default function Layout({ children }: PropsWithChildren) {
               {navDefs.map((item) => {
                 const active = isNavActive(item)
                 const label = t(item.labelKey)
+                if (item.activePrefix === '/smart-ops') return (
+                  <div key={item.to}>
+                    <button type="button" title={label} aria-expanded={smartOpsExpanded} onClick={() => setSmartOpsExpanded((v) => !v)} className={cn('flex w-full min-h-10 items-center rounded-xl px-3 py-2 text-[14px] font-semibold', sidebarCollapsed ? 'justify-center' : 'gap-2.5', active ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:bg-muted/60')}>
+                      {item.icon}{!sidebarCollapsed && <span>{label}</span>}
+                    </button>
+                    {smartOpsExpanded && <div className={cn('flex flex-col gap-1 pt-1', !sidebarCollapsed && 'pl-5')}>
+                      {smartOpsLinks.map(({ to, label: childLabel, icon: Icon }) => <NavLink key={to} to={to} title={t(childLabel)} className={({ isActive }) => cn('flex min-h-9 items-center gap-2 rounded-lg px-2 py-1.5 text-[13px]', sidebarCollapsed && 'justify-center', isActive ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:bg-muted/60')}><Icon size={16} />{!sidebarCollapsed && <span>{t(childLabel)}</span>}</NavLink>)}
+                    </div>}
+                  </div>
+                )
                 return (
                   <NavLink
                     key={item.to}

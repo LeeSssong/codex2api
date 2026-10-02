@@ -20,9 +20,11 @@ export function AccountOpsModule({
   enabled,
   onChange,
   disabled = false,
+  pluginId,
 }: {
   enabled: boolean;
   disabled?: boolean;
+  pluginId?: string;
   onChange: (v: boolean) => void;
 }) {
   const { t } = useTranslation();
@@ -43,8 +45,7 @@ export function AccountOpsModule({
             setPendingValue(value);
             setBusy(true);
             setError("");
-            void api
-              .saveAccountOpsModule(value)
+            void (pluginId ? api.updatePlugin(pluginId, value) : api.saveAccountOpsModule(value))
               .then((r) => onChange(r.enabled))
               .catch((e) => setError(e.message))
               .finally(() => {
@@ -54,8 +55,7 @@ export function AccountOpsModule({
           }}
         />
         <span>
-          <strong>{t("smartOps.copy.moduleName")}</strong>
-          <small>{t("smartOps.copy.moduleHint")}</small>
+          <strong>{pluginId ? t("pluginManager.names." + pluginId) : t("smartOps.copy.moduleName")}</strong>
         </span>
       </label>
       {error && <p role="alert">{error}</p>}

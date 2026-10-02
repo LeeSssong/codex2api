@@ -8,6 +8,15 @@ export interface QualityJudge {
   model_id: string;
   prompt: string;
 }
+export interface QualityBPSPolicy {
+  failure_threshold: number;
+  usage_percent: number;
+  require_all: boolean;
+  pass_threshold: number;
+  hold_on_usage: boolean;
+  all_models: boolean;
+  models: string[];
+}
 export interface AccountQualityPlan {
   id: number;
   account_id: number;
@@ -19,7 +28,8 @@ export interface AccountQualityPlan {
   samples: number;
   max_results: number;
   expected_answer: string;
-  action: "remove_groups" | "disable_scheduling";
+  action: "remove_groups" | "disable_scheduling" | "enable_bps";
+  bps?: QualityBPSPolicy;
   remove_group_ids: number[];
   auto_restore: boolean;
   judge: QualityJudge | null;
@@ -117,12 +127,14 @@ export function formatQualityAction(
   kind: string,
   translate?: (key: string) => string,
 ) {
+	if (action.startsWith("failure_counted:")) return `${translate ? translate("failure_counted") : "连续降智"} ${action.split(":")[1]}`;
+	if (action.startsWith("restore_counted:")) return `${translate ? translate("restore_counted") : "连续满血"} ${action.split(":")[1]}`;
   if (translate)
     return translate(
       action === "restored"
         ? kind === "remove_groups"
           ? "restored_groups"
-          : "restored_scheduling"
+          : kind === "enable_bps" ? "restored_bps" : "restored_scheduling"
         : action,
     );
   if (action === "restored")

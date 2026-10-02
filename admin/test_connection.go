@@ -110,6 +110,9 @@ func (h *Handler) testConnection(c *gin.Context, quality *qualityTestRequest) {
 		account = transient
 		isTransient = true
 	}
+	if quality != nil && quality.ObservationOnly {
+		isTransient = true
+	}
 	// Although this SSE endpoint uses GET, it can update authorization, errors, cooldowns,
 	// and recovery. Invalidate snapshots after streaming so confirmed 401s are not shown as unsampled.
 	if !isTransient {

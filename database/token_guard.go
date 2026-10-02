@@ -74,12 +74,12 @@ func (db *DB) ensureTokenGuardSchema(ctx context.Context) error {
 	})
 }
 func (db *DB) TokenGuardModuleEnabled(ctx context.Context) (bool, error) {
-	var value string
-	err := db.conn.QueryRowContext(ctx, "SELECT value FROM account_ops_settings WHERE key='module_enabled'").Scan(&value)
+	var enabled bool
+	err := db.conn.QueryRowContext(ctx, "SELECT enabled FROM plugin_settings WHERE id='token-guard'").Scan(&enabled)
 	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
+		return true, nil
 	}
-	return value == "true", err
+	return enabled, err
 }
 func (db *DB) TokenGuardConfig(ctx context.Context) (string, int64, error) {
 	var raw string
@@ -113,6 +113,14 @@ func (db *DB) SaveTokenGuardConfig(ctx context.Context, raw string, expected int
 	return next, err
 }
 func (db *DB) guardConfigLock(ctx context.Context, tx *sql.Tx) (int64, error) {
+	// Controls precede job/config locks, matching plugin disable transactions.
+	enabled, err := db.PluginEnabledTx(ctx, tx, "token-guard")
+	if err != nil {
+		return 0, err
+	}
+	if !enabled {
+		return 0, ErrTokenGuardDisabled
+	}
 	// A real write reservation comes before reads on SQLite. On PG this row
 	// serializes config edits/admission and yields a consistent lock order.
 	if _, err := tx.ExecContext(ctx, "UPDATE account_token_guard_config SET revision=revision WHERE id=1"); err != nil {
@@ -122,12 +130,7 @@ func (db *DB) guardConfigLock(ctx context.Context, tx *sql.Tx) (int64, error) {
 	if err := tx.QueryRowContext(ctx, "SELECT revision FROM account_token_guard_config WHERE id=1").Scan(&v); err != nil {
 		return 0, err
 	}
-	var enabled string
-	err := tx.QueryRowContext(ctx, "SELECT value FROM account_ops_settings WHERE key='module_enabled'").Scan(&enabled)
-	if errors.Is(err, sql.ErrNoRows) || err == nil && enabled != "true" {
-		return 0, ErrTokenGuardDisabled
-	}
-	return v, err
+	return v, nil
 }
 
 const tokenGuardJobColumns = "id,kind,account_id,state,owner,fence,config_version,lease_until,cancellation,created_at,updated_at,stats,message"
