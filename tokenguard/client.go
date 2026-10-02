@@ -110,19 +110,29 @@ func (c *Client) Relogin(ctx context.Context, cfg Config, a ReloginAccount) (map
 	return out, nil
 }
 func (c *Client) Notify(ctx context.Context, cfg Config, title, body string, enabled bool) {
+	_ = c.SendNotification(ctx, cfg, title, body, enabled)
+}
+
+// SendNotification reports transport/HTTP failures without retaining response text.
+func (c *Client) SendNotification(ctx context.Context, cfg Config, title, body string, enabled bool) error {
 	if !enabled || cfg.BarkKey == "" {
-		return
+		return nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	data, _ := json.Marshal(map[string]any{"device_key": cfg.BarkKey, "title": title, "body": truncateGuardText(body, 180), "group": "codex", "level": "timeSensitive", "sound": "bell", "isArchive": 1})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.day.app/push", bytes.NewReader(data))
 	if err != nil {
-		return
+		return errors.New("通知请求构造失败")
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.http.Do(req)
-	if err == nil {
-		resp.Body.Close()
+	if err != nil {
+		return errors.New("通知服务请求失败")
 	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return errors.New("通知服务拒绝请求")
+	}
+	return nil
 }
