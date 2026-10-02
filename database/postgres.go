@@ -510,6 +510,11 @@ func New(driver string, dsn string, schema ...string) (*DB, error) {
 			return nil, fmt.Errorf("initialize image asset retention: %w", err)
 		}
 	}
+	if err := db.ensurePluginSettingsSchema(ctx); err != nil {
+		backgroundTaskCancel()
+		_ = conn.Close()
+		return nil, fmt.Errorf("initialize plugin settings schema: %w", err)
+	}
 	if err := db.ensureProxyRiskScoringTables(ctx); err != nil {
 		return nil, fmt.Errorf("创建代理风险评分表失败: %w", err)
 	}

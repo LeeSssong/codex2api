@@ -36,7 +36,9 @@ import (
 	"github.com/codex2api/database"
 	"github.com/codex2api/internal/imagestore"
 	"github.com/codex2api/internal/openaiidentity"
+	"github.com/codex2api/internal/version"
 	"github.com/codex2api/ipv6state"
+	"github.com/codex2api/plugins"
 	"github.com/codex2api/proxy"
 	"github.com/codex2api/security"
 	"github.com/codex2api/security/promptfilter"
@@ -59,6 +61,7 @@ type Handler struct {
 	cache              cache.TokenCache
 	authCacheProxy     *proxy.Handler
 	db                 *database.DB
+	pluginRegistry     *plugins.Registry
 	cacheCfgStore      responseCacheSettingsStore
 	rateLimiter        *proxy.RateLimiter
 	systemUpdate       *systemUpdater
@@ -1036,6 +1039,7 @@ func NewHandler(store *auth.Store, db *database.DB, tc cache.TokenCache, rl *pro
 		proxyRiskJobs:        make(map[string]*proxyRiskScoringJob),
 		cache:                tc,
 		db:                   db,
+		pluginRegistry:       plugins.NewRegistry(database.NewPluginStore(db)),
 		cacheCfgStore:        db,
 		rateLimiter:          rl,
 		cpuSampler:           newCPUSampler(),
@@ -1133,6 +1137,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		}
 	})
 	api.GET("/stats", h.GetStats)
+	api.GET("/plugins", h.ListPlugins)
+	api.PUT("/plugins/:id", h.UpdatePlugin)
 	api.GET("/accounts", h.ListAccounts)
 	api.GET("/accounts/analysis", h.GetAccountAnalysis)
 	api.GET("/accounts/page-stats", h.GetAccountPageStats)

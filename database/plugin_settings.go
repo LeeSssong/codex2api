@@ -1,0 +1,89 @@
+package database
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"fmt"
+
+	"github.com/codex2api/plugins"
+)
+
+// PluginStore persists plugin controls without coupling the registry to the
+// database package. Each plugin has its own row and version/flags payload.
+type PluginStore struct{ db *DB }
+
+func NewPluginStore(db *DB) *PluginStore { return &PluginStore{db: db} }
+
+func (db *DB) ensurePluginSettingsSchema(ctx context.Context) error {
+	table := `CREATE TABLE IF NOT EXISTS plugin_settings (
+		id TEXT PRIMARY KEY,
+		version TEXT NOT NULL DEFAULT '',
+		source_sha TEXT NOT NULL DEFAULT '',
+		sdk_compatibility TEXT NOT NULL DEFAULT 'plugins/v1',
+		update_mode TEXT NOT NULL DEFAULT 'compiled',
+		enabled BOOLEAN NOT NULL DEFAULT TRUE,
+		flags TEXT NOT NULL DEFAULT '{}',
+		updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+	)`
+	_, err := db.conn.ExecContext(ctx, table)
+	if err != nil {
+		return err
+	}
+	columns := []struct{ name, ddl string }{
+		{"source_sha", `TEXT NOT NULL DEFAULT ''`},
+		{"sdk_compatibility", `TEXT NOT NULL DEFAULT 'plugins/v1'`},
+		{"update_mode", `TEXT NOT NULL DEFAULT 'compiled'`},
+	}
+	for _, column := range columns {
+		var count int
+		var query string
+		if db.isSQLite() {
+			query = `SELECT COUNT(*) FROM pragma_table_info('plugin_settings') WHERE name=$1`
+		} else {
+			query = `SELECT COUNT(*) FROM information_schema.columns WHERE table_name='plugin_settings' AND column_name=$1`
+		}
+		if err := db.conn.QueryRowContext(ctx, query, column.name).Scan(&count); err != nil {
+			return err
+		}
+		if count == 0 {
+			if _, err := db.conn.ExecContext(ctx, fmt.Sprintf(`ALTER TABLE plugin_settings ADD COLUMN %s %s`, column.name, column.ddl)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (s *PluginStore) Get(ctx context.Context, id string) (plugins.Setting, error) {
+	var setting plugins.Setting
+	var enabled bool
+	var rawFlags string
+	var sourceSHA, sdkCompatibility, updateMode string
+	err := s.db.conn.QueryRowContext(ctx, `SELECT id,version,source_sha,sdk_compatibility,update_mode,enabled,flags FROM plugin_settings WHERE id=$1`, id).Scan(&setting.ID, &setting.Version, &sourceSHA, &sdkCompatibility, &updateMode, &enabled, &rawFlags)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return plugins.Setting{}, plugins.ErrNotFound
+		}
+		return plugins.Setting{}, err
+	}
+	setting.Enabled = enabled
+	setting.SourceSHA = sourceSHA
+	setting.SDKCompatibility = sdkCompatibility
+	setting.UpdateMode = updateMode
+	if err := json.Unmarshal([]byte(rawFlags), &setting.Flags); err != nil {
+		return plugins.Setting{}, err
+	}
+	return setting, nil
+}
+
+func (s *PluginStore) Put(ctx context.Context, setting plugins.Setting) error {
+	flags, err := json.Marshal(setting.Flags)
+	if err != nil {
+		return err
+	}
+	return s.db.withSQLiteWriteLock(ctx, func() error {
+		_, err := s.db.conn.ExecContext(ctx, `INSERT INTO plugin_settings(id,version,source_sha,sdk_compatibility,update_mode,enabled,flags,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,CURRENT_TIMESTAMP) ON CONFLICT(id) DO UPDATE SET version=EXCLUDED.version,source_sha=EXCLUDED.source_sha,sdk_compatibility=EXCLUDED.sdk_compatibility,update_mode=EXCLUDED.update_mode,enabled=EXCLUDED.enabled,flags=EXCLUDED.flags,updated_at=CURRENT_TIMESTAMP`, setting.ID, setting.Version, setting.SourceSHA, setting.SDKCompatibility, setting.UpdateMode, setting.Enabled, string(flags))
+		return err
+	})
+}
