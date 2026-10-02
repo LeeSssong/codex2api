@@ -165,6 +165,13 @@ import type {
 } from './types'
 
 const BASE = '/api/admin'
+
+export const getSmartOpsConfig = () => request('/smart-ops');
+export const putOAuthAutoConfig = (config: unknown) => request('/smart-ops/oauth-auto-config', { method: 'PUT', body: JSON.stringify(config) });
+export const putPriorityScheduling = (config: unknown) => request('/smart-ops/priority-scheduling', { method: 'PUT', body: JSON.stringify(config) });
+export const listPelicanTests = () => request('/smart-ops/pelican-tests');
+export const createPelicanTest = (job: unknown) => request('/smart-ops/pelican-tests', { method: 'POST', body: JSON.stringify(job) });
+export const cancelPelicanTest = (id: number) => request(`/smart-ops/pelican-tests/${id}/cancel`, { method: 'POST' });
 export const ADMIN_AUTH_REQUIRED_EVENT = 'codex2api:admin-auth-required'
 const ADMIN_AUTH_RESET_KEY = 'admin_auth_reset_at'
 
