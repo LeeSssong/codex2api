@@ -50,19 +50,20 @@ func (c AccountOpsConfig) Allows(kind string) bool {
 }
 
 type AccountOpsEvent struct {
-	AccountID   int64      `json:"account_id"`
-	AccountName string     `json:"account_name"`
-	Kind        string     `json:"kind"`
-	Signal      string     `json:"signal"`
-	HTTPStatus  int        `json:"http_status"`
-	FirstSeen   time.Time  `json:"first_seen"`
-	LastSeen    time.Time  `json:"last_seen"`
-	Occurrences int64      `json:"occurrences"`
-	State       string     `json:"state"`
-	LastSentAt  *time.Time `json:"last_sent_at"`
-	NextSendAt  time.Time  `json:"next_send_at"`
-	Attempts    int        `json:"attempts"`
-	Lease       string     `json:"-"`
+	CredentialGeneration int64      `json:"credential_generation,omitempty"`
+	AccountID            int64      `json:"account_id"`
+	AccountName          string     `json:"account_name"`
+	Kind                 string     `json:"kind"`
+	Signal               string     `json:"signal"`
+	HTTPStatus           int        `json:"http_status"`
+	FirstSeen            time.Time  `json:"first_seen"`
+	LastSeen             time.Time  `json:"last_seen"`
+	Occurrences          int64      `json:"occurrences"`
+	State                string     `json:"state"`
+	LastSentAt           *time.Time `json:"last_sent_at"`
+	NextSendAt           time.Time  `json:"next_send_at"`
+	Attempts             int        `json:"attempts"`
+	Lease                string     `json:"-"`
 }
 type AccountOpsRepository interface {
 	Record(context.Context, AccountOpsEvent) error
@@ -76,18 +77,19 @@ type accountOpsEmailSender interface {
 }
 
 type AccountOpsService struct {
-	moduleGate func() bool
-	settings   SettingRepository
-	repo       AccountOpsRepository
-	email      accountOpsEmailSender
-	config     atomic.Value
-	queue      chan AccountOpsEvent
-	cancel     context.CancelFunc
-	wg         sync.WaitGroup
-	lifecycle  sync.Mutex
-	settingsMu sync.Mutex
-	dropped    atomic.Uint64
-	failures   atomic.Uint64
+	basispointsNotifier func(context.Context, *AccountOpsEvent) (bool, error)
+	moduleGate          func() bool
+	settings            SettingRepository
+	repo                AccountOpsRepository
+	email               accountOpsEmailSender
+	config              atomic.Value
+	queue               chan AccountOpsEvent
+	cancel              context.CancelFunc
+	wg                  sync.WaitGroup
+	lifecycle           sync.Mutex
+	settingsMu          sync.Mutex
+	dropped             atomic.Uint64
+	failures            atomic.Uint64
 }
 
 func NewAccountOpsService(settings SettingRepository, repo AccountOpsRepository, email accountOpsEmailSender) *AccountOpsService {
@@ -201,7 +203,7 @@ func (s *AccountOpsService) Start() {
 			case <-ctx.Done():
 				return
 			case event := <-s.queue:
-				if !s.currentConfig().Allows(event.Kind) {
+				if !s.allowsEvent(event.Kind) {
 					continue
 				}
 				query, stop := context.WithTimeout(ctx, 3*time.Second)
@@ -240,7 +242,7 @@ func (s *AccountOpsService) refreshConfig(ctx context.Context) bool {
 		s.failures.Add(1)
 		return false
 	}
-	return c.Enabled && s.moduleEnabled()
+	return s.moduleEnabled()
 }
 func (s *AccountOpsService) deliver(ctx context.Context) {
 	for i := 0; i < 10 && ctx.Err() == nil; i++ {
@@ -258,6 +260,10 @@ func (s *AccountOpsService) deliver(ctx context.Context) {
 	}
 }
 func (s *AccountOpsService) deliverEvent(ctx context.Context, event *AccountOpsEvent) {
+	if IsBasispointsCategory(event.Kind) {
+		s.deliverBasispointsEvent(ctx, event)
+		return
+	}
 	query, cancel := context.WithTimeout(ctx, 5*time.Second)
 	c, err := s.GetConfig(query)
 	cancel()

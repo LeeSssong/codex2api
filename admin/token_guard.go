@@ -27,6 +27,7 @@ func (h *Handler) StartTokenGuard(ctx context.Context) {
 	}
 	if h.tokenGuard == nil {
 		h.tokenGuard = tokenguard.NewService(h.db, h.store, nil)
+		h.tokenGuard.SetPluginGate(func() bool { return h.PluginEnabled(context.Background(), "token-guard") })
 	}
 	h.tokenGuard.Start(ctx)
 }

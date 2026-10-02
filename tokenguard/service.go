@@ -22,18 +22,22 @@ type ExternalClient interface {
 	Notify(context.Context, Config, string, string, bool)
 }
 type Service struct {
-	db        *database.DB
-	publisher Publisher
-	client    ExternalClient
-	owner     string
-	start     sync.Once
-	stop      sync.Once
-	mu        sync.Mutex
-	cancel    context.CancelFunc
-	running   map[string]context.CancelFunc
-	wg        sync.WaitGroup
-	wake      chan struct{}
+	db         *database.DB
+	publisher  Publisher
+	client     ExternalClient
+	owner      string
+	start      sync.Once
+	stop       sync.Once
+	mu         sync.Mutex
+	cancel     context.CancelFunc
+	running    map[string]context.CancelFunc
+	wg         sync.WaitGroup
+	wake       chan struct{}
+	pluginGate func() bool
 }
+
+func (s *Service) SetPluginGate(gate func() bool) { s.pluginGate = gate }
+func (s *Service) pluginEnabled() bool            { return s.pluginGate == nil || s.pluginGate() }
 
 func NewService(db *database.DB, publisher Publisher, client ExternalClient) *Service {
 	if client == nil {
@@ -108,6 +112,9 @@ func (s *Service) Cancel(ctx context.Context, id string) (bool, error) {
 	return ok, err
 }
 func (s *Service) Run(ctx context.Context, accountID int64) (*database.TokenGuardJob, error) {
+	if !s.pluginEnabled() {
+		return nil, database.ErrTokenGuardDisabled
+	}
 	cfg, v, err := s.Config(ctx)
 	if err != nil {
 		return nil, err
@@ -207,6 +214,10 @@ func (s *Service) loop(ctx context.Context) {
 	}
 }
 func (s *Service) tick(ctx context.Context) {
+	if !s.pluginEnabled() {
+		s.cancelLocal()
+		return
+	}
 	enabled, err := s.db.TokenGuardModuleEnabled(ctx)
 	if err != nil || !enabled {
 		s.cancelLocal()
@@ -452,7 +463,7 @@ func (s *Service) process(ctx context.Context, j database.TokenGuardJob, cfg Con
 		}
 		entry, err := s.mapping(cfg, a)
 		var updates map[string]any
-		if err == nil {
+		if err == nil && s.pluginEnabled() {
 			updates, err = s.client.Relogin(ctx, cfg, entry)
 		}
 		if err == nil && s.publisher == nil {
