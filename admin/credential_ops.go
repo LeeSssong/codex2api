@@ -317,7 +317,15 @@ func (h *Handler) CompleteCredentialOpsWorker(c *gin.Context) {
 		c.Status(409)
 		return
 	}
+	// Join the native OAuth import lock before the transactional identity lookup.
+	// Pool reload runs after release so asynchronous warmup cannot retain the lock.
+	if task.AccountID == 0 {
+		h.mergeDuplicateMu.Lock()
+	}
 	accountID, err := h.db.CommitCredentialOpsLogin(c.Request.Context(), id, req.WorkerID, req.Attempt, tokenCredentialMap(seed), h.newCodexAccountCredentials(seed))
+	if task.AccountID == 0 {
+		h.mergeDuplicateMu.Unlock()
+	}
 	if err != nil {
 		_ = h.db.FailCredentialOpsTask(c.Request.Context(), id, req.WorkerID, req.Attempt)
 		c.JSON(409, gin.H{"error": err.Error()})

@@ -256,3 +256,68 @@ func TestCredentialOpsEnginesAndSchedulerShutdown(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestCredentialOpsFirstImportJoinsNativeIdentityLock(t *testing.T) {
+	db, err := database.New("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	h, r := credentialTestRouter(db, nil)
+	t.Setenv("CODEX2API_CREDENTIAL_OPS_KEY", strings.Repeat("k", 32))
+	t.Setenv("CODEX2API_CREDENTIAL_OPS_WORKER_TOKEN", strings.Repeat("w", 32))
+	out := credentialHTTP(t, r, "POST", "/api/admin/credential-ops/import", "admin", map[string]any{"email": "concurrent@example.com", "password": "test-only"})
+	if out.Code != 202 {
+		t.Fatal(out.Body.String())
+	}
+	var job database.CredentialOpsTaskRow
+	json.Unmarshal(out.Body.Bytes(), &job)
+	out = credentialHTTP(t, r, "POST", "/api/internal/credential-ops/claim", "worker", map[string]any{"worker_id": "worker"})
+	if out.Code != 200 {
+		t.Fatal(out.Body.String())
+	}
+	// The native upsertOAuthIdentityAccountWithRuntime path holds this same
+	// mutex across its identity lookup and insert. Simulate that in-flight import.
+	h.mergeDuplicateMu.Lock()
+	locked := true
+	defer func() {
+		if locked {
+			h.mergeDuplicateMu.Unlock()
+		}
+	}()
+	finished := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		finished <- credentialHTTP(t, r, "POST", fmt.Sprintf("/api/internal/credential-ops/login/%d/complete", job.ID), "worker", map[string]any{"worker_id": "worker", "attempt": 1, "status": "succeeded", "credential": credentialTestTokens("concurrent@example.com")})
+	}()
+	select {
+	case result := <-finished:
+		t.Fatalf("callback escaped native identity lock (%d)", result.Code)
+	case <-time.After(50 * time.Millisecond):
+	}
+	nativeID, err := db.InsertAccountWithCredentials(context.Background(), "Manual native name", map[string]any{"email": "concurrent@example.com", "workspace_id": "workspace-123", "access_token": "native-test-only"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.mergeDuplicateMu.Unlock()
+	locked = false
+	select {
+	case result := <-finished:
+		if result.Code != 200 {
+			t.Fatalf("callback %d %s", result.Code, result.Body.String())
+		}
+	case <-time.After(time.Second):
+		t.Fatal("callback retained native import lock")
+	}
+	saved, err := db.GetCredentialOpsTask(context.Background(), job.ID)
+	if err != nil || saved.AccountID != nativeID {
+		t.Fatalf("native identity was duplicated %#v %v", saved, err)
+	}
+	row, err := db.GetAccountByID(context.Background(), nativeID)
+	if err != nil || row.Name != "Manual native name" {
+		t.Fatal("dedup overwrote manual name")
+	}
+	accounts, err := db.ListCredentialOpsMonitors(context.Background())
+	if err != nil || len(accounts) != 1 {
+		t.Fatalf("duplicate native rows %#v %v", accounts, err)
+	}
+}
