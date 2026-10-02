@@ -1,6 +1,6 @@
 {
   "credentialOps": {
-    "title": "Credential Operations V2",
+    "title": "Credential operations",
     "refresh": "Refresh",
     "disabled": "Credential operations is disabled",
     "loading": "Loading...",
