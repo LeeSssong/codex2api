@@ -102,6 +102,12 @@ class RollbackDecisionTests(unittest.TestCase):
   self.assertIn(('runtime-start',False,True,True),r.calls)
 
 class MigratorCleanupTests(unittest.TestCase):
+ def test_runtime_is_restored_when_stop_failed_before_application_stop(self):
+  from release_host import Release
+  r=Release.__new__(Release);r.stopped=False;r.old_runtime_stopping=True;r.runtime_started=False;calls=[]
+  r.event=lambda name:None;r.stop_migrator=lambda:None;r.dc=lambda *args,**kwargs:calls.append(args)
+  r.rollback()
+  self.assertIn(('up','-d','--no-deps','credential-runtime'),calls)
  def test_orphan_migrator_removed_before_recovery(self):
   import types
   from release_host import Release
@@ -271,6 +277,7 @@ class BPSReleaseSafetyTests(unittest.TestCase):
  def test_feature_smoke_checks_integrated_endpoints_version_and_settings(self):
   import json,types
   r,data=self.fixture();r.args=types.SimpleNamespace(release_id='test');r.report={}
+  r.verified_upstream='a'*40
   r.original_settings={'codex_basispoints_enabled':False};r.original_counts={'accounts':'3','api_keys':'1'}
   payload={'codex_basispoints_enabled':False}
   r.sql=lambda query:'3' if 'accounts' in query else '1'
@@ -281,7 +288,9 @@ class BPSReleaseSafetyTests(unittest.TestCase):
    elif path.startswith('/admin/'):return 200,{'Content-Type':'text/html'},b'<!doctype html>'
    return 200,{'Content-Type':'application/json'},json.dumps(value).encode()
   r.request=request;r.feature_smoke();self.assertEqual(r.report['upstream_check_status'],'source-ancestry-verified-before-build')
+  self.assertEqual(r.report['upstream_revision'],'a'*40)
   payload['codex_basispoints_enabled']=True
   with self.assertRaises(RuntimeError):r.feature_smoke()
   payload['codex_basispoints_enabled']=False;r.sql=lambda query:'0'
   with self.assertRaises(RuntimeError):r.feature_smoke()
+  r.feature_smoke(public=True)

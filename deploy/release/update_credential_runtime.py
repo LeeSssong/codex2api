@@ -55,7 +55,8 @@ def update(image,revision,tree,release_id):
  save()
  try:
   run(['docker','run','--rm','--network','none','--memory','256m','--cpus','0.5',candidate['Id'],'--check'])
-  dc('stop','-t','300','credential-runtime',timeout=330);switched=True
+  switched=True
+  dc('stop','-t','300','credential-runtime',timeout=330)
   atomic_restore(compose,(json.dumps(after,indent=2)+'\n').encode(),0o600,info.st_uid,info.st_gid)
   dc('config','--quiet');dc('up','-d','--no-deps','credential-runtime',timeout=120)
   healthy(candidate['Id']);assert_unchanged_containers(protected_before,protected())

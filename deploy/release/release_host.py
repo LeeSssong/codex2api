@@ -220,14 +220,17 @@ class Release:
   if b'<!doctype html>' not in self.request('/admin/state-pool',public=public)[2].lower():raise RuntimeError('State UI shell missing')
   settings=json.loads(self.request('/api/admin/settings',True,public)[2])
   if settings.get('codex_basispoints_enabled')!=self.original_settings.get('codex_basispoints_enabled'):raise RuntimeError('existing Basispoints switch changed')
-  for table,count in self.original_counts.items():
-   if self.sql('SELECT count(*) FROM '+table+';')!=count:raise RuntimeError('persistent row count changed: '+table)
-  self.report['upstream_revision']='b402c6110ff3eab83c4ac4e9083366c0abc3c08d'
+  if not public:
+   for table,count in self.original_counts.items():
+    if self.sql('SELECT count(*) FROM '+table+';')!=count:raise RuntimeError('persistent row count changed: '+table)
+  self.report['upstream_revision']=self.verified_upstream
   self.report['upstream_check_status']='source-ancestry-verified-before-build'
  def preflight(self):
   image=json.loads(self.run(['docker','image','inspect',self.args.image]))[0]
   if image['Id']!=self.args.digest:raise ValueError('image digest mismatch')
   check_source(image['Config'].get('Labels') or {},self.args.revision,self.args.tree)
+  self.verified_upstream=(image['Config'].get('Labels') or {}).get('io.xingqiao.upstream-revision','')
+  if not re.fullmatch('[0-9a-f]{40}',self.verified_upstream):raise ValueError('missing upstream provenance')
   if image['Architecture']!='amd64':raise ValueError('expected amd64 image')
   self.run(['iptables','-S','DOCKER-USER'])
   network=json.loads(self.run(['docker','network','inspect','codex2api-net']))[0]
@@ -235,7 +238,9 @@ class Release:
   if len(subnets)!=1:raise ValueError('expected one Codex IPv4 subnet')
   self.subnet=subnets[0]
   self.protected_before=self.protected_containers();self.report['protected_before']=self.protected_before;self.save()
-  self.dc('config','--quiet');self.request('/health');self.request('/api/admin/settings',True)
+  self.dc('config','--quiet')
+  self.old_runtime='credential-runtime' in json.loads(self.dc('config','--format','json','--no-env-resolution')).get('services',{})
+  self.request('/health');self.request('/api/admin/settings',True)
   self.request('/health',public=True);self.request('/api/admin/settings',True,public=True)
   self.original_settings=json.loads(self.request('/api/admin/settings',True)[2])
   try:module_info=json.loads(self.request('/api/admin/account-ops/module',True)[2])
@@ -271,6 +276,7 @@ class Release:
   image=json.loads(self.run(['docker','image','inspect',self.args.credential_runtime_image]))[0]
   if image['Id']!=self.args.credential_runtime_digest or image['Architecture']!='amd64':raise ValueError('credential runtime identity mismatch')
   check_source(image['Config'].get('Labels') or {},self.args.revision,self.args.tree)
+  if image['Config'].get('Labels',{}).get('io.xingqiao.plugin-sdk')!='plugins/v1':raise ValueError('credential runtime SDK incompatible')
   app_path,_=checked_file(self.args.credential_app_env,private=True)
   worker_path,_=checked_file(self.args.credential_worker_env,private=True)
   def values(path,allowed):
@@ -288,7 +294,7 @@ class Release:
   effective['services']['codex2api']['image']=self.args.image
   self.new_compose=json.dumps(runtime_compose(effective,image['Id'],str(app_path),str(worker_path)),indent=2)+'\n'
   self.report['credential_runtime_digest']=image['Id'];self.save()
-  self.run(['docker','run','--rm','--network','none','--memory','256m','--cpus','0.5',image['Id'],'--check'],timeout=60)
+  self.run(['docker','run','--rm','--network','none','--memory','256m','--cpus','0.5','--read-only','--tmpfs','/tmp:rw,noexec,nosuid,size=67108864','--pids-limit','128',image['Id'],'--check'],timeout=60)
  def start_credential_runtime(self):
   if not getattr(self,'credentials',False):return
   self.runtime_started=True
@@ -438,7 +444,9 @@ class Release:
   self.event('rollback-started')
   if getattr(self,'runtime_started',False):self.dc('stop','-t','300','credential-runtime',timeout=330)
   self.stop_migrator()
-  if not self.stopped:return
+  if not self.stopped:
+   if getattr(self,'old_runtime_stopping',False):self.dc('up','-d','--no-deps','credential-runtime')
+   return
   if preserve_database:
    self.network_gate(True)
    self.load_caddy(maintenance_config(self.caddy()));self.maintenance=True
@@ -466,7 +474,9 @@ class Release:
    self.network_gate(True)
    self.maintenance=True;self.load_caddy(maintenance_config(self.caddy()));self.event('maintenance-on')
    self.drain()
-   if getattr(self,'credentials',False) and getattr(self,'old_runtime',False):self.dc('stop','-t','300','credential-runtime',timeout=330)
+   if getattr(self,'credentials',False) and getattr(self,'old_runtime',False):
+    self.old_runtime_stopping=True
+    self.dc('stop','-t','300','credential-runtime',timeout=330)
    self.stopped=True;stop_grace=max(0,int(300-(time.monotonic()-self.drain_started)));self.dc('stop','-t',str(stop_grace),'codex2api',timeout=stop_grace+30);self.event('app-stopped')
    self.dump(self.dir/'stopped.dump');self.event('consistent-backup-completed')
    self.original_counts={table:self.sql('SELECT count(*) FROM '+table+';') for table in ['accounts','api_keys']}
