@@ -1,8 +1,8 @@
 # Codex2API 独立智能运维发布 — 2026-10-03
 
-- **目标与结果：** `https://codex.xingqiaolab.top`，发布成功，无回滚。API 与独立 `codex2api-credential-runtime` 均 healthy。原有 70 个账号、1 个 API Key 保留。独立测试站与旧备用服务器未查询、未同步。
+- **目标与结果：** `https://codex.xingqiaolab.top`，发布成功，无回滚。API 与独立 `codex2api-credential-runtime` 均 healthy。原有 70 个账号、1 个 API Key 保留。独立执行器到后台的专用认证链路验证通过，不存在的任务续期返回409。独立测试站与旧备用服务器未查询、未同步。
 - **改动：** 合并官方 `08030dd23f438e0e179afb9140ebf8d4c5d3345e`；原生添加账号 2FA 导入；自动配置、优先调度、质量运维、账号运维、凭证守护、凭证运营、鹈鹕测智；独立插件启停、来源比较工具及登录执行器单独更新脚本。两应用没有共享业务服务、数据库、凭据或 worker。
-- **发布源码：** commit `2f5d30f12bb2eef86a9aac79379be66997431fdc`；tree `165d9a0654adb2f769f805389f01df319f271bde`。从已推送且干净的根目录 `main` 构建，保留原有未提交修改的独立快照与 stash。
+- **发布源码：** commit `2f5d30f12bb2eef86a9aac79379be66997431fdc`；tree `165d9a0654adb2f769f805389f01df319f271bde`。从已推送且干净的根目录 `main` 构建，原有三处未提交修改已无冲突恢复，独立快照与 stash 保留。
 - **应用制品：** `codex2api:release-2f5d30f12bb2`，digest `sha256:cf1714238bb1f66ff128d941dce450667fb8b06c8e8ef7d508ffeca470913b5c`。
 - **执行器制品：** `codex2api-credential-runtime:release-2f5d30f12bb2`，digest `sha256:db2e3053d3e9148c3d62054225d2a48415d186f342f6f5a8b03d987a92ded39b`。锁定 toSub2 `8548397e89bf80e508eda64a87e0d556d43abc84`、Turb `d32e49e623dddf71b5fa6f0f5b0250bef963bdbd`，密钥与 worker 令牌仅在 Codex2API 专属 `0600` 文件中保存。
 - **复用/新增验证：** Go 全包首轮其余包通过，四处集成夹具修正后完整管理端、数据库、smartops 重跑通过；原生质量证据测试确认执行且通过。相关 SQLite/PostgreSQL、并发与取消测试通过；前端类型检查、392 项单元测试及构建通过；Python worker 8 项测试、锁定引擎模拟登录及镜像 `--check` 通过；54 项发布测试通过。桌面/手机端 2FA 表单、实际本地排队取消与零提前建号、自动配置保存验证通过。部署阶段完成备份恢复演练、迁移、七模块接口、版本及公网前端 JS 校验。
