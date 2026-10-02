@@ -171,8 +171,13 @@ class Release:
    time.sleep(1)
   raise RuntimeError('readiness deadline exceeded')
  def protected_containers(self):
-  names=['codex2api-postgres','codex2api-redis','sub2api-sub2api-green-1','sub2api-sub2api-worker-1','sub2api-model-detector-1','sub2api-postgres-1','sub2api-redis-1','sub2api-caddy-1','sub2api-relay-ops-1']
-  return {name:self.inspect(name)['Id'] for name in names}
+  names=self.run(['docker','ps','--format','{{.Names}}']).decode().splitlines()
+  result={}
+  for name in names:
+   if name=='codex2api' or name.startswith(('codex2api-rehearsal-','codex2api-migrate-')):continue
+   container=self.inspect(name)
+   result[name]={'id':container['Id'],'started_at':container['State']['StartedAt']}
+  return result
  def verify_protected_containers(self):
   assert_unchanged_containers(self.protected_before,self.protected_containers())
  def drain(self):

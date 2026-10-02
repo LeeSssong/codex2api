@@ -11,6 +11,16 @@ class ReleaseTests(unittest.TestCase):
  def test_unrelated_containers_are_unchanged(self):
   assert_unchanged_containers({'db':'id1','sub':'id2'},{'db':'id1','sub':'id2'})
   with self.assertRaises(RuntimeError):assert_unchanged_containers({'db':'id1'},{'db':'id3'})
+ def test_same_container_restart_is_detected(self):
+  with self.assertRaises(RuntimeError):assert_unchanged_containers({'sub':{'id':'id1','started_at':'before'}},{'sub':{'id':'id1','started_at':'after'}})
+ def test_protection_discovers_all_running_unrelated_containers(self):
+  import json
+  from release_host import Release
+  release=Release.__new__(Release)
+  release.run=lambda args: b'sub2api-api\nsub2api-openai-reauth-worker\ncodex2api-postgres\ncodex2api\n'
+  release.inspect=lambda name: {'Id':name+'-id','State':{'StartedAt':'original'}}
+  actual=release.protected_containers()
+  self.assertEqual(actual, {name:{'id':name+'-id','started_at':'original'} for name in ['sub2api-api','sub2api-openai-reauth-worker','codex2api-postgres']})
  def test_maintenance_only_changes_codex_route(self):
   config={'apps':{'http':{'servers':{'srv0':{'routes':[{'match':[{'host':['api.xingqiaolab.top']}],'handle':[{'handler':'reverse_proxy'}]},{'match':[{'host':['codex.xingqiaolab.top','64-83-10-67.nip.io']}],'handle':[{'handler':'subroute'}]}]}}}}}
   original=copy.deepcopy(config); updated=maintenance_config(config)

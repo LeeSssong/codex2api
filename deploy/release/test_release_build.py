@@ -6,7 +6,7 @@ class SourceTests(unittest.TestCase):
   self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup);self.root=pathlib.Path(self.tmp.name)/'repo';self.root.mkdir();remote=pathlib.Path(self.tmp.name)/'remote.git'
   subprocess.run(['git','init','--bare',str(remote)],check=True,capture_output=True)
   self.git('init','-b','main');self.git('config','user.name','Build Test');self.git('config','user.email','test@example.invalid')
-  (self.root/'file').write_text('one');self.git('add','.');self.git('commit','-m','fixture');self.git('remote','add','production',str(remote));self.git('push','-u','production','main');self.sha=self.git('rev-parse','HEAD')
+  (self.root/'file').write_text('one');self.git('add','.');self.git('commit','-m','fixture');self.git('remote','add','origin',str(remote));self.git('push','-u','origin','main');self.sha=self.git('rev-parse','HEAD')
  def git(self,*args):return subprocess.check_output(['git',*args],cwd=self.root,stderr=subprocess.DEVNULL,text=True).strip()
  def test_verified_main_matches_remote(self):self.assertEqual(verify_source(self.root,self.sha)[0],self.sha)
  def test_dirty_tree_rejected(self):

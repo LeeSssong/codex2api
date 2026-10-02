@@ -11,8 +11,8 @@ def verify_source(root, upstream):
  if command(['git','symbolic-ref','--short','HEAD'],root)!='main':raise ValueError('release requires main, not a feature branch or detached HEAD')
  if command(['git','status','--porcelain'],root):raise ValueError('release requires a clean working tree')
  revision=command(['git','rev-parse','HEAD'],root); tree=command(['git','rev-parse','HEAD^{tree}'],root)
- remote=command(['git','ls-remote','--exit-code','production','refs/heads/main'],root).split()[0]
- if revision!=remote or command(['git','rev-parse','production/main'],root)!=remote:raise ValueError('main must match freshly verified production/main')
+ remote=command(['git','ls-remote','--exit-code','origin','refs/heads/main'],root).split()[0]
+ if revision!=remote or command(['git','rev-parse','origin/main'],root)!=remote:raise ValueError('main must match freshly verified origin/main')
  command(['git','merge-base','--is-ancestor',upstream,revision],root)
  return revision,tree
 
