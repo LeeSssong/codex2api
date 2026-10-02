@@ -1,6 +1,14 @@
 import copy, unittest
 from release_host import maintenance_config, replace_image, check_source, module_state, assert_unchanged_containers, image_pinned_compose
 class ReleaseTests(unittest.TestCase):
+ def test_plugin_smoke_requires_complete_manifest_and_respects_disabled_guard(self):
+  from release_host import plugin_smoke_endpoints
+  value={'plugins':[{'id':id,'enabled':False,'sdk_compatibility':'plugins/v1'} for id in ['auto-config','priority-scheduling','quality-ops','account-ops','token-guard','credential-ops','pelican-tests']]}
+  self.assertNotIn('/api/admin/account-ops/token-guard/status',plugin_smoke_endpoints(value))
+  value['plugins'][4]['enabled']=True
+  self.assertIn('/api/admin/account-ops/token-guard/status',plugin_smoke_endpoints(value))
+  value['plugins'].pop()
+  with self.assertRaises(RuntimeError):plugin_smoke_endpoints(value)
  def test_standard_image_uses_persisted_module_flag(self):
   self.assertTrue(module_state(None, 'true'))
   self.assertFalse(module_state(None, None))
@@ -283,7 +291,8 @@ class BPSReleaseSafetyTests(unittest.TestCase):
   r.sql=lambda query:'3' if 'accounts' in query else '1'
   def request(path,auth=False,public=False):
    value={}
-   if path.endswith('/settings'):value=payload
+   if path.endswith('/plugins'):value={'plugins':[{'id':id,'enabled':True,'sdk_compatibility':'plugins/v1'} for id in ['auto-config','priority-scheduling','quality-ops','account-ops','token-guard','credential-ops','pelican-tests']]}
+   elif path.endswith('/settings'):value=payload
    elif path=='/health':value={'build_version':'release-test'}
    elif path.startswith('/admin/'):return 200,{'Content-Type':'text/html'},b'<!doctype html>'
    return 200,{'Content-Type':'application/json'},json.dumps(value).encode()

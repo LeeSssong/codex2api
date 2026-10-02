@@ -51,6 +51,15 @@ def assert_unchanged_containers(before, after):
  changed=[name for name,identity in before.items() if after.get(name)!=identity]
  if changed:raise RuntimeError('unrelated containers changed: '+','.join(changed))
 
+def plugin_smoke_endpoints(manifest):
+ expected={'auto-config','priority-scheduling','quality-ops','account-ops','token-guard','credential-ops','pelican-tests'}
+ plugins={item['id']:item for item in manifest.get('plugins',[])}
+ if set(plugins)!=expected:raise RuntimeError('installed plugin manifest incomplete')
+ if any(p.get('sdk_compatibility')!='plugins/v1' or not isinstance(p.get('enabled'),bool) for p in plugins.values()):raise RuntimeError('installed plugin manifest incompatible')
+ endpoints=['/api/admin/smart-ops','/api/admin/smart-ops/pelican-plans','/api/admin/smart-ops/pelican-tests','/api/admin/credential-ops','/api/admin/quality-ops/plans','/api/admin/quality-ops/history','/api/admin/account-ops/config','/api/admin/account-ops/alerts']
+ if plugins['token-guard']['enabled']:endpoints+=['/api/admin/account-ops/token-guard/status','/api/admin/account-ops/token-guard/events?limit=1']
+ return endpoints
+
 def checked_file(path, private=False):
  path=pathlib.Path(path)
  if not path.is_absolute() or '..' in path.parts:raise ValueError('absolute canonical file path required')
@@ -209,7 +218,8 @@ class Release:
   self.report['drain_deadline_reached']=time.monotonic()>=deadline
   self.event('old-requests-drained')
  def feature_smoke(self,public=False):
-  endpoints=['/api/admin/settings','/api/admin/stats','/api/admin/state-pool','/api/admin/state-pool/ipv6','/api/admin/models']
+  manifest=json.loads(self.request('/api/admin/plugins',True,public)[2])
+  endpoints=['/api/admin/settings','/api/admin/stats','/api/admin/state-pool','/api/admin/state-pool/ipv6','/api/admin/models']+plugin_smoke_endpoints(manifest)
   for endpoint in endpoints:
    status,headers,payload=self.request(endpoint,True,public)
    if status!=200 or 'application/json' not in headers.get('Content-Type',headers.get('content-type','')):raise RuntimeError('feature endpoint did not return JSON: '+endpoint)
