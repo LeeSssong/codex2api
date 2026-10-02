@@ -5,6 +5,13 @@ import (
 	"time"
 )
 
+func TestQualityBPSRejectsUnsupportedWebSocketAcceleration(t *testing.T) {
+	policy := &QualityBPSPolicy{FailureThreshold: 1, AllModels: true, WsSSEAcceleration: true}
+	if err := ValidateQualityBPSPolicy(policy); err == nil {
+		t.Fatal("accepted unsupported BPS WebSocket acceleration")
+	}
+}
+
 func TestQualityOutcome(t *testing.T) {
 	for _, tt := range []struct {
 		r    []Sample

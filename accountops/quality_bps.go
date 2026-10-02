@@ -34,6 +34,9 @@ func ValidateQualityBPSPolicy(b *QualityBPSPolicy) error {
 	if b == nil {
 		return fmt.Errorf("BPS settings are required")
 	}
+	if b.WsSSEAcceleration {
+		return fmt.Errorf("BPS WebSocket acceleration is not supported by the native transport")
+	}
 	if b.RecoveryIntervalMinutes != nil && (*b.RecoveryIntervalMinutes < 1 || *b.RecoveryIntervalMinutes > 10080) {
 		return fmt.Errorf("BPS recovery interval must be 1-10080 minutes")
 	}
