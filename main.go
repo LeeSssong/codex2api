@@ -59,6 +59,9 @@ func main() {
 		log.Fatalf("数据库初始化失败: %v", err)
 	}
 	defer db.Close()
+	if err := db.EnsureCredentialOpsSchema(context.Background()); err != nil {
+		log.Fatalf("credential operations schema initialization failed: %v", err)
+	}
 	if migrateOnlyEnabled() {
 		log.Println("数据库迁移完成，CODEX_MIGRATE_ONLY 已启用，进程退出")
 		return
@@ -362,6 +365,7 @@ func main() {
 	adminHandler.StartQualityTests(backgroundCtx)
 	adminHandler.StartAccountOps(backgroundCtx)
 	adminHandler.StartTokenGuard(backgroundCtx)
+	adminHandler.StartCredentialOpsScheduler(backgroundCtx)
 	if err := adminHandler.StartStatePool(backgroundCtx); err != nil {
 		log.Printf("State pool startup failed: %v", err)
 		return
@@ -469,6 +473,7 @@ func main() {
 	}
 	adminHandler.StartPromptIntelligence(backgroundCtx)
 	adminHandler.RegisterRoutes(r)
+	adminHandler.RegisterCredentialOpsWorkerRoutes(r)
 
 	// 管理后台前端静态文件
 	subFS, err := fs.Sub(frontendFS, "frontend/dist")
@@ -674,6 +679,9 @@ func main() {
 	adminHandler.WaitAutoActivate5hWindow()
 	adminHandler.WaitQualityTests()
 	adminHandler.WaitAccountOps()
+	if err := adminHandler.WaitCredentialOpsScheduler(shutdownCtx); err != nil {
+		log.Printf("credential operations shutdown: %v", err)
+	}
 	adminHandler.StopStatePool()
 	wsKeepalive.Stop()
 	wsrelay.ShutdownExecutor()

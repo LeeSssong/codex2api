@@ -35,6 +35,7 @@ const Plugins = lazy(() => import('./pages/Plugins'))
 const AccountOps = lazy(() => import('./pages/AccountOps'))
 const AccountQuality = lazy(() => import('./pages/AccountQuality'))
 const TokenGuard = lazy(() => import('./pages/TokenGuard'))
+const CredentialOps = lazy(() => import('./pages/CredentialOps'))
 
 export default function App() {
   return (
@@ -82,6 +83,7 @@ function AdminApp() {
           <Route path="/smart-ops/quality" element={<AccountQuality />} />
           <Route path="/smart-ops/alerts" element={<AccountOps />} />
           <Route path="/smart-ops/tokens" element={<TokenGuard />} />
+          <Route path="/smart-ops/credentials" element={<CredentialOps />} />
           <Route path="/state-pool" element={<StatePool />} />
           <Route path="/prompt-filter" element={<Navigate to="/prompt-filter/overview" replace />} />
           <Route path="/prompt-filter/:view" element={<PromptFilter />} />
