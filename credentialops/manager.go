@@ -32,32 +32,6 @@ type LoginConfig struct {
 	PasswordCiphertext, TOTPCiphertext, OTPURLCiphertext string
 	UpdatedAt                                            time.Time
 }
-type ImportInput struct {
-	Email, AccountID, RefreshToken string
-	Credential                     map[string]any
-}
-type ImportResult struct {
-	AccountID  int64
-	Generation int64
-	Created    bool
-}
-type Callback struct {
-	AccountID, Generation int64
-	Credential            map[string]any
-}
-type LoginJob struct {
-	ID         string         `json:"id"`
-	Status     string         `json:"status"`
-	AccountID  int64          `json:"account_id"`
-	Credential map[string]any `json:"credential,omitempty"`
-	Error      string         `json:"error,omitempty"`
-}
-type Account struct {
-	ID                              int64
-	Email, ExternalID, RefreshToken string
-	Credential                      map[string]any
-	Generation                      int64
-}
 type Monitor struct {
 	AccountID            int64
 	Enabled, AutoRelogin bool
@@ -84,66 +58,12 @@ const (
 type Manager struct {
 	mu       sync.Mutex
 	cfg      ManagerConfig
-	nextID   int64
-	accounts map[int64]*Account
 	configs  map[int64]LoginConfig
 	monitors map[int64]*Monitor
-	jobs     map[string]*LoginJob
 }
 
 func NewManager(cfg ManagerConfig) *Manager {
-	return &Manager{cfg: cfg, nextID: 1, accounts: map[int64]*Account{}, configs: map[int64]LoginConfig{}, monitors: map[int64]*Monitor{}, jobs: map[string]*LoginJob{}}
-}
-
-func (m *Manager) StartTwoFALogin(ctx context.Context, accountID int64, in LoginConfigInput) (LoginJob, error) {
-	if accountID <= 0 || strings.TrimSpace(in.Email) == "" || strings.TrimSpace(in.Password) == "" || strings.TrimSpace(in.TOTPSecret) == "" {
-		return LoginJob{}, errors.New("email, password and TOTP secret are required")
-	}
-	if _, err := m.SaveLoginConfig(ctx, in); err != nil {
-		return LoginJob{}, err
-	}
-	m.mu.Lock()
-	id := time.Now().UTC().Format("20060102150405.000000000")
-	j := &LoginJob{ID: id, Status: "running", AccountID: accountID}
-	m.jobs[id] = j
-	m.mu.Unlock()
-	go func() {
-		select {
-		case <-ctx.Done():
-			m.mu.Lock()
-			if x := m.jobs[id]; x != nil {
-				x.Status = "cancelled"
-			}
-			m.mu.Unlock()
-		case <-time.After(10 * time.Millisecond):
-			m.mu.Lock()
-			if x := m.jobs[id]; x != nil {
-				x.Status = "succeeded"
-				x.Credential = map[string]any{"email": strings.ToLower(strings.TrimSpace(in.Email))}
-			}
-			m.mu.Unlock()
-		}
-	}()
-	return *j, nil
-}
-func (m *Manager) LoginJob(id string) (LoginJob, bool) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	j, ok := m.jobs[id]
-	if !ok {
-		return LoginJob{}, false
-	}
-	out := *j
-	out.Credential = clone(j.Credential)
-	return out, true
-}
-func (m *Manager) CancelLogin(id string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if j := m.jobs[id]; j != nil && j.Status == "running" {
-		j.Status = "cancelled"
-		j.Credential = nil
-	}
+	return &Manager{cfg: cfg, configs: map[int64]LoginConfig{}, monitors: map[int64]*Monitor{}}
 }
 
 func (m *Manager) SaveLoginConfig(_ context.Context, in LoginConfigInput) (LoginConfig, error) {
@@ -201,48 +121,6 @@ func (m *Manager) LoginConfig(accountID int64) (LoginConfig, bool) {
 	return c, ok
 }
 
-func (m *Manager) ImportCredential(_ context.Context, in ImportInput) (ImportResult, error) {
-	email := strings.ToLower(strings.TrimSpace(in.Email))
-	ext := strings.TrimSpace(in.AccountID)
-	rt := strings.TrimSpace(in.RefreshToken)
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	for _, a := range m.accounts {
-		if (email != "" && a.Email == email) || (ext != "" && a.ExternalID == ext) || (rt != "" && a.RefreshToken == rt) {
-			a.Generation++
-			a.Credential = clone(in.Credential)
-			if email != "" {
-				a.Email = email
-			}
-			if ext != "" {
-				a.ExternalID = ext
-			}
-			if rt != "" {
-				a.RefreshToken = rt
-			}
-			return ImportResult{AccountID: a.ID, Generation: a.Generation}, nil
-		}
-	}
-	id := m.nextID
-	m.nextID++
-	m.accounts[id] = &Account{ID: id, Email: email, ExternalID: ext, RefreshToken: rt, Credential: clone(in.Credential), Generation: 1}
-	return ImportResult{AccountID: id, Generation: 1, Created: true}, nil
-}
-func (m *Manager) ApplyCallback(_ context.Context, cb Callback) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	a := m.accounts[cb.AccountID]
-	if a == nil {
-		return errors.New("account not found")
-	}
-	if cb.Generation != a.Generation {
-		return ErrStaleCallback
-	}
-	a.Credential = clone(cb.Credential)
-	a.Generation++
-	return nil
-}
-
 func (m *Manager) UpsertMonitor(in Monitor) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -283,11 +161,4 @@ func (m *Manager) CompleteProbe(owner string, id int64, r ProbeResult) error {
 	v.LeaseUntil = nil
 	v.NextProbeAt = time.Now().Add(30 * time.Minute)
 	return nil
-}
-func clone(in map[string]any) map[string]any {
-	out := map[string]any{}
-	for k, v := range in {
-		out[k] = v
-	}
-	return out
 }

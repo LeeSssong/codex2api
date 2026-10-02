@@ -34,6 +34,88 @@ type CredentialOpsLoginConfigRow struct {
 	UpdatedAt                                            time.Time
 }
 
+type CredentialOpsTaskRow struct {
+	ID, AccountID, ExpectedGeneration          int64
+	Status, Stage, WorkerID, LeaseOwner, Error string
+	Attempt                                    int
+	LeaseUntil, FinishedAt                     *time.Time
+	CreatedAt, UpdatedAt                       time.Time
+}
+
+func (db *DB) CreateCredentialOpsTask(ctx context.Context, accountID, generation int64) (*CredentialOpsTaskRow, error) {
+	q := `INSERT INTO credential_ops_tasks(account_id,status,stage,expected_generation) VALUES($1,'queued','queued',$2) RETURNING id,created_at,updated_at`
+	if db.isSQLite() {
+		q = `INSERT INTO credential_ops_tasks(account_id,status,stage,expected_generation) VALUES($1,'queued','queued',$2) RETURNING id,created_at,updated_at`
+	}
+	r := &CredentialOpsTaskRow{AccountID: accountID, ExpectedGeneration: generation, Status: "queued", Stage: "queued"}
+	err := db.conn.QueryRowContext(ctx, q, accountID, generation).Scan(&r.ID, &r.CreatedAt, &r.UpdatedAt)
+	return r, err
+}
+func (db *DB) ClaimCredentialOpsTask(ctx context.Context, owner string, lease time.Duration) (*CredentialOpsTaskRow, error) {
+	if db.isSQLite() {
+		return db.claimCredentialOpsTaskSQLite(ctx, owner, lease)
+	}
+	q := `WITH due AS (SELECT id FROM credential_ops_tasks WHERE status='queued' OR (status='running' AND lease_until < NOW()) ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED) UPDATE credential_ops_tasks t SET status='running',stage='starting',lease_owner=$1,lease_until=NOW()+($2*INTERVAL '1 second'),attempt=attempt+1,updated_at=NOW() FROM due WHERE t.id=due.id RETURNING t.id,t.account_id,t.expected_generation,t.status,t.stage,t.lease_owner,t.attempt,t.created_at,t.updated_at`
+	r := &CredentialOpsTaskRow{}
+	err := db.conn.QueryRowContext(ctx, q, owner, int64(lease.Seconds())).Scan(&r.ID, &r.AccountID, &r.ExpectedGeneration, &r.Status, &r.Stage, &r.LeaseOwner, &r.Attempt, &r.CreatedAt, &r.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	return r, err
+}
+func (db *DB) claimCredentialOpsTaskSQLite(ctx context.Context, owner string, lease time.Duration) (*CredentialOpsTaskRow, error) {
+	var id int64
+	err := db.conn.QueryRowContext(ctx, `SELECT id FROM credential_ops_tasks WHERE status='queued' OR (status='running' AND lease_until<CURRENT_TIMESTAMP) ORDER BY id LIMIT 1`).Scan(&id)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	res, err := db.conn.ExecContext(ctx, `UPDATE credential_ops_tasks SET status='running',stage='starting',lease_owner=$1,lease_until=datetime('now', $2),attempt=attempt+1,updated_at=CURRENT_TIMESTAMP WHERE id=$3 AND (status='queued' OR lease_until<CURRENT_TIMESTAMP)`, owner, fmt.Sprintf("+%d seconds", int(lease.Seconds())), id)
+	if err != nil {
+		return nil, err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return nil, nil
+	}
+	var r CredentialOpsTaskRow
+	err = db.conn.QueryRowContext(ctx, `SELECT id,account_id,expected_generation,status,stage,lease_owner,attempt,created_at,updated_at FROM credential_ops_tasks WHERE id=$1`, id).Scan(&r.ID, &r.AccountID, &r.ExpectedGeneration, &r.Status, &r.Stage, &r.LeaseOwner, &r.Attempt, &r.CreatedAt, &r.UpdatedAt)
+	return &r, err
+}
+func (db *DB) CompleteCredentialOpsTask(ctx context.Context, id int64, owner, stage, status, reason string) error {
+	q := `UPDATE credential_ops_tasks SET status=$3,stage=$4,error_message=$5,lease_owner='',lease_until=NULL,finished_at=CASE WHEN $3 IN ('succeeded','failed','cancelled') THEN CURRENT_TIMESTAMP ELSE NULL END,updated_at=CURRENT_TIMESTAMP WHERE id=$1 AND lease_owner=$2`
+	res, err := db.conn.ExecContext(ctx, q, id, owner, status, stage, reason)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+func (db *DB) GetCredentialOpsTask(ctx context.Context, id int64) (*CredentialOpsTaskRow, error) {
+	r := &CredentialOpsTaskRow{}
+	var until, finished sql.NullTime
+	err := db.conn.QueryRowContext(ctx, `SELECT id,account_id,expected_generation,status,stage,lease_owner,attempt,error_message,lease_until,finished_at,created_at,updated_at FROM credential_ops_tasks WHERE id=$1`, id).Scan(&r.ID, &r.AccountID, &r.ExpectedGeneration, &r.Status, &r.Stage, &r.LeaseOwner, &r.Attempt, &r.Error, &until, &finished, &r.CreatedAt, &r.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if until.Valid {
+		r.LeaseUntil = &until.Time
+	}
+	if finished.Valid {
+		r.FinishedAt = &finished.Time
+	}
+	return r, err
+}
+func (db *DB) CancelCredentialOpsTask(ctx context.Context, id int64) error {
+	_, err := db.conn.ExecContext(ctx, `UPDATE credential_ops_tasks SET status='cancelled',stage='cancelled',lease_owner='',lease_until=NULL,finished_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=$1 AND status IN ('queued','running')`, id)
+	return err
+}
+
 func (db *DB) UpsertCredentialOpsLoginConfig(ctx context.Context, row CredentialOpsLoginConfigRow) error {
 	q := `INSERT INTO credential_ops_login_configs(account_id,login_email,credential_mode,engine,proxy_source,password_ciphertext,totp_ciphertext,otp_url_ciphertext,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,CURRENT_TIMESTAMP) ON CONFLICT(account_id) DO UPDATE SET login_email=excluded.login_email,credential_mode=excluded.credential_mode,engine=excluded.engine,proxy_source=excluded.proxy_source,password_ciphertext=excluded.password_ciphertext,totp_ciphertext=excluded.totp_ciphertext,otp_url_ciphertext=excluded.otp_url_ciphertext,updated_at=CURRENT_TIMESTAMP`
 	if db.isSQLite() {
