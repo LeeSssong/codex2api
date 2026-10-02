@@ -30,7 +30,7 @@ func TestSmartOpsNativeOAuthDefaultsPersist(t *testing.T) {
 	if err = db.SaveOAuthAutoConfig(ctx, cfg); err != nil {
 		t.Fatal(err)
 	}
-	h := &Handler{db: db, pluginRegistry: plugins.NewRegistry(nil)}
+	h := &Handler{db: db, pluginRegistry: plugins.NewRegistry(database.NewPluginStore(db))}
 	id, err := h.insertSmartOpsOAuthAccount(ctx, "native", map[string]interface{}{"access_token": "synthetic"}, "")
 	if err != nil {
 		t.Fatal(err)
@@ -144,8 +144,8 @@ func TestSmartOpsPelicanInvokesNativeExecutorAndBilling(t *testing.T) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprint(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"<!doctype html><html>native</html>\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"model\":\"gpt-4o-mini\",\"usage\":{\"input_tokens\":24,\"output_tokens\":88}}}\n\n")
 	})
-	h.pluginRegistry = plugins.NewRegistry(nil)
 	h.db = newTestAdminDB(t)
+	h.pluginRegistry = plugins.NewRegistry(database.NewPluginStore(h.db))
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	if e := h.InitSmartOps(ctx); e != nil {

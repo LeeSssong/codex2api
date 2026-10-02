@@ -9,6 +9,7 @@ func TestOAuthDefaultsAndProgression(t *testing.T) {
 	c := DefaultOAuthAutoConfig()
 	c.Enabled = true
 	c.GroupIDs = []int64{7}
+	c.UpgradeGroupIDs = []int64{7}
 	c.UpgradeEnabled = true
 	c.SuccessesPerStep = 2
 	c.UpgradeStep = 2

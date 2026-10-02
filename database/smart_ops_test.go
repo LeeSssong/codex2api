@@ -439,15 +439,32 @@ func TestSmartOpsDisabledWorkerStopsInFlightAndLeavesQueue(t *testing.T) {
 func TestSmartOpsNativeQualityEvidenceInfluencesCachedScore(t *testing.T) {
 	db := smartOpsDB(t)
 	ctx := context.Background()
-	if _, e := db.conn.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS account_quality_rounds(id INTEGER PRIMARY KEY,account_id BIGINT,created_at TIMESTAMP,record TEXT)`); e != nil {
+	var nativeSchema bool
+	q := `SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='account_quality_plans')`
+	if !db.isSQLite() {
+		q = `SELECT to_regclass('account_quality_plans') IS NOT NULL`
+	}
+	if e := db.conn.QueryRowContext(ctx, q).Scan(&nativeSchema); e != nil {
 		t.Fatal(e)
 	}
-	record := `{"passed_count":0,"total_count":2,"completed_at":"` + time.Now().UTC().Format(time.RFC3339Nano) + `","outcome":"degraded"}`
-	if _, e := db.conn.ExecContext(ctx, `INSERT INTO account_quality_rounds(id,account_id,created_at,record) VALUES(1,77,$1,$2)`, db.timeArg(time.Now()), record); e != nil {
+	if !nativeSchema {
+		t.Skip("native quality module schema is required for this integration fixture")
+	}
+	id, e := db.InsertAccountWithCredentials(ctx, "quality evidence", map[string]interface{}{"access_token": "synthetic"}, "")
+	if e != nil {
+		t.Fatal(e)
+	}
+	config := `{"account_id":` + strconv.FormatInt(id, 10) + `,"enabled":false,"model":"gpt-6-astra","prompt":"Return 42","cron":"0 * * * *","max_results":10,"samples":2,"expected_answer":"42","action":"disable_scheduling","version":1}`
+	var planID int64
+	if e = db.conn.QueryRowContext(ctx, `INSERT INTO account_quality_plans(account_id,config,enabled,next_run) VALUES($1,$2,$3,$4) RETURNING id`, id, config, false, db.timeArg(time.Now().Add(time.Hour))).Scan(&planID); e != nil {
+		t.Fatal(e)
+	}
+	record := `{"account_id":` + strconv.FormatInt(id, 10) + `,"plan_id":` + strconv.FormatInt(planID, 10) + `,"passed_count":0,"total_count":2,"completed_at":"` + time.Now().UTC().Format(time.RFC3339Nano) + `","outcome":"degraded","results":[{"verdict":"fail","output":"0"},{"verdict":"fail","output":"1"}]}`
+	if _, e := db.conn.ExecContext(ctx, `INSERT INTO account_quality_rounds(plan_id,account_id,created_at,record) VALUES($1,$2,$3,$4)`, planID, id, db.timeArg(time.Now()), record); e != nil {
 		t.Fatal(e)
 	}
 	signals, e := db.ReadSmartOpsSignals(ctx, smartops.DefaultPriorityConfig())
-	if e != nil || !signals[77].QualityKnown || signals[77].QualityPercent != 0 || signals[77].QualityObservedUnix == 0 {
+	if e != nil || !signals[id].QualityKnown || signals[id].QualityPercent != 0 || signals[id].QualityObservedUnix == 0 {
 		t.Fatalf("native quality observation unavailable: %+v %v", signals, e)
 	}
 }
