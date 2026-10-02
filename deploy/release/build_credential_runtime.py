@@ -37,7 +37,7 @@ def build(root,upstream,output,host,builder):
    with engine_archive.open('wb') as out:subprocess.run(['git','archive','FETCH_HEAD'],cwd=repo,stdout=out,check=True)
    with tarfile.open(engine_archive) as package:package.extractall(exported)
    contexts+=['--build-context',name+'='+str(exported)]
-  args=docker_command(host,'buildx','build','--builder',builder,'--platform','linux/amd64','--load','--label','org.opencontainers.image.revision='+revision,'--label','io.xingqiao.source-tree='+tree,'--label','io.xingqiao.upstream-revision='+upstream,'-t',image)
+  args=docker_command(host,'buildx','build','--builder',builder,'--platform','linux/amd64','--load','--label','org.opencontainers.image.revision='+revision,'--label','io.xingqiao.source-tree='+tree,'--label','io.xingqiao.upstream-revision='+upstream,'--label','io.xingqiao.plugin-sdk=plugins/v1','-t',image)
   subprocess.run(args+contexts+[str(runtime)],check=True)
  metadata=json.loads(command(docker_command(host,'image','inspect',image),root))[0]
  labels=metadata['Config'].get('Labels',{})
