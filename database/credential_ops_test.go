@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"github.com/codex2api/plugins"
 	"github.com/codex2api/smartops"
 	"os"
 	"path/filepath"
@@ -289,5 +290,46 @@ func TestCredentialOpsFirstImportNativeDefaultsTransaction(t *testing.T) {
 	var count int
 	if err = db.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM accounts WHERE name='invalid@example.com'`).Scan(&count); err != nil || count != 0 {
 		t.Fatal("defaults failure leaked partial native account")
+	}
+}
+
+func TestCredentialOpsDatabaseDisableFence(t *testing.T) {
+	db, err := New("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	if err = db.EnsureCredentialOpsSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.CreateCredentialOpsTaskWithConfig(ctx, 0, 0, CredentialOpsLoginConfigRow{LoginEmail: "fence@example.com", CredentialMode: "password_totp", PasswordCiphertext: "enc:v1:fixture"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := db.ClaimCredentialOpsTask(ctx, "worker", time.Minute)
+	if err != nil || task == nil {
+		t.Fatal(err)
+	}
+	registry := plugins.NewRegistry(NewPluginStore(db))
+	setting, err := registry.Get(ctx, "credential-ops")
+	if err != nil {
+		t.Fatal(err)
+	}
+	setting.Enabled = false
+	if err = registry.Set(ctx, setting); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.ClaimCredentialOpsTask(ctx, "worker-next", time.Minute); !errors.Is(err, ErrCredentialOpsDisabled) {
+		t.Fatalf("disabled claim %v", err)
+	}
+	if err = db.RenewCredentialOpsTask(ctx, task.ID, "worker", task.Attempt, "waiting_otp"); !errors.Is(err, ErrCredentialOpsDisabled) {
+		t.Fatalf("disabled renewal %v", err)
+	}
+	if _, err = db.CommitCredentialOpsLogin(ctx, task.ID, "worker", task.Attempt, map[string]any{"email": "fence@example.com", "workspace_id": "workspace-fence", "access_token": "test-only"}); !errors.Is(err, ErrCredentialOpsDisabled) {
+		t.Fatalf("disabled commit %v", err)
+	}
+	if _, err = db.CreateCredentialOpsTaskWithConfig(ctx, 0, 0, CredentialOpsLoginConfigRow{LoginEmail: "fence@example.com"}); !errors.Is(err, ErrCredentialOpsDisabled) {
+		t.Fatalf("disabled queue %v", err)
 	}
 }

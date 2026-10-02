@@ -174,6 +174,10 @@ func (h *Handler) ClaimCredentialOpsWorker(c *gin.Context) {
 	}
 	task, err := h.db.ClaimCredentialOpsTask(c.Request.Context(), req.WorkerID, 2*time.Minute)
 	if err != nil {
+		if errors.Is(err, database.ErrCredentialOpsDisabled) {
+			c.Status(409)
+			return
+		}
 		c.Status(500)
 		return
 	}

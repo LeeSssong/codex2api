@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strconv"
 	"sync"
@@ -48,6 +49,10 @@ func (h *Handler) ProbeCredentialMonitor(c *gin.Context) {
 	id, _ := strconv.ParseInt(c.Param("id"), 10, 64)
 	m, err := h.db.ClaimCredentialOpsMonitor(c.Request.Context(), id, uuid.NewString())
 	if err != nil {
+		if errors.Is(err, database.ErrCredentialOpsDisabled) {
+			c.Status(409)
+			return
+		}
 		c.Status(500)
 		return
 	}

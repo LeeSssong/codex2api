@@ -46,8 +46,6 @@ def request(path, body):
         return 503, {}
 
 def check():
-    if len(os.environ.get("CODEX2API_CREDENTIAL_OPS_WORKER_TOKEN", "")) < 32:
-        raise RuntimeError("dedicated worker token must contain at least 32 characters")
     import curl_cffi  # noqa: F401
     root = Path(os.environ.get("TOSUB2_ROOT", "/opt/tosub2"))
     if not (root / "src/protocol-login.mjs").is_file():
@@ -189,6 +187,8 @@ def main():
     check()
     if args.check:
         return 0
+    if len(os.environ.get("CODEX2API_CREDENTIAL_OPS_WORKER_TOKEN", "")) < 32:
+        raise RuntimeError("dedicated worker token must contain at least 32 characters")
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
     worker = os.environ.get("CODEX2API_CREDENTIAL_OPS_WORKER_ID", "credential-runtime")

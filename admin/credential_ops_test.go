@@ -23,6 +23,9 @@ func credentialTestRouter(db *database.DB, store *auth.Store) (*Handler, *gin.En
 		panic(err)
 	}
 	h := &Handler{db: db, store: store, pluginRegistry: plugins.NewRegistry(database.NewPluginStore(db)), probeUsage: func(context.Context, *auth.Account) error { return nil }}
+	// Native pool publication is real; keep asynchronous external warmup probes
+	// queued in this fixture so synthetic credentials never leave the process.
+	h.importProbeWorkers = 1 << 20
 	router := gin.New()
 	api := router.Group("/api/admin", func(c *gin.Context) {
 		if c.GetHeader("X-Admin-Key") != "admin-test" {

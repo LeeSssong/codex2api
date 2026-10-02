@@ -13,6 +13,7 @@ import (
 )
 
 var ErrCredentialOpsStale = errors.New("credential task lease or generation changed")
+var ErrCredentialOpsDisabled = errors.New("credential operations plugin is disabled")
 
 func (db *DB) FailCredentialOpsTask(ctx context.Context, id int64, owner string, attempt int) error {
 	res, err := db.conn.ExecContext(ctx, `UPDATE credential_ops_tasks SET status='failed',stage='failed',error_message='login protocol failed',lease_owner='',lease_until=NULL,finished_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=$1 AND lease_owner=$2 AND attempt=$3 AND status='running' AND lease_until>CURRENT_TIMESTAMP`, id, owner, attempt)
@@ -34,6 +35,13 @@ func (db *DB) CreateCredentialOpsTaskWithConfig(ctx context.Context, accountID, 
 			return err
 		}
 		defer tx.Rollback()
+		enabled, err := db.PluginEnabledTx(ctx, tx, "credential-ops")
+		if err != nil {
+			return err
+		}
+		if !enabled {
+			return ErrCredentialOpsDisabled
+		}
 		if accountID > 0 {
 			var count int
 			if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM credential_ops_tasks WHERE account_id=$1 AND status IN ('queued','running')`, accountID).Scan(&count); err != nil {
@@ -74,19 +82,33 @@ func (db *DB) CredentialOpsTaskConfig(ctx context.Context, id int64) (*Credentia
 }
 
 func (db *DB) RenewCredentialOpsTask(ctx context.Context, id int64, owner string, attempt int, stage string) error {
-	until := time.Now().UTC().Add(2 * time.Minute)
-	result, err := db.conn.ExecContext(ctx, `UPDATE credential_ops_tasks SET lease_until=$1,stage=$2,updated_at=CURRENT_TIMESTAMP WHERE id=$3 AND lease_owner=$4 AND attempt=$5 AND status='running' AND lease_until>CURRENT_TIMESTAMP`, db.timeArg(until), stage, id, owner, attempt)
-	if err != nil {
-		return err
-	}
-	n, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if n != 1 {
-		return ErrCredentialOpsStale
-	}
-	return nil
+	return db.withSQLiteWriteLock(ctx, func() error {
+		tx, err := db.conn.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
+		enabled, err := db.PluginEnabledTx(ctx, tx, "credential-ops")
+		if err != nil {
+			return err
+		}
+		if !enabled {
+			return ErrCredentialOpsDisabled
+		}
+		until := time.Now().UTC().Add(2 * time.Minute)
+		result, err := tx.ExecContext(ctx, `UPDATE credential_ops_tasks SET lease_until=$1,stage=$2,updated_at=CURRENT_TIMESTAMP WHERE id=$3 AND lease_owner=$4 AND attempt=$5 AND status='running' AND lease_until>CURRENT_TIMESTAMP`, db.timeArg(until), stage, id, owner, attempt)
+		if err != nil {
+			return err
+		}
+		n, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if n != 1 {
+			return ErrCredentialOpsStale
+		}
+		return tx.Commit()
+	})
 }
 
 // CommitCredentialOpsLogin fences the task and native account in one transaction.
@@ -99,18 +121,12 @@ func (db *DB) CommitCredentialOpsLogin(ctx context.Context, id int64, owner stri
 			return err
 		}
 		defer tx.Rollback()
-		if !db.isSQLite() {
-			if _, err = tx.ExecContext(ctx, `LOCK TABLE plugin_settings IN SHARE MODE`); err != nil {
-				return err
-			}
-		}
-		var enabled bool
-		err = tx.QueryRowContext(ctx, `SELECT enabled FROM plugin_settings WHERE id='credential-ops'`).Scan(&enabled)
-		if err != nil && err != sql.ErrNoRows {
+		enabled, err := db.PluginEnabledTx(ctx, tx, "credential-ops")
+		if err != nil {
 			return err
 		}
-		if err == nil && !enabled {
-			return errors.New("credential operations plugin is disabled")
+		if !enabled {
+			return ErrCredentialOpsDisabled
 		}
 		query := `SELECT account_id,expected_generation FROM credential_ops_tasks WHERE id=$1 AND status='running' AND lease_owner=$2 AND attempt=$3 AND lease_until>CURRENT_TIMESTAMP`
 		if !db.isSQLite() {

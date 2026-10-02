@@ -60,6 +60,12 @@ pathlib.Path(sys.argv[sys.argv.index('--sub2api-out')+1]).write_text(json.dumps(
             worker.process_claim(self.payload(), 'worker-test')
         process.assert_not_called()
 
+    def test_preflight_check_requires_no_token_or_network(self):
+        with patch.dict(os.environ, {"CODEX2API_CREDENTIAL_OPS_WORKER_TOKEN": ""}), patch.object(worker, 'check') as check, patch.object(worker, 'request') as request, patch.object(sys, 'argv', ['worker.py', '--check']):
+            self.assertEqual(worker.main(), 0)
+            check.assert_called_once()
+            request.assert_not_called()
+
     def test_cancelled_renewal_kills_process_group_and_has_no_callback(self):
         self.root.joinpath('node').write_text('#!' + sys.executable + '\nimport time\ntime.sleep(300)\n')
         self.root.joinpath('node').chmod(0o700)

@@ -82,11 +82,33 @@ func (db *DB) ClaimCredentialOpsMonitor(ctx context.Context, id int64, owner str
 		} else if !m.Enabled || m.NextProbeAt.After(now) || (m.CooldownUntil != nil && m.CooldownUntil.After(now)) {
 			continue
 		}
-		result, err := db.conn.ExecContext(ctx, `UPDATE credential_ops_monitors SET lease_owner=$1,lease_until=$2,updated_at=CURRENT_TIMESTAMP WHERE account_id=$3 AND (lease_until IS NULL OR lease_until<CURRENT_TIMESTAMP)`, owner, db.timeArg(now.Add(time.Minute)), m.AccountID)
+		var n int64
+		err = db.withSQLiteWriteLock(ctx, func() error {
+			tx, e := db.conn.BeginTx(ctx, nil)
+			if e != nil {
+				return e
+			}
+			defer tx.Rollback()
+			enabled, e := db.PluginEnabledTx(ctx, tx, "credential-ops")
+			if e != nil {
+				return e
+			}
+			if !enabled {
+				return ErrCredentialOpsDisabled
+			}
+			result, e := tx.ExecContext(ctx, `UPDATE credential_ops_monitors SET lease_owner=$1,lease_until=$2,updated_at=CURRENT_TIMESTAMP WHERE account_id=$3 AND (lease_until IS NULL OR lease_until<CURRENT_TIMESTAMP) AND ($4 OR (enabled=TRUE AND next_probe_at<=CURRENT_TIMESTAMP AND (cooldown_until IS NULL OR cooldown_until<=CURRENT_TIMESTAMP)))`, owner, db.timeArg(now.Add(time.Minute)), m.AccountID, id > 0)
+			if e != nil {
+				return e
+			}
+			n, e = result.RowsAffected()
+			if e != nil {
+				return e
+			}
+			return tx.Commit()
+		})
 		if err != nil {
 			return nil, err
 		}
-		n, _ := result.RowsAffected()
 		if n == 1 {
 			m.LeaseOwner = owner
 			return &m, nil
@@ -114,15 +136,33 @@ func (db *DB) CompleteCredentialOpsMonitor(ctx context.Context, m CredentialOpsM
 	if reauth {
 		cooldown = db.timeArg(now.Add(time.Duration(m.CooldownSeconds) * time.Second))
 	}
-	result, err := db.conn.ExecContext(ctx, `UPDATE credential_ops_monitors SET probe_state=$1,probe_detail=$2,fail_streak=$3,next_probe_at=$4,cooldown_until=$5,lease_owner='',lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE account_id=$6 AND lease_owner=$7 AND lease_until>CURRENT_TIMESTAMP`, state, detail, streak, db.timeArg(now.Add(time.Duration(m.IntervalSeconds)*time.Second)), cooldown, m.AccountID, m.LeaseOwner)
-	if err != nil {
-		return false, err
-	}
-	n, _ := result.RowsAffected()
-	if n != 1 {
-		return false, ErrCredentialOpsStale
-	}
-	return reauth, nil
+	err := db.withSQLiteWriteLock(ctx, func() error {
+		tx, e := db.conn.BeginTx(ctx, nil)
+		if e != nil {
+			return e
+		}
+		defer tx.Rollback()
+		enabled, e := db.PluginEnabledTx(ctx, tx, "credential-ops")
+		if e != nil {
+			return e
+		}
+		if !enabled {
+			return ErrCredentialOpsDisabled
+		}
+		result, e := tx.ExecContext(ctx, `UPDATE credential_ops_monitors SET probe_state=$1,probe_detail=$2,fail_streak=$3,next_probe_at=$4,cooldown_until=$5,lease_owner='',lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE account_id=$6 AND lease_owner=$7 AND lease_until>CURRENT_TIMESTAMP`, state, detail, streak, db.timeArg(now.Add(time.Duration(m.IntervalSeconds)*time.Second)), cooldown, m.AccountID, m.LeaseOwner)
+		if e != nil {
+			return e
+		}
+		n, e := result.RowsAffected()
+		if e != nil {
+			return e
+		}
+		if n != 1 {
+			return ErrCredentialOpsStale
+		}
+		return tx.Commit()
+	})
+	return reauth && err == nil, err
 }
 func (db *DB) ListCredentialOpsTasks(ctx context.Context) ([]CredentialOpsTaskRow, error) {
 	rows, err := db.conn.QueryContext(ctx, `SELECT id FROM credential_ops_tasks ORDER BY id DESC LIMIT 100`)
