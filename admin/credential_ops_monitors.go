@@ -9,8 +9,10 @@ import (
 	"time"
 
 	"github.com/codex2api/database"
+	"github.com/codex2api/proxy"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"strings"
 )
 
 func (h *Handler) ListCredentialOps(c *gin.Context) {
@@ -24,7 +26,33 @@ func (h *Handler) ListCredentialOps(c *gin.Context) {
 		c.Status(500)
 		return
 	}
-	c.JSON(200, gin.H{"accounts": accounts, "tasks": tasks, "enabled": h.PluginEnabled(c.Request.Context(), "credential-ops"), "session_studio_configured": os.Getenv("CODEX2API_CREDENTIAL_OPS_SESSION_STUDIO_ENDPOINT") != ""})
+	rules, err := h.db.CredentialOpsGlobalRules(c.Request.Context())
+	if err != nil {
+		c.Status(500)
+		return
+	}
+	ready := map[int64]bool{}
+	for _, a := range accounts {
+		cfg, e := h.db.GetCredentialOpsLoginConfig(c.Request.Context(), a.AccountID)
+		if e != nil {
+			c.Status(500)
+			return
+		}
+		ready[a.AccountID] = cfg != nil && ((cfg.CredentialMode == "password_totp" && cfg.PasswordCiphertext != "") || (cfg.CredentialMode == "email_otp_url" && cfg.OTPURLCiphertext != ""))
+	}
+	c.JSON(200, gin.H{"accounts": accounts, "tasks": tasks, "rules": rules, "login_configured": ready, "enabled": h.PluginEnabled(c.Request.Context(), "credential-ops"), "session_studio_configured": os.Getenv("CODEX2API_CREDENTIAL_OPS_SESSION_STUDIO_ENDPOINT") != ""})
+}
+func (h *Handler) SaveCredentialGlobalRules(c *gin.Context) {
+	var rules database.CredentialOpsGlobalRules
+	if c.ShouldBindJSON(&rules) != nil {
+		c.Status(400)
+		return
+	}
+	if err := h.db.SaveCredentialOpsGlobalRules(c.Request.Context(), rules); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, rules)
 }
 func (h *Handler) SaveCredentialMonitor(c *gin.Context) {
 	id, _ := strconv.ParseInt(c.Param("id"), 10, 64)
@@ -77,14 +105,26 @@ func (h *Handler) runCredentialProbe(ctx context.Context, m database.CredentialO
 		}
 		if account != nil {
 			probeCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
-			err := h.usageProbeFunc()(probeCtx, account)
+			var err error
+			if h.probeUsage != nil {
+				err = h.probeUsage(probeCtx, account)
+			} else {
+				_, err = proxy.FetchCodexModelsManifest(probeCtx, account, h.store.ResolveProxyForAccount(account), "", "")
+			}
 			cancel()
 			if err == nil {
 				state = "ok"
 			}
-			row, e := h.db.GetAccountByID(ctx, m.AccountID)
-			if e == nil && row != nil && row.CooldownReason == "unauthorized" {
+			if account.GetAccessToken() == "" {
 				state = "auth"
+			} else if err != nil {
+				message := strings.ToLower(err.Error())
+				for _, marker := range []string{"codex models upstream status 401:", "codex models upstream status 403:", "unauthorized", "invalid token", "invalid_token", "token expired", "invalid_grant", "requires re-login"} {
+					if strings.Contains(message, marker) {
+						state = "auth"
+						break
+					}
+				}
 			}
 		}
 	}
@@ -150,6 +190,7 @@ func (h *Handler) WaitCredentialOpsScheduler(ctx context.Context) error {
 }
 func (h *Handler) registerCredentialMonitorRoutes(api *gin.RouterGroup) {
 	api.GET("/credential-ops", h.ListCredentialOps)
+	api.PUT("/credential-ops/rules", h.credentialOpsGate, h.SaveCredentialGlobalRules)
 	api.PUT("/accounts/:id/credential-ops/monitor", h.credentialOpsGate, h.SaveCredentialMonitor)
 	api.POST("/accounts/:id/credential-ops/probe", h.credentialOpsGate, h.ProbeCredentialMonitor)
 }

@@ -30,18 +30,21 @@ export default function TwoFAImport({ accountId = 0, onSaved, sessionStudioConfi
     setName(''); setEmail(''); setPassword(''); setTotp(''); setOTPURL(''); setStored(null); setJob(null); setMessage(''); setClearPassword(false); setClearTOTP(false); setClearOTPURL(false)
     setMode('password_totp'); setEngine('local_worker'); setProxySource('account')
     if (sessionStudioConfigured === undefined) void credentialRequest<CredentialOverview>('/credential-ops').then(data => { if (live) setStudioAvailable(data.session_studio_configured) }).catch(() => {})
-    else setStudioAvailable(sessionStudioConfigured)
     if (accountId > 0) void credentialRequest<CredentialConfig>(`/accounts/${accountId}/credential-ops/config`).then(config => {
       if (!live) return
       setStored(config); setEmail(config.email); setMode(config.mode); setEngine(config.engine); setProxySource(config.proxy_source)
     }).catch(() => {})
     return () => { live = false }
-  }, [accountId, sessionStudioConfigured])
+  }, [accountId])
+  useEffect(() => {
+    if (sessionStudioConfigured !== undefined) setStudioAvailable(sessionStudioConfigured)
+  }, [sessionStudioConfigured])
   useEffect(() => {
     if (!job || !['queued', 'running'].includes(job.Status)) return
     const timer = setInterval(() => { void credentialRequest<CredentialJob>(`/credential-ops/login/${job.ID}`).then(next => {
       setJob(next)
-      if (next.Status === 'succeeded') onSaved?.()
+      if (next.Status === 'succeeded') { setMessage(t('credentialOps.loginSucceeded')); onSaved?.() }
+      if (next.Status === 'failed') setMessage(next.Error || t('credentialOps.failed'))
     }).catch(error => setMessage(String(error))) }, 2000)
     return () => clearInterval(timer)
   }, [job, onSaved])
@@ -71,8 +74,8 @@ export default function TwoFAImport({ accountId = 0, onSaved, sessionStudioConfi
     </div>
     {accountId > 0 && mode === 'password_totp' && <div className="flex flex-wrap gap-4 text-sm"><label className="flex items-center gap-2"><Switch checked={clearPassword} onCheckedChange={setClearPassword} />{t('credentialOps.clearPassword')}</label><label className="flex items-center gap-2"><Switch checked={clearTOTP} onCheckedChange={setClearTOTP} />{t('credentialOps.clearTOTP')}</label></div>}
     {accountId > 0 && mode === 'email_otp_url' && <label className="flex items-center gap-2 text-sm"><Switch checked={clearOTPURL} onCheckedChange={setClearOTPURL} />{t('credentialOps.clearOTPURL')}</label>}
-    <div className="flex flex-wrap gap-2">{accountId > 0 && <Button variant="outline" onClick={() => void submit(false)} disabled={busy}><Save className="size-4" />{t('credentialOps.saveConfig')}</Button>}<Button onClick={() => void submit(true)} disabled={busy || !email || !!job && ['queued', 'running'].includes(job.Status)}>{busy ? <RefreshCw className="size-4 animate-spin" /> : <Play className="size-4" />}{t(busy ? 'credentialOps.submitting' : accountId ? 'credentialOps.relogin' : 'credentialOps.loginImport')}</Button>{job && ['queued', 'running'].includes(job.Status) && <Button variant="outline" onClick={() => void cancel()}><X className="size-4" />{t('credentialOps.cancelJob')}</Button>}</div>
-    {job && <p className="text-sm">{t('credentialOps.jobLabel', { id: job.ID })}: {t(`credentialOps.status.${job.Status}`, { defaultValue: job.Status })} / {t(`credentialOps.stage.${job.Stage}`, { defaultValue: job.Stage })}{job.AccountID > 0 && ` · ${t('credentialOps.accountLabel', { id: job.AccountID })}`}</p>}
+    {job && <p role="status" className="rounded-lg border border-border bg-muted/30 p-3 text-sm">{t('credentialOps.jobLabel', { id: job.ID })}: {t(`credentialOps.status.${job.Status}`, { defaultValue: job.Status })} / {t(`credentialOps.stage.${job.Stage}`, { defaultValue: job.Stage })}{job.AccountID > 0 && ` · ${t('credentialOps.accountLabel', { id: job.AccountID })}`}</p>}
     {message && <p role="status" className="text-sm text-muted-foreground">{message}</p>}
+    <div className="flex flex-wrap gap-2">{accountId > 0 && <Button variant="outline" onClick={() => void submit(false)} disabled={busy}><Save className="size-4" />{t('credentialOps.saveConfig')}</Button>}<Button onClick={() => void submit(true)} disabled={busy || !email || !!job && ['queued', 'running'].includes(job.Status)}>{busy ? <RefreshCw className="size-4 animate-spin" /> : <Play className="size-4" />}{t(busy ? 'credentialOps.submitting' : accountId ? 'credentialOps.relogin' : 'credentialOps.loginImport')}</Button>{job && ['queued', 'running'].includes(job.Status) && <Button variant="outline" onClick={() => void cancel()}><X className="size-4" />{t('credentialOps.cancelJob')}</Button>}</div>
   </section>
 }

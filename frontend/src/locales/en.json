@@ -1,5 +1,11 @@
 {
   "credentialOps": {
+    "retryInterval": "Authentication retry interval (seconds)",
+    "globalRules": "Global credential monitoring",
+    "globalHint": "All OpenAI OAuth accounts are monitored automatically after import. Accounts with saved login credentials sign in again after confirmed authentication failures.",
+    "needsLoginConfig": "Login credentials required",
+    "loginSucceeded": "Login succeeded; credentials updated",
+
     "title": "Credential operations",
     "refresh": "Refresh",
     "disabled": "Credential operations is disabled",

@@ -18,8 +18,9 @@ import (
 
 	"github.com/codex2api/internal/openaiidentity"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/jackc/pgx/v5/stdlib"
 	_ "modernc.org/sqlite"
 )
 
@@ -200,12 +201,12 @@ type sqlExecer interface {
 
 // DB PostgreSQL 数据库操作
 type DB struct {
-	smartOpsBilling atomic.Pointer[smartOpsBillingPolicy]
-	smartOpsSchemaMu sync.Mutex
+	smartOpsBilling     atomic.Pointer[smartOpsBillingPolicy]
+	smartOpsSchemaMu    sync.Mutex
 	smartOpsSchemaReady bool
-	conn           *sql.DB
-	driver         string
-	authCacheScope string
+	conn                *sql.DB
+	driver              string
+	authCacheScope      string
 
 	promptFilterAudit *promptFilterAuditQueue
 
@@ -398,7 +399,21 @@ func New(driver string, dsn string, schema ...string) (*DB, error) {
 	}
 	sqliteSingleConn := driver == "sqlite" && strings.TrimSpace(dsn) == ":memory:"
 
-	conn, err := sql.Open(driverName, dsn)
+	var conn *sql.DB
+	var err error
+	if driver == "postgres" {
+		var cfg *pgx.ConnConfig
+		cfg, err = pgx.ParseConfig(dsn)
+		if err == nil {
+			if cfg.RuntimeParams == nil {
+				cfg.RuntimeParams = map[string]string{}
+			}
+			cfg.RuntimeParams["timezone"] = "UTC"
+			conn = stdlib.OpenDB(*cfg)
+		}
+	} else {
+		conn, err = sql.Open(driverName, dsn)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("连接数据库失败: %w", err)
 	}
@@ -8616,7 +8631,11 @@ func (db *DB) insertAccountRowWithFamily(ctx context.Context, postgresQuery, sql
 		if _, err = tx.ExecContext(ctx, `UPDATE accounts SET credential_family_id=$1 WHERE id=$2 AND COALESCE(credential_family_id,'')=''`, candidate, returnID); err != nil {
 			return err
 		}
-		if platform:=smartOpsOAuthPlatform(credentials);platform!=""{if err=db.ApplySmartOpsOAuthDefaultsTx(ctx,tx,returnID,platform);err!=nil{return err}}
+		if platform := smartOpsOAuthPlatform(credentials); platform != "" {
+			if err = db.ApplySmartOpsOAuthDefaultsTx(ctx, tx, returnID, platform); err != nil {
+				return err
+			}
+		}
 		return tx.Commit()
 	})
 	if err != nil {

@@ -1,5 +1,11 @@
 {
   "credentialOps": {
+    "retryInterval": "驗證失敗重試間隔（秒）",
+    "globalRules": "全域憑證監控規則",
+    "globalHint": "自動監控所有 OpenAI OAuth 帳號；匯入後自動生效。已設定登入憑據的帳號在確認驗證失效後自動重新登入。",
+    "needsLoginConfig": "需設定登入憑據",
+    "loginSucceeded": "登入成功，憑證已更新",
+
     "title": "憑證營運",
     "refresh": "刷新",
     "disabled": "憑據運維外掛已停用",

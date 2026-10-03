@@ -9,14 +9,18 @@ const page = read('../pages/CredentialOps.tsx')
 test('credential forms use shared controls and expose native account import', () => {
   for (const source of [form, page]) {
     assert.doesNotMatch(source, /<select\b|type="checkbox"|<Input type="number"/)
-    assert.match(source, /<Switch\b/)
+
   }
+  assert.match(form, /<Switch\b/)
   assert.match(form, /<Select\b/)
   assert.match(page, /<DraftNumberInput\b/)
   const accounts = read('../pages/Accounts.tsx')
   assert.match(accounts, /accounts\.addMethodTwoFA/)
   assert.match(accounts, /<TwoFAImport accountId=\{0\}/)
-  assert.match(form, /if \(next\.Status === 'succeeded'\) onSaved\?\.\(\)/)
+  assert.match(form, /credentialOps\.loginSucceeded/)
+  assert.match(form, /onSaved\?\.\(\)/)
+  assert.match(page, /credential-ops\/rules/)
+  assert.doesNotMatch(page, /selected\.enabled|selected\.auto_relogin/)
 })
 
 test('credential operations translations have matching keys in three languages', () => {

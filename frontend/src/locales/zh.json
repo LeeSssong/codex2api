@@ -1,5 +1,11 @@
 {
   "credentialOps": {
+    "retryInterval": "鉴权失败重试间隔（秒）",
+    "globalRules": "全局凭证监控规则",
+    "globalHint": "自动监控所有 OpenAI OAuth 账号；导入后自动生效。已配置登录凭据的账号在确认鉴权失效后自动重新登录。",
+    "needsLoginConfig": "需配置登录凭据",
+    "loginSucceeded": "登录成功，凭证已更新",
+
     "title": "凭证运营",
     "refresh": "刷新",
     "disabled": "凭据运维插件已停用",

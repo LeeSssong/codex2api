@@ -55,6 +55,9 @@ func (db *DB) SaveCredentialOpsMonitor(ctx context.Context, m CredentialOpsMonit
 	})
 }
 func (db *DB) ListCredentialOpsMonitors(ctx context.Context) ([]CredentialOpsMonitorRow, error) {
+	if err := db.EnrollCredentialOpsMonitors(ctx); err != nil {
+		return nil, err
+	}
 	rows, err := db.conn.QueryContext(ctx, `SELECT a.id,a.name,COALESCE(m.enabled,FALSE),COALESCE(m.auto_relogin_enabled,FALSE),COALESCE(m.probe_state,'pending'),COALESCE(m.probe_detail,''),COALESCE(m.fail_streak,0),COALESCE(m.next_probe_at,CURRENT_TIMESTAMP),m.cooldown_until,COALESCE(r.interval_seconds,1800),COALESCE(r.failure_threshold,2),COALESCE(r.cooldown_seconds,3600) FROM accounts a LEFT JOIN credential_ops_monitors m ON m.account_id=a.id LEFT JOIN credential_ops_rules r ON r.account_id=a.id WHERE a.status<>'deleted' AND a.platform='openai' AND a.type='oauth' ORDER BY a.id`)
 	if err != nil {
 		return nil, err
@@ -168,13 +171,21 @@ func (db *DB) CompleteCredentialOpsMonitor(ctx context.Context, m CredentialOpsM
 		}
 		reauth = state == "auth" && current.Enabled && current.AutoRelogin && streak >= current.FailureThreshold
 		now := time.Now().UTC()
+		rules, e := credentialGlobalRules(ctx, tx)
+		if e != nil {
+			return e
+		}
+		next := now.Add(time.Duration(current.IntervalSeconds) * time.Second)
+		if state == "auth" {
+			next = now.Add(time.Duration(rules.RetrySeconds) * time.Second)
+		}
 		var cooldown any
 		if reauth {
 			cooldown = db.timeArg(now.Add(time.Duration(current.CooldownSeconds) * time.Second))
 		}
 		// Retain the unique completed probe identity until auto queuing consumes
 		// it; saving rules or a new claim clears/replaces this authorization.
-		result, e := tx.ExecContext(ctx, `UPDATE credential_ops_monitors SET probe_state=$1,probe_detail=$2,fail_streak=$3,next_probe_at=$4,cooldown_until=$5,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE account_id=$6 AND lease_owner=$7 AND lease_until>CURRENT_TIMESTAMP`, state, detail, streak, db.timeArg(now.Add(time.Duration(current.IntervalSeconds)*time.Second)), cooldown, m.AccountID, m.LeaseOwner)
+		result, e := tx.ExecContext(ctx, `UPDATE credential_ops_monitors SET probe_state=$1,probe_detail=$2,fail_streak=$3,next_probe_at=$4,cooldown_until=$5,lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE account_id=$6 AND lease_owner=$7 AND lease_until>CURRENT_TIMESTAMP`, state, detail, streak, db.timeArg(next), cooldown, m.AccountID, m.LeaseOwner)
 		if e != nil {
 			return e
 		}
