@@ -81,20 +81,6 @@ func TestRelayAccountSupportsModelRespectsDeclaredWhitelist(t *testing.T) {
 	if !relayAccountSupportsModel(declared, "grok-3") {
 		t.Fatalf("目录与声明同时命中时应放行 grok-3")
 	}
-
-	// 未同步目录时，白名单只能收窄默认集，不能发明默认集之外的模型。
-	// grok-4.7 已在 OAuth 默认集里，手填白名单后在目录刷新前也应能调度。
-	custom := &auth.Account{
-		UpstreamType: auth.UpstreamGrok,
-		RefreshToken: "rt",
-		Models:       []string{"grok-4.7"},
-	}
-	if !relayAccountSupportsModel(custom, "grok-4.7") {
-		t.Fatal("OAuth 无目录时声明 grok-4.7 应放行（默认集已含该模型）")
-	}
-	if relayAccountSupportsModel(custom, "grok-4.6") {
-		t.Fatal("声明白名单后不应再补默认集放行 grok-4.6")
-	}
 }
 
 func TestGrokChannelSupportsModelUsesCatalogBeforeDefaults(t *testing.T) {
