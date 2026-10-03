@@ -37,7 +37,7 @@ export default function AutoConfig() {
   const channel = config?.platform === 'openai' ? 'codex' : config?.platform
   const initialGroups = groups.filter(g => (g.channel || 'codex') === channel)
   const bpsSwitches: (keyof BPSDefaults)[] = ['ws_sse_acceleration', 'auto_enable_on_degradation', 'all_models', 'omit_unsupported_tools', 'ignore_encrypted_content', 'auto_disable_on_403', 'auto_recover_on_403', 'auto_move_on_403', 'session_proxy', 'cache_creation_as_input']
-  return <div className="space-y-6">
+  return <div className="mx-auto w-full max-w-[1180px] space-y-6">
     <PageHeader title={t('smartOps.autoTitle')} onRefresh={() => void load()} actions={<Button onClick={() => void save()} disabled={disabled || !dirty}>{busy ? <RefreshCw className="size-4 animate-spin" /> : <Save className="size-4" />}{t('common.save')}</Button>} />
     {message && <p role="status" className="text-sm text-muted-foreground">{message}</p>}
     {config && !enabled && <p className="text-sm text-muted-foreground">{t('smartOps.disabled')}</p>}

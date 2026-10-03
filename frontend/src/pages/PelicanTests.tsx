@@ -44,10 +44,11 @@ export default function PelicanTests() {
   async function act(operation: () => Promise<unknown>) { setBusy(true); setMessage(''); try { await operation(); await load() } catch (e) { setMessage((e as Error).message) } finally { setBusy(false) } }
   function edit(plan: PelicanPlan) { setPlanID(plan.id); setName(plan.name); setPlanInterval(plan.interval_minutes); setCron(plan.cron_expression || ''); setPlanEnabled(plan.enabled); setJob(plan.job); setTarget(plan.job.group_ids.length ? 'groups' : 'account'); setMode('scheduled') }
   const disabled = busy || !enabled
-  return <div className="space-y-6">
+  return <div className="mx-auto w-full max-w-[1180px] space-y-6">
     <PageHeader title={t('smartOps.pelicanTitle')} onRefresh={() => void load()} />
     {message && <p role="alert" className="text-sm text-destructive">{message}</p>}
     {!enabled && <p className="text-sm text-muted-foreground">{t('smartOps.disabled')}</p>}
+    <SmartOpsSection title={t('smartOps.execution')}>
     <div className={SETTINGS_FIELD_GRID}>
       <SmartOpsField label={t('smartOps.execution')}><Select aria-label={t('smartOps.execution')} value={mode} onValueChange={setMode} options={[{ value: 'manual', label: t('smartOps.manual') }, { value: 'scheduled', label: t('smartOps.scheduled') }]} /></SmartOpsField>
       <SmartOpsField label={t('smartOps.target')}><Select aria-label={t('smartOps.target')} value={target} onValueChange={setTarget} disabled={disabled} options={[{ value: 'groups', label: t('smartOps.groups') }, { value: 'account', label: t('smartOps.account') }]} /></SmartOpsField>
@@ -67,7 +68,8 @@ export default function PelicanTests() {
       </div>
       <SmartOpsSwitch label={t('smartOps.planEnabled')} value={planEnabled} onChange={setPlanEnabled} disabled={disabled} />
     </SmartOpsSection>}
-    <div className="flex flex-wrap gap-2">
+    </SmartOpsSection>
+    <div className="flex flex-wrap gap-2 rounded-xl border border-border/70 bg-card p-4 shadow-sm">
       {mode === 'manual' ? <Button disabled={disabled || !valid} onClick={() => void act(() => createPelicanTest(normalized))}>{busy ? <RefreshCw className="size-4 animate-spin" /> : <Play className="size-4" />}{t('smartOps.run')}</Button> : <Button disabled={disabled || !valid || !name.trim()} onClick={() => void act(() => savePelicanPlan({ id: planID, name, enabled: planEnabled, interval_minutes: interval, cron_expression: cron, next_run_at: new Date(Date.now() + interval * 60000).toISOString(), job: normalized }))}><Save className="size-4" />{t('smartOps.savePlan')}</Button>}
       {planID > 0 && <Button variant="outline" onClick={() => { setPlanID(0); setName(''); setJob(defaultJob) }}><Plus className="size-4" />{t('smartOps.newPlan')}</Button>}
     </div>
