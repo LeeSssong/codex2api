@@ -30,11 +30,15 @@ func (db *DB) RecordQuality5xxFailure(ctx context.Context, id int64, c smartops.
 		defer tx.Rollback()
 		var current sql.NullInt64
 		var raw string
-		if err = tx.QueryRowContext(ctx, `SELECT base_concurrency_override,credentials FROM accounts WHERE id=$1 AND status<>'deleted'`, id).Scan(&current, &raw); err != nil {
+		q := `SELECT base_concurrency_override,credentials FROM accounts WHERE id=$1 AND status<>'deleted'`
+		if !db.isSQLite() {
+			q += ` FOR UPDATE`
+		}
+		if err = tx.QueryRowContext(ctx, q, id).Scan(&current, &raw); err != nil {
 			return err
 		}
 		if !current.Valid {
-			return nil
+			current = sql.NullInt64{Int64: int64(c.Concurrency), Valid: true}
 		}
 		var state smartops.Quality5xxRampState
 		if err = tx.QueryRowContext(ctx, `SELECT payload FROM smart_ops_concurrency WHERE account_id=$1`, id).Scan(&raw); err != nil && err != sql.ErrNoRows {
@@ -93,11 +97,15 @@ func (db *DB) ApplyQuality5xxProbe(ctx context.Context, id int64, c smartops.OAu
 		defer tx.Rollback()
 		var current sql.NullInt64
 		var raw string
-		if err = tx.QueryRowContext(ctx, `SELECT base_concurrency_override,credentials FROM accounts WHERE id=$1 AND status<>'deleted'`, id).Scan(&current, &raw); err != nil {
+		q := `SELECT base_concurrency_override,credentials FROM accounts WHERE id=$1 AND status<>'deleted'`
+		if !db.isSQLite() {
+			q += ` FOR UPDATE`
+		}
+		if err = tx.QueryRowContext(ctx, q, id).Scan(&current, &raw); err != nil {
 			return err
 		}
 		if !current.Valid {
-			return nil
+			current = sql.NullInt64{Int64: int64(c.Concurrency), Valid: true}
 		}
 		if err = tx.QueryRowContext(ctx, `SELECT payload FROM smart_ops_concurrency WHERE account_id=$1`, id).Scan(&raw); err != nil {
 			return err

@@ -68,7 +68,7 @@ func DefaultOAuthAutoConfig() OAuthAutoConfig {
 		GroupIDs:     []int64{}, ModelMappings: []ModelMapping{{From: "gpt-5.4", To: "gpt-5.5"}},
 		SuccessesPerStep: 20, UpgradeStep: 1, MaxConcurrency: 100, CooldownSeconds: 60,
 		BPS:        BPSDefaults{TargetGroupID: -1, CacheCreationAsInput: true, Models: []string{"gpt-6-astra", "gpt-5.6-sol"}, IgnoreEncryptedContent: true, AutoDisableOn403: true, RecoveryIntervalMinutes: 60, ProxySource: "ip_pool"},
-		Quality5xx: Quality5xxRampConfig{Enabled: true, Floor: 5, CooldownSeconds: 300}}
+		Quality5xx: Quality5xxRampConfig{Enabled: false, Floor: 5, CooldownSeconds: 300}}
 }
 
 func ValidateOAuthAutoConfig(c OAuthAutoConfig) error {
@@ -182,7 +182,13 @@ func (s Quality5xxRampState) ResetOnFailure(c Quality5xxRampConfig, current int,
 	s.Revision, s.Generation, s.CurrentConcurrency = revision, generation, current
 	s.Active, s.ProbePending, s.Attempt = true, true, s.Attempt+1
 	s.CooldownUntil = now.Add(time.Duration(c.CooldownSeconds) * time.Second)
-	s.Concurrency = ConcurrencyState{Revision: revision, Concurrency: current}
+	if s.Concurrency.Concurrency == 0 {
+		s.Concurrency = ConcurrencyState{Revision: revision, Concurrency: current}
+	} else {
+		s.Concurrency.Revision = revision
+		s.Concurrency.Concurrency = current
+		s.Concurrency.Successes = 0
+	}
 	return s
 }
 

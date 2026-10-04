@@ -113,11 +113,11 @@ func (h *Handler) nextAccountForSessionWithDispatch(sessionID string, apiKeyID i
 	return account, proxyURL
 }
 
-func (h *Handler) nextAccountForSessionWithDispatchGuard(sessionID string, apiKeyID int64, exclude map[int64]bool, filter auth.AccountFilter, policy auth.DispatchPolicy,modelScope ...string) (*auth.Account, string, auth.SessionAffinityGuard) {
+func (h *Handler) nextAccountForSessionWithDispatchGuard(sessionID string, apiKeyID int64, exclude map[int64]bool, filter auth.AccountFilter, policy auth.DispatchPolicy, modelScope ...string) (*auth.Account, string, auth.SessionAffinityGuard) {
 	if h == nil || h.store == nil {
 		return nil, "", auth.SessionAffinityGuard{}
 	}
-	return h.store.NextForSessionWithDispatchGuard(sessionID, apiKeyID, exclude, filter, policy,modelScope...)
+	return h.store.NextForSessionWithDispatchGuard(sessionID, apiKeyID, exclude, filter, policy, modelScope...)
 }
 
 func dispatchPolicyForModel(model string) auth.DispatchPolicy {
@@ -2363,6 +2363,9 @@ func (h *Handler) reportStreamOutcomeFailure(account *auth.Account, outcome stre
 		return
 	}
 	h.store.ReportRequestFailure(account, outcome.failureKind, d)
+	if outcome.logStatusCode >= 500 {
+		h.store.ReportQuality5xx(account)
+	}
 }
 
 // unbindOrRetainAffinityForCapacityShed 在首包前透明重试时决定是否保留会话亲和。
@@ -4106,7 +4109,7 @@ func (h *Handler) Responses(c *gin.Context) {
 			if account != nil {
 				stickyProxyURL = account.GetProxyURL()
 			} else if continuationUnavailable && !relayContinuationAttempted {
-				account, stickyProxyURL, affinityGuard = h.nextAccountForSessionWithDispatchGuard(affinityKey, apiKeyID, retryExclusions.ForSelection(), accountFilter, dispatchPolicy,effectiveModel)
+				account, stickyProxyURL, affinityGuard = h.nextAccountForSessionWithDispatchGuard(affinityKey, apiKeyID, retryExclusions.ForSelection(), accountFilter, dispatchPolicy, effectiveModel)
 			} else if turnContinuationPinned {
 				account, stickyProxyURL, selectionErr = h.nextRetryAccountForContinuationWithDispatch(c.Request.Context(), affinityKey, apiKeyID, retryExclusions, accountFilter, dispatchPolicy)
 			} else {
@@ -6114,7 +6117,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 			}
 		}
 		if account == nil {
-			account, stickyProxyURL, affinityGuard = h.nextAccountForSessionWithDispatchGuard(affinityKey, apiKeyID, retryExclusions.ForSelection(), accountFilter, dispatchPolicy,effectiveModel)
+			account, stickyProxyURL, affinityGuard = h.nextAccountForSessionWithDispatchGuard(affinityKey, apiKeyID, retryExclusions.ForSelection(), accountFilter, dispatchPolicy, effectiveModel)
 		}
 		if account == nil {
 			if continuousRetryCommitExpired(c, continuousRetryProtocolResponses) {

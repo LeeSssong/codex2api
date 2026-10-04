@@ -20,6 +20,24 @@ type smartOpsObservation struct {
 	epoch   int64
 }
 
+// ReportQuality5xx records an OAuth quality episode. The database transaction
+// owns fencing and cooldown ownership; callers may invoke this from HTTP or WS
+// failure paths without blocking the response.
+func (s *Store) ReportQuality5xx(acc *Account) {
+	if acc == nil || s.db == nil {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		cfg, err := s.db.LoadOAuthAutoConfig(ctx)
+		if err != nil || !cfg.Quality5xx.Enabled {
+			return
+		}
+		_, _, _ = s.db.RecordQuality5xxFailure(ctx, acc.DBID, cfg, acc.GetCredentialGeneration(), cfg.Revision, cfg.Quality5xx.Models)
+	}()
+}
+
 func (s *Store) ResolveSmartOpsBPSSessionProxy(account *Account, session string) (string, error) {
 	if account == nil {
 		return "", errors.New("account missing")
