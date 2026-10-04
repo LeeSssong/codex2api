@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Codex-only compatible-schema release. Keep the old app until drain completes."""
-import argparse,copy,fcntl,json,os,pathlib,re,stat,time,types
+import argparse,copy,fcntl,json,os,pathlib,re,stat,tempfile,time,types
 from release_host import Release,assert_codex_only_config,check_source,codex_route,replace_image,atomic_restore
 
 def change_upstream(config,old_port,new_port):
@@ -66,12 +66,37 @@ def caddyfile_bind_source(mounts,container_path='/etc/caddy/Caddyfile'):
  return path
 
 def persist_caddyfile(path,old_port,new_port,backup):
- """Backup and update a bind-mounted Caddyfile in place, preserving its inode."""
- path=pathlib.Path(path); data=path.read_bytes(); pathlib.Path(backup).write_bytes(data)
- updated=change_caddyfile_upstream(data.decode(),old_port,new_port).encode()
- with path.open('wb') as out:
-  out.write(updated);out.flush();os.fsync(out.fileno())
- return data
+ """Atomically update the host Caddyfile source.
+
+ A single-file Docker bind mount may retain the old inode until the Caddy
+ container is recreated.  The live release therefore always loads validated
+ JSON through Caddy's API; this update makes the host source correct for the
+ next natural restart without attempting to write a read-only mount.
+ """
+ path=pathlib.Path(path); data=path.read_bytes(); updated=change_caddyfile_upstream(data.decode(),old_port,new_port).encode()
+ pathlib.Path(backup).write_bytes(data)
+ info=path.stat(); fd,tmp=tempfile.mkstemp(prefix='.release-caddy-',dir=path.parent)
+ try:
+  with os.fdopen(fd,'wb') as out:
+   out.write(updated);out.flush();os.fsync(out.fileno())
+  os.chown(tmp,info.st_uid,info.st_gid);os.chmod(tmp,stat.S_IMODE(info.st_mode));os.replace(tmp,path)
+  dirfd=os.open(path.parent,os.O_DIRECTORY);os.fsync(dirfd);os.close(dirfd)
+ except BaseException:
+  if os.path.exists(tmp):os.unlink(tmp)
+  raise
+ return updated
+
+def restore_caddyfile(path,data):
+ """Atomically restore a previously backed-up host Caddyfile."""
+ path=pathlib.Path(path); info=path.stat(); fd,tmp=tempfile.mkstemp(prefix='.release-caddy-restore-',dir=path.parent)
+ try:
+  with os.fdopen(fd,'wb') as out:
+   out.write(data);out.flush();os.fsync(out.fileno())
+  os.chown(tmp,info.st_uid,info.st_gid);os.chmod(tmp,stat.S_IMODE(info.st_mode));os.replace(tmp,path)
+  dirfd=os.open(path.parent,os.O_DIRECTORY);os.fsync(dirfd);os.close(dirfd)
+ except BaseException:
+  if os.path.exists(tmp):os.unlink(tmp)
+  raise
 
 class BlueGreenRelease(Release):
  def execute(self):
@@ -85,8 +110,6 @@ class BlueGreenRelease(Release):
   self.caddyfile_backup=self.dir/'Caddyfile.before'
   self.caddyfile_before=self.caddyfile.read_bytes()
   self.caddyfile_backup.write_bytes(self.caddyfile_before);self.caddyfile_backup.chmod(0o600)
-  self.caddyfile_mount_before=self.run(['docker','exec','sub2api-caddy-1','cat','/etc/caddy/Caddyfile'])
-  (self.dir/'Caddyfile.mount.before').write_bytes(self.caddyfile_mount_before)
   (self.dir/'caddy.before.json').write_text(json.dumps(self.route_config))
   oldport=int(self.old['HostConfig']['PortBindings'][str(self.port)+'/tcp'][0]['HostPort'])
   newport=oldport+1
@@ -107,13 +130,9 @@ class BlueGreenRelease(Release):
    overview=json.loads(self.request('/api/admin/credential-ops',True)[2])
    if not isinstance(overview.get('rules'),dict):raise RuntimeError('global rules unavailable')
    self.event('candidate-ready')
-   # Update the bind source before Caddy's JSON config. In-place writes keep
-   # the inode visible through a single-file bind mount after later reloads.
-   updated_caddyfile=persist_caddyfile(self.caddyfile,oldport,newport,self.caddyfile_backup)
-   # A historical atomic host replacement can leave a single-file bind mount
-   # on the old inode. Update that mounted inode too; this does not touch the
-   # container writable layer and avoids restarting Caddy.
-   self.run(['docker','exec','-i','sub2api-caddy-1','sh','-c','cat > /etc/caddy/Caddyfile'],updated_caddyfile)
+   # Persist the host source before loading the live JSON route.
+   persist_caddyfile(self.caddyfile,oldport,newport,self.caddyfile_backup)
+   self.report['caddyfile_mount_note']='host source persisted atomically; read-only single-file mount refreshes on natural Caddy restart'
    self.load_caddy(change_upstream(self.route_config,oldport,newport));self.switched=True
    self.event('traffic-switched')
    health=json.loads(self.request('/health',public=True)[2])
@@ -153,10 +172,7 @@ class BlueGreenRelease(Release):
     restored=self.caddy();codex_route(restored)['handle']=self.route_before;self.load_caddy(restored)
    if hasattr(self,'caddyfile') and self.caddyfile_backup.exists():
     data=self.caddyfile_backup.read_bytes()
-    with self.caddyfile.open('wb') as out:out.write(data);out.flush();os.fsync(out.fileno())
-    mounted_backup=(self.dir/'Caddyfile.mount.before')
-    if mounted_backup.exists():
-     self.run(['docker','exec','-i','sub2api-caddy-1','sh','-c','cat > /etc/caddy/Caddyfile'],mounted_backup.read_bytes())
+    restore_caddyfile(self.caddyfile,data)
    self.write_compose(self.before)
    if self.run(['docker','ps','-a','--filter','name=^/'+self.candidate+'$','--format','{{.Names}}']).strip():self.run(['docker','rm','--force',self.candidate])
    self.report['result']='failed';self.report['rolled_back']=True;self.save()

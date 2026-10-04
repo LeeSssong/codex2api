@@ -27,12 +27,12 @@ class RoutingTests(unittest.TestCase):
   self.assertEqual(caddyfile_bind_source([{'Type':'bind','Source':'/opt/sub2api/production/Caddyfile','Destination':'/etc/caddy/Caddyfile'}]),Path('/opt/sub2api/production/Caddyfile'))
   self.assertEqual(caddyfile_bind_source([{'Type':'bind','Source':'/opt/sub2api/production','Destination':'/etc/caddy'}]),Path('/opt/sub2api/production/Caddyfile'))
 
- def test_persist_caddyfile_keeps_inode_and_backup(self):
+ def test_persist_caddyfile_atomically_replaces_host_source_and_backs_up(self):
   with tempfile.TemporaryDirectory() as folder:
    path=Path(folder)/'Caddyfile';backup=Path(folder)/'before';path.write_text('codex.xingqiaolab.top { reverse_proxy 127.0.0.1:18080 }\n')
    inode=path.stat().st_ino
    persist_caddyfile(path,18080,18081,backup)
-   self.assertEqual(path.stat().st_ino,inode)
+   self.assertNotEqual(path.stat().st_ino,inode)
    self.assertIn(':18081',path.read_text());self.assertIn(':18080',backup.read_text())
 
 if __name__=='__main__':unittest.main()
