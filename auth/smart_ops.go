@@ -38,6 +38,22 @@ func (s *Store) ReportQuality5xx(acc *Account) {
 	}()
 }
 
+// ReportQuality5xxSuccess allows an integration worker to apply a completed,
+// fenced quality probe result and advance native concurrency gradually.
+func (s *Store) ReportQuality5xxSuccess(accountID, generation int64, revision string, passed, conclusive bool) {
+	if s == nil || s.db == nil || accountID <= 0 {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		c, err := s.db.LoadOAuthAutoConfig(ctx)
+		if err == nil && c.Quality5xx.Enabled {
+			_, _, _ = s.db.ApplyQuality5xxProbe(ctx, accountID, c, generation, revision, passed, conclusive)
+		}
+	}()
+}
+
 func (s *Store) ResolveSmartOpsBPSSessionProxy(account *Account, session string) (string, error) {
 	if account == nil {
 		return "", errors.New("account missing")
