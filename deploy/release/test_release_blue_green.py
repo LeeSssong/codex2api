@@ -36,3 +36,8 @@ class RoutingTests(unittest.TestCase):
    self.assertIn(':18081',path.read_text());self.assertIn(':18080',backup.read_text())
 
 if __name__=='__main__':unittest.main()
+
+class CandidateIsolationTests(unittest.TestCase):
+ def test_candidate_project_is_unique_per_release(self):
+  source=Path(__file__).with_name('release_blue_green.py').read_text()
+  self.assertIn("'--project-name','codex2api-candidate-'+self.args.release_id",source)

@@ -122,7 +122,7 @@ class BlueGreenRelease(Release):
   self.candidate_file.write_text(json.dumps({'services':{'codex2api':service},'networks':config.get('networks',{}),'volumes':config.get('volumes',{})}));self.candidate_file.chmod(0o600)
   self.switched=False
   try:
-   self.run(['docker','compose','--project-name','codex2api-candidate','--project-directory',str(self.root),'-f',str(self.candidate_file),'up','-d','--no-deps','codex2api'])
+   self.run(['docker','compose','--project-name','codex2api-candidate-'+self.args.release_id,'--project-directory',str(self.root),'-f',str(self.candidate_file),'up','-d','--no-deps','codex2api'])
    self.port=newport;self.ready()
    health=json.loads(self.request('/health')[2])
    if health.get('build_version')!='release-'+self.args.release_id:raise RuntimeError('candidate version mismatch')
