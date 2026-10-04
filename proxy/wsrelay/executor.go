@@ -146,6 +146,9 @@ func (e *Executor) ExecuteRequestViaWebsocket(
 	// 跨账号回声守卫在握手头装配末尾剥离已知来自其他账号的 turn state。
 	affinityKey := proxy.CodexTurnStateAffinityKeyFromContext(ctx)
 	headers, err := e.prepareWebsocketHeadersChecked(ctx, accessToken, account, accountIDStr, headerSessionID, apiKey, deviceCfg, ginHeaders, wsBody, affinityKey)
+	if err == nil {
+		proxy.LogCodexFingerprintDebug("ws-handshake", account, egress.DialProxyURL, headers, wsBody)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -226,6 +229,11 @@ func (e *Executor) ExecuteRequestViaWebsocket(
 	poolSessionID = actualWebsocketPoolSessionID(wc, poolSessionID)
 	if wc.upstreamUserAgentKnown {
 		proxy.RecordUpstreamUserAgent(ctx, wc.upstreamUserAgent)
+		reused := headers.Clone()
+		reused.Set("User-Agent", wc.upstreamUserAgent)
+		proxy.LogCodexFingerprintDebug("ws-reused", account, egress.DialProxyURL, reused, wsBody)
+	} else {
+		proxy.LogCodexFingerprintDebug("ws-new", account, egress.DialProxyURL, headers, wsBody)
 	}
 
 	// 发送请求，失败时最多重试 2 次（重建连接）。
@@ -409,7 +417,17 @@ func (e *Executor) prepareWebsocketHeadersChecked(ctx context.Context, accessTok
 	// 指纹收敛：在透传之后覆盖客户端原值，在账号自定义头之前保留运维覆盖优先级。
 	// 握手头是逐连接冻结的，复用连接沿用建连时的取值；收敛值按账号恒定，正好与
 	// 这一语义相容。off 档为空操作。
-	proxy.ApplyCodexFingerprintHeaders(headers, account, ginHeaders)
+	downstreamHeaders := ginHeaders
+	// 空的握手会话表示这条连接会在多个请求间复用，不能把单次缓存键写进握手。
+	// 非空时与 HTTP 一样，用最终 prompt_cache_key 补齐缺失的会话种子。
+	if strings.TrimSpace(sessionID) != "" {
+		seed := strings.TrimSpace(gjson.GetBytes(wsBody, "prompt_cache_key").String())
+		if seed == "" || proxy.IsStatelessWebsocketSessionID(seed) {
+			seed = sessionID
+		}
+		downstreamHeaders = proxy.AttachCodexFingerprintCacheSeed(account, ginHeaders, seed)
+	}
+	proxy.ApplyCodexFingerprintHeaders(headers, account, downstreamHeaders)
 
 	// Account ID
 	if accountID != "" {
@@ -419,14 +437,8 @@ func (e *Executor) prepareWebsocketHeadersChecked(ctx context.Context, accessTok
 	// （codex-rs/core/src/client.rs build_websocket_headers）与 HTTP /responses 同形，
 	// 都是 session-id / thread-id / x-client-request-id，也都不发 Conversation_id。
 	// legacy 档下该函数恢复旧的 Session_id + 清 Conversation_id 行为。
-	proxy.ApplyCodexSessionHeaders(headers, account, sessionID, ginHeaders, true)
-	for name, value := range account.GetCustomHeaders() {
-		name = strings.TrimSpace(name)
-		if name == "" {
-			continue
-		}
-		headers.Set(name, value)
-	}
+	proxy.ApplyCodexSessionHeaders(headers, account, sessionID, downstreamHeaders, true)
+	proxy.ApplyAccountCustomHeaders(headers, account)
 	proxy.ApplyWindowsDesktopAttestation(headers, account)
 
 	// routing hint 由网关按最终 WS 帧体合成，在账号自定义头之后设置。

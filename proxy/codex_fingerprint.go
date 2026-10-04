@@ -30,13 +30,12 @@ import (
 //   - 请求体 client_metadata（Codex 官方路径同样原样透传）
 //
 // 明确不改写的部分：
-//   - 出站 Session_id 头：由 resolveUpstreamSessionID 独立决定（默认隔离模式下每请求
-//     随机），收敛不介入，否则会改变 prompt cache 隔离语义。注意它与 metadata 里的
-//     session_id 是两套独立身份，开启收敛后两者取值不同属预期。
+//   - prompt_cache_key：会话隔离逻辑独占。指纹最多把它当作派生种子，不回写。
 //   - turn_id / turn_started_at_unix_ms：客户端逐轮随机值，不标识设备或会话；
 //     重算反而会让头与体、turn_id 与其时间戳彼此不一致，本身就是特征。
-//   - 客户端未携带的字段：只改写已存在的键，绝不新增，避免改变 metadata 的形状。
-//     该规则同样适用于请求头——出站只覆盖下游确实发过的标识头，不凭空补发。
+//   - 除「会话身份收敛」外，客户端未携带的字段只改写已存在的键，绝不新增。
+//     会话身份收敛会补上账号级 installation_id（只进 turn metadata，不补
+//     X-Codex-Installation-Id 头），并在已有对话种子时补上对应的会话字段。
 
 const (
 	codexTurnMetadataHeader    = "X-Codex-Turn-Metadata"
@@ -200,9 +199,11 @@ func resolveCodexFingerprintIDs(account *auth.Account, downstreamHeaders http.He
 		if clientThread == "" {
 			clientThread = clientSession
 		}
-		// Missing identity must not collapse every anonymous request into one thread.
+		// No client session or thread: keep the account installation, but do not
+		// invent one shared thread. FinalizeCodexSingleMachineIdentity may later
+		// seed a per-conversation mapping from the already-chosen prompt_cache_key.
 		if clientSession == "" {
-			return nil
+			return ids
 		}
 		ids.sessionID = singleMachineIdentity(accountID, clientSession)
 		ids.threadID = singleMachineIdentity(accountID, clientThread)
@@ -239,10 +240,14 @@ func resolveCodexFingerprintIDs(account *auth.Account, downstreamHeaders http.He
 // 真实设备标识上，且该值本来就会覆盖出站头（自定义头最后应用），这里一并采用可
 // 保证请求头与 metadata 中的取值一致。
 func resolveConvergedInstallationID(account *auth.Account, accountID int64) string {
-	for name, value := range account.GetCustomHeaders() {
-		if strings.EqualFold(strings.TrimSpace(name), codexInstallationIDHeader) {
-			if pinned := strings.TrimSpace(value); pinned != "" {
-				return pinned
+	// 会话身份收敛的安装标识只来自账号级派生值。自定义头里的安装标识会把
+	// 同一账号拆成两套设备，这个档位不采用它。
+	if account.EffectiveCodexFingerprintMode() != auth.CodexFingerprintModeSingleMachineMultiWindow {
+		for name, value := range account.GetCustomHeaders() {
+			if strings.EqualFold(strings.TrimSpace(name), codexInstallationIDHeader) {
+				if pinned := strings.TrimSpace(value); pinned != "" {
+					return pinned
+				}
 			}
 		}
 	}
@@ -290,7 +295,16 @@ func ApplyCodexFingerprintHeaders(outbound http.Header, account *auth.Account, d
 		return
 	}
 
-	if raw := strings.TrimSpace(outbound.Get(codexTurnMetadataHeader)); raw != "" {
+	if ids.mode == auth.CodexFingerprintModeSingleMachineMultiWindow {
+		raw := strings.TrimSpace(outbound.Get(codexTurnMetadataHeader))
+		validObject := raw != "" && gjson.Valid(raw) && gjson.Parse(raw).IsObject()
+		if !validObject {
+			raw = "{}"
+		}
+		if rewritten, changed := rewriteCodexTurnMetadataJSON(raw, ids); changed || !validObject {
+			outbound.Set(codexTurnMetadataHeader, rewritten)
+		}
+	} else if raw := strings.TrimSpace(outbound.Get(codexTurnMetadataHeader)); raw != "" {
 		if rewritten, changed := rewriteCodexTurnMetadataJSON(raw, ids); changed {
 			outbound.Set(codexTurnMetadataHeader, rewritten)
 		}
@@ -398,6 +412,7 @@ func ApplyCodexFingerprintToBody(body []byte, account *auth.Account, downstreamH
 	if ids.mode == auth.CodexFingerprintModeSingleMachineMultiWindow {
 		body = setExistingJSONString(body, "client_metadata.installation_id", ids.installationID)
 		body = rewriteSingleMachineBodyLineage(body, ids)
+		body = ensureSingleMachineClientMetadata(body, ids)
 	}
 	if ids.mode != auth.CodexFingerprintModeDevice {
 		body = setExistingJSONString(body, "client_metadata.session_id", ids.sessionID)
@@ -419,7 +434,8 @@ func ApplyCodexFingerprintToBody(body []byte, account *auth.Account, downstreamH
 
 // rewriteCodexTurnMetadataJSON 收敛 turn metadata JSON 里的身份字段。
 // 用 sjson 原地替换而非 map 反序列化再序列化：后者会按字典序重排键、丢掉原始键序，
-// 这个形状差异本身就是可识别特征。未出现的键不会被补上。
+// 这个形状差异本身就是可识别特征。除会话身份收敛外，未出现的键不会被补上。
+// 会话身份收敛会补上已有取值的安装标识和会话字段，避免有头和没头变成两套设备。
 func rewriteCodexTurnMetadataJSON(raw string, ids *codexFingerprintIDs) (string, bool) {
 	if ids == nil || !gjson.Valid(raw) {
 		return raw, false
@@ -440,7 +456,10 @@ func rewriteCodexTurnMetadataJSON(raw string, ids *codexFingerprintIDs) (string,
 			continue
 		}
 		existing := gjson.Get(raw, path)
-		if !existing.Exists() || existing.String() == value {
+		if existing.Exists() && existing.String() == value {
+			continue
+		}
+		if !existing.Exists() && ids.mode != auth.CodexFingerprintModeSingleMachineMultiWindow {
 			continue
 		}
 		updated, err := sjson.Set(raw, path, value)
@@ -638,6 +657,22 @@ func setExistingJSONString(body []byte, path, value string) []byte {
 	}
 	existing := gjson.GetBytes(body, path)
 	if !existing.Exists() || existing.String() == value {
+		return body
+	}
+	updated, err := sjson.SetBytes(body, path, value)
+	if err != nil {
+		return body
+	}
+	return updated
+}
+
+// setJSONString 写入已有对象里的字符串。调用方必须先确认父对象存在。
+func setJSONString(body []byte, path, value string) []byte {
+	if value == "" {
+		return body
+	}
+	existing := gjson.GetBytes(body, path)
+	if existing.Exists() && existing.String() == value {
 		return body
 	}
 	updated, err := sjson.SetBytes(body, path, value)

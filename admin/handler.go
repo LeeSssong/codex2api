@@ -1325,6 +1325,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.GET("/ops/errors/summary", h.GetOpsErrorSummary)
 	api.GET("/settings", h.GetSettings)
 	api.PUT("/settings", h.UpdateSettings)
+	api.POST("/settings/codex-fingerprint/migrate-session-identity", h.MigrateCodexSessionIdentity)
 	api.GET("/settings/codex-user-agent/catalog", h.GetCodexUserAgentCatalog)
 	api.POST("/settings/codex-user-agent/preview", h.PreviewCodexUserAgent)
 	api.GET("/settings/claude-config", h.GetClaudeConfig)
@@ -2842,6 +2843,22 @@ func (h *Handler) UpdateAccountScheduler(c *gin.Context) {
 				writeError(c, http.StatusConflict, fmt.Sprintf("相同凭证的目标工作区已存在 (id=%d)", duplicateID))
 				return
 			}
+		}
+	}
+
+	if update.CodexFingerprintMode.Set || update.CustomHeaders.Set {
+		row, err := h.db.GetAccountByID(ctx, id)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				writeError(c, http.StatusNotFound, "账号不存在")
+				return
+			}
+			writeError(c, http.StatusInternalServerError, "查询账号失败: "+err.Error())
+			return
+		}
+		if err := singleMachineIdentityHeaderConflict([]*database.AccountRow{row}, update); err != nil {
+			writeError(c, http.StatusBadRequest, err.Error())
+			return
 		}
 	}
 
@@ -6992,6 +7009,17 @@ func (h *Handler) BatchUpdateAccounts(c *gin.Context) {
 			}
 		}
 	}
+	if schedulerUpdate.CodexFingerprintMode.Set || schedulerUpdate.CustomHeaders.Set {
+		rows, err := h.db.ListActiveByIDs(ctx, ids)
+		if err != nil {
+			writeError(c, http.StatusInternalServerError, "查询账号失败: "+err.Error())
+			return
+		}
+		if err := singleMachineIdentityHeaderConflict(rows, schedulerUpdate); err != nil {
+			writeError(c, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
 
 	updatedIDs, err := h.db.BatchUpdateAccountMetadata(ctx, ids, database.BatchAccountMetadataUpdate{
 		Enabled:                 enabled,
@@ -9433,18 +9461,20 @@ type settingsResponse struct {
 	ContinuousRetryErrorCodes         []string `json:"continuous_retry_error_codes"`
 	ContinuousRetryMaxDurationSeconds int      `json:"continuous_retry_max_duration_seconds"`
 	CodexFingerprintDefaultMode       string   `json:"codex_fingerprint_default_mode"`
-	AllowRemoteMigration              bool     `json:"allow_remote_migration"`
-	DatabaseDriver                    string   `json:"database_driver"`
-	DatabaseLabel                     string   `json:"database_label"`
-	CacheDriver                       string   `json:"cache_driver"`
-	CacheLabel                        string   `json:"cache_label"`
-	ExpiredCleaned                    int      `json:"expired_cleaned,omitempty"`
-	ModelMapping                      string   `json:"model_mapping"`
-	CodexModelMapping                 string   `json:"codex_model_mapping"`
-	PayloadRules                      string   `json:"payload_rules"`
-	ReasoningEffortModels             string   `json:"reasoning_effort_models"`
-	ResinURL                          string   `json:"resin_url"`
-	ResinPlatformName                 string   `json:"resin_platform_name"`
+	// CodexTransportMode 是进程环境变量 CODEX_TRANSPORT_MODE 的只读视图，不落库。
+	CodexTransportMode    string `json:"codex_transport_mode"`
+	AllowRemoteMigration  bool   `json:"allow_remote_migration"`
+	DatabaseDriver        string `json:"database_driver"`
+	DatabaseLabel         string `json:"database_label"`
+	CacheDriver           string `json:"cache_driver"`
+	CacheLabel            string `json:"cache_label"`
+	ExpiredCleaned        int    `json:"expired_cleaned,omitempty"`
+	ModelMapping          string `json:"model_mapping"`
+	CodexModelMapping     string `json:"codex_model_mapping"`
+	PayloadRules          string `json:"payload_rules"`
+	ReasoningEffortModels string `json:"reasoning_effort_models"`
+	ResinURL              string `json:"resin_url"`
+	ResinPlatformName     string `json:"resin_platform_name"`
 	// CodexEgress 是后端权威的"Codex 渠道当前由谁承担出站"摘要:Resin 启用时代理池与
 	// proxy_url 对 Codex 不生效,界面据此标注,避免三套配置并存看不出谁在生效(issue #679)。
 	CodexEgress                        proxy.CodexEgressSummary         `json:"codex_egress"`
@@ -10457,6 +10487,7 @@ func (h *Handler) GetSettings(c *gin.Context) {
 		ContinuousRetryErrorCodes:           continuousRetryPolicy.ErrorCodes,
 		ContinuousRetryMaxDurationSeconds:   continuousRetryPolicy.MaxDurationSeconds,
 		CodexFingerprintDefaultMode:         h.store.GetCodexFingerprintDefaultMode(),
+		CodexTransportMode:                  proxy.CodexTransportMode(),
 		AllowRemoteMigration:                h.store.GetAllowRemoteMigration() && adminAuthSource != "disabled",
 		DatabaseDriver:                      h.databaseDriver,
 		DatabaseLabel:                       h.databaseLabel,
@@ -12341,6 +12372,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		ContinuousRetryErrorCodes:           continuousRetryPolicy.ErrorCodes,
 		ContinuousRetryMaxDurationSeconds:   continuousRetryPolicy.MaxDurationSeconds,
 		CodexFingerprintDefaultMode:         h.store.GetCodexFingerprintDefaultMode(),
+		CodexTransportMode:                  proxy.CodexTransportMode(),
 		AllowRemoteMigration:                h.store.GetAllowRemoteMigration() && adminAuthSource != "disabled",
 		DatabaseDriver:                      h.databaseDriver,
 		DatabaseLabel:                       h.databaseLabel,

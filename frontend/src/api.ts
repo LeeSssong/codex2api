@@ -1631,6 +1631,11 @@ export const api = {
       builtin_version: string
       updated: boolean
     }>('/codex-cli-version/sync', { method: 'POST' }),
+  migrateCodexSessionIdentity: () =>
+    request<{ updated: number; skipped_conflict: number; message: string }>(
+      '/settings/codex-fingerprint/migrate-session-identity',
+      { method: 'POST' },
+    ),
   syncCodexClientVersions: () =>
     request<Record<'cli' | 'desktop_mac' | 'desktop_windows' | 'vscode', import('./types').CodexClientVersionSyncResult>>('/codex-client-versions/sync', { method: 'POST' }),
   listModelPricing: () =>

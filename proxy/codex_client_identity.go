@@ -25,6 +25,13 @@ func ResolveCodexOutboundClientIdentity(input CodexClientIdentityInput) (CodexOu
 	if IsDeviceProfileStabilizationEnabled(input.DeviceConfig) {
 		return codexDeviceClientIdentity(input), nil
 	}
+	// 会话身份收敛的出口必须是同一套客户端画像。保留客户端 / 自动兼容
+	// 会把下游 UA 原样送出，同一账号就会随着调用方变化。
+	if input.Account != nil && input.Account.EffectiveCodexFingerprintMode() == auth.CodexFingerprintModeSingleMachineMultiWindow {
+		settings := CurrentRuntimeSettings()
+		ua, version, err := generatedCodexClientHeadersChecked(input.Account, settings)
+		return CodexOutboundClientIdentity{UserAgent: ua, Version: version, Generated: true}, err
+	}
 	userAgent := strings.TrimSpace(input.Headers.Get("User-Agent"))
 	originator := strings.TrimSpace(input.Headers.Get("Originator"))
 	settings := CurrentRuntimeSettings()

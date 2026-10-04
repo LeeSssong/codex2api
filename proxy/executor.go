@@ -190,6 +190,11 @@ const (
 	codexTransportModeUTLSChrome = "utls_chrome"
 )
 
+// CodexTransportMode 返回进程启动时的 TLS 模式。它在进程生命周期内不变。
+func CodexTransportMode() string {
+	return codexTransportModeFromEnv()
+}
+
 func codexTransportModeFromEnv() string {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("CODEX_TRANSPORT_MODE"))) {
 	case "", "standard", "go", "default":
@@ -290,6 +295,12 @@ func shortHashForLog(raw string) string {
 }
 
 func logCodexFingerprintDebug(kind string, account *auth.Account, proxyURL string, headers http.Header) {
+	LogCodexFingerprintDebug(kind, account, proxyURL, headers, nil)
+}
+
+// LogCodexFingerprintDebug records hashed identity fields when
+// CODEX_FINGERPRINT_DEBUG is enabled. It never logs tokens or raw session values.
+func LogCodexFingerprintDebug(kind string, account *auth.Account, proxyURL string, headers http.Header, body []byte) {
 	if !codexFingerprintDebugEnabled() {
 		return
 	}
@@ -297,9 +308,13 @@ func logCodexFingerprintDebug(kind string, account *auth.Account, proxyURL strin
 	if account != nil {
 		accountID = account.ID()
 	}
+	if headers == nil {
+		headers = http.Header{}
+	}
 	userAgent := strings.TrimSpace(headers.Get("User-Agent"))
 	originator := strings.TrimSpace(headers.Get("Originator"))
-	log.Printf("[CodexFingerprint] kind=%s account_id=%d transport_mode=%s proxy_enabled=%t official_client=%t ua_hash=%s originator=%s session_hash=%s stainless_present=%t",
+	turn := gjson.Parse(headers.Get("X-Codex-Turn-Metadata"))
+	log.Printf("[CodexFingerprint] kind=%s account_id=%d transport_mode=%s proxy_enabled=%t official_client=%t ua_hash=%s originator=%s version=%s session_hash=%s thread_hash=%s request_hash=%s window_hash=%s parent_thread_hash=%s legacy_session=%t legacy_conversation=%t installation_header=%t turn_installation_hash=%s turn_session_hash=%s turn_thread_hash=%s turn_window_hash=%s body_installation_hash=%s body_session_hash=%s body_thread_hash=%s body_window_hash=%s cache_key_hash=%s stainless_present=%t",
 		kind,
 		accountID,
 		codexTransportModeFromEnv(),
@@ -307,7 +322,24 @@ func logCodexFingerprintDebug(kind string, account *auth.Account, proxyURL strin
 		IsCodexOfficialClientByHeaders(userAgent, originator),
 		shortHashForLog(userAgent),
 		originator,
-		shortHashForLog(headers.Get("Session_id")),
+		strings.TrimSpace(headers.Get("Version")),
+		shortHashForLog(headers.Get("Session-Id")),
+		shortHashForLog(headers.Get("Thread-Id")),
+		shortHashForLog(headers.Get("X-Client-Request-Id")),
+		shortHashForLog(headers.Get("X-Codex-Window-Id")),
+		shortHashForLog(headers.Get("X-Codex-Parent-Thread-Id")),
+		strings.TrimSpace(headers.Get("Session_id")) != "",
+		strings.TrimSpace(headers.Get("Conversation_id")) != "",
+		strings.TrimSpace(headers.Get("X-Codex-Installation-Id")) != "",
+		shortHashForLog(turn.Get("installation_id").String()),
+		shortHashForLog(turn.Get("session_id").String()),
+		shortHashForLog(turn.Get("thread_id").String()),
+		shortHashForLog(turn.Get("window_id").String()),
+		shortHashForLog(gjson.GetBytes(body, "client_metadata.installation_id").String()),
+		shortHashForLog(gjson.GetBytes(body, "client_metadata.session_id").String()),
+		shortHashForLog(gjson.GetBytes(body, "client_metadata.thread_id").String()),
+		shortHashForLog(gjson.GetBytes(body, "client_metadata.window_id").String()),
+		shortHashForLog(gjson.GetBytes(body, "prompt_cache_key").String()),
 		headers.Get("X-Stainless-Package-Version") != "" ||
 			headers.Get("X-Stainless-Runtime-Version") != "" ||
 			headers.Get("X-Stainless-Os") != "" ||
@@ -624,6 +656,16 @@ func executeNativeCodexRequest(ctx context.Context, account *auth.Account, reque
 		// 出站前最后兜底：任何中间改写都不能把普通 input 项放到
 		// compaction_trigger 后面，否则上游直接返回 invalid_request_error。
 		requestBody = normalizeCompactionTriggerFinal(requestBody, false)
+		// 共享的无会话连接池不能把单次请求的会话写进握手头。显式会话和
+		// 客户端自带的缓存键仍然用来派生稳定会话，且不回写 prompt_cache_key。
+		cacheSeed := ""
+		if !(IsStatelessWebsocketSessionID(sessionID) && strings.TrimSpace(poolRouteKey) != "") {
+			cacheSeed = strings.TrimSpace(gjson.GetBytes(requestBody, "prompt_cache_key").String())
+			if sessionID != "" && !IsStatelessWebsocketSessionID(sessionID) {
+				cacheSeed = sessionID
+			}
+		}
+		headers, requestBody = FinalizeCodexSingleMachineIdentity(account, headers, requestBody, cacheSeed)
 		traceProxy := proxyOverride
 		if traceProxy == "" {
 			account.Mu().RLock()
@@ -700,6 +742,7 @@ func executeNativeCodexRequest(ctx context.Context, account *auth.Account, reque
 		cacheKey = sessionID
 		requestBody, _ = sjson.SetBytes(requestBody, "prompt_cache_key", cacheKey)
 	}
+	headers, requestBody = FinalizeCodexSingleMachineIdentity(account, headers, requestBody, cacheKey)
 
 	endpoint := CodexBaseURL + "/responses"
 
@@ -784,7 +827,7 @@ func executeNativeCodexRequest(ctx context.Context, account *auth.Account, reque
 		}
 
 		egress.ApplyHeaders(req.Header)
-		logCodexFingerprintDebug("http", account, egress.DialProxyURL, req.Header)
+		LogCodexFingerprintDebug("http", account, egress.DialProxyURL, req.Header, requestBody)
 
 		if err := ConsumeAPIKeyModelRequestQuota(ctx, requestModel); err != nil {
 			return nil, err
@@ -1146,6 +1189,7 @@ func executeNativeCodexCompactRequest(ctx context.Context, account *auth.Account
 		cacheKey = sessionID
 		requestBody, _ = sjson.SetBytes(requestBody, "prompt_cache_key", cacheKey)
 	}
+	headers, requestBody = FinalizeCodexSingleMachineIdentity(account, headers, requestBody, cacheKey)
 
 	// compact 端点
 	endpoint := CodexBaseURL + "/responses/compact"
@@ -1167,7 +1211,7 @@ func executeNativeCodexCompactRequest(ctx context.Context, account *auth.Account
 	ApplyCodexRoutingHint(req.Header, account, requestBody)
 
 	egress.ApplyHeaders(req.Header)
-	logCodexFingerprintDebug("compact", account, egress.DialProxyURL, req.Header)
+	LogCodexFingerprintDebug("compact", account, egress.DialProxyURL, req.Header, requestBody)
 
 	if err := ConsumeAPIKeyModelRequestQuota(ctx, gjson.GetBytes(requestBody, "model").String()); err != nil {
 		return nil, err
@@ -1223,15 +1267,26 @@ func applyCodexAllowedForwardHeaders(req *http.Request, downstreamHeaders http.H
 }
 
 func applyAccountCustomHeaders(req *http.Request, account *auth.Account) {
-	if req == nil || account == nil {
+	if req == nil {
 		return
 	}
+	ApplyAccountCustomHeaders(req.Header, account)
+}
+
+// ApplyAccountCustomHeaders copies account custom headers onto an outbound
+// header set. Session-identity convergence drops headers that would replace
+// the account's User-Agent, session, or installation identity.
+func ApplyAccountCustomHeaders(outbound http.Header, account *auth.Account) {
+	if outbound == nil || account == nil {
+		return
+	}
+	blockIdentity := account.EffectiveCodexFingerprintMode() == auth.CodexFingerprintModeSingleMachineMultiWindow
 	for name, value := range account.GetCustomHeaders() {
 		name = strings.TrimSpace(name)
-		if name == "" {
+		if name == "" || (blockIdentity && codexSingleMachineBlockedHeader(name)) {
 			continue
 		}
-		req.Header.Set(name, value)
+		outbound.Set(name, value)
 	}
 }
 

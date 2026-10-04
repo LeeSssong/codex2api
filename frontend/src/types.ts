@@ -2267,6 +2267,8 @@ export interface SystemSettings {
   continuous_retry_max_duration_seconds: number
   /** 新导入/新建 Codex 账号默认盖上的设备指纹收敛档位（off/device/session/full）。 */
   codex_fingerprint_default_mode: string
+  /** 进程环境变量 CODEX_TRANSPORT_MODE 的只读视图（standard / utls_chrome）。 */
+  codex_transport_mode?: string
   allow_remote_migration: boolean
   database_driver: string
   database_label: string
