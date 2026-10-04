@@ -10,6 +10,17 @@ import (
 	"github.com/codex2api/smartops"
 )
 
+func qualityPayload(raw string, state smartops.Quality5xxRampState) []byte {
+	m := map[string]json.RawMessage{}
+	if raw != "" {
+		_ = json.Unmarshal([]byte(raw), &m)
+	}
+	b, _ := json.Marshal(state)
+	m["quality_5xx"] = b
+	out, _ := json.Marshal(m)
+	return out
+}
+
 // RecordQuality5xxFailure atomically fences a ramp attempt and persists the
 // state in the existing smart_ops_concurrency payload. It returns the
 // concurrency to apply and whether a probe should be queued.
@@ -45,13 +56,20 @@ func (db *DB) RecordQuality5xxFailure(ctx context.Context, id int64, c smartops.
 			return err
 		}
 		if raw != "" {
-			_ = json.Unmarshal([]byte(raw), &state)
+			var envelope struct {
+				Quality *smartops.Quality5xxRampState `json:"quality_5xx"`
+			}
+			if e := json.Unmarshal([]byte(raw), &envelope); e == nil && envelope.Quality != nil {
+				state = *envelope.Quality
+			} else {
+				_ = json.Unmarshal([]byte(raw), &state)
+			}
 		}
 		state = state.ResetOnFailure(c.Quality5xx, int(current.Int64), generation, revision, time.Now())
 		state.OwnedModels = append([]string(nil), models...)
 		next = state.CurrentConcurrency
 		shouldProbe = true
-		b, _ := json.Marshal(state)
+		b := qualityPayload(raw, state)
 		if _, err = tx.ExecContext(ctx, `INSERT INTO smart_ops_concurrency(account_id,payload) VALUES($1,$2) ON CONFLICT(account_id) DO UPDATE SET payload=EXCLUDED.payload`, id, string(b)); err != nil {
 			return err
 		}
@@ -111,12 +129,17 @@ func (db *DB) ApplyQuality5xxProbe(ctx context.Context, id int64, c smartops.OAu
 			return err
 		}
 		var s smartops.Quality5xxRampState
-		if err = json.Unmarshal([]byte(raw), &s); err != nil {
+		var envelope struct {
+			Quality *smartops.Quality5xxRampState `json:"quality_5xx"`
+		}
+		if err = json.Unmarshal([]byte(raw), &envelope); err == nil && envelope.Quality != nil {
+			s = *envelope.Quality
+		} else if err = json.Unmarshal([]byte(raw), &s); err != nil {
 			return err
 		}
 		s, next = s.ProbeResult(c, int(current.Int64), generation, revision, passed, conclusive, time.Now())
 		active = s.Active
-		b, _ := json.Marshal(s)
+		b := qualityPayload(raw, s)
 		if _, err = tx.ExecContext(ctx, `UPDATE smart_ops_concurrency SET payload=$1 WHERE account_id=$2`, string(b), id); err != nil {
 			return err
 		}
