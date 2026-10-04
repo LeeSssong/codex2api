@@ -39,6 +39,9 @@ func (db *DB) RecordQuality5xxFailure(ctx context.Context, id int64, c smartops.
 			return err
 		}
 		defer tx.Rollback()
+		if ok, e := db.PluginEnabledTx(ctx, tx, smartops.PluginAutoConfig); e != nil || !ok {
+			return e
+		}
 		var current sql.NullInt64
 		var raw string
 		q := `SELECT base_concurrency_override,credentials FROM accounts WHERE id=$1 AND status<>'deleted'`
@@ -54,6 +57,10 @@ func (db *DB) RecordQuality5xxFailure(ctx context.Context, id int64, c smartops.
 		var state smartops.Quality5xxRampState
 		if err = tx.QueryRowContext(ctx, `SELECT payload FROM smart_ops_concurrency WHERE account_id=$1`, id).Scan(&raw); err != nil && err != sql.ErrNoRows {
 			return err
+		}
+		if err == sql.ErrNoRows {
+			raw = ""
+			err = nil
 		}
 		if raw != "" {
 			var envelope struct {
@@ -95,7 +102,7 @@ func (db *DB) RecordQuality5xxFailure(ctx context.Context, id int64, c smartops.
 }
 
 func (db *DB) setModelCooldownTx(ctx context.Context, tx *sql.Tx, id int64, model, reason string, until time.Time) error {
-	_, err := tx.ExecContext(ctx, `INSERT INTO account_model_cooldowns(account_id,model,reason,reset_at,updated_at) VALUES($1,$2,$3,$4,CURRENT_TIMESTAMP) ON CONFLICT(account_id,model) DO UPDATE SET reason=excluded.reason,reset_at=excluded.reset_at,updated_at=CURRENT_TIMESTAMP`, id, model, reason, db.timeArg(until))
+	_, err := tx.ExecContext(ctx, `INSERT INTO account_model_cooldowns(account_id,model,reason,reset_at,updated_at) VALUES($1,$2,$3,$4,CURRENT_TIMESTAMP) ON CONFLICT(account_id,model) DO UPDATE SET reason=excluded.reason,reset_at=excluded.reset_at,updated_at=CURRENT_TIMESTAMP WHERE account_model_cooldowns.reason=$3 OR account_model_cooldowns.reset_at <= CURRENT_TIMESTAMP`, id, model, reason, db.timeArg(until))
 	return err
 }
 
@@ -142,6 +149,11 @@ func (db *DB) ApplyQuality5xxProbe(ctx context.Context, id int64, c smartops.OAu
 		}
 		s, next = s.ProbeResult(c, int(current.Int64), generation, revision, passed, conclusive, time.Now())
 		active = s.Active
+		if !passed || !conclusive {
+			for _, m := range s.OwnedModels {
+				_, _ = tx.ExecContext(ctx, `UPDATE account_model_cooldowns SET reset_at=$1,updated_at=CURRENT_TIMESTAMP WHERE account_id=$2 AND model=$3 AND reason='quality_5xx_ramp'`, db.timeArg(time.Now().Add(time.Duration(c.Quality5xx.CooldownSeconds)*time.Second)), id, m)
+			}
+		}
 		if next != int(current.Int64) {
 			if _, err = tx.ExecContext(ctx, `UPDATE accounts SET base_concurrency_override=$1,updated_at=CURRENT_TIMESTAMP WHERE id=$2`, next, id); err != nil {
 				return err

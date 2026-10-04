@@ -209,6 +209,10 @@ func (s Quality5xxRampState) ProbeResult(c OAuthAutoConfig, current int, generat
 	s.ProbePending = false
 	// Release only our owned cooldown state; progression remains success based.
 	s.Concurrency, current = AdvanceConcurrency(s.Concurrency, current, c, ConcurrencyResult{Success: true, At: now}, now)
+	if s.OriginalConcurrency > 0 && current > s.OriginalConcurrency {
+		current = s.OriginalConcurrency
+		s.Concurrency.Concurrency = current
+	}
 	if current >= s.OriginalConcurrency {
 		s.Active = false
 		s.CurrentConcurrency = current
