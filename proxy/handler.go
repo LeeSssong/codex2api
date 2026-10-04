@@ -8501,6 +8501,11 @@ func (h *Handler) applyCooldown(account *auth.Account, statusCode int, body []by
 }
 
 func (h *Handler) applyCooldownForModel(account *auth.Account, statusCode int, body []byte, resp *http.Response, model string) codex429Decision {
+	// Only a real transport 5xx belongs here. Stream semantic failures are
+	// observed by reportStreamOutcomeFailure, avoiding duplicate episodes.
+	if h != nil && h.store != nil && resp != nil && resp.StatusCode == statusCode && statusCode >= 500 && statusCode <= 599 {
+		h.store.ReportQuality5xx(account)
+	}
 	// Basispoints model availability and relay-format failures do not invalidate credentials.
 	if basispointsRequestErrorCode(body) != "" {
 		return codex429Decision{}
