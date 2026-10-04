@@ -9,6 +9,7 @@ import (
 	"github.com/codex2api/accountops"
 	"github.com/google/uuid"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -112,6 +113,43 @@ func (db *DB) TriggerAccountQualityPlan(ctx context.Context, id int64) error {
 			return sql.ErrNoRows
 		}
 		return nil
+	})
+}
+
+// TriggerQualityPlansForAccount wakes configured native quality rounds after
+// an upstream 5xx. Plans remain disabled/owned by the normal account-ops
+// worker; this only moves matching enabled plans to the due queue.
+func (db *DB) TriggerQualityPlansForAccount(ctx context.Context, accountID int64, models []string) error {
+	return db.withSQLiteWriteLock(ctx, func() error {
+		rows, err := db.conn.QueryContext(ctx, `SELECT id,config FROM account_quality_plans WHERE account_id=$1 AND enabled=TRUE`, accountID)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		now := db.timeArg(time.Now().UTC())
+		for rows.Next() {
+			var id int64
+			var raw string
+			if err := rows.Scan(&id, &raw); err != nil {
+				return err
+			}
+			var p accountops.Plan
+			if json.Unmarshal([]byte(raw), &p) != nil {
+				continue
+			}
+			match := len(models) == 0
+			for _, m := range models {
+				if strings.EqualFold(strings.TrimSpace(m), strings.TrimSpace(p.Model)) {
+					match = true
+				}
+			}
+			if match {
+				if _, err := db.conn.ExecContext(ctx, `UPDATE account_quality_plans SET next_run=$1 WHERE id=$2 AND (lease='' OR lease_until<$1)`, now, id); err != nil {
+					return err
+				}
+			}
+		}
+		return rows.Err()
 	})
 }
 func (db *DB) DeleteAccountQualityPlan(ctx context.Context, id int64) error {

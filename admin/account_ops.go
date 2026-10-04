@@ -499,6 +499,11 @@ func (h *Handler) runAccountQualityRound(parent context.Context, p accountops.Pl
 		log.Printf("[account-ops] apply plan=%d: %v", p.ID, e)
 		return
 	}
+	if h.store != nil {
+		if cfg, ce := h.db.LoadOAuthAutoConfig(ctx); ce == nil && cfg.Quality5xx.Enabled {
+			h.store.ReportQuality5xxSuccess(p.AccountID, p.CredentialGeneration, cfg.Revision, round.Outcome == "passed", round.Outcome != "inconclusive")
+		}
+	}
 	h.accountOps.alerts.ObserveQuality(p.AccountID, round.AccountName, round.Action)
 	if h.store != nil {
 		row, e = h.db.GetAccountByID(ctx, p.AccountID)

@@ -35,6 +35,7 @@ func (s *Store) ReportQuality5xx(acc *Account) {
 			return
 		}
 		_, _, _ = s.db.RecordQuality5xxFailure(ctx, acc.DBID, cfg, acc.GetCredentialGeneration(), cfg.Revision, cfg.Quality5xx.Models)
+		_ = s.db.TriggerQualityPlansForAccount(ctx, acc.DBID, cfg.Quality5xx.Models)
 	}()
 }
 
