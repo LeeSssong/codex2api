@@ -85,6 +85,8 @@ class BlueGreenRelease(Release):
   self.caddyfile_backup=self.dir/'Caddyfile.before'
   self.caddyfile_before=self.caddyfile.read_bytes()
   self.caddyfile_backup.write_bytes(self.caddyfile_before);self.caddyfile_backup.chmod(0o600)
+  self.caddyfile_mount_before=self.run(['docker','exec','sub2api-caddy-1','cat','/etc/caddy/Caddyfile'])
+  (self.dir/'Caddyfile.mount.before').write_bytes(self.caddyfile_mount_before)
   (self.dir/'caddy.before.json').write_text(json.dumps(self.route_config))
   oldport=int(self.old['HostConfig']['PortBindings'][str(self.port)+'/tcp'][0]['HostPort'])
   newport=oldport+1
@@ -104,12 +106,14 @@ class BlueGreenRelease(Release):
    if self.inspect(self.candidate)['Image']!=self.args.digest:raise RuntimeError('candidate digest mismatch')
    overview=json.loads(self.request('/api/admin/credential-ops',True)[2])
    if not isinstance(overview.get('rules'),dict):raise RuntimeError('global rules unavailable')
-   if any(not row['enabled'] for row in overview['accounts']):
-    self.request_rules(overview['rules'])
    self.event('candidate-ready')
    # Update the bind source before Caddy's JSON config. In-place writes keep
    # the inode visible through a single-file bind mount after later reloads.
-   persist_caddyfile(self.caddyfile,oldport,newport,self.caddyfile_backup)
+   updated_caddyfile=persist_caddyfile(self.caddyfile,oldport,newport,self.caddyfile_backup)
+   # A historical atomic host replacement can leave a single-file bind mount
+   # on the old inode. Update that mounted inode too; this does not touch the
+   # container writable layer and avoids restarting Caddy.
+   self.run(['docker','exec','-i','sub2api-caddy-1','sh','-c','cat > /etc/caddy/Caddyfile'],updated_caddyfile)
    self.load_caddy(change_upstream(self.route_config,oldport,newport));self.switched=True
    self.event('traffic-switched')
    health=json.loads(self.request('/health',public=True)[2])
@@ -150,15 +154,13 @@ class BlueGreenRelease(Release):
    if hasattr(self,'caddyfile') and self.caddyfile_backup.exists():
     data=self.caddyfile_backup.read_bytes()
     with self.caddyfile.open('wb') as out:out.write(data);out.flush();os.fsync(out.fileno())
+    mounted_backup=(self.dir/'Caddyfile.mount.before')
+    if mounted_backup.exists():
+     self.run(['docker','exec','-i','sub2api-caddy-1','sh','-c','cat > /etc/caddy/Caddyfile'],mounted_backup.read_bytes())
    self.write_compose(self.before)
    if self.run(['docker','ps','-a','--filter','name=^/'+self.candidate+'$','--format','{{.Names}}']).strip():self.run(['docker','rm','--force',self.candidate])
    self.report['result']='failed';self.report['rolled_back']=True;self.save()
    raise
- def request_rules(self,rules):
-  import urllib.request
-  req=urllib.request.Request('http://127.0.0.1:'+str(self.port)+'/api/admin/credential-ops/rules',json.dumps(rules).encode(),headers={'Content-Type':'application/json','X-Admin-Key':self.env['ADMIN_SECRET']},method='PUT')
-  with urllib.request.urlopen(req,timeout=30) as response:response.read()
-
 if __name__=='__main__':
  p=argparse.ArgumentParser()
  for name in ['image','digest','revision','tree','release-id']:p.add_argument('--'+name,required=True)
