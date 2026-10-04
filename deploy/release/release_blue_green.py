@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Codex-only compatible-schema release. Keep the old app until drain completes."""
-import argparse,copy,fcntl,json,os,pathlib,time,types
+import argparse,copy,fcntl,json,os,pathlib,re,stat,time,types
 from release_host import Release,assert_codex_only_config,check_source,codex_route,replace_image,atomic_restore
 
 def change_upstream(config,old_port,new_port):
@@ -20,6 +20,59 @@ def change_upstream(config,old_port,new_port):
  if count!=1:raise ValueError('expected one Codex upstream')
  assert_codex_only_config(config,result);return result
 
+def change_caddyfile_upstream(text,old_port,new_port):
+ """Change the single reverse_proxy endpoint in the Codex site block.
+
+ The running Caddy container bind-mounts this file, so callers must write the
+ returned bytes in place.  We intentionally reject ambiguous Caddyfiles rather
+ than changing a similarly named Sub2API route.
+ """
+ site=re.search(r'(?m)^\s*(?P<name>(?:[^\s{]+\s*,\s*)*codex\.xingqiaolab\.top(?:\s*,[^\s{]+)*)\s*\{',text)
+ if not site: raise ValueError('Codex site block not found')
+ start=site.end(); depth=1; pos=start
+ while depth and pos<len(text):
+  if text[pos]=='{': depth+=1
+  elif text[pos]=='}': depth-=1
+  pos+=1
+ if depth: raise ValueError('unterminated Codex site block')
+ block=text[start:pos-1]
+ matches=list(re.finditer(r'(?m)^\s*reverse_proxy\s+([^\n#]+)',block))
+ if len(matches)!=1: raise ValueError('expected one Codex reverse_proxy directive')
+ line=matches[0].group(1)
+ endpoints=re.findall(r'(?<![\w.-])([^\s:]+):(\d+)(?!\d)',line)
+ if len(endpoints)!=1 or int(endpoints[0][1])!=old_port:
+  raise ValueError('unexpected Codex Caddy upstream')
+ old_token=endpoints[0][0]+':'+endpoints[0][1]
+ new_token=endpoints[0][0]+':'+str(new_port)
+ changed=block.replace(old_token,new_token,1)
+ return text[:start]+changed+text[pos-1:]
+
+def caddyfile_bind_source(mounts,container_path='/etc/caddy/Caddyfile'):
+ """Resolve a regular-file Caddy bind mount without touching container layers."""
+ target=pathlib.PurePosixPath(container_path)
+ candidates=[]
+ for mount in mounts:
+  if mount.get('Type')!='bind': continue
+  destination=pathlib.PurePosixPath(mount.get('Destination',''))
+  source=pathlib.Path(mount.get('Source',''))
+  if destination==target:
+   candidates.append(source)
+  elif target.is_relative_to(destination):
+   candidates.append(source/pathlib.PurePosixPath(*target.relative_to(destination).parts))
+ if len(candidates)!=1: raise ValueError('expected one Caddyfile bind source')
+ path=candidates[0]
+ if not path.is_absolute() or '..' in path.parts or path.is_symlink(): raise ValueError('unsafe Caddyfile bind source')
+ if path.exists() and not stat.S_ISREG(path.stat().st_mode): raise ValueError('Caddyfile bind source is not a regular file')
+ return path
+
+def persist_caddyfile(path,old_port,new_port,backup):
+ """Backup and update a bind-mounted Caddyfile in place, preserving its inode."""
+ path=pathlib.Path(path); data=path.read_bytes(); pathlib.Path(backup).write_bytes(data)
+ updated=change_caddyfile_upstream(data.decode(),old_port,new_port).encode()
+ with path.open('wb') as out:
+  out.write(updated);out.flush();os.fsync(out.fileno())
+ return data
+
 class BlueGreenRelease(Release):
  def execute(self):
   # Deliberately no schema migration or credential-runtime update on this path.
@@ -27,6 +80,11 @@ class BlueGreenRelease(Release):
   check_source(self.inspect(self.args.image)['Config'].get('Labels',{}),self.args.revision,self.args.tree)
   if self.inspect(self.args.image)['Id']!=self.args.digest:raise ValueError('image digest mismatch')
   self.route_config=self.caddy();self.route_before=copy.deepcopy(codex_route(self.route_config)['handle'])
+  caddy_mounts=self.inspect('sub2api-caddy-1').get('Mounts',[])
+  self.caddyfile=caddyfile_bind_source(caddy_mounts)
+  self.caddyfile_backup=self.dir/'Caddyfile.before'
+  self.caddyfile_before=self.caddyfile.read_bytes()
+  self.caddyfile_backup.write_bytes(self.caddyfile_before);self.caddyfile_backup.chmod(0o600)
   (self.dir/'caddy.before.json').write_text(json.dumps(self.route_config))
   oldport=int(self.old['HostConfig']['PortBindings'][str(self.port)+'/tcp'][0]['HostPort'])
   newport=oldport+1
@@ -49,6 +107,9 @@ class BlueGreenRelease(Release):
    if any(not row['enabled'] for row in overview['accounts']):
     self.request_rules(overview['rules'])
    self.event('candidate-ready')
+   # Update the bind source before Caddy's JSON config. In-place writes keep
+   # the inode visible through a single-file bind mount after later reloads.
+   persist_caddyfile(self.caddyfile,oldport,newport,self.caddyfile_backup)
    self.load_caddy(change_upstream(self.route_config,oldport,newport));self.switched=True
    self.event('traffic-switched')
    health=json.loads(self.request('/health',public=True)[2])
@@ -86,6 +147,9 @@ class BlueGreenRelease(Release):
     self.run(['docker','start','codex2api'])
    if self.switched:
     restored=self.caddy();codex_route(restored)['handle']=self.route_before;self.load_caddy(restored)
+   if hasattr(self,'caddyfile') and self.caddyfile_backup.exists():
+    data=self.caddyfile_backup.read_bytes()
+    with self.caddyfile.open('wb') as out:out.write(data);out.flush();os.fsync(out.fileno())
    self.write_compose(self.before)
    if self.run(['docker','ps','-a','--filter','name=^/'+self.candidate+'$','--format','{{.Names}}']).strip():self.run(['docker','rm','--force',self.candidate])
    self.report['result']='failed';self.report['rolled_back']=True;self.save()
