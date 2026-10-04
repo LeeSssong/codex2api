@@ -1578,6 +1578,7 @@ func (h *Handler) logUsageForRequest(c *gin.Context, input *database.UsageLogInp
 	populateCompactUsageMetaFromRequest(c, input)
 	populateUltraUsageMetaFromRequest(c, input)
 	markCyberPolicyUsageKind(input)
+	if a := concurrencyAuditFromContext(c.Request.Context()); a != nil { a.result(input) }
 	input = database.SnapshotUsageLogBilling(input)
 	if deferImageUsage(c, h, input) {
 		return
@@ -3868,6 +3869,7 @@ func (h *Handler) Responses(c *gin.Context) {
 		api.SendError(c, api.NewAPIError(api.ErrCodeInvalidRequest, "Failed to read request body", api.ErrorTypeInvalidRequest))
 		return
 	}
+	defer h.beginConcurrencyRequest(c, rawBody)()
 	h.capturePromptRequestIngress(c, rawBody)
 	bodyReadDone := time.Now()
 	compactionMeta := requestCompactionMetaForHTTP(c, rawBody)
@@ -6837,6 +6839,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		api.SendError(c, api.NewAPIError(api.ErrCodeInvalidRequest, "Failed to read request body", api.ErrorTypeInvalidRequest))
 		return
 	}
+	defer h.beginConcurrencyRequest(c, rawBody)()
 	h.capturePromptRequestIngress(c, rawBody)
 
 	supportedModels := h.supportedModelIDs(c.Request.Context())

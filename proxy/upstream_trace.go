@@ -103,6 +103,7 @@ func resetUpstreamAttemptTrace(ctx context.Context) {
 }
 
 func beginUpstreamTrace(ctx context.Context, account *auth.Account, proxyURL string, ws bool) func(*http.Response) {
+	beginConcurrencyAttempt(ctx, account, ws)
 	a := upstreamTraceFromContext(ctx)
 	if a == nil || account == nil {
 		return func(*http.Response) {}
@@ -165,6 +166,9 @@ func doTracedUpstreamRequest(client *http.Client, req *http.Request, account *au
 	record := beginUpstreamTrace(req.Context(), account, proxyURL, false)
 	resp, err := client.Do(req)
 	record(resp)
+	if a := concurrencyAuditFromContext(req.Context()); a != nil && account != nil {
+		a.transportResult(account.ID(), resp, err)
+	}
 	return resp, err
 }
 

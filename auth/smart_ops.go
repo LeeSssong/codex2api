@@ -14,12 +14,6 @@ import (
 	"time"
 )
 
-type smartOpsObservation struct {
-	id      int64
-	success bool
-	epoch   int64
-}
-
 var quality5xxQueue = make(chan struct{}, 128)
 
 // ReportQuality5xx records an OAuth quality episode. The database transaction
@@ -100,17 +94,28 @@ type smartOpsSnapshot struct {
 	signals map[int64]smartops.Signal
 	enabled bool
 }
+type smartOpsAutoSnapshot struct {
+	config  smartops.OAuthAutoConfig
+	enabled bool
+}
 type smartOpsAdapter struct {
-	snapshot  atomic.Pointer[smartOpsSnapshot]
-	observe   chan smartOpsObservation
-	wg        sync.WaitGroup
-	gate      smartops.PluginGate
-	blocked   atomic.Bool
-	autoEpoch atomic.Int64
+	snapshot    atomic.Pointer[smartOpsSnapshot]
+	auto        atomic.Pointer[smartOpsAutoSnapshot]
+	observe     chan smartops.ConcurrencyObservation
+	wg          sync.WaitGroup
+	gate        smartops.PluginGate
+	blocked     atomic.Bool
+	blockMu     sync.RWMutex
+	blockReason string
+	autoEpoch   atomic.Int64
 }
 
+// Keep restart markers bounded without turning cache eviction into a false
+// process restart that discards an account's accumulated successes.
+const smartOpsRestartSeenLimit = 4096
+
 func (s *Store) StartSmartOps(ctx context.Context, gate smartops.PluginGate, config func(context.Context) (smartops.OAuthAutoConfig, smartops.PriorityConfig, error)) {
-	a := &smartOpsAdapter{observe: make(chan smartOpsObservation, 4096), gate: gate}
+	a := &smartOpsAdapter{observe: make(chan smartops.ConcurrencyObservation, 4096), gate: gate}
 	s.smartOps.Store(a)
 	a.wg.Add(1)
 	go func() {
@@ -119,20 +124,24 @@ func (s *Store) StartSmartOps(ctx context.Context, gate smartops.PluginGate, con
 		defer tick.Stop()
 		var revision string
 		var lastSignals time.Time
+		seen := make(map[int64]bool)
 		refresh := func() {
 			oauth, p, e := config(ctx)
 			if e != nil {
+				a.pause("configuration refresh failed")
 				return
 			}
 			if oauth.Revision != revision {
 				revision = oauth.Revision
-				a.blocked.Store(false)
+				a.resume()
+				clear(seen)
 			}
+			a.auto.Store(&smartOpsAutoSnapshot{config: oauth, enabled: gate != nil && gate(ctx, smartops.PluginAutoConfig) && oauth.UpgradeEnabled})
 			if s.db != nil {
 				if epoch, e := s.db.SmartOpsControlEpoch(ctx, smartops.PluginAutoConfig); e == nil {
 					a.autoEpoch.Store(epoch)
 				} else {
-					a.blocked.Store(true)
+					a.pause("configuration epoch refresh failed")
 				}
 				s.db.SetSmartOpsBilling(oauth.ModelBilling, func() bool { return gate != nil && gate(context.Background(), smartops.PluginAutoConfig) })
 			}
@@ -163,37 +172,122 @@ func (s *Store) StartSmartOps(ctx context.Context, gate smartops.PluginGate, con
 				if a.blocked.Load() || gate == nil || !gate(ctx, smartops.PluginAutoConfig) || s.db == nil {
 					continue
 				}
-				c, _, e := config(ctx)
-				if e != nil {
+				current := a.auto.Load()
+				if current == nil || !current.enabled {
 					continue
 				}
-				next, changed, e := s.db.RecordSmartOpsConcurrency(ctx, observation.id, c, observation.success, observation.epoch)
-				if e != nil {
-					log.Printf("[smart-ops] concurrency observation account=%d: %v", observation.id, e)
+				observation, ok := a.prepareSmartOpsConcurrencyObservation(observation, seen)
+				if !ok {
 					continue
 				}
+				writeCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				next, changed, e := s.db.RecordSmartOpsConcurrencyObservation(writeCtx, observation, current.config)
+				cancel()
+				if e != nil {
+					a.pause("concurrency persistence failed")
+					log.Printf("[smart-ops] concurrency observation account=%d: %v", observation.AccountID, e)
+					continue
+				}
+				seen[observation.AccountID] = true
 				if changed {
-					s.ApplyAccountSchedulerOverridePatch(observation.id, false, nil, true, &next, nil)
+					s.ApplyAccountSchedulerOverridePatch(observation.AccountID, false, nil, true, &next, nil)
 				}
 			}
 		}
 	}()
 }
+
+func (a *smartOpsAdapter) prepareSmartOpsConcurrencyObservation(observation smartops.ConcurrencyObservation, seen map[int64]bool) (smartops.ConcurrencyObservation, bool) {
+	if seen[observation.AccountID] {
+		observation.Reset = false
+		return observation, true
+	}
+	if len(seen) >= smartOpsRestartSeenLimit {
+		a.pause("concurrency restart marker capacity reached")
+		return observation, false
+	}
+	observation.Reset = true
+	return observation, true
+}
+
 func (s *Store) WaitSmartOps() {
 	if a := s.smartOps.Load(); a != nil {
 		a.wg.Wait()
 	}
 }
-func (s *Store) observeSmartOps(acc *Account, success bool) {
-	if a := s.smartOps.Load(); a != nil {
-		select {
-		case a.observe <- smartOpsObservation{id: acc.DBID, success: success, epoch: a.autoEpoch.Load()}:
-		default:
-			if !a.blocked.Swap(true) {
-				log.Printf("[smart-ops] concurrency observation queue full; progression paused account=%d", acc.DBID)
-			}
-		}
+func (a *smartOpsAdapter) pause(reason string) {
+	a.blocked.Store(true)
+	a.blockMu.Lock()
+	a.blockReason = reason
+	a.blockMu.Unlock()
+}
+
+func (a *smartOpsAdapter) resume() {
+	a.blocked.Store(false)
+	a.blockMu.Lock()
+	a.blockReason = ""
+	a.blockMu.Unlock()
+}
+
+// BeginSmartOpsConcurrencyObservation captures the exact progression inputs
+// at request start, before retries or later config edits can change them.
+func (s *Store) BeginSmartOpsConcurrencyObservation(acc *Account) smartops.ConcurrencyObservation {
+	if s == nil || acc == nil || acc.DBID <= 0 {
+		return smartops.ConcurrencyObservation{}
 	}
+	a := s.smartOps.Load()
+	if a == nil || a.blocked.Load() || a.gate == nil || !a.gate(context.Background(), smartops.PluginAutoConfig) {
+		return smartops.ConcurrencyObservation{}
+	}
+	snapshot := a.auto.Load()
+	if snapshot == nil || !snapshot.enabled {
+		return smartops.ConcurrencyObservation{}
+	}
+	return smartops.ConcurrencyObservation{
+		AccountID:          acc.DBID,
+		StartedAt:          time.Now(),
+		Revision:           snapshot.config.Revision,
+		Epoch:              a.autoEpoch.Load(),
+		CurrentConcurrency: acc.GetBaseConcurrencyEffective(),
+	}
+}
+
+// ReportSmartOpsConcurrencyObservation queues one definitive HTTP result. It
+// never delays a client response; a full queue pauses future progression until
+// the administrator publishes a new configuration revision.
+func (s *Store) ReportSmartOpsConcurrencyObservation(observation smartops.ConcurrencyObservation) {
+	if s == nil || observation.AccountID <= 0 {
+		return
+	}
+	a := s.smartOps.Load()
+	if a == nil || a.blocked.Load() || a.gate == nil || !a.gate(context.Background(), smartops.PluginAutoConfig) {
+		return
+	}
+	snapshot := a.auto.Load()
+	if snapshot == nil || !snapshot.enabled || observation.Revision == "" {
+		return
+	}
+	select {
+	case a.observe <- observation:
+	default:
+		a.pause("concurrency observation queue full")
+		log.Printf("[smart-ops] concurrency observation queue full; progression paused account=%d", observation.AccountID)
+	}
+}
+
+// SmartOpsConcurrencyStatus reports whether automatic concurrency progression
+// is paused and why. A disabled feature is reported as unpaused.
+func (s *Store) SmartOpsConcurrencyStatus() (bool, string) {
+	if s == nil {
+		return false, ""
+	}
+	a := s.smartOps.Load()
+	if a == nil || !a.blocked.Load() {
+		return false, ""
+	}
+	a.blockMu.RLock()
+	defer a.blockMu.RUnlock()
+	return true, a.blockReason
 }
 
 func (s *Store) smartOpsAcquire(apiKeyID int64, exclude map[int64]bool, filter AccountFilter, policy DispatchPolicy, modelScope ...string) (*Account, bool) {

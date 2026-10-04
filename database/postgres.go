@@ -7670,6 +7670,25 @@ func (db *DB) batchUpdateAccountCredentials(ctx context.Context, tx *sql.Tx, cur
 }
 
 func (db *DB) batchReplaceAccountGroups(ctx context.Context, tx *sql.Tx, accountIDs []int64, groupIDs []int64) error {
+	if !db.isSQLite() {
+		placeholders := dbPlaceholders(false, 1, len(accountIDs))
+		rows, err := tx.QueryContext(ctx, `SELECT id FROM accounts WHERE id IN (`+strings.Join(placeholders, ",")+`) ORDER BY id FOR UPDATE`, argsFromInt64s(accountIDs)...)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var id int64
+			if err = rows.Scan(&id); err != nil {
+				rows.Close()
+				return err
+			}
+		}
+		if err = rows.Err(); err != nil {
+			rows.Close()
+			return err
+		}
+		rows.Close()
+	}
 	placeholders := dbPlaceholders(db.isSQLite(), 1, len(accountIDs))
 	args := argsFromInt64s(accountIDs)
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf("DELETE FROM account_group_members WHERE account_id IN (%s)", strings.Join(placeholders, ",")), args...); err != nil {

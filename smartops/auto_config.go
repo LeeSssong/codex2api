@@ -1,6 +1,7 @@
 package smartops
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -242,13 +243,78 @@ func ApplyModelMappings(credentials map[string]string, rules []ModelMapping) map
 }
 
 type ConcurrencyState struct {
-	Revision               string `json:"revision"`
-	Concurrency, Successes int
-	PausedUntil            time.Time
+	Revision    string    `json:"revision"`
+	Concurrency int       `json:"concurrency"`
+	Successes   int       `json:"successes"`
+	Required    int       `json:"required"`
+	Maximum     int       `json:"maximum"`
+	Step        int       `json:"step"`
+	PausedUntil time.Time `json:"paused_until"`
 }
+
+// UnmarshalJSON accepts the pre-tagged Go field names written by older
+// versions, including PausedUntil which does not case-fold to paused_until.
+func (s *ConcurrencyState) UnmarshalJSON(data []byte) error {
+	type canonical ConcurrencyState
+	var value canonical
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	var legacy struct {
+		Revision    string
+		Concurrency int
+		Successes   int
+		Required    int
+		Maximum     int
+		Step        int
+		PausedUntil time.Time
+	}
+	if err := json.Unmarshal(data, &legacy); err != nil {
+		return err
+	}
+	if value.Revision == "" {
+		value.Revision = legacy.Revision
+	}
+	if value.Concurrency == 0 {
+		value.Concurrency = legacy.Concurrency
+	}
+	if value.Successes == 0 {
+		value.Successes = legacy.Successes
+	}
+	if value.Required == 0 {
+		value.Required = legacy.Required
+	}
+	if value.Maximum == 0 {
+		value.Maximum = legacy.Maximum
+	}
+	if value.Step == 0 {
+		value.Step = legacy.Step
+	}
+	if value.PausedUntil.IsZero() {
+		value.PausedUntil = legacy.PausedUntil
+	}
+	*s = ConcurrencyState(value)
+	return nil
+}
+
 type ConcurrencyResult struct {
-	Success bool
-	At      time.Time
+	Success   bool
+	StartedAt time.Time
+	// At is retained for callers compiled against the first progression API.
+	At time.Time
+}
+
+// ConcurrencyObservation is the durable account outcome captured at request
+// start. CurrentConcurrency is the effective scheduler limit seen by the
+// request, including a group inherited value when no account override exists.
+type ConcurrencyObservation struct {
+	AccountID          int64
+	Success            bool
+	StartedAt          time.Time
+	Revision           string
+	Epoch              int64
+	CurrentConcurrency int64
+	Reset              bool
 }
 
 // AdvanceConcurrency is pure and only increases after a complete success cycle.
@@ -256,11 +322,19 @@ func AdvanceConcurrency(s ConcurrencyState, current int, c OAuthAutoConfig, resu
 	if s.Revision != c.Revision || s.Concurrency != current {
 		s = ConcurrencyState{Revision: c.Revision, Concurrency: current}
 	}
-	if !result.Success || !c.UpgradeEnabled || now.Before(s.PausedUntil) {
+	s.Required, s.Maximum, s.Step = c.SuccessesPerStep, c.MaxConcurrency, c.UpgradeStep
+	started := result.StartedAt
+	if started.IsZero() {
+		started = result.At
+	}
+	if !result.Success || !c.UpgradeEnabled || now.Before(s.PausedUntil) || (!started.IsZero() && started.Before(s.PausedUntil)) {
 		if !result.Success {
 			s.Successes = 0
 			s.PausedUntil = now.Add(time.Duration(c.CooldownSeconds) * time.Second)
 		}
+		return s, current
+	}
+	if current >= c.MaxConcurrency {
 		return s, current
 	}
 	s.Successes++
@@ -271,6 +345,7 @@ func AdvanceConcurrency(s ConcurrencyState, current int, c OAuthAutoConfig, resu
 		}
 		s.Successes = 0
 		s.Concurrency = current
+		s.PausedUntil = now.Add(time.Duration(c.CooldownSeconds) * time.Second)
 	}
 	return s, current
 }

@@ -42,6 +42,7 @@ func (h *Handler) RegisterSmartOps(r *gin.RouterGroup) {
 	if h.smartOps != nil {
 		RegisterSmartOpsRoutes(r, h.smartOps)
 	}
+	r.GET("/smart-ops/concurrency-progress", h.smartOpsConcurrencyProgress)
 }
 func (h *Handler) WaitSmartOps() {
 	if h.smartOps != nil {

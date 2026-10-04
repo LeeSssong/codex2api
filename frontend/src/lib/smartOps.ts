@@ -23,6 +23,13 @@ export type PriorityConfig = {
   load_weight: number; cost_weight: number;
 }
 export type SmartOpsConfig = { oauth_auto_config: OAuthAutoConfig; priority_scheduling: PriorityConfig; plugins: Record<string, boolean> }
+export type { ConcurrencyProgress } from './concurrencyProgress'
+export type ConcurrencyProgressResponse = {
+  enabled: boolean
+  paused: boolean
+  reason: string
+  progress: Record<string, import('./concurrencyProgress').ConcurrencyProgress>
+}
 export type PelicanJob = {
   id?: number; account_id: number; group_ids: number[]; model: string; prompt: string; reasoning_effort: string;
   samples: number; parallel: number; retries: number; max_history: number;

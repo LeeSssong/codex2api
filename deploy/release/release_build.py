@@ -9,21 +9,22 @@ def docker_command(host,*args):
  if host not in (None,'ssh://sub2api-prod'):raise ValueError('unsupported build daemon; use the verified production SSH alias')
  return ['docker']+(['--host',host] if host else [])+list(args)
 
-def verify_source(root, upstream):
+def verify_source(root, upstream, remote="origin"):
+ if remote not in ("origin", "production"):raise ValueError("unsupported source remote")
  root=pathlib.Path(root).resolve()
  if pathlib.Path(command(['git','rev-parse','--show-toplevel'],root)).resolve()!=root:raise ValueError('must use the repository root')
  if command(['git','symbolic-ref','--short','HEAD'],root)!='main':raise ValueError('release requires main, not a feature branch or detached HEAD')
  if command(['git','status','--porcelain'],root):raise ValueError('release requires a clean working tree')
  revision=command(['git','rev-parse','HEAD'],root); tree=command(['git','rev-parse','HEAD^{tree}'],root)
- remote=command(['git','ls-remote','--exit-code','origin','refs/heads/main'],root).split()[0]
- if revision!=remote or command(['git','rev-parse','origin/main'],root)!=remote:raise ValueError('main must match freshly verified origin/main')
+ remote_sha=command(['git','ls-remote','--exit-code',remote,'refs/heads/main'],root).split()[0]
+ if revision!=remote_sha or command(['git','rev-parse',remote+'/main'],root)!=remote_sha:raise ValueError('main must match freshly verified '+remote+'/main')
  command(['git','merge-base','--is-ancestor',upstream,revision],root)
  return revision,tree
 
-def build(root, upstream, output, docker_host=None, builder=None):
+def build(root, upstream, output, docker_host=None, builder=None, remote="origin"):
  docker_command(docker_host)
  if docker_host and not builder:raise ValueError('remote packaging requires a dedicated resource-limited builder')
- root=pathlib.Path(root).resolve();revision,tree=verify_source(root,upstream)
+ root=pathlib.Path(root).resolve();revision,tree=verify_source(root,upstream,remote)
  output=pathlib.Path(output).resolve();output.mkdir(mode=0o700,parents=True,exist_ok=False)
  image='codex2api:release-'+revision[:12]
  build_version='release-'+datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8))).strftime('%Y%m%d')+'-'+revision[:12]
@@ -43,12 +44,12 @@ def build(root, upstream, output, docker_host=None, builder=None):
  metadata=json.loads(command(docker_command(docker_host,'image','inspect',image),root))[0]
  labels=metadata['Config'].get('Labels',{})
  if metadata['Architecture']!='amd64' or labels.get('org.opencontainers.image.revision')!=revision or labels.get('io.xingqiao.source-tree')!=tree:raise ValueError('built image provenance mismatch')
- verify_source(root,upstream)
- manifest={'revision':revision,'tree':tree,'upstream_revision':upstream,'image':image,'digest':metadata['Id'],'build_version':build_version,'packaging_host':docker_host or 'local','builder':builder}
+ verify_source(root,upstream,remote)
+ manifest={'revision':revision,'tree':tree,'upstream_revision':upstream,'image':image,'digest':metadata['Id'],'build_version':build_version,'packaging_host':docker_host or 'local','builder':builder,'source_remote':remote}
  (output/'manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
  # Stream output to a local artifact, including when the daemon is remote.
  with (output/'image.tar').open('wb') as archive:subprocess.run(docker_command(docker_host,'save',image),stdout=archive,check=True)
  print(json.dumps(manifest))
 
 if __name__=='__main__':
- p=argparse.ArgumentParser();p.add_argument('--root',required=True);p.add_argument('--upstream',required=True);p.add_argument('--output',required=True);p.add_argument('--docker-host',choices=['ssh://sub2api-prod']);p.add_argument('--builder');a=p.parse_args();build(a.root,a.upstream,a.output,a.docker_host,a.builder)
+ p=argparse.ArgumentParser();p.add_argument('--root',required=True);p.add_argument('--upstream',required=True);p.add_argument('--output',required=True);p.add_argument('--docker-host',choices=['ssh://sub2api-prod']);p.add_argument('--builder');p.add_argument('--remote',choices=['origin','production'],default='origin');a=p.parse_args();build(a.root,a.upstream,a.output,a.docker_host,a.builder,a.remote)

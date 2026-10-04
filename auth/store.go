@@ -10721,8 +10721,6 @@ func (s *Store) ReportRequestSuccess(acc *Account, latency time.Duration) {
 	if acc == nil {
 		return
 	}
-	s.observeSmartOps(acc,true)
-
 	acc.mu.Lock()
 	acc.recordLatencyLocked(latency)
 	acc.recordResultLocked(true)
@@ -10760,8 +10758,6 @@ func (s *Store) ReportRequestFailure(acc *Account, kind string, latency time.Dur
 	if acc == nil {
 		return
 	}
-	s.observeSmartOps(acc,false)
-
 	now := time.Now()
 	acc.mu.Lock()
 	acc.recordLatencyLocked(latency)

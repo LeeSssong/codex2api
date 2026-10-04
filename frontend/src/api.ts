@@ -1,5 +1,5 @@
 import type { CodexPathSnapshot } from "./types"
-import type { SmartOpsConfig, OAuthAutoConfig, PriorityConfig, PelicanJob, PelicanRecord, PelicanPlan } from './lib/smartOps'
+import type { SmartOpsConfig, OAuthAutoConfig, PriorityConfig, PelicanJob, PelicanRecord, PelicanPlan, ConcurrencyProgressResponse } from './lib/smartOps'
 import { readCodexProbeEvents, type CodexProbeBatch, type CodexProbeEvent, type CodexProbeLevel, type CodexProbeResult } from './lib/codexProbe.ts'
 import { qualityTestFilterQuery, type QualityTestJob, type QualityTestJobsFilter, type QualityTestJobsResponse, type QualityTestPrompt } from './lib/qualityTest.ts'
 import type { StateImportPreview, StatePackage, StatePoolData } from './lib/statePool.ts'
@@ -168,6 +168,7 @@ import type {
 const BASE = '/api/admin'
 
 export const getSmartOpsConfig = () => request<SmartOpsConfig>('/smart-ops');
+export const getSmartOpsConcurrencyProgress = (ids: number[], signal?: AbortSignal) => request<ConcurrencyProgressResponse>(`/smart-ops/concurrency-progress?ids=${ids.join(',')}`, { signal });
 export const putOAuthAutoConfig = (config: OAuthAutoConfig) => request('/smart-ops/oauth-auto-config', { method: 'PUT', body: JSON.stringify(config) });
 export const putPriorityScheduling = (config: PriorityConfig) => request('/smart-ops/priority-scheduling', { method: 'PUT', body: JSON.stringify(config) });
 export const listPelicanTests = () => request<{ jobs: PelicanRecord[] }>('/smart-ops/pelican-tests');

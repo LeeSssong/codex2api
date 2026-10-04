@@ -413,6 +413,7 @@ func writeGeminiNativeError(c *gin.Context, status int, message string) {
 }
 
 func (h *Handler) handleGeminiGenerateContent(c *gin.Context, model string, rawBody []byte, stream bool) {
+	defer h.beginConcurrencyRequest(c, rawBody)()
 	if h.enforceAPIKeyLimitsAndReply(c, model) {
 		return
 	}

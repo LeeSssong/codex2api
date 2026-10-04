@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Plus, Save, Trash2, RefreshCw } from 'lucide-react'
 import PageHeader from '../components/PageHeader'
@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { SmartOpsSection, SmartOpsField, SmartOpsSwitch, SmartOpsNumber, SmartOpsGroups, SmartOpsModelList, SETTINGS_FIELD_GRID } from '../components/SmartOpsFields'
-import { api, getSmartOpsConfig, putOAuthAutoConfig } from '../api'
+import { api, getSmartOpsConfig, getSmartOpsConcurrencyProgress, putOAuthAutoConfig } from '../api'
 import type { AccountGroup } from '../types'
 import type { OAuthAutoConfig, BPSDefaults, Quality5xxConfig } from '../lib/smartOps'
 
@@ -18,15 +18,32 @@ export default function AutoConfig() {
   const [enabled, setEnabled] = useState(false)
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState('')
-  async function load() {
-    try { const [data, g] = await Promise.all([getSmartOpsConfig(), api.listAccountGroups()]); setConfig(data.oauth_auto_config); setSaved(JSON.stringify(data.oauth_auto_config)); setGroups(g.groups); setEnabled(data.plugins['auto-config']); setMessage('') }
+  const [progressPaused, setProgressPaused] = useState<{ paused: boolean, reason: string } | null>(null)
+  const refreshProgressStatus = useCallback(async () => {
+    try {
+      const progress = await getSmartOpsConcurrencyProgress([])
+      setProgressPaused(progress.enabled && progress.paused ? { paused: true, reason: progress.reason } : null)
+    } catch {
+      setProgressPaused(null)
+    }
+  }, [])
+  const load = useCallback(async () => {
+    try {
+      const [data, g] = await Promise.all([getSmartOpsConfig(), api.listAccountGroups()])
+      setConfig(data.oauth_auto_config); setSaved(JSON.stringify(data.oauth_auto_config)); setGroups(g.groups); setEnabled(data.plugins['auto-config']); setMessage('')
+      await refreshProgressStatus()
+    }
     catch (e) { setMessage((e as Error).message) }
-  }
-  useEffect(() => { void load() }, [])
+  }, [refreshProgressStatus])
+  useEffect(() => {
+    void load()
+    const refreshID = window.setInterval(() => void refreshProgressStatus(), 30_000)
+    return () => window.clearInterval(refreshID)
+  }, [load, refreshProgressStatus])
   async function save() {
     if (!config) return
     setBusy(true)
-    try { await putOAuthAutoConfig(config); const data = await getSmartOpsConfig(); setConfig(data.oauth_auto_config); setSaved(JSON.stringify(data.oauth_auto_config)); setMessage(t('smartOps.saved')) }
+    try { await putOAuthAutoConfig(config); await load(); setMessage(t('smartOps.saved')) }
     catch (e) { setMessage((e as Error).message) }
     finally { setBusy(false) }
   }
@@ -63,6 +80,7 @@ export default function AutoConfig() {
         <Button variant="outline" disabled={disabled} onClick={() => patch({ model_mappings: [...config.model_mappings, { from: '', to: '' }] })}><Plus className="size-4" />{t('smartOps.addRule')}</Button>
       </SmartOpsSection>
       <SmartOpsSection title={t('smartOps.concurrencyUpgrade')}>
+        {progressPaused?.paused && <p className="text-sm text-amber-700 dark:text-amber-400" role="status">{t('smartOps.progressPaused', { reason: progressPaused.reason })}</p>}
         <SmartOpsSwitch label={t('smartOps.upgrade_enabled')} value={config.upgrade_enabled} onChange={v => patch({ upgrade_enabled: v })} disabled={disabled} />
         <SmartOpsField label={t('smartOps.upgradeGroups')}><SmartOpsGroups groups={groups} value={config.upgrade_group_ids || []} onChange={v => patch({ upgrade_group_ids: v })} disabled={disabled} /></SmartOpsField>
         <div className={SETTINGS_FIELD_GRID}>

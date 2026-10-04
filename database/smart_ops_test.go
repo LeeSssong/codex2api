@@ -271,6 +271,263 @@ func TestSmartOpsConcurrencyPersistsEverySuccessAndManualChange(t *testing.T) {
 		t.Fatal(e)
 	}
 }
+
+func TestRecordSmartOpsConcurrencyObservationFencesConfigAndManualEdits(t *testing.T) {
+	db := smartOpsDB(t)
+	ctx := context.Background()
+	g, err := db.CreateAccountGroup(ctx, "observed", "", "#345678", 0, 0, sql.NullInt64{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := smartops.DefaultOAuthAutoConfig()
+	c.Enabled, c.UpgradeEnabled, c.GroupIDs, c.UpgradeGroupIDs = true, true, []int64{g}, []int64{g}
+	c.SuccessesPerStep, c.MaxConcurrency, c.Revision = 1, 5, "revision-1"
+	c.UpdatedAt = time.Now().UTC()
+	if err = db.SaveOAuthAutoConfig(ctx, c); err != nil {
+		t.Fatal(err)
+	}
+	id, err := db.InsertAutoConfiguredOAuthAccount(ctx, "observed", "openai", "oauth", map[string]interface{}{"access_token": "synthetic"}, "", c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := c.UpdatedAt.Add(time.Millisecond)
+	obs := smartops.ConcurrencyObservation{AccountID: id, Success: true, StartedAt: started, Revision: c.Revision, CurrentConcurrency: 3}
+	if next, changed, err := db.RecordSmartOpsConcurrencyObservation(ctx, obs, c); err != nil || !changed || next != 4 {
+		t.Fatalf("first observation = %d %v %v", next, changed, err)
+	}
+	if _, err = db.conn.ExecContext(ctx, `UPDATE accounts SET base_concurrency_override=2,updated_at=CURRENT_TIMESTAMP WHERE id=$1`, id); err != nil {
+		t.Fatal(err)
+	}
+	if next, changed, err := db.RecordSmartOpsConcurrencyObservation(ctx, obs, c); err != nil || changed || next != 2 {
+		t.Fatalf("manual edit = %d %v %v", next, changed, err)
+	}
+	c.Revision = "revision-2"
+	c.UpdatedAt = time.Now().UTC().Add(time.Second)
+	if err = db.SaveOAuthAutoConfig(ctx, c); err != nil {
+		t.Fatal(err)
+	}
+	if next, changed, err := db.RecordSmartOpsConcurrencyObservation(ctx, obs, c); err != nil || changed || next != 0 {
+		t.Fatalf("stale config = %d %v %v", next, changed, err)
+	}
+}
+
+func TestSmartOpsConcurrencyObservationSkipsDisabledAndLockedAccounts(t *testing.T) {
+	db := smartOpsDB(t)
+	ctx := context.Background()
+	g, err := db.CreateAccountGroup(ctx, "eligible", "", "#345678", 0, 0, sql.NullInt64{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := smartops.DefaultOAuthAutoConfig()
+	c.Enabled, c.UpgradeEnabled, c.GroupIDs, c.UpgradeGroupIDs = true, true, []int64{g}, []int64{g}
+	c.SuccessesPerStep, c.Revision, c.UpdatedAt = 1, "eligibility", time.Now().UTC()
+	if err = db.SaveOAuthAutoConfig(ctx, c); err != nil {
+		t.Fatal(err)
+	}
+	id, err := db.InsertAutoConfiguredOAuthAccount(ctx, "eligible", "openai", "oauth", map[string]interface{}{"access_token": "synthetic"}, "", c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	observation := smartops.ConcurrencyObservation{AccountID: id, Success: true, StartedAt: time.Now().UTC().Add(time.Millisecond), Revision: c.Revision, CurrentConcurrency: 3}
+	for _, update := range []string{"UPDATE accounts SET enabled=FALSE WHERE id=$1", "UPDATE accounts SET enabled=TRUE,locked=TRUE WHERE id=$1"} {
+		if _, err = db.conn.ExecContext(ctx, update, id); err != nil {
+			t.Fatal(err)
+		}
+		if _, changed, err := db.RecordSmartOpsConcurrencyObservation(ctx, observation, c); err != nil || changed {
+			t.Fatalf("ineligible account changed=%v err=%v", changed, err)
+		}
+	}
+}
+
+func TestSmartOpsConcurrencyFailureClearsProgressAfterAccountError(t *testing.T) {
+	db := smartOpsDB(t)
+	ctx := context.Background()
+	g, err := db.CreateAccountGroup(ctx, "failure", "", "#345678", 0, 0, sql.NullInt64{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := smartops.DefaultOAuthAutoConfig()
+	c.Enabled, c.UpgradeEnabled, c.GroupIDs, c.UpgradeGroupIDs = true, true, []int64{g}, []int64{g}
+	c.SuccessesPerStep, c.Revision, c.UpdatedAt = 2, "failure", time.Now().UTC()
+	if err = db.SaveOAuthAutoConfig(ctx, c); err != nil {
+		t.Fatal(err)
+	}
+	id, err := db.InsertAutoConfiguredOAuthAccount(ctx, "failure", "openai", "oauth", map[string]interface{}{"access_token": "synthetic"}, "", c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now().UTC().Add(time.Millisecond)
+	if _, _, err = db.RecordSmartOpsConcurrencyObservation(ctx, smartops.ConcurrencyObservation{AccountID: id, Success: true, StartedAt: start, Revision: c.Revision, CurrentConcurrency: 3}, c); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.conn.ExecContext(ctx, `UPDATE accounts SET status='error' WHERE id=$1`, id); err != nil {
+		t.Fatal(err)
+	}
+	if _, changed, err := db.RecordSmartOpsConcurrencyObservation(ctx, smartops.ConcurrencyObservation{AccountID: id, Success: false, StartedAt: time.Now().UTC().Add(time.Millisecond), Revision: c.Revision, CurrentConcurrency: 3}, c); err != nil || changed {
+		t.Fatalf("failure reset = changed=%v err=%v", changed, err)
+	}
+	progress, err := db.LoadSmartOpsConcurrencyProgress(ctx, []int64{id}, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state, ok := progress[id]; ok && state.Successes != 0 {
+		t.Fatalf("failure retained successes: %#v", state)
+	}
+}
+
+func TestLoadSmartOpsConcurrencyProgressFiltersStateAndIneligibleAccounts(t *testing.T) {
+	db := smartOpsDB(t)
+	ctx := context.Background()
+	g, err := db.CreateAccountGroup(ctx, "progress", "", "#345678", 0, 0, sql.NullInt64{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := smartops.DefaultOAuthAutoConfig()
+	c.Enabled, c.UpgradeEnabled, c.GroupIDs, c.UpgradeGroupIDs = true, true, []int64{g}, []int64{g}
+	c.SuccessesPerStep, c.Revision, c.UpdatedAt = 2, "progress", time.Now().UTC()
+	if err = db.SaveOAuthAutoConfig(ctx, c); err != nil {
+		t.Fatal(err)
+	}
+	id, err := db.InsertAutoConfiguredOAuthAccount(ctx, "progress", "openai", "oauth", map[string]interface{}{"access_token": "synthetic"}, "", c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := smartops.ConcurrencyObservation{AccountID: id, Success: true, StartedAt: time.Now().UTC().Add(time.Millisecond), Revision: c.Revision, CurrentConcurrency: 3}
+	if _, _, err = db.RecordSmartOpsConcurrencyObservation(ctx, o, c); err != nil {
+		t.Fatal(err)
+	}
+	progress, err := db.LoadSmartOpsConcurrencyProgress(ctx, []int64{id, id, 999}, c)
+	if err != nil || progress[id].Required != 2 || progress[id].Maximum != c.MaxConcurrency || progress[id].Step != c.UpgradeStep {
+		t.Fatalf("progress=%#v err=%v", progress, err)
+	}
+	if _, err = db.conn.ExecContext(ctx, `UPDATE accounts SET locked=1 WHERE id=$1`, id); err != nil {
+		t.Fatal(err)
+	}
+	progress, err = db.LoadSmartOpsConcurrencyProgress(ctx, []int64{id}, c)
+	if err != nil || len(progress) != 0 {
+		t.Fatalf("locked progress=%#v err=%v", progress, err)
+	}
+}
+
+func TestSmartOpsConcurrencyUsesNativeGlobalAndAllGroupEffectiveLimit(t *testing.T) {
+	db := smartOpsDB(t)
+	ctx := context.Background()
+	selected, err := db.CreateAccountGroup(ctx, "selected-effective", "", "#345678", 0, 0, sql.NullInt64{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := db.CreateAccountGroup(ctx, "other-effective", "", "#345678", 0, 0, sql.NullInt64{Int64: 2, Valid: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings, err := db.GetSystemSettings(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settings == nil {
+		settings = &SystemSettings{}
+	}
+	settings.MaxConcurrency = 7
+	if err = db.UpdateSystemSettings(ctx, settings); err != nil {
+		t.Fatal(err)
+	}
+	c := smartops.DefaultOAuthAutoConfig()
+	c.Enabled, c.UpgradeEnabled, c.GroupIDs, c.UpgradeGroupIDs = true, true, []int64{selected}, []int64{selected}
+	c.Concurrency, c.SuccessesPerStep, c.Revision, c.UpdatedAt = 3, 1, "effective", time.Now().UTC()
+	if err = db.SaveOAuthAutoConfig(ctx, c); err != nil {
+		t.Fatal(err)
+	}
+	globalID, err := db.InsertAutoConfiguredOAuthAccount(ctx, "global-effective", "openai", "oauth", map[string]interface{}{"access_token": "synthetic"}, "", c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.conn.ExecContext(ctx, `UPDATE accounts SET base_concurrency_override=NULL WHERE id=$1`, globalID); err != nil {
+		t.Fatal(err)
+	}
+	o := smartops.ConcurrencyObservation{AccountID: globalID, Success: true, StartedAt: time.Now().UTC().Add(time.Second), Revision: c.Revision, CurrentConcurrency: 7}
+	if next, changed, err := db.RecordSmartOpsConcurrencyObservation(ctx, o, c); err != nil || !changed || next != 8 {
+		t.Fatalf("global effective = %d %v %v", next, changed, err)
+	}
+	progress, err := db.LoadSmartOpsConcurrencyProgress(ctx, []int64{globalID}, c)
+	if err != nil || progress[globalID].Concurrency != 8 {
+		t.Fatalf("global progress=%#v err=%v", progress, err)
+	}
+	if _, err = db.conn.ExecContext(ctx, `UPDATE accounts SET base_concurrency_override=4 WHERE id=$1`, globalID); err != nil {
+		t.Fatal(err)
+	}
+	progress, err = db.LoadSmartOpsConcurrencyProgress(ctx, []int64{globalID}, c)
+	if err != nil || progress[globalID].Concurrency != 4 || progress[globalID].Successes != 0 {
+		t.Fatalf("manual progress=%#v err=%v", progress, err)
+	}
+	groupID, err := db.InsertAutoConfiguredOAuthAccount(ctx, "group-effective", "openai", "oauth", map[string]interface{}{"access_token": "synthetic"}, "", c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = db.SetAccountGroups(ctx, groupID, []int64{selected, other}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.conn.ExecContext(ctx, `UPDATE accounts SET base_concurrency_override=NULL WHERE id=$1`, groupID); err != nil {
+		t.Fatal(err)
+	}
+	o = smartops.ConcurrencyObservation{AccountID: groupID, Success: true, StartedAt: time.Now().UTC().Add(time.Second), Revision: c.Revision, CurrentConcurrency: 2}
+	if next, changed, err := db.RecordSmartOpsConcurrencyObservation(ctx, o, c); err != nil || !changed || next != 3 {
+		t.Fatalf("all-group effective = %d %v %v", next, changed, err)
+	}
+}
+
+func TestSmartOpsConcurrencyManualLimitStartsCooldownFencedCycle(t *testing.T) {
+	db := smartOpsDB(t)
+	ctx := context.Background()
+	g, err := db.CreateAccountGroup(ctx, "manual-cooldown", "", "#345678", 0, 0, sql.NullInt64{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := smartops.DefaultOAuthAutoConfig()
+	c.Enabled, c.UpgradeEnabled, c.GroupIDs, c.UpgradeGroupIDs = true, true, []int64{g}, []int64{g}
+	c.SuccessesPerStep, c.CooldownSeconds, c.Revision, c.UpdatedAt = 2, 60, "manual-cooldown", time.Now().UTC()
+	if err = db.SaveOAuthAutoConfig(ctx, c); err != nil {
+		t.Fatal(err)
+	}
+	id, err := db.InsertAutoConfiguredOAuthAccount(ctx, "manual-cooldown", "openai", "oauth", map[string]interface{}{"access_token": "synthetic"}, "", c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = db.RecordSmartOpsConcurrencyObservation(ctx, smartops.ConcurrencyObservation{AccountID: id, Success: true, StartedAt: time.Now().UTC().Add(time.Second), Revision: c.Revision, CurrentConcurrency: 3}, c); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.conn.ExecContext(ctx, `UPDATE accounts SET base_concurrency_override=4 WHERE id=$1`, id); err != nil {
+		t.Fatal(err)
+	}
+	if next, changed, err := db.RecordSmartOpsConcurrencyObservation(ctx, smartops.ConcurrencyObservation{AccountID: id, Success: true, StartedAt: time.Now().UTC().Add(time.Second), Revision: c.Revision, CurrentConcurrency: 4}, c); err != nil || changed || next != 4 {
+		t.Fatalf("manual observation=%d %v %v", next, changed, err)
+	}
+	progress, err := db.LoadSmartOpsConcurrencyProgress(ctx, []int64{id}, c)
+	if err != nil || progress[id].Successes != 0 || !progress[id].PausedUntil.After(time.Now()) {
+		t.Fatalf("manual progress=%#v err=%v", progress, err)
+	}
+}
+
+func TestSmartOpsConcurrencyFencesSavedConfigJSONTimestamp(t *testing.T) {
+	db := smartOpsDB(t)
+	ctx := context.Background()
+	g, err := db.CreateAccountGroup(ctx, "config-time", "", "#345678", 0, 0, sql.NullInt64{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := smartops.DefaultOAuthAutoConfig()
+	c.Enabled, c.UpgradeEnabled, c.GroupIDs, c.UpgradeGroupIDs = true, true, []int64{g}, []int64{g}
+	c.SuccessesPerStep, c.Revision, c.UpdatedAt = 1, "config-time", time.Now().UTC().Add(time.Minute)
+	if err = db.SaveOAuthAutoConfig(ctx, c); err != nil {
+		t.Fatal(err)
+	}
+	id, err := db.InsertAutoConfiguredOAuthAccount(ctx, "config-time", "openai", "oauth", map[string]interface{}{"access_token": "synthetic"}, "", c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next, changed, err := db.RecordSmartOpsConcurrencyObservation(ctx, smartops.ConcurrencyObservation{AccountID: id, Success: true, StartedAt: time.Now().UTC(), Revision: c.Revision, CurrentConcurrency: 3}, c); err != nil || changed || next != 0 {
+		t.Fatalf("json timestamp fence=%d %v %v", next, changed, err)
+	}
+}
 func TestSmartOpsRuntimeUsesServerContextAndCancelsNativeExecutor(t *testing.T) {
 	db := smartOpsDB(t)
 	parent, cancel := context.WithCancel(context.Background())
@@ -466,5 +723,46 @@ func TestSmartOpsNativeQualityEvidenceInfluencesCachedScore(t *testing.T) {
 	signals, e := db.ReadSmartOpsSignals(ctx, smartops.DefaultPriorityConfig())
 	if e != nil || !signals[id].QualityKnown || signals[id].QualityPercent != 0 || signals[id].QualityObservedUnix == 0 {
 		t.Fatalf("native quality observation unavailable: %+v %v", signals, e)
+	}
+}
+
+func TestSmartOpsConcurrencyParallelResultsPromoteOnce(t *testing.T) {
+	db := smartOpsDB(t)
+	ctx := context.Background()
+	group, err := db.CreateAccountGroup(ctx, "parallel", "", "#345678", 0, 0, sql.NullInt64{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := smartops.DefaultOAuthAutoConfig()
+	c.Enabled = true
+	c.UpgradeEnabled = true
+	c.GroupIDs = []int64{group}
+	c.UpgradeGroupIDs = []int64{group}
+	c.Revision = "parallel"
+	c.SuccessesPerStep = 2
+	if err = db.SaveOAuthAutoConfig(ctx, c); err != nil {
+		t.Fatal(err)
+	}
+	id, err := db.InsertAutoConfiguredOAuthAccount(ctx, "parallel", "openai", "oauth", map[string]interface{}{"access_token": "synthetic"}, "", c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	obs := smartops.ConcurrencyObservation{AccountID: id, Success: true, Revision: c.Revision, StartedAt: time.Now().Add(time.Second), CurrentConcurrency: 3}
+	errors := make(chan error, 12)
+	var wg sync.WaitGroup
+	for i := 0; i < 12; i++ {
+		wg.Add(1)
+		go func() { defer wg.Done(); _, _, e := db.RecordSmartOpsConcurrencyObservation(ctx, obs, c); errors <- e }()
+	}
+	wg.Wait()
+	close(errors)
+	for e := range errors {
+		if e != nil {
+			t.Fatal(e)
+		}
+	}
+	row, err := db.GetAccountByID(ctx, id)
+	if err != nil || row.BaseConcurrencyOverride.Int64 != 4 {
+		t.Fatalf("parallel outcomes promoted more than once: %+v %v", row, err)
 	}
 }

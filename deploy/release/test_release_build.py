@@ -29,3 +29,11 @@ class SourceTests(unittest.TestCase):
  def test_feature_branch_rejected(self):
   self.git('checkout','-b','codex/candidate')
   with self.assertRaises(ValueError):verify_source(self.root,self.sha)
+
+class ProductionRemoteSourceTests(SourceTests):
+ def test_custom_production_remote_preserves_official_origin(self):
+  self.git('remote','add','production',self.git('remote','get-url','origin'))
+  self.git('fetch','production')
+  self.assertEqual(verify_source(self.root,self.sha,remote='production')[0],self.sha)
+ def test_unknown_remote_rejected(self):
+  with self.assertRaises(ValueError):verify_source(self.root,self.sha,remote='unverified')

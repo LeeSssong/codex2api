@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/robfig/cron/v3"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -591,8 +592,28 @@ func (db *DB) enqueueDuePelicanPlan(ctx context.Context, id int64, now time.Time
 	})
 }
 
+// RecordSmartOpsConcurrency preserves the original override-only behavior for
+// callers that have not yet captured a request-start observation.
 func (db *DB) RecordSmartOpsConcurrency(ctx context.Context, id int64, c smartops.OAuthAutoConfig, success bool, observedEpoch ...int64) (int64, bool, error) {
-	if !c.UpgradeEnabled {
+	o := smartops.ConcurrencyObservation{AccountID: id, Success: success, Revision: c.Revision}
+	if len(observedEpoch) > 0 {
+		o.Epoch = observedEpoch[0]
+	}
+	return db.recordSmartOpsConcurrencyObservation(ctx, o, c, true, len(observedEpoch) > 0)
+}
+
+// RecordSmartOpsConcurrencyObservation advances one account only when the
+// request still belongs to the saved rule, plugin generation, account state,
+// selected group, and observed effective limit.
+func (db *DB) RecordSmartOpsConcurrencyObservation(ctx context.Context, o smartops.ConcurrencyObservation, c smartops.OAuthAutoConfig) (int64, bool, error) {
+	return db.recordSmartOpsConcurrencyObservation(ctx, o, c, false, true)
+}
+
+func (db *DB) recordSmartOpsConcurrencyObservation(ctx context.Context, o smartops.ConcurrencyObservation, c smartops.OAuthAutoConfig, legacy, checkEpoch bool) (int64, bool, error) {
+	if !c.UpgradeEnabled || o.AccountID <= 0 {
+		return 0, false, nil
+	}
+	if !legacy && (o.Revision == "" || o.StartedAt.IsZero()) {
 		return 0, false, nil
 	}
 	if e := db.EnsureSmartOpsSchema(ctx); e != nil {
@@ -613,37 +634,90 @@ func (db *DB) RecordSmartOpsConcurrency(ctx context.Context, id int64, c smartop
 		if !enabled {
 			return nil
 		}
-		if len(observedEpoch) > 0 {
+		if checkEpoch {
 			var epoch int64
-			e = tx.QueryRowContext(ctx, `SELECT epoch FROM smart_ops_plugin_epochs WHERE plugin_id=$1`, smartops.PluginAutoConfig).Scan(&epoch)
+			epochQuery := `SELECT epoch FROM smart_ops_plugin_epochs WHERE plugin_id=$1`
+			if !db.isSQLite() {
+				epochQuery += ` FOR SHARE`
+			}
+			e = tx.QueryRowContext(ctx, epochQuery, smartops.PluginAutoConfig).Scan(&epoch)
 			if e != nil && e != sql.ErrNoRows {
 				return e
 			}
-			if epoch != observedEpoch[0] {
+			if epoch != o.Epoch {
 				return nil
 			}
 		}
-		q := `SELECT base_concurrency_override,credentials FROM accounts WHERE id=$1 AND status<>'deleted'`
+		if !legacy {
+			var savedRaw string
+			var savedUpdatedRaw any
+			settingsQuery := `SELECT value,updated_at FROM smart_ops_settings WHERE key=$1`
+			if !db.isSQLite() {
+				settingsQuery += ` FOR SHARE`
+			}
+			e = tx.QueryRowContext(ctx, settingsQuery, "oauth_auto_config").Scan(&savedRaw, &savedUpdatedRaw)
+			if errors.Is(e, sql.ErrNoRows) {
+				return nil
+			}
+			if e != nil {
+				return e
+			}
+			var saved smartops.OAuthAutoConfig
+			if e = json.Unmarshal([]byte(savedRaw), &saved); e != nil {
+				return e
+			}
+			savedUpdated, e := parseDBTimeValue(savedUpdatedRaw)
+			if e != nil {
+				return e
+			}
+			if !saved.UpgradeEnabled || saved.Revision != c.Revision || (o.Revision != "" && saved.Revision != o.Revision) || (!o.StartedAt.IsZero() && (o.StartedAt.Before(savedUpdated) || (!saved.UpdatedAt.IsZero() && o.StartedAt.Before(saved.UpdatedAt)))) {
+				return nil
+			}
+			c = saved
+		}
+		var globalConcurrency int64 = 2
+		systemQuery := `SELECT max_concurrency FROM system_settings WHERE id=1`
+		if !db.isSQLite() {
+			systemQuery += ` FOR SHARE`
+		}
+		if e = tx.QueryRowContext(ctx, systemQuery).Scan(&globalConcurrency); e != nil && !errors.Is(e, sql.ErrNoRows) {
+			return e
+		}
+		if globalConcurrency < 1 {
+			globalConcurrency = 1
+		}
+		q := `SELECT base_concurrency_override,status,COALESCE(enabled,true),COALESCE(locked,false) FROM accounts WHERE id=$1 AND status<>'deleted'`
 		if !db.isSQLite() {
 			q += ` FOR UPDATE`
 		}
 		var current sql.NullInt64
-		var raw any
-		if e = tx.QueryRowContext(ctx, q, id).Scan(&current, &raw); e != nil {
+		var status string
+		var accountEnabled, locked bool
+		if e = tx.QueryRowContext(ctx, q, o.AccountID).Scan(&current, &status, &accountEnabled, &locked); errors.Is(e, sql.ErrNoRows) {
+			return nil
+		} else if e != nil {
 			return e
 		}
-		_ = decodeCredentials(raw)
-		if !current.Valid {
+		if !accountEnabled || (o.Success && (locked || status != "active")) {
 			return nil
 		}
-		groups, e := tx.QueryContext(ctx, `SELECT group_id FROM account_group_members WHERE account_id=$1`, id)
+		if legacy && !current.Valid {
+			return nil
+		}
+		groupsQuery := `SELECT m.group_id,g.base_concurrency_override FROM account_group_members m JOIN account_groups g ON g.id=m.group_id WHERE m.account_id=$1`
+		if !db.isSQLite() {
+			groupsQuery += ` FOR SHARE OF m,g`
+		}
+		groups, e := tx.QueryContext(ctx, groupsQuery, o.AccountID)
 		if e != nil {
 			return e
 		}
 		eligible := false
+		var groupBase int64
 		for groups.Next() {
 			var gid int64
-			if e = groups.Scan(&gid); e != nil {
+			var override sql.NullInt64
+			if e = groups.Scan(&gid, &override); e != nil {
 				groups.Close()
 				return e
 			}
@@ -651,6 +725,9 @@ func (db *DB) RecordSmartOpsConcurrency(ctx context.Context, id int64, c smartop
 				if wanted == gid {
 					eligible = true
 				}
+			}
+			if override.Valid && override.Int64 > 0 && (groupBase == 0 || override.Int64 < groupBase) {
+				groupBase = override.Int64
 			}
 		}
 		e = groups.Err()
@@ -661,9 +738,23 @@ func (db *DB) RecordSmartOpsConcurrency(ctx context.Context, id int64, c smartop
 		if !eligible {
 			return nil
 		}
+		effective := globalConcurrency
+		if groupBase > 0 {
+			effective = groupBase
+		}
+		if current.Valid {
+			effective = current.Int64
+		}
+		if effective < 1 {
+			return nil
+		}
+		if !legacy && o.CurrentConcurrency != effective {
+			next = effective
+			return nil
+		}
 		var state smartops.ConcurrencyState
 		var payload string
-		e = tx.QueryRowContext(ctx, `SELECT payload FROM smart_ops_concurrency WHERE account_id=$1`, id).Scan(&payload)
+		e = tx.QueryRowContext(ctx, `SELECT payload FROM smart_ops_concurrency WHERE account_id=$1`, o.AccountID).Scan(&payload)
 		var quality smartops.Quality5xxRampState
 		if e == nil {
 			var envelope struct {
@@ -685,29 +776,38 @@ func (db *DB) RecordSmartOpsConcurrency(ctx context.Context, id int64, c smartop
 			return e
 		}
 		var n int
-		if quality.Active && (quality.CurrentConcurrency != int(current.Int64) || quality.Revision != c.Revision || !c.Quality5xx.Enabled) {
+		if quality.Active && (quality.CurrentConcurrency != int(effective) || quality.Revision != c.Revision || !c.Quality5xx.Enabled) {
 			// An explicit concurrency edit relinquishes recovery ownership.
 			quality.Active = false
 			quality.ProbePending = false
 		}
 		if quality.Active && quality.ProbePending {
-			n = int(current.Int64)
+			n = int(effective)
 		} else if quality.Active {
+			if o.Reset {
+				quality.Concurrency.Successes = 0
+			}
 			recoveryConfig := c
 			if quality.OriginalConcurrency < recoveryConfig.MaxConcurrency {
 				recoveryConfig.MaxConcurrency = quality.OriginalConcurrency
 			}
-			quality.Concurrency, n = smartops.AdvanceConcurrency(quality.Concurrency, int(current.Int64), recoveryConfig, smartops.ConcurrencyResult{Success: success, At: time.Now()}, time.Now())
+			quality.Concurrency, n = smartops.AdvanceConcurrency(quality.Concurrency, int(effective), recoveryConfig, smartops.ConcurrencyResult{Success: o.Success, StartedAt: o.StartedAt, At: time.Now()}, time.Now())
 			quality.CurrentConcurrency = n
 			state = quality.Concurrency
 			if n >= recoveryConfig.MaxConcurrency {
 				quality.Active = false
 			}
 		} else {
-			if quality.Attempt > 0 && quality.Revision == c.Revision && quality.CurrentConcurrency == int(current.Int64) && quality.OriginalConcurrency > 0 && c.MaxConcurrency > quality.OriginalConcurrency {
+			if state.Concurrency != 0 && state.Concurrency != int(effective) {
+				state = smartops.ConcurrencyState{Revision: c.Revision, Concurrency: int(effective), PausedUntil: time.Now().Add(time.Duration(c.CooldownSeconds) * time.Second)}
+			}
+			if quality.Attempt > 0 && quality.Revision == c.Revision && quality.CurrentConcurrency == int(effective) && quality.OriginalConcurrency > 0 && c.MaxConcurrency > quality.OriginalConcurrency {
 				c.MaxConcurrency = quality.OriginalConcurrency
 			}
-			state, n = smartops.AdvanceConcurrency(state, int(current.Int64), c, smartops.ConcurrencyResult{Success: success, At: time.Now()}, time.Now())
+			if o.Reset {
+				state.Successes = 0
+			}
+			state, n = smartops.AdvanceConcurrency(state, int(effective), c, smartops.ConcurrencyResult{Success: o.Success, StartedAt: o.StartedAt, At: time.Now()}, time.Now())
 		}
 		m := map[string]json.RawMessage{}
 		if payload != "" {
@@ -720,22 +820,125 @@ func (db *DB) RecordSmartOpsConcurrency(ctx context.Context, id int64, c smartop
 			m["quality_5xx"] = qb
 		}
 		b, _ := json.Marshal(m)
-		if _, e = tx.ExecContext(ctx, `INSERT INTO smart_ops_concurrency(account_id,payload) VALUES($1,$2) ON CONFLICT(account_id) DO UPDATE SET payload=EXCLUDED.payload`, id, string(b)); e != nil {
+		if _, e = tx.ExecContext(ctx, `INSERT INTO smart_ops_concurrency(account_id,payload) VALUES($1,$2) ON CONFLICT(account_id) DO UPDATE SET payload=EXCLUDED.payload`, o.AccountID, string(b)); e != nil {
 			return e
 		}
 		next = int64(n)
-		changed = next != current.Int64
+		changed = next != effective
 		if changed {
-			if _, e = tx.ExecContext(ctx, `UPDATE accounts SET base_concurrency_override=$1,updated_at=CURRENT_TIMESTAMP WHERE id=$2`, next, id); e != nil {
+			if _, e = tx.ExecContext(ctx, `UPDATE accounts SET base_concurrency_override=$1,updated_at=CURRENT_TIMESTAMP WHERE id=$2`, next, o.AccountID); e != nil {
 				return e
 			}
-			if e = insertSchedulerOutboxEventTx(ctx, tx, SchedulerEntityAccount, id, "upsert"); e != nil {
+			if e = insertSchedulerOutboxEventTx(ctx, tx, SchedulerEntityAccount, o.AccountID, "upsert"); e != nil {
 				return e
 			}
 		}
 		return tx.Commit()
 	})
 	return next, changed, e
+}
+
+// LoadSmartOpsConcurrencyProgress returns the stored progression state for
+// the requested account IDs. Accounts without state remain absent.
+func (db *DB) LoadSmartOpsConcurrencyProgress(ctx context.Context, ids []int64, c smartops.OAuthAutoConfig) (map[int64]smartops.ConcurrencyState, error) {
+	out := make(map[int64]smartops.ConcurrencyState)
+	if !c.UpgradeEnabled || len(ids) == 0 || len(c.UpgradeGroupIDs) == 0 {
+		return out, nil
+	}
+	if e := db.EnsureSmartOpsSchema(ctx); e != nil {
+		return nil, e
+	}
+	unique := make([]int64, 0, len(ids))
+	seen := map[int64]bool{}
+	for _, id := range ids {
+		if id > 0 && !seen[id] {
+			seen[id] = true
+			unique = append(unique, id)
+		}
+	}
+	if len(unique) == 0 {
+		return out, nil
+	}
+	placeholders := make([]string, len(unique))
+	args := make([]any, 0, len(unique)+len(c.UpgradeGroupIDs))
+	for i, id := range unique {
+		placeholders[i] = "$" + strconv.Itoa(i+1)
+		args = append(args, id)
+	}
+	groupPlaceholders := make([]string, 0, len(c.UpgradeGroupIDs))
+	for _, id := range c.UpgradeGroupIDs {
+		if id <= 0 {
+			continue
+		}
+		groupPlaceholders = append(groupPlaceholders, "$"+strconv.Itoa(len(args)+1))
+		args = append(args, id)
+	}
+	if len(groupPlaceholders) == 0 {
+		return out, nil
+	}
+	var globalConcurrency int64 = 2
+	if e := db.conn.QueryRowContext(ctx, `SELECT max_concurrency FROM system_settings WHERE id=1`).Scan(&globalConcurrency); e != nil && !errors.Is(e, sql.ErrNoRows) {
+		return nil, e
+	}
+	if globalConcurrency < 1 {
+		globalConcurrency = 1
+	}
+	rows, e := db.conn.QueryContext(ctx, `SELECT a.id,p.payload,a.base_concurrency_override,(
+		SELECT MIN(all_groups.base_concurrency_override) FROM account_group_members all_members
+		JOIN account_groups all_groups ON all_groups.id=all_members.group_id
+		WHERE all_members.account_id=a.id AND all_groups.base_concurrency_override IS NOT NULL)
+		FROM accounts a
+		LEFT JOIN smart_ops_concurrency p ON p.account_id=a.id
+		WHERE a.id IN (`+strings.Join(placeholders, ",")+`) AND a.status='active'
+		AND COALESCE(a.enabled,true) AND NOT COALESCE(a.locked,false)
+		AND EXISTS(SELECT 1 FROM account_group_members selected_members WHERE selected_members.account_id=a.id AND selected_members.group_id IN (`+strings.Join(groupPlaceholders, ",")+`))`, args...)
+	if e != nil {
+		return nil, e
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		var payload sql.NullString
+		var accountOverride, groupOverride sql.NullInt64
+		if e = rows.Scan(&id, &payload, &accountOverride, &groupOverride); e != nil {
+			return nil, e
+		}
+		effective := globalConcurrency
+		if groupOverride.Valid && groupOverride.Int64 > 0 {
+			effective = groupOverride.Int64
+		}
+		if accountOverride.Valid && accountOverride.Int64 > 0 {
+			effective = accountOverride.Int64
+		}
+		state := smartops.ConcurrencyState{Revision: c.Revision, Concurrency: int(effective), Required: c.SuccessesPerStep, Maximum: c.MaxConcurrency, Step: c.UpgradeStep}
+		if !payload.Valid {
+			out[id] = state
+			continue
+		}
+		var envelope map[string]json.RawMessage
+		if json.Unmarshal([]byte(payload.String), &envelope) != nil {
+			continue
+		}
+		raw := envelope["concurrency"]
+		if raw == nil {
+			raw = json.RawMessage(payload.String)
+		}
+		if json.Unmarshal(raw, &state) == nil && state.Revision == c.Revision && state.Concurrency == int(effective) {
+			if state.Required == 0 {
+				state.Required = c.SuccessesPerStep
+			}
+			if state.Maximum == 0 {
+				state.Maximum = c.MaxConcurrency
+			}
+			if state.Step == 0 {
+				state.Step = c.UpgradeStep
+			}
+			out[id] = state
+		} else {
+			out[id] = smartops.ConcurrencyState{Revision: c.Revision, Concurrency: int(effective), Required: c.SuccessesPerStep, Maximum: c.MaxConcurrency, Step: c.UpgradeStep}
+		}
+	}
+	return out, rows.Err()
 }
 
 // Background aggregation, never called from request selection.
