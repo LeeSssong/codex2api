@@ -291,6 +291,10 @@ func qualityTxGroups(ctx context.Context, tx *sql.Tx, id int64) ([]int64, error)
 // Both the recovery baseline and all account mutations commit together. Native
 // account/group triggers emit scheduler outbox events in this same transaction.
 func (db *DB) ApplyAccountQualityOutcome(ctx context.Context, p accountops.Plan, outcome string) (action string, err error) {
+	qualityConfig, configErr := db.LoadOAuthAutoConfig(ctx)
+	if configErr != nil {
+		return "action_failed", configErr
+	}
 	action = "no_change"
 	err = db.WithAccountControlTx(ctx, func(tx *sql.Tx) error {
 		pluginEnabled, e := db.PluginEnabledTx(ctx, tx, "quality-ops")
@@ -364,6 +368,20 @@ func (db *DB) ApplyAccountQualityOutcome(ctx context.Context, p accountops.Plan,
 		}
 		if (p.ControlRevision > 0 && p.ControlRevision != revision) || (p.CredentialGeneration > 0 && p.CredentialGeneration != generation) {
 			action = "account_changed"
+			return nil
+		}
+		if p.QualityAttempt > 0 {
+			_, active, e := db.applyQuality5xxProbeTx(ctx, tx, p.AccountID, qualityConfig, generation, p.QualityRevision, outcome == "passed", outcome != "inconclusive", p.QualityAttempt)
+			if e != nil {
+				return e
+			}
+			if outcome == "passed" {
+				action = "recovery_started"
+			} else if active {
+				action = "model_cooldown_refreshed"
+			} else {
+				action = "stale_run"
+			}
 			return nil
 		}
 		if outcome == "inconclusive" && p.Action != "enable_bps" {

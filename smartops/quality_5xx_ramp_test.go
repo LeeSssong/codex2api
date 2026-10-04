@@ -27,7 +27,7 @@ func TestQuality5xxRampFailureAndOwnedRecovery(t *testing.T) {
 		t.Fatalf("inconclusive probe recovered: %+v n=%d", s, n)
 	}
 	s, n = s.ProbeResult(c, 5, 3, c.Revision, true, true, now)
-	if n != 6 || s.Active == false {
+	if n != 5 || s.Active == false || s.ProbePending {
 		t.Fatalf("first success progression state=%+v n=%d", s, n)
 	}
 }

@@ -364,6 +364,9 @@ func (h *Handler) GetAccountQualityRound(c *gin.Context) {
 }
 func (h *Handler) runAccountQualityRound(parent context.Context, p accountops.Plan) {
 	p.QualityAttempt = h.db.Quality5xxAttempt(parent, p.AccountID)
+	if cfg, err := h.db.LoadOAuthAutoConfig(parent); err == nil {
+		p.QualityRevision = cfg.Revision
+	}
 	ctx, cancel := context.WithTimeout(parent, 10*time.Minute)
 	defer cancel()
 	round := accountops.Round{PlanID: p.ID, AccountID: p.AccountID, Plan: p, StartedAt: time.Now().UTC(), Results: make([]accountops.Sample, p.Samples)}
@@ -500,11 +503,7 @@ func (h *Handler) runAccountQualityRound(parent context.Context, p accountops.Pl
 		log.Printf("[account-ops] apply plan=%d: %v", p.ID, e)
 		return
 	}
-	if h.store != nil {
-		if cfg, ce := h.db.LoadOAuthAutoConfig(ctx); ce == nil && cfg.Quality5xx.Enabled {
-			h.store.ReportQuality5xxSuccess(p.AccountID, p.CredentialGeneration, cfg.Revision, round.Outcome == "passed", round.Outcome != "inconclusive", p.QualityAttempt)
-		}
-	}
+
 	h.accountOps.alerts.ObserveQuality(p.AccountID, round.AccountName, round.Action)
 	if h.store != nil {
 		row, e = h.db.GetAccountByID(ctx, p.AccountID)

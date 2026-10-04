@@ -42,8 +42,20 @@ func (s *Store) ReportQuality5xx(acc *Account) {
 		if err != nil || !cfg.Quality5xx.Enabled {
 			return
 		}
-		_, _, _ = s.db.RecordQuality5xxFailure(ctx, acc.DBID, cfg, acc.GetCredentialGeneration(), cfg.Revision, cfg.Quality5xx.Models)
-		_ = s.db.TriggerQualityPlansForAccount(ctx, acc.DBID, cfg.Quality5xx.Models)
+		_, queued, err := s.db.RecordQuality5xxFailure(ctx, acc.DBID, cfg, acc.GetCredentialGeneration(), cfg.Revision, cfg.Quality5xx.Models, int(acc.GetBaseConcurrencyEffective()))
+		if err != nil {
+			log.Printf("[quality-5xx] persist account=%d: %v", acc.DBID, err)
+			return
+		}
+		if !queued {
+			return
+		}
+		if err = s.reloadDispatchAccountByID(ctx, acc.DBID); err != nil {
+			log.Printf("[quality-5xx] projection account=%d: %v", acc.DBID, err)
+		}
+		if err = s.db.TriggerQualityPlansForAccount(ctx, acc.DBID, nil); err != nil {
+			log.Printf("[quality-5xx] trigger account=%d: %v", acc.DBID, err)
+		}
 	}()
 }
 

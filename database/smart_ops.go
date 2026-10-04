@@ -685,9 +685,28 @@ func (db *DB) RecordSmartOpsConcurrency(ctx context.Context, id int64, c smartop
 			return e
 		}
 		var n int
+		if quality.Active && quality.CurrentConcurrency != int(current.Int64) {
+			// An explicit concurrency edit relinquishes recovery ownership.
+			quality.Active = false
+			quality.ProbePending = false
+		}
 		if quality.Active && quality.ProbePending {
 			n = int(current.Int64)
+		} else if quality.Active {
+			recoveryConfig := c
+			if quality.OriginalConcurrency < recoveryConfig.MaxConcurrency {
+				recoveryConfig.MaxConcurrency = quality.OriginalConcurrency
+			}
+			quality.Concurrency, n = smartops.AdvanceConcurrency(quality.Concurrency, int(current.Int64), recoveryConfig, smartops.ConcurrencyResult{Success: success, At: time.Now()}, time.Now())
+			quality.CurrentConcurrency = n
+			state = quality.Concurrency
+			if n >= recoveryConfig.MaxConcurrency {
+				quality.Active = false
+			}
 		} else {
+			if quality.Attempt > 0 && quality.Revision == c.Revision && quality.CurrentConcurrency == int(current.Int64) && quality.OriginalConcurrency > 0 && c.MaxConcurrency > quality.OriginalConcurrency {
+				c.MaxConcurrency = quality.OriginalConcurrency
+			}
 			state, n = smartops.AdvanceConcurrency(state, int(current.Int64), c, smartops.ConcurrencyResult{Success: success, At: time.Now()}, time.Now())
 		}
 		m := map[string]json.RawMessage{}

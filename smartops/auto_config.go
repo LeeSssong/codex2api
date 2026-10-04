@@ -96,6 +96,9 @@ func ValidateOAuthAutoConfig(c OAuthAutoConfig) error {
 	if c.Quality5xx.Floor < 1 || c.Quality5xx.Floor > 10000 || c.Quality5xx.CooldownSeconds < 1 || c.Quality5xx.CooldownSeconds > 86400 {
 		return errors.New("invalid quality 5xx ramp settings")
 	}
+	if c.Quality5xx.Enabled && (!c.UpgradeEnabled || len(c.UpgradeGroupIDs) == 0 || len(c.Quality5xx.Models) == 0) {
+		return errors.New("5xx recovery requires concurrency progression groups and selected models")
+	}
 	for _, model := range c.Quality5xx.Models {
 		if strings.TrimSpace(model) == "" || len(model) > 200 {
 			return errors.New("invalid quality 5xx model")
@@ -207,12 +210,8 @@ func (s Quality5xxRampState) ProbeResult(c OAuthAutoConfig, current int, generat
 		return s, current
 	}
 	s.ProbePending = false
-	// Release only our owned cooldown state; progression remains success based.
-	s.Concurrency, current = AdvanceConcurrency(s.Concurrency, current, c, ConcurrencyResult{Success: true, At: now}, now)
-	if s.OriginalConcurrency > 0 && current > s.OriginalConcurrency {
-		current = s.OriginalConcurrency
-		s.Concurrency.Concurrency = current
-	}
+	// A probe unlocks recovery but is not a user-request success sample.
+	s.Concurrency = ConcurrencyState{Revision: revision, Concurrency: current, PausedUntil: now.Add(time.Duration(c.CooldownSeconds) * time.Second)}
 	if current >= s.OriginalConcurrency {
 		s.Active = false
 		s.CurrentConcurrency = current
