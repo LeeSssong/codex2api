@@ -8,7 +8,7 @@ import { Select } from '@/components/ui/select'
 import { SmartOpsSection, SmartOpsField, SmartOpsSwitch, SmartOpsNumber, SmartOpsGroups, SmartOpsModelList, SETTINGS_FIELD_GRID } from '../components/SmartOpsFields'
 import { api, getSmartOpsConfig, putOAuthAutoConfig } from '../api'
 import type { AccountGroup } from '../types'
-import type { OAuthAutoConfig, BPSDefaults } from '../lib/smartOps'
+import type { OAuthAutoConfig, BPSDefaults, Quality5xxConfig } from '../lib/smartOps'
 
 export default function AutoConfig() {
   const { t } = useTranslation()
@@ -34,6 +34,8 @@ export default function AutoConfig() {
   const disabled = !enabled || busy
   const patch = (p: Partial<OAuthAutoConfig>) => setConfig(v => v && { ...v, ...p })
   const bps = (p: Partial<BPSDefaults>) => config && patch({ bps: { ...config.bps, ...p } })
+  const quality = config?.quality_5xx ?? { enabled: false, floor: 5, cooldown_seconds: 300, models: [] }
+  const patchQuality = (p: Partial<Quality5xxConfig>) => patch({ quality_5xx: { ...quality, ...p } })
   const channel = config?.platform === 'openai' ? 'codex' : config?.platform
   const initialGroups = groups.filter(g => (g.channel || 'codex') === channel)
   const bpsSwitches: (keyof BPSDefaults)[] = ['ws_sse_acceleration', 'auto_enable_on_degradation', 'all_models', 'omit_unsupported_tools', 'ignore_encrypted_content', 'auto_disable_on_403', 'auto_recover_on_403', 'auto_move_on_403', 'session_proxy', 'cache_creation_as_input']
@@ -68,6 +70,15 @@ export default function AutoConfig() {
           <SmartOpsNumber label={t('smartOps.upgrade_step')} value={config.upgrade_step} max={1000} onChange={v => patch({ upgrade_step: v })} disabled={disabled} />
           <SmartOpsNumber label={t('smartOps.max_concurrency')} value={config.max_concurrency} onChange={v => patch({ max_concurrency: v })} disabled={disabled} />
           <SmartOpsNumber label={t('smartOps.cooldown_seconds')} value={config.cooldown_seconds} max={86400} onChange={v => patch({ cooldown_seconds: v })} disabled={disabled} />
+        </div>
+      </SmartOpsSection>
+      <SmartOpsSection title={t('smartOps.quality5xx.title')}>
+        <SmartOpsSwitch label={t('smartOps.quality5xx.enabled')} value={quality.enabled} onChange={v => patchQuality({ enabled: v })} disabled={disabled} />
+        <p className="text-sm text-muted-foreground">{t('smartOps.quality5xx.description')}</p>
+        <div className={SETTINGS_FIELD_GRID}>
+          <SmartOpsNumber label={t('smartOps.quality5xx.floor')} value={quality.floor} onChange={v => patchQuality({ floor: v })} disabled={disabled} />
+          <SmartOpsNumber label={t('smartOps.quality5xx.interval')} value={quality.cooldown_seconds} max={86400} onChange={v => patchQuality({ cooldown_seconds: v })} disabled={disabled} />
+          <SmartOpsField label={t('smartOps.quality5xx.models')}><SmartOpsModelList label={t('smartOps.quality5xx.models')} value={quality.models || []} onChange={v => patchQuality({ models: v })} disabled={disabled} /></SmartOpsField>
         </div>
       </SmartOpsSection>
       <SmartOpsSection title={t('smartOps.bpsDefaults')}>

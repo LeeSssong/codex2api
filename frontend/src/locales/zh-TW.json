@@ -3072,6 +3072,14 @@
     "sourceModel": "請求模型",
     "targetModel": "上游模型",
     "addRule": "新增規則",
+    "quality5xx": {
+      "title": "5xx 後降低並行數與模型恢復",
+      "enabled": "啟用 5xx 恢復狀態機",
+      "description": "OAuth 帳號遇到上游 5xx 後降低並行數並冷卻指定模型，其他模型繼續排程。背景品質檢測通過後解除冷卻，再依上方並行升級規則逐步恢復。請為指定模型設定並啟用品質檢測計畫。",
+      "floor": "5xx 後並行數（不會提高已有低並行數）",
+      "interval": "模型冷卻時間（秒）",
+      "models": "冷卻的模型（逗號分隔）"
+    },
     "concurrencyUpgrade": "並發升級",
     "upgrade_enabled": "成功請求後自動增加並發",
     "upgradeGroups": "升級分組",

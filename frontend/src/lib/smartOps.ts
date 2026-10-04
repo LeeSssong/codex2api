@@ -7,7 +7,9 @@ export type BPSDefaults = {
   auto_move_on_403: boolean; target_group_id: number; session_proxy: boolean; proxy_source: string;
   cache_creation_as_input: boolean;
 }
+export type Quality5xxConfig = { enabled: boolean; floor: number; cooldown_seconds: number; models: string[] }
 export type OAuthAutoConfig = {
+  quality_5xx?: Quality5xxConfig;
   enabled: boolean; platform: string; priority: number; load_factor: number; concurrency: number;
   group_ids: number[]; model_mappings: ModelMapping[]; upgrade_enabled: boolean; upgrade_group_ids: number[];
   successes_per_step: number; upgrade_step: number; max_concurrency: number; cooldown_seconds: number;
