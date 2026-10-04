@@ -158,17 +158,23 @@ func ValidateOAuthAutoConfig(c OAuthAutoConfig) error {
 	return nil
 }
 
+type QualityCooldownSnapshot struct {
+	Reason  string    `json:"reason"`
+	ResetAt time.Time `json:"reset_at"`
+}
 type Quality5xxRampState struct {
-	Revision            string           `json:"revision"`
-	Generation          int64            `json:"generation"`
-	OriginalConcurrency int              `json:"original_concurrency"`
-	CurrentConcurrency  int              `json:"current_concurrency"`
-	Active              bool             `json:"active"`
-	Attempt             uint64           `json:"attempt"`
-	ProbePending        bool             `json:"probe_pending"`
-	CooldownUntil       time.Time        `json:"cooldown_until"`
-	OwnedModels         []string         `json:"owned_models,omitempty"`
-	Concurrency         ConcurrencyState `json:"concurrency"`
+	PreviousCooldowns   map[string]QualityCooldownSnapshot `json:"previous_cooldowns,omitempty"`
+	AppliedCooldowns    map[string]time.Time               `json:"applied_cooldowns,omitempty"`
+	Revision            string                             `json:"revision"`
+	Generation          int64                              `json:"generation"`
+	OriginalConcurrency int                                `json:"original_concurrency"`
+	CurrentConcurrency  int                                `json:"current_concurrency"`
+	Active              bool                               `json:"active"`
+	Attempt             uint64                             `json:"attempt"`
+	ProbePending        bool                               `json:"probe_pending"`
+	CooldownUntil       time.Time                          `json:"cooldown_until"`
+	OwnedModels         []string                           `json:"owned_models,omitempty"`
+	Concurrency         ConcurrencyState                   `json:"concurrency"`
 }
 
 func (s Quality5xxRampState) ResetOnFailure(c Quality5xxRampConfig, current int, generation int64, revision string, now time.Time) Quality5xxRampState {

@@ -43,6 +43,16 @@ func (db *DB) RecordQuality5xxFailure(ctx context.Context, id int64, c smartops.
 		if ok, e := db.PluginEnabledTx(ctx, tx, smartops.PluginAutoConfig); e != nil || !ok {
 			return e
 		}
+		if ok, e := db.PluginEnabledTx(ctx, tx, "quality-ops"); e != nil || !ok {
+			return e
+		}
+		var probeConfigured bool
+		if e := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM account_quality_plans WHERE account_id=$1 AND enabled=TRUE)`, id).Scan(&probeConfigured); e != nil {
+			return e
+		}
+		if !probeConfigured {
+			return nil
+		}
 		if !c.UpgradeEnabled {
 			return nil
 		}
@@ -113,7 +123,12 @@ func (db *DB) RecordQuality5xxFailure(ctx context.Context, id int64, c smartops.
 			}
 		}
 		state = state.ResetOnFailure(c.Quality5xx, int(current.Int64), generation, revision, time.Now())
-		state.OwnedModels = append([]string(nil), models...)
+		state.OwnedModels = nil
+		for _, model := range models {
+			if model = strings.ToLower(strings.TrimSpace(model)); model != "" {
+				state.OwnedModels = append(state.OwnedModels, model)
+			}
+		}
 		next = state.CurrentConcurrency
 		shouldProbe = true
 		b := qualityPayload(raw, state)
@@ -128,25 +143,20 @@ func (db *DB) RecordQuality5xxFailure(ctx context.Context, id int64, c smartops.
 				return err
 			}
 		}
-		for _, model := range models {
-			model = strings.TrimSpace(model)
-			if model != "" {
-				if err = db.setModelCooldownTx(ctx, tx, id, model, "quality_5xx_ramp", time.Now().Add(time.Duration(c.Quality5xx.CooldownSeconds)*time.Second)); err != nil {
-					return err
-				}
-			}
+		if err = db.updateQualityCooldownsTx(ctx, tx, id, &state, state.CooldownUntil, false); err != nil {
+			return err
 		}
+		b = qualityPayload(raw, state)
+		if _, err = tx.ExecContext(ctx, `UPDATE smart_ops_concurrency SET payload=$1 WHERE account_id=$2`, string(b), id); err != nil {
+			return err
+		}
+
 		if err = insertSchedulerOutboxEventTx(ctx, tx, SchedulerEntityAccount, id, "upsert"); err != nil {
 			return err
 		}
 		return tx.Commit()
 	})
 	return next, shouldProbe, err
-}
-
-func (db *DB) setModelCooldownTx(ctx context.Context, tx *sql.Tx, id int64, model, reason string, until time.Time) error {
-	_, err := tx.ExecContext(ctx, `INSERT INTO account_model_cooldowns(account_id,model,reason,reset_at,updated_at) VALUES($1,$2,$3,$4,CURRENT_TIMESTAMP) ON CONFLICT(account_id,model) DO UPDATE SET reason=excluded.reason,reset_at=excluded.reset_at,updated_at=CURRENT_TIMESTAMP WHERE account_model_cooldowns.reason=$3 OR account_model_cooldowns.reset_at <= CURRENT_TIMESTAMP`, id, model, reason, db.timeArg(until))
-	return err
 }
 
 // ApplyQuality5xxProbe records a fenced probe result. Inconclusive and failed
@@ -210,29 +220,25 @@ func (db *DB) applyQuality5xxProbeTx(ctx context.Context, tx *sql.Tx, id int64, 
 	}
 	s, next = s.ProbeResult(c, int(current.Int64), generation, revision, passed, conclusive, time.Now())
 	active = s.Active
-	if !passed || !conclusive {
-		for _, m := range s.OwnedModels {
-			if _, err = tx.ExecContext(ctx, `UPDATE account_model_cooldowns SET reset_at=$1,updated_at=CURRENT_TIMESTAMP WHERE account_id=$2 AND model=$3 AND reason='quality_5xx_ramp'`, db.timeArg(time.Now().Add(time.Duration(c.Quality5xx.CooldownSeconds)*time.Second)), id, m); err != nil {
-				return next, active, err
-			}
-		}
-	}
+
 	if next != int(current.Int64) {
 		if _, err = tx.ExecContext(ctx, `UPDATE accounts SET base_concurrency_override=$1,updated_at=CURRENT_TIMESTAMP WHERE id=$2`, next, id); err != nil {
 			return next, active, err
 		}
+
 		if err = insertSchedulerOutboxEventTx(ctx, tx, SchedulerEntityAccount, id, "upsert"); err != nil {
 			return next, active, err
 		}
 	}
-	if passed && conclusive {
-		for _, m := range s.OwnedModels {
-			if _, err = tx.ExecContext(ctx, `DELETE FROM account_model_cooldowns WHERE account_id=$1 AND model=$2 AND reason='quality_5xx_ramp'`, id, m); err != nil {
-				return next, active, err
-			}
+	if !passed || !conclusive {
+		if _, err = tx.ExecContext(ctx, `UPDATE account_quality_plans SET next_run=$1 WHERE account_id=$2 AND enabled=TRUE`, db.timeArg(time.Now().Add(time.Duration(c.Quality5xx.CooldownSeconds)*time.Second)), id); err != nil {
+			return next, active, err
 		}
-		s.OwnedModels = nil
 	}
+	if err = db.updateQualityCooldownsTx(ctx, tx, id, &s, s.CooldownUntil, passed && conclusive); err != nil {
+		return next, active, err
+	}
+
 	b := qualityPayload(raw, s)
 	if _, err = tx.ExecContext(ctx, `UPDATE smart_ops_concurrency SET payload=$1 WHERE account_id=$2`, string(b), id); err != nil {
 		return next, active, err
@@ -258,4 +264,70 @@ func (db *DB) Quality5xxAttempt(ctx context.Context, id int64) uint64 {
 		return 0
 	}
 	return e.Quality.Attempt
+}
+
+func (db *DB) updateQualityCooldownsTx(ctx context.Context, tx *sql.Tx, id int64, s *smartops.Quality5xxRampState, until time.Time, restore bool) error {
+	if s.PreviousCooldowns == nil {
+		s.PreviousCooldowns = map[string]smartops.QualityCooldownSnapshot{}
+	}
+	if s.AppliedCooldowns == nil {
+		s.AppliedCooldowns = map[string]time.Time{}
+	}
+	for _, model := range s.OwnedModels {
+		var reason string
+		var reset any
+		q := `SELECT reason,reset_at FROM account_model_cooldowns WHERE account_id=$1 AND model=$2`
+		if !db.isSQLite() {
+			q += ` FOR UPDATE`
+		}
+		err := tx.QueryRowContext(ctx, q, id, model).Scan(&reason, &reset)
+		exists := err == nil
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		var current time.Time
+		if exists {
+			current, err = parseDBTimeValue(reset)
+			if err != nil {
+				return err
+			}
+		}
+		applied, owned := s.AppliedCooldowns[model]
+		if owned && (!exists || reason != "quality_5xx_ramp" || !current.Equal(applied)) {
+			continue
+		}
+		if restore {
+			if !owned {
+				continue
+			}
+			before := s.PreviousCooldowns[model]
+			if before.ResetAt.After(time.Now()) {
+				_, err = tx.ExecContext(ctx, `UPDATE account_model_cooldowns SET reason=$1,reset_at=$2,updated_at=CURRENT_TIMESTAMP WHERE account_id=$3 AND model=$4`, before.Reason, db.timeArg(before.ResetAt), id, model)
+			} else {
+				_, err = tx.ExecContext(ctx, `DELETE FROM account_model_cooldowns WHERE account_id=$1 AND model=$2`, id, model)
+			}
+			if err != nil {
+				return err
+			}
+			delete(s.PreviousCooldowns, model)
+			delete(s.AppliedCooldowns, model)
+			continue
+		}
+		if !owned {
+			s.PreviousCooldowns[model] = smartops.QualityCooldownSnapshot{Reason: reason, ResetAt: current}
+		}
+		deadline := until.Truncate(time.Second)
+		if current.After(deadline) {
+			deadline = current
+		}
+		_, err = tx.ExecContext(ctx, `INSERT INTO account_model_cooldowns(account_id,model,reason,reset_at,updated_at) VALUES($1,$2,'quality_5xx_ramp',$3,CURRENT_TIMESTAMP) ON CONFLICT(account_id,model) DO UPDATE SET reason=excluded.reason,reset_at=excluded.reset_at,updated_at=CURRENT_TIMESTAMP`, id, model, db.timeArg(deadline))
+		if err != nil {
+			return err
+		}
+		s.AppliedCooldowns[model] = deadline
+	}
+	if restore {
+		s.OwnedModels = nil
+	}
+	return nil
 }

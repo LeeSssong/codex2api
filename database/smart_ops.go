@@ -685,7 +685,7 @@ func (db *DB) RecordSmartOpsConcurrency(ctx context.Context, id int64, c smartop
 			return e
 		}
 		var n int
-		if quality.Active && quality.CurrentConcurrency != int(current.Int64) {
+		if quality.Active && (quality.CurrentConcurrency != int(current.Int64) || quality.Revision != c.Revision || !c.Quality5xx.Enabled) {
 			// An explicit concurrency edit relinquishes recovery ownership.
 			quality.Active = false
 			quality.ProbePending = false

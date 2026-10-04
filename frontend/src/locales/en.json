@@ -8022,7 +8022,7 @@
     "quality5xx": {
       "title": "5xx Concurrency and Model Recovery",
       "enabled": "Enable 5xx recovery",
-      "description": "After an upstream 5xx, lower OAuth account concurrency and cool the selected models while other models remain available. A successful background quality check releases the models, then the progression rules above gradually restore concurrency. Configure and enable quality plans for the selected models.",
+      "description": "After an upstream 5xx, lower OAuth account concurrency and cool the selected models while other models remain available. A successful background quality check releases the models, then the progression rules above gradually restore concurrency. Enable progression, select its groups, and enable an account quality plan.",
       "floor": "Concurrency after 5xx (never raises a lower limit)",
       "interval": "Model cooldown (seconds)",
       "models": "Models to cool (comma separated)"

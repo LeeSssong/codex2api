@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"github.com/codex2api/accountops"
 	"github.com/codex2api/smartops"
 	"testing"
 	"time"
@@ -30,6 +31,12 @@ func TestQuality5xxDatabaseLifecycle(t *testing.T) {
 	c.Quality5xx = smartops.Quality5xxRampConfig{Enabled: true, Floor: 5, CooldownSeconds: 60, Models: []string{"target"}}
 	id, err := db.InsertAutoConfiguredOAuthAccount(ctx, "test", "openai", "oauth", map[string]interface{}{"access_token": "synthetic-do-not-copy"}, "", c)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err = db.ensureAccountOpsSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.SaveAccountQualityPlan(ctx, accountops.Plan{AccountID: id, Enabled: true, Model: "target", Prompt: "test", ExpectedAnswer: "21", Cron: "*/5 * * * *", Samples: 1, Action: "disable_scheduling"}); err != nil {
 		t.Fatal(err)
 	}
 	row, err := db.GetAccountByID(ctx, id)
