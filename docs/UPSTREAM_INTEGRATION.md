@@ -4,7 +4,7 @@ This checkout combines the following pinned upstream revisions:
 
 | Source | Branch | Revision |
 | --- | --- | --- |
-| james-6-23/codex2api | main | 5601508801d0b4d1efc9881e5ad04eb8077c654f |
+| james-6-23/codex2api | main | a7d6cec31c85b91f730ea43cd26c184f4e0718bf |
 | hloolx/codex2api | main | b402c611 |
 
 The integration starts from the main project and merges hloolx with conflict
@@ -49,3 +49,11 @@ hloolx with `-X theirs` when it is the incoming branch. Run Go tests, frontend
 tests, type checking, the frontend build, and State/route browser regressions
 before deploying. Text conflict resolution alone cannot detect interface or
 database placeholder conflicts.
+
+The 2026-10-04 update merges official main into production main at `4dbefcab`.
+It retains independent operations plugins, credential monitoring, quality 5xx
+recovery, managed State, and Basispoints. Official client version pairs, model
+compatibility, usage mismatch display, and degraded-account concurrency controls
+are included. The settings SQL keeps both preserve flags before the appended
+Basispoints argument; PostgreSQL and SQLite persistence regressions exercise
+these settings together.

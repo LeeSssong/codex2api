@@ -36,6 +36,8 @@ func TestExhaustedResetSettingsPersistence(t *testing.T) {
 			}
 			for _, enabled := range []bool{true, false} {
 				settings.AutoResetCreditsOnExhaustionEnabled = enabled
+				settings.CodexBasispointsEnabled = enabled
+				settings.ShowUpstreamModelMismatch = enabled
 				settings.PreservePromptFilterCustomPatterns = true
 				settings.PreservePromptFilterReviewAPIKey = true
 				settings.PromptFilterCustomPatterns = "[]"
@@ -52,6 +54,9 @@ func TestExhaustedResetSettingsPersistence(t *testing.T) {
 				}
 				if got.PromptFilterCustomPatterns != `[{"id":"fixture"}]` || got.PromptFilterReviewAPIKey != "fixture-key" {
 					t.Fatal("new SQL parameter disturbed preserve flags")
+				}
+				if got.CodexBasispointsEnabled != enabled || got.ShowUpstreamModelMismatch != enabled {
+					t.Fatal("upstream display setting and Basispoints switch did not persist independently")
 				}
 			}
 			// Simulate upgrading an existing installation lacking the newly added column.

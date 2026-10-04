@@ -130,6 +130,7 @@ func main() {
 			ImageStorageConfig:                "{}",
 			PublicKeyUsagePageEnabled:         true,
 			PublicImageStudioPageEnabled:      true,
+			ShowUpstreamModelMismatch:         true,
 			CodexWSHideUpstreamErrors:         true,
 			CodexWSSilentRetryEnabled:         true,
 			CodexWSSilentMaxRetries:           2,
@@ -182,6 +183,7 @@ func main() {
 			ImageStorageConfig:                "{}",
 			PublicKeyUsagePageEnabled:         true,
 			PublicImageStudioPageEnabled:      true,
+			ShowUpstreamModelMismatch:         true,
 			CodexWSHideUpstreamErrors:         true,
 			CodexWSSilentRetryEnabled:         true,
 			CodexWSSilentMaxRetries:           2,
@@ -240,6 +242,9 @@ func main() {
 		auth.SetConfiguredAntigravitySettings(parsed)
 		if len(parsed.ModelRedirects) > 0 {
 			log.Printf("Antigravity 模型重定向已加载: %d 条", len(parsed.ModelRedirects))
+		}
+		if parsed.ExposeThoughts {
+			log.Printf("Antigravity 思考内容下发已开启")
 		}
 	}
 	antigravityCfgCancel()

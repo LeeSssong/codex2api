@@ -35,9 +35,11 @@ import {
   uniqueTestModels,
 } from "../lib/connectionTestModels";
 import { orderAntigravityTestModels } from "../lib/antigravityModels";
+import { grokConnectionTestModels } from "../lib/grokModelDisplay";
 import { cn } from "@/lib/utils";
 import { useToast } from "../hooks/useToast";
 import Modal from "./Modal";
+import ModelDetectorModal from "./ModelDetectorModal";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
@@ -83,12 +85,14 @@ export default function TestConnectionModal({
   onSettled,
   successHint,
   restoreOnSuccess,
+  mode = "test",
 }: {
   account: AccountRow;
   onClose: () => void;
   onSettled: () => void;
   successHint?: string;
   restoreOnSuccess?: boolean;
+  mode?: "test" | "detector";
 }) {
   const { t } = useTranslation();
   const { showToast } = useToast();
@@ -119,19 +123,20 @@ export default function TestConnectionModal({
   }, []);
 
   const isClaudeAccount = Boolean(account.claude_api);
-  // Antigravity models already use public tier IDs. Prefer the channel setting,
-  // falling back to the newest Flash model rather than obsolete catalog entries.
+  // Antigravity 优先使用额度快照里的模型,避免账号目录中的额外模型混入测连。
   const isAntigravityAccount = Boolean(account.antigravity_api);
   // Relay accounts provide their own model catalog; Claude uses a separate branch.
   const isOpenAIResponsesAccount = Boolean(
     account.openai_responses_api || account.grok_api,
   );
+  // 白名单为空的 Grok 账号以上游模型目录为准，不能只读 account.models。
+  const isGrokAccount = Boolean(account.grok_api);
 
   const modelSelectOptions = useMemo(
     () =>
       uniqueTestModels(
         modelOptions,
-        selectedModel,
+        isAntigravityAccount && !modelOptions.includes(selectedModel) ? undefined : selectedModel,
         !isOpenAIResponsesAccount && !isClaudeAccount && !isAntigravityAccount,
       ).map((item) => ({ label: item, value: item })),
     [isAntigravityAccount, isClaudeAccount, isOpenAIResponsesAccount, modelOptions, selectedModel],
@@ -150,9 +155,9 @@ export default function TestConnectionModal({
             /* Fall back to the catalog when channel settings are unavailable. */
           }
           if (!active) return;
-          const ordered = orderAntigravityTestModels(account.models ?? [], preferred);
+          const ordered = orderAntigravityTestModels(account.models ?? [], preferred, account.antigravity_quota);
           setModelOptions(ordered);
-          setSelectedModel((current) => current || ordered[0] || "");
+          setSelectedModel((current) => ordered.includes(current) ? current : ordered[0] || "");
           return;
         }
 
@@ -170,6 +175,17 @@ export default function TestConnectionModal({
           );
           setModelOptions(fallbackModels);
           setSelectedModel((current) => current || fallbackModels[0] || "");
+          return;
+        }
+
+        if (isGrokAccount) {
+          const grokModels = grokConnectionTestModels(account);
+          const preferredModel = grokModels.find(
+            (item) => item.toLowerCase() === settings.test_model.toLowerCase(),
+          );
+          const nextModels = uniqueTestModels(grokModels, preferredModel, false);
+          setModelOptions(nextModels);
+          setSelectedModel((current) => current || nextModels[0] || "");
           return;
         }
 
@@ -217,9 +233,9 @@ export default function TestConnectionModal({
       } catch {
         if (!active) return;
         if (isAntigravityAccount) {
-          const ordered = orderAntigravityTestModels(account.models ?? [], "");
+          const ordered = orderAntigravityTestModels(account.models ?? [], "", account.antigravity_quota);
           setModelOptions(ordered);
-          setSelectedModel((current) => current || ordered[0] || "");
+          setSelectedModel((current) => ordered.includes(current) ? current : ordered[0] || "");
         } else if (isClaudeAccount) {
           const accountModels = (account.models ?? []).filter(
             (model) => isConnectionTestModel(model) && model.toLowerCase().startsWith("claude-"),
@@ -229,6 +245,10 @@ export default function TestConnectionModal({
             undefined,
             false,
           );
+          setModelOptions(fallbackModels);
+          setSelectedModel((current) => current || fallbackModels[0] || "");
+        } else if (isGrokAccount) {
+          const fallbackModels = uniqueTestModels(grokConnectionTestModels(account), undefined, false);
           setModelOptions(fallbackModels);
           setSelectedModel((current) => current || fallbackModels[0] || "");
         } else if (isOpenAIResponsesAccount) {
@@ -263,10 +283,10 @@ export default function TestConnectionModal({
     return () => {
       active = false;
     };
-  }, [account.claude_api, account.model_mapping, account.models, isAntigravityAccount, isClaudeAccount, isOpenAIResponsesAccount]);
+  }, [account.antigravity_quota, account.claude_api, account.grok_models, account.model_mapping, account.models, isAntigravityAccount, isClaudeAccount, isGrokAccount, isOpenAIResponsesAccount]);
 
   useEffect(() => {
-    if (!modelOptionsReady || !selectedModel) return;
+    if (mode === "detector" || !modelOptionsReady || !selectedModel) return;
 
     // Reset previous results, including StrictMode remounts.
     setOutput([]);
@@ -411,6 +431,7 @@ export default function TestConnectionModal({
     attempt,
     markSettled,
     modelOptionsReady,
+    mode,
     restoreOnSuccess,
     selectedModel,
     t,
@@ -549,6 +570,17 @@ export default function TestConnectionModal({
       diagnostics?.response_body,
   );
   const monoStyle = { fontFamily: "var(--font-geist-mono)" } as const;
+
+  if (mode === "detector") {
+    return modelOptionsReady ? (
+      <ModelDetectorModal
+        account={account}
+        requestModels={modelSelectOptions.map((option) => option.value)}
+        defaultModel={selectedModel}
+        onClose={onClose}
+      />
+    ) : null;
+  }
 
   return (
     <Modal

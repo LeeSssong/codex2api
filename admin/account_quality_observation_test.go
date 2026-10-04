@@ -38,7 +38,7 @@ func TestAccountQualityObservationsNeverChangeSchedulingControls(t *testing.T) {
 			before := a.CooldownUtil
 			router := gin.New()
 			router.POST("/accounts/:id/test", func(c *gin.Context) {
-				h.testConnection(c, &qualityTestRequest{Model: "gemini-3.5-flash-low", Prompt: "q", TextOnly: true, ObservationOnly: true})
+				h.testConnection(c, &qualityTestRequest{Model: a.Models[0], Prompt: "q", TextOnly: true, ObservationOnly: true})
 			})
 			w := httptest.NewRecorder()
 			router.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/accounts/7/test", nil))

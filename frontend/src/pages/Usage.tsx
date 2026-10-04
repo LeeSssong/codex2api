@@ -39,9 +39,21 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { Activity, Box, Clock, Zap, Sparkles, AlertTriangle, Search, Brain, DatabaseZap, DatabaseBackup, X, Image as ImageIcon, Info, CircleDollarSign, BarChart3, KeyRound, Route, SlidersHorizontal, ShieldAlert, RefreshCw, ChevronDown, RotateCcw, PlugZap, FlaskConical } from 'lucide-react'
+import { createLucideIcon, Activity, Box, Clock, Zap, Sparkles, AlertTriangle, Search, Brain, DatabaseZap, X, Image as ImageIcon, Info, CircleDollarSign, BarChart3, KeyRound, Route, SlidersHorizontal, ShieldAlert, RefreshCw, ChevronDown, RotateCcw, PlugZap, FlaskConical } from 'lucide-react'
+
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
+
+// 缓存写入图标:取 Lucide (ISC) 的 database-plus,与读取用的 DatabaseZap 成对。
+// 锁定的 lucide-react 1.0.1 还没收录它,升级前在这里按同一路径注册。
+const DatabasePlus = createLucideIcon('database-plus', [
+  ['path', { d: 'M19 16v6', key: 'tddt3s' }],
+  ['path', { d: 'M21 12.536V5', key: 'zeza6i' }],
+  ['path', { d: 'M22 19h-6', key: 'vcuq98' }],
+  ['path', { d: 'M3 12A9 3 0 0 0 15.1824 14.8061', key: 'ukc3b1' }],
+  ['path', { d: 'M3 5V19A9 3 0 0 0 13.318 21.968', key: '1lyu4j' }],
+  ['ellipse', { cx: '12', cy: '5', rx: '9', ry: '3', key: 'msslwz' }],
+])
 
 /** Color ramp for reasoning effort: cool/muted → hot/intense. */
 function getReasoningEffortBadgeClassName(effort: string): string {
@@ -67,6 +79,19 @@ function getReasoningEffortBadgeClassName(effort: string): string {
     default:
       return 'border-transparent bg-muted text-muted-foreground'
   }
+}
+
+function usageRequestedModelTitle(
+  log: UsageLog,
+  ultraHint: string,
+  filterHint: string,
+): string {
+  const actual = log.effective_model?.trim()
+  const parts: string[] = []
+  if (log.ultra) parts.push(ultraHint)
+  if (actual && actual !== log.model) parts.push(actual)
+  parts.push(filterHint)
+  return parts.join('\n')
 }
 
 function ReasoningEffortBadge({ effort }: { effort: string }) {
@@ -1368,7 +1393,7 @@ function UsageCacheBadges({ log, align = 'end' }: { log: UsageLog; align?: 'star
       )}
       {tokens.cacheWriteTokens > 0 && (
         <Badge variant="outline" title={writeTitle} aria-label={writeTitle} className={`${usageTableBadgeClass} gap-1 border-transparent bg-amber-500/10 text-amber-600 dark:bg-amber-500/20 dark:text-amber-400`}>
-          <DatabaseBackup className="size-3.5" aria-hidden="true" />
+          <DatabasePlus className="size-3.5" aria-hidden="true" />
           {formatTokens(tokens.cacheWriteTokens, true)}
         </Badge>
       )}
@@ -1743,6 +1768,8 @@ export default function Usage() {
   const [filterFast, setFilterFast] = useState('')
   const [filterUltra, setFilterUltra] = useState('')
   const [filterModelMismatch, setFilterModelMismatch] = useState(false)
+  // 关闭「显示上游模型不一致」后，筛选参数不再带上这项；ref 让筛选回调不用等设置加载完再重建。
+  const showUpstreamModelMismatchRef = useRef(true)
   const [filterType, setFilterType] = useState<UsageTypeFilter>('')
   const [filterErrorKind, setFilterErrorKind] = useState('')
   const [filterRetry, setFilterRetry] = useState<UsageRetryFilter>('')
@@ -1804,7 +1831,7 @@ export default function Usage() {
       accountId: filterAccountId || undefined,
       fast: filterFast || undefined,
       ultra: filterUltra || undefined,
-      upstreamModelMismatch: filterModelMismatch ? 'true' : undefined,
+      upstreamModelMismatch: showUpstreamModelMismatchRef.current && filterModelMismatch ? 'true' : undefined,
       stream: filterType === 'stream' ? 'true' : filterType === 'sync' ? 'false' : undefined,
       compact: filterType === 'compact' ? 'true' : undefined,
       hasCompactionHistory: filterType === 'history' ? 'true' : undefined,
@@ -1946,6 +1973,15 @@ export default function Usage() {
 
   const { stats, settings } = data
   const showFullUsageNumbers = settings?.show_full_usage_numbers ?? false
+  const showUpstreamModelMismatch = settings?.show_upstream_model_mismatch !== false
+  showUpstreamModelMismatchRef.current = showUpstreamModelMismatch
+
+  useEffect(() => {
+    if (!showUpstreamModelMismatch && filterModelMismatch) {
+      setFilterModelMismatch(false)
+      setPage(1)
+    }
+  }, [showUpstreamModelMismatch, filterModelMismatch])
   const totalPages = Math.max(1, Math.ceil(logsTotal / pageSize))
   const currentPage = Math.min(page, totalPages)
 
@@ -2016,7 +2052,7 @@ export default function Usage() {
     filterType,
     filterFast,
     filterUltra,
-    filterModelMismatch ? 'true' : '',
+    showUpstreamModelMismatch && filterModelMismatch ? 'true' : '',
     filterErrorKind,
     filterRetry,
     filterTransport,
@@ -2031,7 +2067,7 @@ export default function Usage() {
     || filterType
     || filterFast
     || filterUltra
-    || filterModelMismatch
+    || (showUpstreamModelMismatch && filterModelMismatch)
     || filterErrorKind
     || filterRetry
     || filterTransport,
@@ -2608,20 +2644,22 @@ export default function Usage() {
                     <Sparkles className="size-3.5" />
                     Ultra
                   </button>
-                  <button
-                    type="button"
-                    title={t('usage.filterModelMismatchHint')}
-                    onClick={() => { setFilterModelMismatch(!filterModelMismatch); setPage(1) }}
-                    className={cn(
-                      'inline-flex h-8 min-w-0 flex-1 items-center justify-center gap-1 rounded-lg border px-2.5 text-[13px] font-medium transition-colors',
-                      filterModelMismatch
-                        ? 'border-orange-500/40 bg-orange-500/12 text-orange-600 dark:bg-orange-500/20 dark:text-orange-300'
-                        : 'border-border bg-background text-muted-foreground hover:bg-muted/50 hover:text-foreground',
-                    )}
-                  >
-                    <AlertTriangle className="size-3.5" />
-                    {t('usage.filterModelMismatch')}
-                  </button>
+                  {showUpstreamModelMismatch ? (
+                    <button
+                      type="button"
+                      title={t('usage.filterModelMismatchHint')}
+                      onClick={() => { setFilterModelMismatch(!filterModelMismatch); setPage(1) }}
+                      className={cn(
+                        'inline-flex h-8 min-w-0 flex-1 items-center justify-center gap-1 rounded-lg border px-2.5 text-[13px] font-medium transition-colors',
+                        filterModelMismatch
+                          ? 'border-orange-500/40 bg-orange-500/12 text-orange-600 dark:bg-orange-500/20 dark:text-orange-300'
+                          : 'border-border bg-background text-muted-foreground hover:bg-muted/50 hover:text-foreground',
+                      )}
+                    >
+                      <AlertTriangle className="size-3.5" />
+                      {t('usage.filterModelMismatch')}
+                    </button>
+                  ) : null}
                   </div>
                 </div>
               ) : null}
@@ -2672,7 +2710,11 @@ export default function Usage() {
                               className={`${usageTableBadgeClass} ${usageClickableFilterClass} ${log.ultra ? 'usage-ultra-model' : ''} ${filterModel === log.model ? 'border-primary/50 text-primary' : ''}`}
                               role="button"
                               tabIndex={0}
-                              title={`${log.ultra ? `${t('usage.ultraModeHint')} · ` : ''}${t('usage.filterByModelHint', { model: log.model || '-' })}`}
+                              title={usageRequestedModelTitle(
+                                log,
+                                t('usage.ultraModeHint'),
+                                t('usage.filterByModelHint', { model: log.model || '-' }),
+                              )}
                               onClick={() => toggleModelFilter(log.model)}
                               onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleModelFilter(log.model) } }}
                             >
@@ -2706,7 +2748,7 @@ export default function Usage() {
                             hasCompactionHistory={log.has_compaction_history}
                           />
                           <InternalRequestBadge log={log} />
-                          {log.upstream_model_mismatch === true && log.upstream_response_model && (
+                          {showUpstreamModelMismatch && log.upstream_model_mismatch === true && log.upstream_response_model && (
                             <UpstreamResponseModelBadge log={log} sentModel={log.effective_model || log.model} />
                           )}
                         </div>
@@ -2905,7 +2947,11 @@ export default function Usage() {
                               className={`${usageTableBadgeClass} ${usageClickableFilterClass} ${log.ultra ? 'usage-ultra-model' : ''} ${filterModel === log.model ? 'border-primary/50 text-primary' : ''}`}
                               role="button"
                               tabIndex={0}
-                              title={`${log.ultra ? `${t('usage.ultraModeHint')} · ` : ''}${t('usage.filterByModelHint', { model: log.model || '-' })}`}
+                              title={usageRequestedModelTitle(
+                                log,
+                                t('usage.ultraModeHint'),
+                                t('usage.filterByModelHint', { model: log.model || '-' }),
+                              )}
                               onClick={() => toggleModelFilter(log.model)}
                               onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleModelFilter(log.model) } }}
                             >
@@ -2919,11 +2965,6 @@ export default function Usage() {
                               )}
                               {log.model || '-'}
                             </Badge>
-                            {log.effective_model && log.effective_model !== log.model && (
-                              <Badge variant="outline" className="text-[11px] font-medium border-transparent bg-blue-500/10 text-blue-600 dark:bg-blue-500/20 dark:text-blue-400">
-                                → {log.effective_model}
-                              </Badge>
-                            )}
                             {log.reasoning_effort ? (
                               <ReasoningEffortBadge effort={log.reasoning_effort} />
                             ) : null}
@@ -2940,7 +2981,7 @@ export default function Usage() {
                                 {formatServiceTierLabel(t, log.billing_service_tier || log.service_tier)}
                               </Badge>
                             )}
-                            {log.upstream_model_mismatch === true && log.upstream_response_model && (
+                            {showUpstreamModelMismatch && log.upstream_model_mismatch === true && log.upstream_response_model && (
                               <UpstreamResponseModelBadge log={log} sentModel={log.effective_model || log.model} />
                             )}
                           </div>

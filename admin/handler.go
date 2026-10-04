@@ -1203,6 +1203,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.GET("/accounts/:id/grok/state", h.GetGrokAccountState)
 	api.POST("/accounts/:id/grok/sync", h.SyncGrokAccountState)
 	api.POST("/accounts/:id/grok/capabilities/probe", h.ProbeGrokAccountCapabilities)
+	api.GET("/accounts/:id/grok/auth-json", h.GetGrokAccountAuthJSON)
 	api.POST("/accounts/:id/oauth/exchange-code", h.UpdateOAuthAccountCode)
 	api.POST("/accounts/import", h.ImportAccounts)
 	api.POST("/accounts/sub2api/preview", h.PreviewSub2APIAccounts)
@@ -1812,6 +1813,7 @@ type accountResponse struct {
 	AutoPause7dThreshold          *float64                    `json:"auto_pause_7d_threshold"`
 	AutoPause5hDisabled           bool                        `json:"auto_pause_5h_disabled"`
 	AutoPause7dDisabled           bool                        `json:"auto_pause_7d_disabled"`
+	KeepConcurrencyOnDegrade      bool                        `json:"keep_concurrency_on_degrade"`
 	UsageLimitOverride            *bool                       `json:"ignore_usage_limit_status_override"`
 	UsageLimitEffective           bool                        `json:"ignore_usage_limit_status_effective"`
 	DispatchCountLimit            *int64                      `json:"dispatch_count_limit"`
@@ -2220,6 +2222,7 @@ type updateAccountSchedulerReq struct {
 	ScoreBiasOverride       json.RawMessage `json:"score_bias_override"`
 	BaseConcurrencyOverride json.RawMessage `json:"base_concurrency_override"`
 	SkipWarmTier            json.RawMessage `json:"skip_warm_tier"`
+	KeepConcurrency         json.RawMessage `json:"keep_concurrency_on_degrade"`
 	AllowedAPIKeyIDs        json.RawMessage `json:"allowed_api_key_ids"`
 	Tags                    json.RawMessage `json:"tags"`
 	GroupIDs                json.RawMessage `json:"group_ids"`
@@ -2247,6 +2250,7 @@ type accountSchedulerUpdate struct {
 	ScoreBiasOverride       database.OptionalNullInt64
 	BaseConcurrencyOverride database.OptionalNullInt64
 	SkipWarmTier            database.OptionalBool
+	KeepConcurrency         database.OptionalBool
 	AllowedAPIKeyIDs        database.OptionalInt64Slice
 	Tags                    optionalStringSlice
 	GroupIDs                database.OptionalInt64Slice
@@ -2282,6 +2286,10 @@ func parseAccountSchedulerUpdate(req updateAccountSchedulerReq) (accountSchedule
 		return accountSchedulerUpdate{}, err
 	}
 	skipWarmTier, err := parseOptionalBoolField(req.SkipWarmTier, "skip_warm_tier")
+	if err != nil {
+		return accountSchedulerUpdate{}, err
+	}
+	keepConcurrency, err := parseOptionalBoolField(req.KeepConcurrency, auth.KeepConcurrencyOnDegradeCredentialKey)
 	if err != nil {
 		return accountSchedulerUpdate{}, err
 	}
@@ -2453,6 +2461,9 @@ func parseAccountSchedulerUpdate(req updateAccountSchedulerReq) (accountSchedule
 	if autoPause7dDisabled.Set {
 		credentialUpdates["auto_pause_7d_disabled"] = autoPause7dDisabled.Value
 	}
+	if keepConcurrency.Set {
+		credentialUpdates[auth.KeepConcurrencyOnDegradeCredentialKey] = keepConcurrency.Value
+	}
 	if ignoreUsageLimitStatusOverride.Set {
 		if ignoreUsageLimitStatusOverride.Value == nil {
 			credentialUpdates["ignore_usage_limit_status_override"] = nil
@@ -2482,6 +2493,7 @@ func parseAccountSchedulerUpdate(req updateAccountSchedulerReq) (accountSchedule
 		ScoreBiasOverride:       scoreBiasOverride,
 		BaseConcurrencyOverride: baseConcurrencyOverride,
 		SkipWarmTier:            skipWarmTier,
+		KeepConcurrency:         keepConcurrency,
 		AllowedAPIKeyIDs:        allowedAPIKeyIDs,
 		Tags:                    tags,
 		GroupIDs:                groupIDs,
@@ -2587,6 +2599,7 @@ func (u accountSchedulerUpdate) hasChanges() bool {
 		u.CodexTurnStateModels.Set ||
 		u.BaseConcurrencyOverride.Set ||
 		u.SkipWarmTier.Set ||
+		u.KeepConcurrency.Set ||
 		u.AllowedAPIKeyIDs.Set ||
 		u.Tags.Set ||
 		u.GroupIDs.Set ||
@@ -2858,6 +2871,9 @@ func (h *Handler) applyAccountSchedulerRuntimeUpdate(id int64, update accountSch
 			nullableInt64Pointer(update.BaseConcurrencyOverride.Value),
 			optionalBoolPtr(update.SkipWarmTier),
 		)
+	}
+	if update.KeepConcurrency.Set {
+		h.store.ApplyAccountKeepConcurrencyOnDegrade(id, update.KeepConcurrency.Value)
 	}
 	if update.AllowedAPIKeyIDs.Set {
 		h.store.ApplyAccountAllowedAPIKeys(id, update.AllowedAPIKeyIDs.Values)
@@ -6441,9 +6457,9 @@ func (h *Handler) RefreshAccountUsage(c *gin.Context) {
 			}
 			if value := row.GetCredential(auth.ClaudeUsageWindowsCredentialKey); value != "" {
 				resp["claude_usage_windows_probed"] = true
-				if windows := parseClaudeUsageWindows(value); len(windows) > 0 {
-					resp["claude_usage_windows"] = windows
-				}
+			}
+			if windows := claudeAccountUsageWindows(row); len(windows) > 0 {
+				resp["claude_usage_windows"] = windows
 			}
 		}
 	}
@@ -9376,6 +9392,9 @@ type settingsResponse struct {
 	CodexSyncedDesktopMacBuild          string `json:"codex_synced_desktop_mac_build"`
 	CodexSyncedDesktopWindowsBuild      string `json:"codex_synced_desktop_windows_build"`
 	CodexSyncedVSCodeBuild              string `json:"codex_synced_vscode_build"`
+
+	CodexClientVersions []proxy.CodexClientVersionTarget `json:"codex_client_versions"`
+
 	// CodexEffectiveCLIVersion 是当前实际用于出站 UA 的版本(内置常量与同步值取大),
 	// 供设置页"设为同步版本"按钮使用——同步值可能过期或为空,内置值才是下限。
 	CodexEffectiveCLIVersion       string `json:"codex_effective_cli_version"`
@@ -9463,6 +9482,7 @@ type settingsResponse struct {
 	BillingTierPolicy                  string                           `json:"billing_tier_policy"`
 	ModelsListReadMaxBytes             int64                            `json:"models_list_read_max_bytes"`
 	ShowFullUsageNumbers               bool                             `json:"show_full_usage_numbers"`
+	ShowUpstreamModelMismatch          bool                             `json:"show_upstream_model_mismatch"`
 	PublicKeyUsagePageEnabled          bool                             `json:"public_key_usage_page_enabled"`
 	PublicImageStudioPageEnabled       bool                             `json:"public_image_studio_page_enabled"`
 	PublicAccountPortalPageEnabled     bool                             `json:"public_account_portal_page_enabled"`
@@ -9634,6 +9654,7 @@ type updateSettingsReq struct {
 	BillingTierPolicy                   *string                          `json:"billing_tier_policy"`
 	ModelsListReadMaxBytes              *int64                           `json:"models_list_read_max_bytes"`
 	ShowFullUsageNumbers                *bool                            `json:"show_full_usage_numbers"`
+	ShowUpstreamModelMismatch           *bool                            `json:"show_upstream_model_mismatch"`
 	PublicKeyUsagePageEnabled           *bool                            `json:"public_key_usage_page_enabled"`
 	PublicImageStudioPageEnabled        *bool                            `json:"public_image_studio_page_enabled"`
 	PublicAccountPortalPageEnabled      *bool                            `json:"public_account_portal_page_enabled"`
@@ -10274,6 +10295,7 @@ func (h *Handler) GetSettings(c *gin.Context) {
 	var resinURL, resinPlatformName string
 	branding := brandingFromSettings(dbSettings)
 	showFullUsageNumbers := false
+	showUpstreamModelMismatch := true
 	publicKeyUsagePageEnabled := true
 	publicImageStudioPageEnabled := true
 	publicAccountPortalPageEnabled := false
@@ -10284,6 +10306,7 @@ func (h *Handler) GetSettings(c *gin.Context) {
 		resinURL = dbSettings.ResinURL
 		resinPlatformName = dbSettings.ResinPlatformName
 		showFullUsageNumbers = dbSettings.ShowFullUsageNumbers
+		showUpstreamModelMismatch = dbSettings.ShowUpstreamModelMismatch
 		publicKeyUsagePageEnabled = dbSettings.PublicKeyUsagePageEnabled
 		publicImageStudioPageEnabled = dbSettings.PublicImageStudioPageEnabled
 		publicAccountPortalPageEnabled = dbSettings.PublicAccountPortalPageEnabled
@@ -10401,6 +10424,7 @@ func (h *Handler) GetSettings(c *gin.Context) {
 		CodexSyncedDesktopMacBuild:          proxy.CurrentRuntimeSettings().CodexSyncedDesktopMacBuild,
 		CodexSyncedDesktopWindowsBuild:      proxy.CurrentRuntimeSettings().CodexSyncedDesktopWindowsBuild,
 		CodexSyncedVSCodeBuild:              proxy.CurrentRuntimeSettings().CodexSyncedVSCodeBuild,
+		CodexClientVersions:                 proxy.CodexClientVersionCacheView(),
 		CodexEffectiveCLIVersion:            proxy.LatestCodexCLIVersionForHeaders(),
 		SchedulerMode:                       h.store.GetSchedulerMode(),
 		AffinityMode:                        h.store.GetAffinityMode(),
@@ -10478,6 +10502,7 @@ func (h *Handler) GetSettings(c *gin.Context) {
 		BillingTierPolicy:                   runtimeCfg.BillingTierPolicy,
 		ModelsListReadMaxBytes:              runtimeCfg.ModelsListReadMaxBytes,
 		ShowFullUsageNumbers:                showFullUsageNumbers,
+		ShowUpstreamModelMismatch:           showUpstreamModelMismatch,
 		PublicKeyUsagePageEnabled:           publicKeyUsagePageEnabled,
 		PublicImageStudioPageEnabled:        publicImageStudioPageEnabled,
 		PublicAccountPortalPageEnabled:      publicAccountPortalPageEnabled,
@@ -10772,6 +10797,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	siteLogo := ""
 	bgCfg := defaultBackgroundConfig()
 	showFullUsageNumbers := false
+	showUpstreamModelMismatch := true
 	publicKeyUsagePageEnabled := true
 	publicImageStudioPageEnabled := true
 	publicAccountPortalPageEnabled := false
@@ -10797,6 +10823,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		siteLogo = strings.TrimSpace(existingSettings.SiteLogo)
 		bgCfg = decodeBackgroundConfig(existingSettings.BackgroundConfig)
 		showFullUsageNumbers = existingSettings.ShowFullUsageNumbers
+		showUpstreamModelMismatch = existingSettings.ShowUpstreamModelMismatch
 		publicKeyUsagePageEnabled = existingSettings.PublicKeyUsagePageEnabled
 		publicImageStudioPageEnabled = existingSettings.PublicImageStudioPageEnabled
 		publicAccountPortalPageEnabled = existingSettings.PublicAccountPortalPageEnabled
@@ -11576,6 +11603,10 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		showFullUsageNumbers = *req.ShowFullUsageNumbers
 		log.Printf("设置已更新: show_full_usage_numbers = %t", showFullUsageNumbers)
 	}
+	if req.ShowUpstreamModelMismatch != nil {
+		showUpstreamModelMismatch = *req.ShowUpstreamModelMismatch
+		log.Printf("设置已更新: show_upstream_model_mismatch = %t", showUpstreamModelMismatch)
+	}
 	if req.PublicKeyUsagePageEnabled != nil {
 		publicKeyUsagePageEnabled = *req.PublicKeyUsagePageEnabled
 		log.Printf("设置已更新: public_key_usage_page_enabled = %t", publicKeyUsagePageEnabled)
@@ -11991,6 +12022,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		FirstTokenTimeoutSeconds:            runtimeCfg.FirstTokenTimeoutSec,
 		BillingTierPolicy:                   runtimeCfg.BillingTierPolicy,
 		ShowFullUsageNumbers:                showFullUsageNumbers,
+		ShowUpstreamModelMismatch:           showUpstreamModelMismatch,
 		PublicKeyUsagePageEnabled:           publicKeyUsagePageEnabled,
 		PublicImageStudioPageEnabled:        publicImageStudioPageEnabled,
 		PublicAccountPortalPageEnabled:      publicAccountPortalPageEnabled,
@@ -12276,6 +12308,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		CodexSyncedDesktopMacBuild:          proxy.CurrentRuntimeSettings().CodexSyncedDesktopMacBuild,
 		CodexSyncedDesktopWindowsBuild:      proxy.CurrentRuntimeSettings().CodexSyncedDesktopWindowsBuild,
 		CodexSyncedVSCodeBuild:              proxy.CurrentRuntimeSettings().CodexSyncedVSCodeBuild,
+		CodexClientVersions:                 proxy.CodexClientVersionCacheView(),
 		CodexEffectiveCLIVersion:            proxy.LatestCodexCLIVersionForHeaders(),
 		SchedulerMode:                       h.store.GetSchedulerMode(),
 		AffinityMode:                        h.store.GetAffinityMode(),
@@ -12355,6 +12388,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		BillingTierPolicy:                   runtimeCfg.BillingTierPolicy,
 		ModelsListReadMaxBytes:              runtimeCfg.ModelsListReadMaxBytes,
 		ShowFullUsageNumbers:                showFullUsageNumbers,
+		ShowUpstreamModelMismatch:           showUpstreamModelMismatch,
 		PublicKeyUsagePageEnabled:           publicKeyUsagePageEnabled,
 		PublicImageStudioPageEnabled:        publicImageStudioPageEnabled,
 		PublicAccountPortalPageEnabled:      publicAccountPortalPageEnabled,

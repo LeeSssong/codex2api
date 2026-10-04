@@ -196,10 +196,12 @@ type Account struct {
 	AntigravityHardBlocked     bool
 	AntigravityHardBlockReason string
 	// antigravityQuota* 是 antigravity_quota 凭据投影出的调度排序键（已用百分比），
-	// 见 scheduling_usage_key.go；随控制面同步快照更新。
+	// 见 scheduling_usage_key.go；随控制面同步快照更新。antigravityModelMaxOutput
+	// 是同一快照里各上游模型自报的最大输出 token(键为小写模型 ID)。
 	antigravityQuotaUsedPercent float64
 	antigravityQuotaObservedAt  time.Time
 	antigravityQuotaValid       bool
+	antigravityModelMaxOutput   map[string]int
 	BaseURL                     string
 	APIKey                      string
 	Models                      []string
@@ -440,6 +442,7 @@ type Account struct {
 	IgnoreUsageLimitStatusOverride *bool
 	ignoreUsageLimitStatus         bool
 	SkipWarmTier                   bool // 跳过 warm 层级降级
+	KeepConcurrencyOnDegrade       bool // warm/risky 不降并发,层级照算 (issue #772)
 	AllowedAPIKeyIDs               []int64
 	allowedAPIKeySet               map[int64]struct{}
 	Tags                           []string
@@ -1027,6 +1030,18 @@ func concurrencyLimitForTier(baseLimit int64, tier AccountHealthTier) int64 {
 	}
 }
 
+// KeepConcurrencyOnDegradeCredentialKey 是「降级不降并发」开关在凭据 JSON 中的键 (issue #772)。
+const KeepConcurrencyOnDegradeCredentialKey = "keep_concurrency_on_degrade"
+
+// tierConcurrencyLimitLocked 按健康层级折算并发上限;账号开启
+// KeepConcurrencyOnDegrade 时 warm/risky 沿用基础并发,只有 banned 归零。
+func (a *Account) tierConcurrencyLimitLocked(baseLimit int64, tier AccountHealthTier) int64 {
+	if a.KeepConcurrencyOnDegrade && (tier == HealthTierWarm || tier == HealthTierRisky) {
+		tier = HealthTierHealthy
+	}
+	return concurrencyLimitForTier(baseLimit, tier)
+}
+
 func defaultScoreBiasForPlan(planType string) int64 {
 	switch NormalizePlanType(planType) {
 	// k12 是教育版 team 工作区，行为与 team 一致 (issue #282)
@@ -1406,7 +1421,7 @@ func (a *Account) recomputeSchedulerLocked(baseLimit int64) {
 	a.DispatchScore = dispatchScore
 	a.ScoreBiasEffective = scoreBiasEffective
 	a.BaseConcurrencyEffective = baseConcurrencyEffective
-	a.DynamicConcurrencyLimit = a.quotaAutoPause5hGuardConcurrencyLimitLocked(concurrencyLimitForTier(baseConcurrencyEffective, tier), now)
+	a.DynamicConcurrencyLimit = a.quotaAutoPause5hGuardConcurrencyLimitLocked(a.tierConcurrencyLimitLocked(baseConcurrencyEffective, tier), now)
 	a.DynamicConcurrencyLimit = a.smartPacingConcurrencyLimitLocked(a.DynamicConcurrencyLimit, now)
 	if a.premium5hRateLimitedLocked(now) && a.DynamicConcurrencyLimit > 1 {
 		a.DynamicConcurrencyLimit = 1
@@ -5879,6 +5894,7 @@ func (s *Store) buildAccountFromRow(ctx context.Context, row *database.AccountRo
 	}
 	account.AutoPause5hDisabled = row.GetCredentialBool("auto_pause_5h_disabled")
 	account.AutoPause7dDisabled = row.GetCredentialBool("auto_pause_7d_disabled")
+	account.KeepConcurrencyOnDegrade = row.GetCredentialBool(KeepConcurrencyOnDegradeCredentialKey)
 	if limit, ok := row.GetCredentialInt64("dispatch_count_limit"); ok {
 		account.SetDispatchCountLimit(limit)
 	}
@@ -9328,6 +9344,21 @@ func (s *Store) ApplyAccountQuotaAutoPauseConfig(dbID int64, threshold5h, thresh
 		acc.AutoPause7dDisabled = *disabled7d
 	}
 	acc.recomputeEffectiveAutoPause(s)
+	acc.recomputeSchedulerLocked(atomic.LoadInt64(&s.maxConcurrency))
+	acc.mu.Unlock()
+	s.fastSchedulerUpdate(acc)
+	return true
+}
+
+// ApplyAccountKeepConcurrencyOnDegrade 切换账号「降级不降并发」并立即重算上限。
+func (s *Store) ApplyAccountKeepConcurrencyOnDegrade(dbID int64, enabled bool) bool {
+	acc := s.FindByID(dbID)
+	if acc == nil {
+		return false
+	}
+
+	acc.mu.Lock()
+	acc.KeepConcurrencyOnDegrade = enabled
 	acc.recomputeSchedulerLocked(atomic.LoadInt64(&s.maxConcurrency))
 	acc.mu.Unlock()
 	s.fastSchedulerUpdate(acc)
