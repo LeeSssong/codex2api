@@ -16,7 +16,7 @@ class RoutingTests(unittest.TestCase):
   with self.assertRaises(ValueError):change_upstream(source,9999,18081)
 
  def test_caddyfile_changes_only_codex_site_and_preserves_other_sites(self):
-  source='''codex.xingqiaolab.top {\n    reverse_proxy 172.18.0.1:18080\n}\n\napi.xingqiaolab.top {\n    reverse_proxy sub2api-api:8080\n}\n'''
+  source='''codex.xingqiaolab.top, 64-83-10-67.nip.io {\n    reverse_proxy 172.18.0.1:18080\n}\n\napi.xingqiaolab.top {\n    reverse_proxy sub2api-api:8080\n}\n'''
   result=change_caddyfile_upstream(source,18080,18081)
   self.assertIn('reverse_proxy 172.18.0.1:18081',result)
   self.assertIn('reverse_proxy sub2api-api:8080',result)

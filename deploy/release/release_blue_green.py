@@ -27,7 +27,7 @@ def change_caddyfile_upstream(text,old_port,new_port):
  returned bytes in place.  We intentionally reject ambiguous Caddyfiles rather
  than changing a similarly named Sub2API route.
  """
- site=re.search(r'(?m)^\s*(?P<name>(?:[^\s{]+\s*,\s*)*codex\.xingqiaolab\.top(?:\s*,[^\s{]+)*)\s*\{',text)
+ site=re.search(r'(?m)^\s*(?P<name>(?:[^\s{]+\s*,\s*)*codex\.xingqiaolab\.top(?:\s*,\s*[^\s{]+)*)\s*\{',text)
  if not site: raise ValueError('Codex site block not found')
  start=site.end(); depth=1; pos=start
  while depth and pos<len(text):
