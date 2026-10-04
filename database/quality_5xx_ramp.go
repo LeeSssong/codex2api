@@ -101,7 +101,7 @@ func (db *DB) setModelCooldownTx(ctx context.Context, tx *sql.Tx, id int64, mode
 
 // ApplyQuality5xxProbe records a fenced probe result. Inconclusive and failed
 // probes deliberately retain the ramp and cooldowns.
-func (db *DB) ApplyQuality5xxProbe(ctx context.Context, id int64, c smartops.OAuthAutoConfig, generation int64, revision string, passed, conclusive bool) (int, bool, error) {
+func (db *DB) ApplyQuality5xxProbe(ctx context.Context, id int64, c smartops.OAuthAutoConfig, generation int64, revision string, passed, conclusive bool, episode ...uint64) (int, bool, error) {
 	if err := db.EnsureSmartOpsSchema(ctx); err != nil {
 		return 0, false, err
 	}
@@ -137,12 +137,11 @@ func (db *DB) ApplyQuality5xxProbe(ctx context.Context, id int64, c smartops.OAu
 		} else if err = json.Unmarshal([]byte(raw), &s); err != nil {
 			return err
 		}
+		if len(episode) > 0 && s.Attempt != episode[0] {
+			return nil
+		}
 		s, next = s.ProbeResult(c, int(current.Int64), generation, revision, passed, conclusive, time.Now())
 		active = s.Active
-		b := qualityPayload(raw, s)
-		if _, err = tx.ExecContext(ctx, `UPDATE smart_ops_concurrency SET payload=$1 WHERE account_id=$2`, string(b), id); err != nil {
-			return err
-		}
 		if next != int(current.Int64) {
 			if _, err = tx.ExecContext(ctx, `UPDATE accounts SET base_concurrency_override=$1,updated_at=CURRENT_TIMESTAMP WHERE id=$2`, next, id); err != nil {
 				return err
@@ -151,25 +150,33 @@ func (db *DB) ApplyQuality5xxProbe(ctx context.Context, id int64, c smartops.OAu
 				return err
 			}
 		}
-		if !active && passed && conclusive {
-			rows, e := tx.QueryContext(ctx, `SELECT model FROM account_model_cooldowns WHERE account_id=$1 AND reason='quality_5xx_ramp'`, id)
-			if e != nil {
-				return e
-			}
-			for rows.Next() {
-				var m string
-				if e = rows.Scan(&m); e != nil {
-					rows.Close()
-					return e
-				}
-				if _, e = tx.ExecContext(ctx, `DELETE FROM account_model_cooldowns WHERE account_id=$1 AND model=$2 AND reason='quality_5xx_ramp'`, id, m); e != nil {
-					rows.Close()
-					return e
+		if passed && conclusive {
+			for _, m := range s.OwnedModels {
+				if _, err = tx.ExecContext(ctx, `DELETE FROM account_model_cooldowns WHERE account_id=$1 AND model=$2 AND reason='quality_5xx_ramp'`, id, m); err != nil {
+					return err
 				}
 			}
-			rows.Close()
+			s.OwnedModels = nil
+		}
+		b := qualityPayload(raw, s)
+		if _, err = tx.ExecContext(ctx, `UPDATE smart_ops_concurrency SET payload=$1 WHERE account_id=$2`, string(b), id); err != nil {
+			return err
 		}
 		return tx.Commit()
 	})
 	return next, active, err
+}
+
+func (db *DB) Quality5xxAttempt(ctx context.Context, id int64) uint64 {
+	var raw string
+	if db.conn.QueryRowContext(ctx, `SELECT payload FROM smart_ops_concurrency WHERE account_id=$1`, id).Scan(&raw) != nil {
+		return 0
+	}
+	var e struct {
+		Quality smartops.Quality5xxRampState `json:"quality_5xx"`
+	}
+	if json.Unmarshal([]byte(raw), &e) != nil {
+		return 0
+	}
+	return e.Quality.Attempt
 }

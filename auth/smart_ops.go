@@ -49,7 +49,7 @@ func (s *Store) ReportQuality5xx(acc *Account) {
 
 // ReportQuality5xxSuccess allows an integration worker to apply a completed,
 // fenced quality probe result and advance native concurrency gradually.
-func (s *Store) ReportQuality5xxSuccess(accountID, generation int64, revision string, passed, conclusive bool) {
+func (s *Store) ReportQuality5xxSuccess(accountID, generation int64, revision string, passed, conclusive bool, attempt ...uint64) {
 	if s == nil || s.db == nil || accountID <= 0 {
 		return
 	}
@@ -58,7 +58,7 @@ func (s *Store) ReportQuality5xxSuccess(accountID, generation int64, revision st
 		defer cancel()
 		c, err := s.db.LoadOAuthAutoConfig(ctx)
 		if err == nil && c.Quality5xx.Enabled {
-			_, _, _ = s.db.ApplyQuality5xxProbe(ctx, accountID, c, generation, revision, passed, conclusive)
+			_, _, _ = s.db.ApplyQuality5xxProbe(ctx, accountID, c, generation, revision, passed, conclusive, attempt...)
 		}
 	}()
 }

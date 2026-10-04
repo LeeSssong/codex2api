@@ -45,6 +45,7 @@ type Plan struct {
 	Version              int64             `json:"version"`
 	NextRun              time.Time         `json:"next_run"`
 	Lease                string            `json:"-"`
+	QualityAttempt       uint64            `json:"-"`
 }
 type ExecutionEvidence struct {
 	Upstream             string `json:"upstream,omitempty"`
