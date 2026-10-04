@@ -127,6 +127,11 @@ func (db *DB) TriggerQualityPlansForAccount(ctx context.Context, accountID int64
 		}
 		defer rows.Close()
 		now := db.timeArg(time.Now().UTC())
+		type item struct {
+			id int64
+			p  accountops.Plan
+		}
+		var items []item
 		for rows.Next() {
 			var id int64
 			var raw string
@@ -144,12 +149,19 @@ func (db *DB) TriggerQualityPlansForAccount(ctx context.Context, accountID int64
 				}
 			}
 			if match {
-				if _, err := db.conn.ExecContext(ctx, `UPDATE account_quality_plans SET next_run=$1 WHERE id=$2 AND (lease='' OR lease_until<$1)`, now, id); err != nil {
-					return err
-				}
+				items = append(items, item{id: id, p: p})
 			}
 		}
-		return rows.Err()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		rows.Close()
+		for _, it := range items {
+			if _, err := db.conn.ExecContext(ctx, `UPDATE account_quality_plans SET next_run=$1 WHERE id=$2 AND (lease='' OR lease_until<$1)`, now, it.id); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 }
 func (db *DB) DeleteAccountQualityPlan(ctx context.Context, id int64) error {

@@ -20,6 +20,8 @@ type smartOpsObservation struct {
 	epoch   int64
 }
 
+var quality5xxQueue = make(chan struct{}, 128)
+
 // ReportQuality5xx records an OAuth quality episode. The database transaction
 // owns fencing and cooldown ownership; callers may invoke this from HTTP or WS
 // failure paths without blocking the response.
@@ -27,7 +29,13 @@ func (s *Store) ReportQuality5xx(acc *Account) {
 	if acc == nil || s.db == nil {
 		return
 	}
+	select {
+	case quality5xxQueue <- struct{}{}:
+	default:
+		return
+	}
 	go func() {
+		defer func() { <-quality5xxQueue }()
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		cfg, err := s.db.LoadOAuthAutoConfig(ctx)

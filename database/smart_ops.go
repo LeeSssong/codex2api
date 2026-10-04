@@ -664,15 +664,43 @@ func (db *DB) RecordSmartOpsConcurrency(ctx context.Context, id int64, c smartop
 		var state smartops.ConcurrencyState
 		var payload string
 		e = tx.QueryRowContext(ctx, `SELECT payload FROM smart_ops_concurrency WHERE account_id=$1`, id).Scan(&payload)
+		var quality smartops.Quality5xxRampState
 		if e == nil {
-			if e = json.Unmarshal([]byte(payload), &state); e != nil {
+			var envelope struct {
+				Quality *smartops.Quality5xxRampState `json:"quality_5xx"`
+			}
+			if json.Unmarshal([]byte(payload), &envelope) == nil && envelope.Quality != nil {
+				quality = *envelope.Quality
+			}
+			var env map[string]json.RawMessage
+			_ = json.Unmarshal([]byte(payload), &env)
+			if rawState, ok := env["concurrency"]; ok {
+				if e = json.Unmarshal(rawState, &state); e != nil {
+					return e
+				}
+			} else if e = json.Unmarshal([]byte(payload), &state); e != nil {
 				return e
 			}
 		} else if !errors.Is(e, sql.ErrNoRows) {
 			return e
 		}
-		state, n := smartops.AdvanceConcurrency(state, int(current.Int64), c, smartops.ConcurrencyResult{Success: success, At: time.Now()}, time.Now())
-		b, _ := json.Marshal(state)
+		var n int
+		if quality.Active && quality.ProbePending {
+			n = int(current.Int64)
+		} else {
+			state, n = smartops.AdvanceConcurrency(state, int(current.Int64), c, smartops.ConcurrencyResult{Success: success, At: time.Now()}, time.Now())
+		}
+		m := map[string]json.RawMessage{}
+		if payload != "" {
+			_ = json.Unmarshal([]byte(payload), &m)
+		}
+		sb, _ := json.Marshal(state)
+		m["concurrency"] = sb
+		if quality.Active || quality.Attempt > 0 {
+			qb, _ := json.Marshal(quality)
+			m["quality_5xx"] = qb
+		}
+		b, _ := json.Marshal(m)
 		if _, e = tx.ExecContext(ctx, `INSERT INTO smart_ops_concurrency(account_id,payload) VALUES($1,$2) ON CONFLICT(account_id) DO UPDATE SET payload=EXCLUDED.payload`, id, string(b)); e != nil {
 			return e
 		}
