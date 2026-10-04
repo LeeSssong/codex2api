@@ -10,23 +10,34 @@ import (
 // OAuthAutoConfig is deliberately provider-neutral; adapters apply it to the
 // native account creation request and remain responsible for eligibility.
 type OAuthAutoConfig struct {
-	Enabled          bool               `json:"enabled"`
-	Platform         string             `json:"platform"`
-	Priority         int                `json:"priority"`
-	LoadFactor       int                `json:"load_factor"`
-	Concurrency      int                `json:"concurrency"`
-	GroupIDs         []int64            `json:"group_ids"`
-	UpgradeGroupIDs  []int64            `json:"upgrade_group_ids"`
-	ModelMappings    []ModelMapping     `json:"model_mappings"`
-	UpgradeEnabled   bool               `json:"upgrade_enabled"`
-	SuccessesPerStep int                `json:"successes_per_step"`
-	UpgradeStep      int                `json:"upgrade_step"`
-	MaxConcurrency   int                `json:"max_concurrency"`
-	CooldownSeconds  int                `json:"cooldown_seconds"`
-	Revision         string             `json:"revision"`
-	UpdatedAt        time.Time          `json:"updated_at"`
-	BPS              BPSDefaults        `json:"bps"`
-	ModelBilling     ModelBillingConfig `json:"model_billing"`
+	Enabled          bool                 `json:"enabled"`
+	Platform         string               `json:"platform"`
+	Priority         int                  `json:"priority"`
+	LoadFactor       int                  `json:"load_factor"`
+	Concurrency      int                  `json:"concurrency"`
+	GroupIDs         []int64              `json:"group_ids"`
+	UpgradeGroupIDs  []int64              `json:"upgrade_group_ids"`
+	ModelMappings    []ModelMapping       `json:"model_mappings"`
+	UpgradeEnabled   bool                 `json:"upgrade_enabled"`
+	SuccessesPerStep int                  `json:"successes_per_step"`
+	UpgradeStep      int                  `json:"upgrade_step"`
+	MaxConcurrency   int                  `json:"max_concurrency"`
+	CooldownSeconds  int                  `json:"cooldown_seconds"`
+	Revision         string               `json:"revision"`
+	UpdatedAt        time.Time            `json:"updated_at"`
+	BPS              BPSDefaults          `json:"bps"`
+	ModelBilling     ModelBillingConfig   `json:"model_billing"`
+	Quality5xx       Quality5xxRampConfig `json:"quality_5xx,omitempty"`
+}
+
+// Quality5xxRampConfig controls the conservative recovery path for repeated
+// upstream 5xx responses on OAuth accounts. It is provider-neutral; adapters
+// decide how to run the probe and persist model cooldowns.
+type Quality5xxRampConfig struct {
+	Enabled         bool     `json:"enabled"`
+	Floor           int      `json:"floor"`
+	CooldownSeconds int      `json:"cooldown_seconds"`
+	Models          []string `json:"models"`
 }
 
 type BPSDefaults struct {
@@ -56,7 +67,8 @@ func DefaultOAuthAutoConfig() OAuthAutoConfig {
 		ModelBilling: ModelBillingConfig{Rules: []ModelBillingRule{{Model: "gpt-6-luna*", Multiplier: 10}}},
 		GroupIDs:     []int64{}, ModelMappings: []ModelMapping{{From: "gpt-5.4", To: "gpt-5.5"}},
 		SuccessesPerStep: 20, UpgradeStep: 1, MaxConcurrency: 100, CooldownSeconds: 60,
-		BPS: BPSDefaults{TargetGroupID: -1, CacheCreationAsInput: true, Models: []string{"gpt-6-astra", "gpt-5.6-sol"}, IgnoreEncryptedContent: true, AutoDisableOn403: true, RecoveryIntervalMinutes: 60, ProxySource: "ip_pool"}}
+		BPS:        BPSDefaults{TargetGroupID: -1, CacheCreationAsInput: true, Models: []string{"gpt-6-astra", "gpt-5.6-sol"}, IgnoreEncryptedContent: true, AutoDisableOn403: true, RecoveryIntervalMinutes: 60, ProxySource: "ip_pool"},
+		Quality5xx: Quality5xxRampConfig{Enabled: true, Floor: 5, CooldownSeconds: 300}}
 }
 
 func ValidateOAuthAutoConfig(c OAuthAutoConfig) error {
@@ -80,6 +92,14 @@ func ValidateOAuthAutoConfig(c OAuthAutoConfig) error {
 	}
 	if c.SuccessesPerStep < 1 || c.SuccessesPerStep > 100000 || c.UpgradeStep < 1 || c.UpgradeStep > 1000 || c.MaxConcurrency < 1 || c.MaxConcurrency > 10000 || c.CooldownSeconds < 1 || c.CooldownSeconds > 86400 {
 		return errors.New("invalid upgrade settings")
+	}
+	if c.Quality5xx.Floor < 1 || c.Quality5xx.Floor > 10000 || c.Quality5xx.CooldownSeconds < 1 || c.Quality5xx.CooldownSeconds > 86400 {
+		return errors.New("invalid quality 5xx ramp settings")
+	}
+	for _, model := range c.Quality5xx.Models {
+		if strings.TrimSpace(model) == "" || len(model) > 200 {
+			return errors.New("invalid quality 5xx model")
+		}
 	}
 	if c.Enabled && len(c.GroupIDs) == 0 {
 		return errors.New("enabled configuration requires a group")
@@ -133,6 +153,63 @@ func ValidateOAuthAutoConfig(c OAuthAutoConfig) error {
 		seenModels[m.From] = true
 	}
 	return nil
+}
+
+type Quality5xxRampState struct {
+	Revision            string           `json:"revision"`
+	Generation          int64            `json:"generation"`
+	OriginalConcurrency int              `json:"original_concurrency"`
+	CurrentConcurrency  int              `json:"current_concurrency"`
+	Active              bool             `json:"active"`
+	Attempt             uint64           `json:"attempt"`
+	ProbePending        bool             `json:"probe_pending"`
+	CooldownUntil       time.Time        `json:"cooldown_until"`
+	OwnedModels         []string         `json:"owned_models,omitempty"`
+	Concurrency         ConcurrencyState `json:"concurrency"`
+}
+
+func (s Quality5xxRampState) ResetOnFailure(c Quality5xxRampConfig, current int, generation int64, revision string, now time.Time) Quality5xxRampState {
+	if !c.Enabled {
+		return s
+	}
+	original := current
+	if current > c.Floor {
+		current = c.Floor
+	}
+	if !s.Active || s.Generation != generation || s.Revision != revision || s.OriginalConcurrency < current {
+		s.OriginalConcurrency = original
+	}
+	s.Revision, s.Generation, s.CurrentConcurrency = revision, generation, current
+	s.Active, s.ProbePending, s.Attempt = true, true, s.Attempt+1
+	s.CooldownUntil = now.Add(time.Duration(c.CooldownSeconds) * time.Second)
+	s.Concurrency = ConcurrencyState{Revision: revision, Concurrency: current}
+	return s
+}
+
+func (s Quality5xxRampState) ProbeResult(c OAuthAutoConfig, current int, generation int64, revision string, passed bool, conclusive bool, now time.Time) (Quality5xxRampState, int) {
+	if !s.Active || s.Generation != generation || s.Revision != revision || !s.ProbePending {
+		return s, current
+	}
+	if !conclusive {
+		s.ProbePending = true
+		s.CooldownUntil = now.Add(time.Duration(c.Quality5xx.CooldownSeconds) * time.Second)
+		return s, current
+	}
+	if !passed {
+		s.ProbePending = true
+		s.CooldownUntil = now.Add(time.Duration(c.Quality5xx.CooldownSeconds) * time.Second)
+		return s, current
+	}
+	s.ProbePending = false
+	// Release only our owned cooldown state; progression remains success based.
+	s.Concurrency, current = AdvanceConcurrency(s.Concurrency, current, c, ConcurrencyResult{Success: true, At: now}, now)
+	if current >= s.OriginalConcurrency {
+		s.Active = false
+		s.CurrentConcurrency = current
+		return s, current
+	}
+	s.CurrentConcurrency = current
+	return s, current
 }
 
 // ApplyModelMappings copies a credential map and preserves explicit mappings.
