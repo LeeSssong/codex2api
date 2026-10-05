@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 
@@ -225,6 +226,10 @@ func TestSingleMachineCacheSeedDerivesSessionWithoutTouchingCacheKey(t *testing.
 	if gjson.Get(embedded, "session_id").String() != session || gjson.GetBytes(firstBody, "client_metadata.session_id").String() != session {
 		t.Fatal("header and body session differ")
 	}
+	windowID := gjson.Get(embedded, "window_id").String()
+	if windowID == "" || gjson.GetBytes(firstBody, "client_metadata.window_id").String() != windowID {
+		t.Fatal("body window_id does not match turn metadata")
+	}
 	if gjson.Get(embedded, "installation_id").String() == "" || gjson.GetBytes(firstBody, "client_metadata.installation_id").String() == "" {
 		t.Fatal("installation was not filled inside existing metadata")
 	}
@@ -243,6 +248,76 @@ func TestSingleMachineCacheSeedDerivesSessionWithoutTouchingCacheKey(t *testing.
 	}
 	if gjson.Get(outbound.Get(codexTurnMetadataHeader), "installation_id").String() == "" || gjson.Get(outbound.Get(codexTurnMetadataHeader), "session_id").String() != session {
 		t.Fatalf("turn metadata header = %s", outbound.Get(codexTurnMetadataHeader))
+	}
+	if outbound.Get(codexWindowIDHeader) == "" || outbound.Get(codexWindowIDHeader) != gjson.Get(outbound.Get(codexTurnMetadataHeader), "window_id").String() {
+		t.Fatalf("window header = %q metadata = %s", outbound.Get(codexWindowIDHeader), outbound.Get(codexTurnMetadataHeader))
+	}
+	if outbound.Get(codexParentThreadIDHeader) != "" {
+		t.Fatal("invented a parent thread")
+	}
+}
+
+func TestSingleMachineTurnMetadataFollowsCacheKey(t *testing.T) {
+	a := fingerprintAccount(t, auth.CodexFingerprintModeSingleMachineMultiWindow)
+	headers := http.Header{}
+	headers.Set(codexTurnMetadataHeader, `{"installation_id":"foreign-installation","session_id":"raw-session","thread_id":"raw-thread","turn_id":"keep-turn"}`)
+	body := []byte(`{"prompt_cache_key":"conversation-a","client_metadata":{"note":"keep"}}`)
+	outHeaders, outBody := FinalizeCodexSingleMachineIdentity(a, headers, body, "conversation-a")
+	seeded, _ := ConvergedCodexSessionIdentity(a, outHeaders)
+	fromCache, _ := ConvergedCodexSessionIdentity(a, AttachCodexFingerprintCacheSeed(a, http.Header{}, "conversation-a"))
+	if seeded == "" || seeded != fromCache || seeded == singleMachineIdentity(a.ID(), "raw-session") {
+		t.Fatalf("session = %s cache = %s", seeded, fromCache)
+	}
+	if gjson.GetBytes(outBody, "prompt_cache_key").String() != "conversation-a" {
+		t.Fatal("prompt_cache_key was rewritten")
+	}
+	if gjson.GetBytes(outBody, "client_metadata.note").String() != "keep" {
+		t.Fatal("unrelated metadata dropped")
+	}
+	// 出站顺序与 applyCodexRequestHeaders 相同：先透传 turn metadata，再按已确定的会话种子改写。
+	outbound := http.Header{}
+	outbound.Set(codexTurnMetadataHeader, outHeaders.Get(codexTurnMetadataHeader))
+	ApplyCodexFingerprintHeaders(outbound, a, outHeaders)
+	metadata := outbound.Get(codexTurnMetadataHeader)
+	if gjson.Get(metadata, "session_id").String() != seeded || gjson.Get(metadata, "thread_id").String() != seeded {
+		t.Fatalf("turn metadata session = %s", metadata)
+	}
+	if gjson.Get(metadata, "installation_id").String() == "foreign-installation" || gjson.Get(metadata, "installation_id").String() == "" {
+		t.Fatalf("installation = %s", metadata)
+	}
+	if gjson.Get(metadata, "turn_id").String() != "keep-turn" {
+		t.Fatal("turn id changed")
+	}
+	if strings.Contains(metadata, "raw-session") || strings.Contains(metadata, "raw-thread") {
+		t.Fatalf("foreign session survived: %s", metadata)
+	}
+	if got := gjson.GetBytes(outBody, "client_metadata.window_id").String(); got == "" || got != gjson.Get(metadata, "window_id").String() {
+		t.Fatalf("body window_id = %q metadata = %s", got, metadata)
+	}
+	if outbound.Get(codexWindowIDHeader) == "" || outbound.Get(codexWindowIDHeader) != gjson.Get(outbound.Get(codexTurnMetadataHeader), "window_id").String() {
+		t.Fatalf("window header = %q", outbound.Get(codexWindowIDHeader))
+	}
+	if outbound.Get(codexInstallationIDHeader) != "" || outbound.Get(codexParentThreadIDHeader) != "" {
+		t.Fatal("invented installation or parent header")
+	}
+
+	bare := http.Header{}
+	bare.Set(codexTurnMetadataHeader, `{"session_id":"raw-session","thread_id":"raw-thread","turn_id":"keep-turn"}`)
+	if got := resolveCodexFingerprintIDs(a, bare); got == nil || got.sessionID != "" || got.threadID != "" {
+		t.Fatalf("turn metadata seeded a session: %+v", got)
+	}
+	outbound = http.Header{}
+	outbound.Set(codexTurnMetadataHeader, bare.Get(codexTurnMetadataHeader))
+	ApplyCodexFingerprintHeaders(outbound, a, bare)
+	stripped := outbound.Get(codexTurnMetadataHeader)
+	if gjson.Get(stripped, "session_id").Exists() || gjson.Get(stripped, "thread_id").Exists() || gjson.Get(stripped, "window_id").Exists() {
+		t.Fatalf("foreign session survived: %s", stripped)
+	}
+	if gjson.Get(stripped, "turn_id").String() != "keep-turn" || gjson.Get(stripped, "installation_id").String() == "" {
+		t.Fatalf("metadata = %s", stripped)
+	}
+	if outbound.Get(codexWindowIDHeader) != "" {
+		t.Fatal("window header without a session")
 	}
 }
 
@@ -287,14 +362,14 @@ func TestSingleMachineForcesGeneratedClientHeaders(t *testing.T) {
 	downstream.Set("User-Agent", "codex-tui/0.153.3 (Linux Unknown; x86_64) xterm-256color (codex-tui; 0.153.3)")
 	downstream.Set("Originator", "codex-tui")
 	account := fingerprintAccount(t, auth.CodexFingerprintModeSingleMachineMultiWindow)
-	identity, err := ResolveCodexOutboundClientIdentity(CodexClientIdentityInput{Account: account, APIKey: "api-key", Headers: downstream})
-	if err != nil || !identity.Generated || identity.UserAgent == "" || identity.UserAgent == downstream.Get("User-Agent") {
-		t.Fatalf("single machine leaked downstream UA %q generated=%v err=%v", identity.UserAgent, identity.Generated, err)
+	userAgent, _, used := resolveCodexOutboundClientHeaders(account, "api-key", nil, downstream)
+	if !used || userAgent == "" || userAgent == downstream.Get("User-Agent") {
+		t.Fatalf("single machine leaked downstream UA %q used=%v", userAgent, used)
 	}
 	device := fingerprintAccount(t, auth.CodexFingerprintModeDevice)
-	passed, err := ResolveCodexOutboundClientIdentity(CodexClientIdentityInput{Account: device, APIKey: "api-key", Headers: downstream})
-	if err != nil || passed.Generated || passed.UserAgent != downstream.Get("User-Agent") {
-		t.Fatalf("device mode changed UA %q generated=%v err=%v", passed.UserAgent, passed.Generated, err)
+	passed, _, used := resolveCodexOutboundClientHeaders(device, "api-key", nil, downstream)
+	if used || passed != downstream.Get("User-Agent") {
+		t.Fatalf("device mode changed UA %q used=%v", passed, used)
 	}
 }
 
@@ -336,6 +411,9 @@ func TestSingleMachineAnonymousHTTPWireUsesCacheSeed(t *testing.T) {
 	}
 	if gjson.GetBytes(gotBody, "client_metadata.session_id").String() != session || gjson.GetBytes(gotBody, "client_metadata.installation_id").String() == "" {
 		t.Fatalf("body identity = %s", gotBody)
+	}
+	if gotHeaders.Get(codexWindowIDHeader) == "" || gotHeaders.Get(codexWindowIDHeader) != gjson.GetBytes(gotBody, "client_metadata.window_id").String() {
+		t.Fatalf("window header = %q body = %s", gotHeaders.Get(codexWindowIDHeader), gotBody)
 	}
 	if gotHeaders.Get("Conversation_id") != "" || gotHeaders.Get("Session_id") != "" || gotHeaders.Get(codexInstallationIDHeader) != "" {
 		t.Fatalf("unexpected identity headers: %v", gotHeaders)

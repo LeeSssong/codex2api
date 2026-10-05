@@ -76,6 +76,7 @@ func ensureSingleMachineClientMetadata(body []byte, ids *codexFingerprintIDs) []
 	}
 	body = setJSONString(body, "client_metadata.session_id", ids.sessionID)
 	body = setJSONString(body, "client_metadata.thread_id", ids.threadID)
+	body = setJSONString(body, "client_metadata.window_id", ids.windowID)
 	body = setJSONString(body, "client_metadata.x-codex-window-id", ids.windowID)
 	return body
 }
@@ -129,7 +130,9 @@ func AttachCodexFingerprintCacheSeed(account *auth.Account, headers http.Header,
 	if cacheKey == "" || IsStatelessWebsocketSessionID(cacheKey) {
 		return headers
 	}
-	sessionID, threadID := extractClientCodexIdentity(headers)
+	// 已有直接声明的会话头时，缓存键不再改这段身份。turn metadata 里的会话不算声明，
+	// 否则它会挡住缓存键，同一次请求就出现两段身份。
+	sessionID, threadID := explicitCodexSessionHeaders(headers)
 	if sessionID != "" || threadID != "" {
 		return headers
 	}

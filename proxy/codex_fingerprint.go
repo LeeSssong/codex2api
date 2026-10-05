@@ -192,7 +192,9 @@ func resolveCodexFingerprintIDs(account *auth.Account, downstreamHeaders http.He
 	}
 
 	if mode == auth.CodexFingerprintModeSingleMachineMultiWindow {
-		clientSession, clientThread := extractClientCodexIdentity(downstreamHeaders)
+		// 只认调用方直接声明的会话头。turn metadata 里的 session/thread 若参与派生，
+		// 会和已经确定的 prompt_cache_key 变成两段对话；那些字段稍后改写成这段种子。
+		clientSession, clientThread := explicitCodexSessionHeaders(downstreamHeaders)
 		if clientSession == "" {
 			clientSession = clientThread
 		}
@@ -318,6 +320,12 @@ func ApplyCodexFingerprintHeaders(outbound http.Header, account *auth.Account, d
 		outbound.Set(codexClientRequestIDHeader, converged)
 	}
 
+	// 有会话时窗口头始终发出，并与 turn metadata 的 window_id 相同。
+	// 不补 X-Codex-Installation-Id，也不给没有父线程的请求补 parent。
+	if ids.mode == auth.CodexFingerprintModeSingleMachineMultiWindow && ids.windowID != "" {
+		outbound.Set(codexWindowIDHeader, ids.windowID)
+	}
+
 	// 仅对确有 Codex 引擎特征的下游请求处理标识头。
 	if !EvaluateEngineFingerprint(downstreamHeaders, nil, nil) {
 		return
@@ -368,6 +376,23 @@ func convergedClientRequestID(current string, ids *codexFingerprintIDs, downstre
 	default:
 		return ""
 	}
+}
+
+// explicitCodexSessionHeaders 只读取调用方直接放在会话头里的值。
+// 请求体 client_metadata 的会话由 PrepareCodexFingerprintHeaders 提前抄到这些头上，
+// 因此仍然算直接声明。turn metadata 里的 session_id / thread_id 不算。
+func explicitCodexSessionHeaders(headers http.Header) (sessionID, threadID string) {
+	if headers == nil {
+		return "", ""
+	}
+	for _, name := range []string{"Session-Id", "Session_id"} {
+		if value := strings.TrimSpace(headers.Get(name)); value != "" {
+			sessionID = value
+			break
+		}
+	}
+	threadID = strings.TrimSpace(headers.Get(codexThreadIDHeader))
+	return sessionID, threadID
 }
 
 // extractClientCodexIdentity 取下游自报的原始会话/线程标识，用于判断别的头是否
@@ -453,6 +478,14 @@ func rewriteCodexTurnMetadataJSON(raw string, ids *codexFingerprintIDs) (string,
 	for _, update := range updates {
 		path, value := update[0], update[1]
 		if value == "" {
+			// 没有对话种子时，丢掉 turn metadata 自带的会话字段，避免它单独成为另一段身份。
+			if ids.mode == auth.CodexFingerprintModeSingleMachineMultiWindow && gjson.Get(raw, path).Exists() {
+				updated, err := sjson.Delete(raw, path)
+				if err == nil && updated != raw {
+					raw = updated
+					changed = true
+				}
+			}
 			continue
 		}
 		existing := gjson.Get(raw, path)
