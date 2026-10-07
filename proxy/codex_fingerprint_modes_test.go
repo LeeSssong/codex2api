@@ -362,14 +362,14 @@ func TestSingleMachineForcesGeneratedClientHeaders(t *testing.T) {
 	downstream.Set("User-Agent", "codex-tui/0.153.3 (Linux Unknown; x86_64) xterm-256color (codex-tui; 0.153.3)")
 	downstream.Set("Originator", "codex-tui")
 	account := fingerprintAccount(t, auth.CodexFingerprintModeSingleMachineMultiWindow)
-	userAgent, _, used := resolveCodexOutboundClientHeaders(account, "api-key", nil, downstream)
-	if !used || userAgent == "" || userAgent == downstream.Get("User-Agent") {
-		t.Fatalf("single machine leaked downstream UA %q used=%v", userAgent, used)
+	identity, err := ResolveCodexOutboundClientIdentity(CodexClientIdentityInput{Account: account, APIKey: "api-key", Headers: downstream})
+	if err != nil || !identity.Generated || identity.UserAgent == "" || identity.UserAgent == downstream.Get("User-Agent") {
+		t.Fatalf("single machine leaked downstream UA %q generated=%v err=%v", identity.UserAgent, identity.Generated, err)
 	}
 	device := fingerprintAccount(t, auth.CodexFingerprintModeDevice)
-	passed, _, used := resolveCodexOutboundClientHeaders(device, "api-key", nil, downstream)
-	if used || passed != downstream.Get("User-Agent") {
-		t.Fatalf("device mode changed UA %q used=%v", passed, used)
+	passed, err := ResolveCodexOutboundClientIdentity(CodexClientIdentityInput{Account: device, APIKey: "api-key", Headers: downstream})
+	if err != nil || passed.Generated || passed.UserAgent != downstream.Get("User-Agent") {
+		t.Fatalf("device mode changed UA %q generated=%v err=%v", passed.UserAgent, passed.Generated, err)
 	}
 }
 

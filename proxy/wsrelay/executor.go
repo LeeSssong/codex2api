@@ -147,7 +147,7 @@ func (e *Executor) ExecuteRequestViaWebsocket(
 	affinityKey := proxy.CodexTurnStateAffinityKeyFromContext(ctx)
 	headers, err := e.prepareWebsocketHeadersChecked(ctx, accessToken, account, accountIDStr, headerSessionID, apiKey, deviceCfg, ginHeaders, wsBody, affinityKey)
 	if err == nil {
-		proxy.LogCodexFingerprintDebug("ws-handshake", account, egress.DialProxyURL, headers, wsBody)
+		proxy.LogCodexFingerprintDebug(ctx, "ws-handshake", account, egress.DialProxyURL, headers, wsBody)
 	}
 	if err != nil {
 		return nil, err
@@ -231,9 +231,9 @@ func (e *Executor) ExecuteRequestViaWebsocket(
 		proxy.RecordUpstreamUserAgent(ctx, wc.upstreamUserAgent)
 		reused := headers.Clone()
 		reused.Set("User-Agent", wc.upstreamUserAgent)
-		proxy.LogCodexFingerprintDebug("ws-reused", account, egress.DialProxyURL, reused, wsBody)
+		proxy.LogCodexFingerprintDebug(ctx, "ws-reused", account, egress.DialProxyURL, reused, wsBody)
 	} else {
-		proxy.LogCodexFingerprintDebug("ws-new", account, egress.DialProxyURL, headers, wsBody)
+		proxy.LogCodexFingerprintDebug(ctx, "ws-new", account, egress.DialProxyURL, headers, wsBody)
 	}
 
 	// 发送请求，失败时最多重试 2 次（重建连接）。

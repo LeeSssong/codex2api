@@ -294,56 +294,57 @@ func shortHashForLog(raw string) string {
 	return hex.EncodeToString(sum[:6])
 }
 
-func logCodexFingerprintDebug(kind string, account *auth.Account, proxyURL string, headers http.Header) {
-	LogCodexFingerprintDebug(kind, account, proxyURL, headers, nil)
+func logCodexFingerprintDebug(ctx context.Context, kind string, account *auth.Account, proxyURL string, headers http.Header) {
+	LogCodexFingerprintDebug(ctx, kind, account, proxyURL, headers, nil)
 }
 
-// LogCodexFingerprintDebug records hashed identity fields when
-// CODEX_FINGERPRINT_DEBUG is enabled. It never logs tokens or raw session values.
-func LogCodexFingerprintDebug(kind string, account *auth.Account, proxyURL string, headers http.Header, body []byte) {
-	if !codexFingerprintDebugEnabled() {
-		return
-	}
+// LogCodexFingerprintDebug 每次出站都把哈希后的身份写入用量日志。
+// 多字段调试行仍只在 CODEX_FINGERPRINT_DEBUG 打开时打印，且不记录令牌或标识原文。
+func LogCodexFingerprintDebug(ctx context.Context, kind string, account *auth.Account, proxyURL string, headers http.Header, body []byte) {
 	accountID := int64(0)
 	if account != nil {
 		accountID = account.ID()
+	}
+	obs := recordCodexFingerprintObservation(ctx, kind, accountID, headers, body)
+	if !codexFingerprintDebugEnabled() {
+		return
 	}
 	if headers == nil {
 		headers = http.Header{}
 	}
 	userAgent := strings.TrimSpace(headers.Get("User-Agent"))
 	originator := strings.TrimSpace(headers.Get("Originator"))
-	turn := gjson.Parse(headers.Get("X-Codex-Turn-Metadata"))
-	log.Printf("[CodexFingerprint] kind=%s account_id=%d transport_mode=%s proxy_enabled=%t official_client=%t ua_hash=%s originator=%s version=%s session_hash=%s thread_hash=%s request_hash=%s window_hash=%s parent_thread_hash=%s legacy_session=%t legacy_conversation=%t installation_header=%t turn_installation_hash=%s turn_session_hash=%s turn_thread_hash=%s turn_window_hash=%s body_installation_hash=%s body_session_hash=%s body_thread_hash=%s body_window_hash=%s cache_key_hash=%s stainless_present=%t",
+	log.Printf("[CodexFingerprint] kind=%s account_id=%d transport_mode=%s proxy_enabled=%t official_client=%t ua_hash=%s originator=%s version=%s session_hash=%s thread_hash=%s request_hash=%s window_hash=%s parent_thread_hash=%s legacy_session=%t legacy_conversation=%t installation_header=%t turn_installation_hash=%s turn_session_hash=%s turn_thread_hash=%s turn_window_hash=%s body_installation_hash=%s body_session_hash=%s body_thread_hash=%s body_window_hash=%s cache_key_hash=%s stainless_present=%t attestation=%t attestation_hash=%s aligned=%t mismatch=%s",
 		kind,
 		accountID,
 		codexTransportModeFromEnv(),
 		strings.TrimSpace(proxyURL) != "",
 		IsCodexOfficialClientByHeaders(userAgent, originator),
-		shortHashForLog(userAgent),
+		obs.UAHash,
 		originator,
 		strings.TrimSpace(headers.Get("Version")),
-		shortHashForLog(headers.Get("Session-Id")),
-		shortHashForLog(headers.Get("Thread-Id")),
-		shortHashForLog(headers.Get("X-Client-Request-Id")),
-		shortHashForLog(headers.Get("X-Codex-Window-Id")),
-		shortHashForLog(headers.Get("X-Codex-Parent-Thread-Id")),
-		strings.TrimSpace(headers.Get("Session_id")) != "",
-		strings.TrimSpace(headers.Get("Conversation_id")) != "",
-		strings.TrimSpace(headers.Get("X-Codex-Installation-Id")) != "",
-		shortHashForLog(turn.Get("installation_id").String()),
-		shortHashForLog(turn.Get("session_id").String()),
-		shortHashForLog(turn.Get("thread_id").String()),
-		shortHashForLog(turn.Get("window_id").String()),
-		shortHashForLog(gjson.GetBytes(body, "client_metadata.installation_id").String()),
-		shortHashForLog(gjson.GetBytes(body, "client_metadata.session_id").String()),
-		shortHashForLog(gjson.GetBytes(body, "client_metadata.thread_id").String()),
-		shortHashForLog(gjson.GetBytes(body, "client_metadata.window_id").String()),
-		shortHashForLog(gjson.GetBytes(body, "prompt_cache_key").String()),
-		headers.Get("X-Stainless-Package-Version") != "" ||
-			headers.Get("X-Stainless-Runtime-Version") != "" ||
-			headers.Get("X-Stainless-Os") != "" ||
-			headers.Get("X-Stainless-Arch") != "",
+		obs.SessionHash,
+		obs.ThreadHash,
+		obs.RequestHash,
+		obs.WindowHash,
+		obs.ParentHash,
+		obs.LegacySession,
+		obs.LegacyConversation,
+		obs.InstallationHeader,
+		obs.TurnInstallationHash,
+		obs.TurnSessionHash,
+		obs.TurnThreadHash,
+		obs.TurnWindowHash,
+		obs.BodyInstallationHash,
+		obs.BodySessionHash,
+		obs.BodyThreadHash,
+		obs.BodyWindowHash,
+		obs.CacheKeyHash,
+		obs.Stainless,
+		obs.Attestation,
+		obs.AttestationHash,
+		obs.Aligned,
+		obs.Mismatch,
 	)
 }
 
@@ -827,7 +828,7 @@ func executeNativeCodexRequest(ctx context.Context, account *auth.Account, reque
 		}
 
 		egress.ApplyHeaders(req.Header)
-		LogCodexFingerprintDebug("http", account, egress.DialProxyURL, req.Header, requestBody)
+		LogCodexFingerprintDebug(req.Context(), "http", account, egress.DialProxyURL, req.Header, requestBody)
 
 		if err := ConsumeAPIKeyModelRequestQuota(ctx, requestModel); err != nil {
 			return nil, err
@@ -1211,7 +1212,7 @@ func executeNativeCodexCompactRequest(ctx context.Context, account *auth.Account
 	ApplyCodexRoutingHint(req.Header, account, requestBody)
 
 	egress.ApplyHeaders(req.Header)
-	LogCodexFingerprintDebug("compact", account, egress.DialProxyURL, req.Header, requestBody)
+	LogCodexFingerprintDebug(req.Context(), "compact", account, egress.DialProxyURL, req.Header, requestBody)
 
 	if err := ConsumeAPIKeyModelRequestQuota(ctx, gjson.GetBytes(requestBody, "model").String()); err != nil {
 		return nil, err

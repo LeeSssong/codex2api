@@ -985,7 +985,7 @@ func TestSQLiteUsageLogsHasAPIKeyColumns(t *testing.T) {
 		t.Fatalf("sqliteTableColumns 返回错误: %v", err)
 	}
 
-	for _, name := range []string{"api_key_id", "api_key_name", "api_key_masked", "client_ip", "client_user_agent", "upstream_user_agent", "user_agent_overridden", "internal_reason", "parent_request_id", "image_count", "image_width", "image_height", "image_bytes", "image_format", "image_size", "effective_model", "compact", "has_compaction_history", "account_billed", "user_billed", "is_retry_attempt", "attempt_index", "upstream_error_kind", "error_message"} {
+	for _, name := range []string{"api_key_id", "api_key_name", "api_key_masked", "client_ip", "client_user_agent", "upstream_user_agent", "user_agent_overridden", "codex_fingerprint", "internal_reason", "parent_request_id", "image_count", "image_width", "image_height", "image_bytes", "image_format", "image_size", "effective_model", "compact", "has_compaction_history", "account_billed", "user_billed", "is_retry_attempt", "attempt_index", "upstream_error_kind", "error_message"} {
 		if _, ok := columns[name]; !ok {
 			t.Fatalf("usage_logs 缺少列 %q", name)
 		}
@@ -2012,6 +2012,7 @@ func TestUsageLogsPersistUserAgentAudit(t *testing.T) {
 		ClientUserAgent:     "curl/8.7.1",
 		UpstreamUserAgent:   "codex-tui/0.151.0 (Mac OS 15.5.0; arm64) xterm-256color (codex-tui; 0.151.0)",
 		UserAgentOverridden: true,
+		CodexFingerprint:    `{"kind":"http","aligned":true}`,
 	}); err != nil {
 		t.Fatalf("InsertUsageLog 返回错误: %v", err)
 	}
@@ -2032,6 +2033,9 @@ func TestUsageLogsPersistUserAgentAudit(t *testing.T) {
 	}
 	if !logs[0].UserAgentOverridden {
 		t.Fatal("UserAgentOverridden = false, want true")
+	}
+	if got := logs[0].CodexFingerprint; got != `{"kind":"http","aligned":true}` {
+		t.Fatalf("CodexFingerprint = %q", got)
 	}
 }
 

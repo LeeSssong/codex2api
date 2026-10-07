@@ -3589,6 +3589,8 @@ export interface UsageLog {
   client_user_agent: string
   upstream_user_agent: string
   user_agent_overridden: boolean
+  /** Hashed Codex outbound identity for this attempt. Empty when the attempt had no Codex observation. */
+  codex_fingerprint?: string
   turn_state_overridden?: boolean
   turn_state_rewrite_note?: string
   internal_reason: string

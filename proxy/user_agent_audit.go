@@ -23,10 +23,10 @@ func withUserAgentAudit(ctx context.Context) context.Context {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if userAgentAuditFromContext(ctx) != nil {
-		return ctx
+	if userAgentAuditFromContext(ctx) == nil {
+		ctx = context.WithValue(ctx, userAgentAuditContextKey{}, &userAgentAudit{})
 	}
-	return context.WithValue(ctx, userAgentAuditContextKey{}, &userAgentAudit{})
+	return withCodexFingerprintAudit(ctx)
 }
 
 func userAgentAuditFromContext(ctx context.Context) *userAgentAudit {
@@ -39,6 +39,7 @@ func userAgentAuditFromContext(ctx context.Context) *userAgentAudit {
 
 func resetUpstreamUserAgentAudit(ctx context.Context) {
 	resetUpstreamAttemptTrace(ctx)
+	resetCodexFingerprintAudit(ctx)
 	if audit := userAgentAuditFromContext(ctx); audit != nil {
 		audit.mu.Lock()
 		audit.upstreamUserAgent = ""
@@ -86,6 +87,9 @@ func populateUserAgentMetaFromRequest(c *gin.Context, input *database.UsageLogIn
 		input.UpstreamUserAgent = upstreamUserAgent
 		input.UserAgentOverridden = clientUserAgent != upstreamUserAgent
 	}
+	populateCodexFingerprintFromRequest(c.Request.Context(), func(raw string) {
+		input.CodexFingerprint = raw
+	})
 }
 
 func normalizeUsageLogUserAgent(userAgent string) string {
