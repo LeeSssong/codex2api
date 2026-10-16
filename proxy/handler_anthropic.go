@@ -683,8 +683,8 @@ func (h *Handler) Messages(c *gin.Context) {
 			return fixedTierFilter(account)
 		}
 	}
-	accountFilter = h.withModelCooldownFilter(c.Request.Context(), effectiveModel, accountFilter)
 	accountFilter = h.withCodexRouteFilter(c, model, effectiveModel, routingBody, accountFilter)
+	accountFilter = h.withModelCooldownFilter(c.Request.Context(), effectiveModel, accountFilter)
 	accountFilter = h.applyUpstreamChannelFilter(c, effectiveModel, accountFilter)
 	accountFilter = h.applyScopeBudgetFilter(c, accountFilter)
 	// scope 并发位在选中账号后才能占，请求退出时统一释放（issue #439 v2）。

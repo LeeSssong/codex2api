@@ -488,6 +488,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 
 	accountFilter := accountFilterForResponsesWebSocket(effectiveModel)
 	accountFilter = h.withCodexRouteFilter(c, logModel, effectiveModel, codexBody, accountFilter)
+	accountFilter = h.withModelCooldownFilter(c.Request.Context(), effectiveModel, accountFilter)
 	accountFilter = applyAffinityGroupRouting(c, sessionIdentity, accountFilter)
 	accountFilter = h.applyScopeBudgetFilter(c, accountFilter)
 	// resolveCompactionAffinity 只在已知来源相互冲突时报错；缓存故障按未知
@@ -635,8 +636,8 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 					d.recordSelectionError(routeErr)
 				}
 				apiErr = api.NewAPIError(api.ErrorCode(routeErr.Code), routeErr.Message, routeAPIErrorType(routeErr))
-			} else if errors.Is(selectionErr, auth.ErrSchedulerQueueFull) {
-				apiErr = schedulerQueueFullAPIError()
+			} else if selectionAPIError := schedulerSelectionAPIError(selectionErr); selectionAPIError != nil {
+				apiErr = selectionAPIError
 			} else if lastRetryableUpstreamErr != nil {
 				apiErr = responsesWSClientUpstreamAPIError(lastRetryableUpstreamErr, hideUpstreamErrors)
 			} else if (lastStatusCode == http.StatusTooManyRequests && len(lastBody) > 0) || lastFailureModelUnsupported(lastStatusCode, lastBody) {
@@ -1499,7 +1500,7 @@ func (h *Handler) streamResponsesWSUpstream(
 		h.logPromptPolicyRetryUsage(c, database.UsageLogInput{
 			AccountID: account.ID(), Endpoint: "/v1/responses", Model: model, EffectiveModel: logEffectiveModel,
 			StatusCode: outcome.logStatusCode, DurationMs: totalDuration, FirstTokenMs: firstTokenMs, ReasoningEffort: effectiveReasoningEffortForAccount(account, reasoningEffort, c.Request.Context()),
-			InboundEndpoint: "/v1/responses", UpstreamEndpoint: "/v1/responses", Stream: true, ViaWebsocket: viaWebsocket,
+			InboundEndpoint: "/v1/responses", UpstreamEndpoint: upstreamEndpoint, Stream: true, ViaWebsocket: viaWebsocket,
 			AttemptIndex: fallbackAttempt, UpstreamErrorKind: outcome.failureKind,
 			ErrorMessage: usageLogFailureMessage(outcome.logStatusCode, outcome.failureMessage),
 		}, promptPolicyIncidentID)

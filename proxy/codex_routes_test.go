@@ -344,6 +344,25 @@ func TestCodexEmptyAuthorizedIntersectionReturnsImmediately(t *testing.T) {
 	}
 }
 
+func TestRouteAwareCooldownFilterDoesNotReapplyNativeStateGate(t *testing.T) {
+	old := ipv6StateProvider.Load()
+	t.Cleanup(func() { SetIPv6StateProvider(old) })
+	SetIPv6StateProvider(&IPv6StateProvider{EligibleAccounts: func(string) (bool, map[int64]bool) {
+		return true, map[int64]bool{}
+	}})
+	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 1})
+	t.Cleanup(store.Stop)
+	h := NewHandler(store, nil, &config.Config{}, nil)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	route := newCodexRouteDecision(c.Request.Context(), "gpt-6-astra", "gpt-6-astra", database.APIKeyLimits{}, 2)
+	ctx := context.WithValue(c.Request.Context(), codexRouteKey{}, route)
+	filter := h.withModelCooldownFilter(ctx, "gpt-6-astra", func(*auth.Account) bool { return true })
+	if !filter(&auth.Account{DBID: 884001}) {
+		t.Fatal("route-aware cooldown filter reapplied native State admission")
+	}
+}
+
 func TestCodexRouteFailedSecondPathCannotLoop(t *testing.T) {
 	enableBasispointsForTest(t)
 	a := &auth.Account{DBID: 995004, AccessToken: "token", AccountID: "workspace"}

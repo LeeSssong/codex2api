@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/codex2api/auth"
+	"github.com/codex2api/egressipv6"
 	"github.com/codex2api/proxy"
 	"github.com/gorilla/websocket"
 )
@@ -58,7 +59,15 @@ func (m *Manager) connectionDialer(ctx context.Context, input connectionDialRequ
 		dialProxy = strings.TrimSpace(boundProxy)
 		dialer.Proxy = nil
 	}
-	if dialProxy != "" {
+	if proxy.IsIPv6Route(dialProxy) {
+		sourceDialer, err := egressipv6.NewDialer(proxy.IPv6RouteIP(dialProxy))
+		if err != nil {
+			return nil, err
+		}
+		dialer.Proxy = nil
+		dialer.NetDialContext = sourceDialer.DialContext
+		dialer.NetDialTLSContext = nil
+	} else if dialProxy != "" {
 		if err := configureWebsocketDialerProxy(&dialer, dialProxy); err != nil {
 			return nil, err
 		}
@@ -91,6 +100,9 @@ func (m *Manager) wrapDialedConnection(input dialedConnection) *WsConnection {
 	wc := NewWsConnection(input.conn, input.session, input.request.url)
 	wc.account = input.request.account
 	wc.PoolKey = input.poolKey
+	if proxy.IsIPv6Route(input.request.proxyOverride) {
+		wc.ipv6Route = input.request.proxyOverride
+	}
 	wc.upstreamUserAgent = strings.TrimSpace(input.request.headers.Get("User-Agent"))
 	wc.upstreamUserAgentKnown = true
 	wc.upstreamClientIdentity = websocketClientIdentity(input.request.headers)

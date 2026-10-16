@@ -649,7 +649,14 @@ export interface AccountPageStatsResponse {
 export interface AccountLiveStateResponse {
   state_summary?: import('./lib/accountStateModels').StateSummary
   server_time?: number
-  accounts: Record<string, { active_requests: number; occupied_requests: number; state_models?: AccountStateModel[]; dynamic_concurrency_limit?: number; base_concurrency_effective?: number }>
+  accounts: Record<string, {
+    state_models?: AccountStateModel[]
+    active_requests: number
+    occupied_requests: number
+    // 调度器当前实际执行的并发上限与配置值；旧后端不返回时保留列表里的值。
+    dynamic_concurrency_limit?: number
+    base_concurrency_effective?: number
+  }>
   session_slot_buffer_enabled: boolean
 }
 

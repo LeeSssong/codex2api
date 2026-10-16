@@ -36,6 +36,9 @@ func TestCodexUnifiedClientIdentitySettingPersistence(t *testing.T) {
 			}
 			for _, enabled := range []bool{true, false} {
 				settings.CodexUnifiedClientIdentityEnabled = enabled
+				settings.CodexBasispointsEnabled = !enabled
+				settings.CodexWSDownstreamKeepaliveSlots = 11
+				settings.AutoResetCreditsOnExhaustionEnabled = enabled
 				settings.PreservePromptFilterCustomPatterns = true
 				settings.PreservePromptFilterReviewAPIKey = true
 				settings.PromptFilterCustomPatterns = "[]"
@@ -47,14 +50,20 @@ func TestCodexUnifiedClientIdentitySettingPersistence(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
+				if got.CodexWSDownstreamKeepaliveSlots != 11 {
+					t.Fatal("keepalive setting collided with BPS SQL parameter")
+				}
 				if got.CodexUnifiedClientIdentityEnabled != enabled {
 					t.Fatalf("unified client identity = %v, want %v", got.CodexUnifiedClientIdentityEnabled, enabled)
+				}
+				if got.CodexBasispointsEnabled != !enabled || got.AutoResetCreditsOnExhaustionEnabled != enabled {
+					t.Fatal("BPS and upstream settings did not persist independently")
 				}
 				if got.PromptFilterCustomPatterns != `[{"id":"fixture"}]` || got.PromptFilterReviewAPIKey != "fixture-key" {
 					t.Fatal("new SQL parameter disturbed preserve flags")
 				}
 			}
-			// 模拟旧库升级：缺列时迁移补列并默认关闭。
+			// An old database gains the missing column with a disabled default.
 			if _, err := db.conn.ExecContext(ctx, "ALTER TABLE system_settings DROP COLUMN codex_unified_client_identity_enabled"); err != nil {
 				t.Fatal(err)
 			}

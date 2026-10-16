@@ -196,3 +196,23 @@ func TestIdleChatRetentionEvictsOldestBoundAndProtectsActive(t *testing.T) {
 		t.Fatal("evicted connection retained its continuation binding")
 	}
 }
+
+func TestContinuationRejectsRotatedIPv6Route(t *testing.T) {
+	executor, original := continuationFixture(t)
+	original.ipv6Route = "local-ipv6://2604::1"
+	input := websocketContinuation{responseID: "previous", accountID: 7, apiKey: "key", identity: "client", route: original.ipv6Route}
+	if got, _ := executor.manager.lookupContinuationConn(input); got != original {
+		t.Fatal("same IPv6 route lost continuation")
+	}
+	input.route = "local-ipv6://2604::2"
+	if got, _ := executor.manager.lookupContinuationConn(input); got != nil {
+		t.Fatal("rotated IPv6 route reused old connection")
+	}
+	input.route = ""
+	if got, _ := executor.manager.lookupContinuationConn(input); got != nil {
+		t.Fatal("direct route reused IPv6 connection")
+	}
+	if !original.IsConnected() || original.session.PendingCount() != 0 {
+		t.Fatal("route check mutated original lease")
+	}
+}

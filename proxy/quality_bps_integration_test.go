@@ -4,10 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"github.com/codex2api/config"
+	"github.com/gin-gonic/gin"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/codex2api/accountops"
 	"github.com/codex2api/auth"
@@ -48,6 +52,19 @@ func TestQualityBPSPolicyChangesRealTransportAndPreservesKeyConstraints(t *testi
 	if account == nil {
 		t.Fatal("fixture account unavailable")
 	}
+
+	oldProvider := ipv6StateProvider.Load()
+	t.Cleanup(func() { SetIPv6StateProvider(oldProvider) })
+	SetIPv6StateProvider(&IPv6StateProvider{EligibleAccounts: func(string) (bool, map[int64]bool) { return true, map[int64]bool{} }})
+	h := NewHandler(store, db, &config.Config{}, nil)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest("POST", "/v1/responses", nil)
+	filter := h.withCodexRouteFilter(c, "gpt-6-astra", "gpt-6-astra", nil, nil)
+	filter = h.withModelCooldownFilter(c.Request.Context(), "gpt-6-astra", filter)
+	if !filter(account) {
+		t.Fatalf("qualityBPS=%v paths=%v snapshot=%+v", account.QualityBPSPreferred("gpt-6-astra"), codexRouteFromContext(c.Request.Context()).eligibleAccountPaths(account, "gpt-6-astra"), account.CodexPathSnapshot("basispoints", "gpt-6-astra", time.Now()))
+	}
+	SetIPv6StateProvider(oldProvider)
 	var bpsCalls, nativeCalls int
 	installBasispointsTransport(t, account, func(*http.Request) (*http.Response, error) {
 		bpsCalls++
@@ -57,6 +74,7 @@ func TestQualityBPSPolicyChangesRealTransportAndPreservesKeyConstraints(t *testi
 		nativeCalls++
 		return basispointsTestCompleted("resp-native", nil), nil
 	})
+
 	run := func(ctx context.Context, model string) {
 		t.Helper()
 		body, _ := json.Marshal(map[string]any{"model": model, "input": "test", "stream": true})

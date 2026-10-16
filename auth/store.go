@@ -22,6 +22,7 @@ import (
 
 	"github.com/codex2api/cache"
 	"github.com/codex2api/database"
+	"github.com/codex2api/egressipv6"
 	"github.com/codex2api/internal/openaiidentity"
 	"github.com/codex2api/security/promptfilter"
 	"github.com/codex2api/smartops"
@@ -161,6 +162,7 @@ type Account struct {
 	smartOpsBPS               smartops.BPSDefaults
 	smartOpsBPSSet            bool
 	daybreak                  database.DaybreakSnapshot
+	modelQuality              *modelQualityGate
 	codexRoutes               codexAccountRoutes
 	stateAdmissionMu          sync.Mutex
 	stateBusinessLimit        int64
@@ -220,7 +222,8 @@ type Account struct {
 	// Timezone 是账号绑定的 IANA 时区（credentials.timezone）。Codex 官方出站路径据此
 	// 改写请求体 environment_context 里的时区与日期（见 proxy/codex_environment_context.go）；
 	// 空 = 不绑定、透传下游值。Claude 账号沿用同一凭据键做身份标签。
-	Timezone             string
+	Timezone string
+	// Credential-level Turn State injection and model scope.
 	CodexTurnState       string
 	CodexTurnStateModels string
 	CodexTurnStateSetAt  time.Time
@@ -3527,6 +3530,7 @@ func (a *Account) GetLastUsedAt() time.Time {
 // Store 多账号管理器（数据库 + Token 缓存）
 type Store struct {
 	smartOps                           atomic.Pointer[smartOpsAdapter]
+	modelQuality                       modelQualityGate
 	proxyAuditLabels                   map[string]ProxyAuditLabel
 	mu                                 sync.RWMutex
 	accountMutationMu                  sync.Mutex // serializes account-set and scheduler mutations without nesting their locks
@@ -4941,7 +4945,7 @@ func (s *Store) resolveProxyForAccountSnapshot(acc *Account) (string, bool) {
 		accountID = acc.DBID
 		accountProxy = strings.TrimSpace(acc.ProxyURL)
 		groupIDs = cloneInt64Slice(acc.GroupIDs)
-		resinCarriesEgress = ResinEgressEnabled() && !acc.isRelayStyleLocked()
+		resinCarriesEgress = (ResinEgressEnabled() || egressipv6.Enabled()) && !acc.isRelayStyleLocked()
 		acc.mu.RUnlock()
 	}
 
@@ -5613,6 +5617,7 @@ func (s *Store) buildAccountFromRow(ctx context.Context, row *database.AccountRo
 	}
 
 	account := &Account{
+		modelQuality:                 &s.modelQuality,
 		DBID:                         row.ID,
 		CredentialGeneration:         row.CredentialGeneration,
 		CredentialFamilyID:           row.CredentialFamilyID,
@@ -9188,6 +9193,7 @@ func (s *Store) AddAccounts(accounts []*Account) {
 		}
 		acc.mu.Lock()
 		acc.grokRuntimeSink = s
+		acc.modelQuality = &s.modelQuality
 		acc.attachCodexRouteDB(s.db)
 		acc.recomputeEffectiveIgnoreUsageLimitStatus(ignoreUsageLimit)
 		acc.recomputeEffectiveGroupBaseConcurrency(s)

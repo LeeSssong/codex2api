@@ -24,7 +24,7 @@ before(async () => {
   name: 'intelligence-harness', enforce: 'pre',
   resolveId(id) { if (id === 'virtual:intelligence-harness') return '\0intelligence-harness'; if (/^(?:\.\.\/|\.\/)+api$/.test(id)) return '\0mock-api' },
   load(id) {
-   if (id === '\0mock-api') return 'export const api = new Proxy({}, { get: (_, name) => (...args) => window.__api(name, args) }); export const getAdminKey = () => "fixture"; export const resetAdminAuthState = () => {}; export class AdminAPIError extends Error {}'
+   if (id === '\0mock-api') return 'export const api = new Proxy({}, { get: (_, name) => (...args) => window.__api(name, args) }); export const getSmartOpsConcurrencyProgress = async () => ({enabled:false,accounts:{}}); export const getAdminKey = () => "fixture"; export const resetAdminAuthState = () => {}; export class AdminAPIError extends Error {}'
    if (id !== '\0intelligence-harness') return
    return `import React from 'react'; import {createRoot} from 'react-dom/client'; import {MemoryRouter} from 'react-router-dom';
    import IntelligenceCheck from ${JSON.stringify(path.join(root, 'src/pages/IntelligenceCheck.tsx'))};
@@ -237,8 +237,6 @@ test('account table, card and detail show their independent intelligence history
  await page.screenshot({ path: path.join(artifactDir, 'accounts-card-mobile.png'), fullPage: true })
  await page.setViewportSize({width:1280,height:900})
  await page.locator('.codex-account-card__actions').getByRole('button', { name: '查看详情', exact: true }).click()
- // Existing account detail opens the quick-config sheet above the detail sheet.
- await page.keyboard.press('Escape')
  await page.getByRole('dialog').getByLabel('最近 20 次降智检测，由旧到新').waitFor()
  await assertActionsFollowStatus(page.getByRole('dialog'))
  await page.screenshot({ path: path.join(artifactDir, 'accounts-detail.png'), fullPage: true })

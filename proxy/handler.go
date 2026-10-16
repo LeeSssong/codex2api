@@ -128,7 +128,11 @@ func dispatchPolicyForModel(model string) auth.DispatchPolicy {
 }
 
 func (h *Handler) withModelCooldownFilter(ctx context.Context, model string, filter auth.AccountFilter) auth.AccountFilter {
-	filter = withRequiredStateFilter(model, filter)
+	// Codex routing checks State per eligible path; a global State gate would
+	// incorrectly reject account-scoped BPS recovery when global BPS is off.
+	if codexRouteFromContext(ctx) == nil {
+		filter = withRequiredStateFilter(model, filter)
+	}
 	if h == nil || h.store == nil {
 		return filter
 	}
@@ -374,7 +378,7 @@ func accountFilterForModel(model string) auth.AccountFilter {
 		if account.IsRelayStyle() {
 			return false
 		}
-		if model != "" && account.IsModelRateLimited(model) {
+		if model != "" && (account.IsModelRateLimited(model) || account.IsModelQualityBlocked(model)) {
 			return false
 		}
 		if !account.SupportsCodexModel(model) {
@@ -4102,6 +4106,7 @@ func (h *Handler) Responses(c *gin.Context) {
 		accountFilter = accountFilterForResponsesModelWithOriginal(logModel, effectiveModel, allowCodexAccounts)
 	}
 	accountFilter = h.withCodexRouteFilter(c, logModel, effectiveModel, codexBody, accountFilter)
+	accountFilter = h.withModelCooldownFilter(c.Request.Context(), effectiveModel, accountFilter)
 	if continuationUnavailable {
 		accountFilter = responsesContinuationRelayFilter(accountFilter)
 	}
@@ -6146,6 +6151,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 	// 中转账号会命中上游自身的 /responses/compact，使仅接入中转的用户也能压缩（issue #174）。
 	accountFilter := accountFilterForCompactResponsesModelWithOriginal(routingModel, effectiveModel, modelIDInList(effectiveModel, SupportedModelIDs(c.Request.Context(), h.db)))
 	accountFilter = h.withCodexRouteFilter(c, routingModel, effectiveModel, codexBody, accountFilter)
+	accountFilter = h.withModelCooldownFilter(c.Request.Context(), effectiveModel, accountFilter)
 	accountFilter = excludeClaudeAccountsFilter(accountFilter)
 	if continuationUnavailable {
 		accountFilter = responsesContinuationRelayFilter(accountFilter)
@@ -7011,6 +7017,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 	// 翻译后的请求体本身就是 Responses 形态，中转账号直接以 HTTP 转发（issue #181）。
 	accountFilter := accountFilterForResponsesModelWithOriginal(logModel, effectiveModel, modelIDInList(effectiveModel, SupportedModelIDs(c.Request.Context(), h.db)))
 	accountFilter = h.withCodexRouteFilter(c, logModel, effectiveModel, codexBody, accountFilter)
+	accountFilter = h.withModelCooldownFilter(c.Request.Context(), effectiveModel, accountFilter)
 	accountFilter = h.applyUpstreamChannelFilter(c, effectiveModel, accountFilter)
 	accountFilter = excludeClaudeAccountsFilter(accountFilter)
 	accountFilter = h.applyScopeBudgetFilter(c, accountFilter)

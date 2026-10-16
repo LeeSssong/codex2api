@@ -23,6 +23,7 @@ import (
 	"github.com/codex2api/cache"
 	"github.com/codex2api/config"
 	"github.com/codex2api/database"
+	"github.com/codex2api/egressipv6"
 	"github.com/codex2api/internal/imagestore"
 	"github.com/codex2api/internal/version"
 	"github.com/codex2api/proxy"
@@ -352,6 +353,15 @@ func main() {
 	claudeCLIVersionCancel()
 
 	// 5. 初始化账号管理器
+	ipv6Egress := egressipv6.New(db)
+	if err := ipv6Egress.Refresh(context.Background()); err != nil {
+		log.Printf("initialize IPv6 egress: %v", err)
+		return
+	}
+	ipv6Egress.ObserveSource = proxy.RecordIPv6Source
+	egressipv6.Install(ipv6Egress)
+	auth.CodexHTTPClientDecorator = proxy.WrapOAuthIPv6Client
+
 	store := auth.NewStore(db, tc, settings)
 	store.SetSchedulerWaitLimits(cfg.SchedulerMaxWaiters, cfg.SchedulerMaxWaitersPerKey)
 
@@ -384,12 +394,21 @@ func main() {
 	adminHandler.StartAccountOps(backgroundCtx)
 	adminHandler.StartTokenGuard(backgroundCtx)
 	adminHandler.StartCredentialOpsScheduler(backgroundCtx)
+	defer func() {
+		cancelBackground()
+		adminHandler.WaitModelQuality()
+	}()
+	go ipv6Egress.Run(backgroundCtx)
+	if err := adminHandler.StartModelQuality(backgroundCtx); err != nil {
+		cancelBackground()
+		log.Printf("Model quality guard startup failed: %v", err)
+		return
+	}
 	if err := adminHandler.StartStatePool(backgroundCtx); err != nil {
 		log.Printf("State pool startup failed: %v", err)
 		return
 	}
 	defer adminHandler.StopStatePool()
-	defer cancelBackground()
 	if !proxy.StartResponseCacheSettingsPoller(backgroundCtx, db) {
 		log.Fatalf("启动响应缓存设置同步失败")
 	}
@@ -403,10 +422,11 @@ func main() {
 	adminHandler.StartOfficialPricingSync(backgroundCtx)
 	// Prompt 审核日志保留清理：默认保留 7 天，每小时分批清理过期行，CY 关联行不动。
 	adminHandler.StartPromptLogRetention(backgroundCtx)
-	adminHandler.StartChannelMonitor(backgroundCtx)
 	// Basispoints inbound images: embedded base64 images become self-hosted signed
 	// HTTPS links (imagestore + /p/img) and are swept after their retention window.
 	proxy.StartBasispointsImageHost(backgroundCtx, db)
+	// Schedule per-account Responses channel health and rate probes.
+	adminHandler.StartChannelMonitor(backgroundCtx)
 
 	// 后台定时同步 Codex CLI 模拟版本（启动即拉一次，之后按设置的间隔）；
 	// 出上游新版本门槛时无需发版即可跟进。开关/间隔在设置页可调，
@@ -702,6 +722,7 @@ func main() {
 	if err := adminHandler.WaitCredentialOpsScheduler(shutdownCtx); err != nil {
 		log.Printf("credential operations shutdown: %v", err)
 	}
+	adminHandler.WaitModelQuality()
 	adminHandler.StopStatePool()
 	adminHandler.WaitIntelligenceChecks()
 	wsKeepalive.Stop()

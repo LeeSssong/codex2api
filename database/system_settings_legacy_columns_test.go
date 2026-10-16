@@ -19,8 +19,8 @@ func TestSQLiteSystemSettingsIgnoresRetiredColumnsAfterRestart(t *testing.T) {
 		}
 	})
 
-	// New installations omit the retired route settings. Existing installations
-	// may retain these columns without needing a destructive schema migration.
+	// The fork retains its BPS enable switch. Other upstream BPS settings remain
+	// retired and may persist without a destructive schema migration.
 	legacyColumns := []struct {
 		name string
 		ddl  string
@@ -69,6 +69,9 @@ func TestSQLiteSystemSettingsIgnoresRetiredColumnsAfterRestart(t *testing.T) {
 	}
 	settings.SiteName = "After upgrade"
 	settings.MaxConcurrency = 8
+	if !settings.CodexBasispointsEnabled {
+		t.Fatal("upgrade lost the fork's active BPS setting")
+	}
 	if err := db.UpdateSystemSettings(ctx, settings); err != nil {
 		t.Fatalf("save after upgrade: %v", err)
 	}

@@ -50,7 +50,7 @@ func (r *WsResponse) bindCompletedResponse(responseID string) {
 
 func (m *Manager) lookupContinuationConn(input websocketContinuation) (*WsConnection, string) {
 	wc, key := m.lookupResponseConn(input.responseID, input.accountID, input.apiKey)
-	if wc == nil || (input.identity != "" && wc.upstreamClientIdentity != input.identity) {
+	if wc == nil || (input.identity != "" && wc.upstreamClientIdentity != input.identity) || wc.ipv6Route != ipv6ContinuationRoute(input.route) {
 		return nil, ""
 	}
 	if input.url != "" && wc.PoolKey != m.poolKey(input.accountID, input.url, key, input.proxyURL) {

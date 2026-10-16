@@ -57,34 +57,34 @@ type currentUserPrecheck struct {
 }
 
 type Decision struct {
-	Enabled               bool          `json:"enabled"`
-	Mode                  string        `json:"mode"`
-	Profile               string        `json:"profile"`
-	ApplicationPromptKind string        `json:"application_prompt_kind,omitempty"`
+	Enabled               bool   `json:"enabled"`
+	Mode                  string `json:"mode"`
+	Profile               string `json:"profile"`
+	ApplicationPromptKind string `json:"application_prompt_kind,omitempty"`
 	// ApprovalReviewModelUntrusted names the requested model of a well-formed
 	// Codex auto-review request that was scanned as ordinary input because the
 	// model is not listed in Enforcement.ApprovalReviewModels.
-	ApprovalReviewModelUntrusted string `json:"approval_review_model_untrusted,omitempty"`
-	Action                string        `json:"action"`
-	WouldAction           string        `json:"would_action"`
-	Score                 int           `json:"score"`
-	RawScore              int           `json:"raw_score"`
-	AuditScore            int           `json:"audit_score,omitempty"`
-	AuditRawScore         int           `json:"audit_raw_score,omitempty"`
-	ReasonCode            string        `json:"reason_code,omitempty"`
-	Reason                string        `json:"reason,omitempty"`
-	Terminal              bool          `json:"terminal,omitempty"`
-	StrikeEligible        bool          `json:"strike_eligible,omitempty"`
-	Truncated             bool          `json:"truncated,omitempty"`
-	CurrentUserTruncated  bool          `json:"current_user_truncated,omitempty"`
-	AuxiliaryTruncated    bool          `json:"auxiliary_truncated,omitempty"`
-	PrimaryOrigin         SegmentOrigin `json:"primary_origin,omitempty"`
-	PrimaryDetector       string        `json:"primary_detector,omitempty"`
-	Signals               []Signal      `json:"signals,omitempty"`
-	Errors                []string      `json:"errors,omitempty"`
-	ReviewText            string        `json:"-"`
-	legacyVerdict         Verdict
-	deferredAudit         *DeferredAudit
+	ApprovalReviewModelUntrusted string        `json:"approval_review_model_untrusted,omitempty"`
+	Action                       string        `json:"action"`
+	WouldAction                  string        `json:"would_action"`
+	Score                        int           `json:"score"`
+	RawScore                     int           `json:"raw_score"`
+	AuditScore                   int           `json:"audit_score,omitempty"`
+	AuditRawScore                int           `json:"audit_raw_score,omitempty"`
+	ReasonCode                   string        `json:"reason_code,omitempty"`
+	Reason                       string        `json:"reason,omitempty"`
+	Terminal                     bool          `json:"terminal,omitempty"`
+	StrikeEligible               bool          `json:"strike_eligible,omitempty"`
+	Truncated                    bool          `json:"truncated,omitempty"`
+	CurrentUserTruncated         bool          `json:"current_user_truncated,omitempty"`
+	AuxiliaryTruncated           bool          `json:"auxiliary_truncated,omitempty"`
+	PrimaryOrigin                SegmentOrigin `json:"primary_origin,omitempty"`
+	PrimaryDetector              string        `json:"primary_detector,omitempty"`
+	Signals                      []Signal      `json:"signals,omitempty"`
+	Errors                       []string      `json:"errors,omitempty"`
+	ReviewText                   string        `json:"-"`
+	legacyVerdict                Verdict
+	deferredAudit                *DeferredAudit
 }
 
 // DeferredAudit is an immutable snapshot of auxiliary shadow-only content

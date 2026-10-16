@@ -13,10 +13,10 @@ import (
 // 记录一次转发尝试内上游响应自报的模型名，与实际发往上游的模型对比，写入用量日志，
 // 供管理端「模型不一致」审计与筛选使用。观测绝不影响转发与计费路径。
 //
-// - first：首个声明（如 response.created 帧携带的 response.model）
-// - terminal：终态事件声明（response.completed / response.incomplete / response.failed），
-//   存在时优先生效
-// - conflict：同一次尝试内出现互相矛盾的自报——上游混流或中途换模型的信号
+//   - first：首个声明（如 response.created 帧携带的 response.model）
+//   - terminal：终态事件声明（response.completed / response.incomplete / response.failed），
+//     存在时优先生效
+//   - conflict：同一次尝试内出现互相矛盾的自报——上游混流或中途换模型的信号
 type upstreamResponseModelObserver struct {
 	first    string
 	terminal string

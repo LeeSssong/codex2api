@@ -482,7 +482,9 @@ func (h *Handler) waitForRetryAccountAvailableWithGuard(ctx context.Context, aff
 			return step, nil
 		}
 	}
-	if d:=codexRouteFromContext(ctx);d!=nil{ctx=auth.WithPrioritySchedulingModel(ctx,d.EffectiveModel)}
+	if d := codexRouteFromContext(ctx); d != nil {
+		ctx = auth.WithPrioritySchedulingModel(ctx, d.EffectiveModel)
+	}
 	account, proxyURL, guard, err := h.store.WaitForDispatchAvailable(ctx, affinityKey, dispatchAccountWaitTimeout, apiKeyID, exclude, filter, preserveBinding, policy, heartbeat)
 	account, proxyURL = guardRetryAccountContext(ctx, h.store.Release, account, proxyURL)
 	if account == nil {
@@ -550,6 +552,9 @@ func (h *Handler) nextRetryAccountWithGuard(ctx context.Context, affinityKey str
 		if err := codexRouteBudgetError(ctx); err != nil {
 			return nil, "", auth.SessionAffinityGuard{}, err
 		}
+		if ctx.Err() != nil {
+			return nil, "", auth.SessionAffinityGuard{}, ctx.Err()
+		}
 		exclude := exclusions.ForSelection()
 		var account *auth.Account
 		var stickyProxyURL string
@@ -557,13 +562,16 @@ func (h *Handler) nextRetryAccountWithGuard(ctx context.Context, affinityKey str
 		if preserveBinding {
 			account, stickyProxyURL = h.store.NextForContinuationWithDispatch(affinityKey, apiKeyID, exclude, filter, policy)
 		} else {
-			model:=auth.PrioritySchedulingModel(ctx);if d:=codexRouteFromContext(ctx);d!=nil{model=d.EffectiveModel}
-			account, stickyProxyURL, guard = h.nextAccountForSessionWithDispatchGuard(affinityKey, apiKeyID, exclude, filter, policy,model)
+			model := auth.PrioritySchedulingModel(ctx)
+			if d := codexRouteFromContext(ctx); d != nil {
+				model = d.EffectiveModel
+			}
+			account, stickyProxyURL, guard = h.nextAccountForSessionWithDispatchGuard(affinityKey, apiKeyID, exclude, filter, policy, model)
 		}
 		if account != nil {
 			if ctx.Err() != nil {
 				h.store.Release(account)
-				return nil, "", auth.SessionAffinityGuard{}, nil
+				return nil, "", auth.SessionAffinityGuard{}, ctx.Err()
 			}
 			if d := codexRouteFromContext(ctx); d != nil {
 				d.mu.Lock()
@@ -571,6 +579,9 @@ func (h *Handler) nextRetryAccountWithGuard(ctx context.Context, affinityKey str
 				d.mu.Unlock()
 			}
 			return account, stickyProxyURL, guard, nil
+		}
+		if ctx.Err() != nil {
+			return nil, "", auth.SessionAffinityGuard{}, ctx.Err()
 		}
 		if d := codexRouteFromContext(ctx); d != nil {
 			d.mu.Lock()

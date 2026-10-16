@@ -76,6 +76,7 @@ type Handler struct {
 	systemUpdateOnce         sync.Once
 	refreshAccount           func(context.Context, int64) error
 	probeUsage               func(context.Context, *auth.Account) error
+	modelQuality             *modelQualityRunner
 
 	codexCapabilityProbe func(context.Context, *auth.Account, proxy.CodexCapabilityProbeOptions) proxy.CodexProbeResult
 	codexProbeMu         sync.Mutex
@@ -1266,6 +1267,11 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	h.RegisterSmartOps(api)
 	h.registerIntelligenceCheckRoutes(api)
 	api.GET("/quality-tests", h.ListQualityTests)
+	api.GET("/ipv6-egress", h.GetIPv6Egress)
+	api.PUT("/ipv6-egress", h.UpdateIPv6Egress)
+	api.GET("/model-quality", h.GetModelQuality)
+	api.PUT("/model-quality", h.UpdateModelQuality)
+	api.POST("/model-quality/retest", h.RetestModelQuality)
 	h.registerStatePoolRoutes(api)
 	api.GET("/quality-tests/:id", h.GetQualityTest)
 	api.POST("/quality-tests/:id/cancel", h.CancelQualityTest)

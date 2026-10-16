@@ -26,6 +26,23 @@ test("turn state distinguishes exact length, absent headers, and unknown transpo
   }
 });
 
+test("version-gated upstream errors are recognised in any provided text", () => {
+  const failedEvent = JSON.stringify({
+    response: {
+      error: {
+        message: "The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account.",
+        type: "invalid_request_error",
+      },
+      status: "failed",
+      status_code: 400,
+    },
+    type: "response.failed",
+  });
+  assert.equal(isCodexVersionGatedError(failedEvent), true);
+  assert.equal(isCodexVersionGatedError(undefined, `{"detail":"The 'gpt-5.5' model requires a newer version of Codex"}`), true);
+  assert.equal(isCodexVersionGatedError("usage_limit_reached", null, ""), false);
+});
+
 test("window kind follows the backend minute thresholds", () => {
   assert.equal(codexTestWindowKind({ window_minutes: 300 }), "5h");
   assert.equal(codexTestWindowKind({ window_minutes: 10080 }), "7d");
@@ -72,7 +89,7 @@ test("final diagnostics are recognised by duration_ms only", () => {
   assert.equal(formatCodexTestMS(undefined), "—");
 });
 
-test("hloolx connection test starts in an effect and aborts on cleanup", () => {
+test("hloolx connection test starts explicitly and aborts on cleanup", () => {
   const source = readFileSync(new URL("../components/TestConnectionModal.tsx", import.meta.url), "utf8");
   const file = ts.createSourceFile("TestConnectionModal.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
   let requests = 0;
@@ -85,13 +102,13 @@ test("hloolx connection test starts in an effect and aborts on cleanup", () => {
         ancestors.push(parent);
         parent = parent.parent;
       }
-      assert.ok(ancestors.some((item) => ts.isCallExpression(item) && item.expression.getText(file) === "useEffect"));
+      assert.ok(ancestors.some((item) => ts.isVariableDeclaration(item) && item.name.getText(file) === "startTest"));
     }
     ts.forEachChild(node, visit);
   };
   visit(file);
   assert.equal(requests, 1);
-  assert.ok(source.includes("controller.abort()"));
-  assert.ok(source.includes("window.clearTimeout(timer)"));
-  assert.ok(source.includes("setAttempt((value) => value + 1)"));
+  assert.ok(source.includes("useEffect(() => () => abortRef.current?.abort(), [])"));
+  assert.ok(source.includes("onClick={startTest}"));
+  assert.ok(source.includes("prompt: testContent"));
 });

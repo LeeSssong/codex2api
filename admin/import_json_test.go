@@ -419,7 +419,7 @@ func TestImportAccountsJSONRejectsInvalidJSONFile(t *testing.T) {
 func TestImportAccountsCommonDoesNotCollapseConflictingChatGPTAccountID(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	db := newTestAdminDB(t)
+	db := newTestImportDB(t)
 	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
 	handler := &Handler{
 		db:    db,
@@ -455,7 +455,7 @@ func TestImportAccountsCommonDoesNotCollapseConflictingChatGPTAccountID(t *testi
 func TestImportAccountsCommonUpdatesKnownWorkspaceWhenDuplicatesAllowed(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	db := newTestAdminDB(t)
+	db := newTestImportDB(t)
 	store := auth.NewStore(db, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
 	probed := make(chan int64, 1)
 	handler := &Handler{
@@ -527,7 +527,7 @@ func TestImportAccountsCommonUpdatesKnownWorkspaceWhenDuplicatesAllowed(t *testi
 func TestImportAccountsCommonSkipsExistingOAuthIdentityWithSameCredentials(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	db := newTestAdminDB(t)
+	db := newTestImportDB(t)
 	store := auth.NewStore(db, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
 	handler := &Handler{
 		db:    db,
@@ -589,7 +589,7 @@ func TestImportAccountsCommonSkipsExistingOAuthIdentityWithSameCredentials(t *te
 func TestImportAccountsCommonSkipsAmbiguousOAuthIdentityWithExistingAccount(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	db := newTestAdminDB(t)
+	db := newTestImportDB(t)
 	store := auth.NewStore(db, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
 	handler := &Handler{
 		db:    db,
@@ -644,7 +644,7 @@ func TestImportAccountsCommonSkipsAmbiguousOAuthIdentityWithExistingAccount(t *t
 func TestImportAccountsCommonSkipsAmbiguousKnownWorkspaceWhenDuplicatesAllowed(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	db := newTestAdminDB(t)
+	db := newTestImportDB(t)
 	store := auth.NewStore(db, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
 	handler := &Handler{
 		db:    db,
@@ -689,7 +689,7 @@ func TestImportAccountsCommonSkipsAmbiguousKnownWorkspaceWhenDuplicatesAllowed(t
 func TestImportAccountsCommonCollapsesIdenticalOAuthIdentityInFile(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	db := newTestAdminDB(t)
+	db := newTestImportDB(t)
 	store := auth.NewStore(db, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
 	handler := &Handler{
 		db:    db,
@@ -729,7 +729,7 @@ func TestImportAccountsCommonCollapsesIdenticalOAuthIdentityInFile(t *testing.T)
 func TestImportAccountsCommonTriggersUsageProbeForImportedAccountWithAccessToken(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	db := newTestAdminDB(t)
+	db := newTestImportDB(t)
 	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
 	probed := make(chan int64, 1)
 	handler := &Handler{
@@ -763,7 +763,7 @@ func TestImportAccountsCommonTriggersUsageProbeForImportedAccountWithAccessToken
 func TestImportAccountsCommonMarksImported7dUsageAsRateLimited(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	db := newTestAdminDB(t)
+	db := newTestImportDB(t)
 	store := auth.NewStore(db, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
 	handler := &Handler{
 		db:    db,
@@ -811,7 +811,7 @@ func TestImportAccountsCommonMarksImported7dUsageAsRateLimited(t *testing.T) {
 func TestImportAccountsCommonRefreshesAndProbesRTOnlyImport(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	db := newTestAdminDB(t)
+	db := newTestImportDB(t)
 	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
 	probed := make(chan int64, 1)
 	handler := &Handler{
@@ -852,7 +852,7 @@ func TestImportAccountsCommonRefreshesAndProbesRTOnlyImport(t *testing.T) {
 func TestImportAccountsCommonRefreshesOAuthIdentityRTOnlyImport(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	db := newTestAdminDB(t)
+	db := newTestImportDB(t)
 	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
 	refreshed := make(chan int64, 2)
 	probed := make(chan int64, 1)
@@ -912,7 +912,7 @@ func TestImportAccountsCommonRefreshesOAuthIdentityRTOnlyImport(t *testing.T) {
 func TestAddAccountStreamReportsProgressAndProbesAfterRefresh(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	db := newTestAdminDB(t)
+	db := newTestImportDB(t)
 	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
 	probed := make(chan int64, 2)
 	handler := &Handler{
@@ -968,7 +968,7 @@ func TestAddAccountStreamReportsProgressAndProbesAfterRefresh(t *testing.T) {
 func TestAddAccountSkipRefreshDoesNotWarmup(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	db := newTestAdminDB(t)
+	db := newTestImportDB(t)
 	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
 	t.Cleanup(store.Stop)
 	var refreshed atomic.Int64
@@ -1007,7 +1007,7 @@ func TestAddAccountSkipRefreshDoesNotWarmup(t *testing.T) {
 func TestAddAccountRTRefreshUsesImportProbeGate(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	db := newTestAdminDB(t)
+	db := newTestImportDB(t)
 	store := auth.NewStore(nil, nil, &database.SystemSettings{
 		MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4", UsageProbeConcurrency: 1,
 	})
@@ -1196,7 +1196,7 @@ func newMultipartRequest(t *testing.T, files map[string]string) *http.Request {
 func TestImportAccountsCommonAllowsDuplicateWithoutWorkspace(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	db := newTestAdminDB(t)
+	db := newTestImportDB(t)
 	store := auth.NewStore(db, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
 	handler := &Handler{
 		db:    db,
@@ -1236,7 +1236,7 @@ func TestImportAccountsCommonAllowsDuplicateWithoutWorkspace(t *testing.T) {
 func TestImportAccountsCommonSeparatesCredentialWorkspaceRoutes(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	db := newTestAdminDB(t)
+	db := newTestImportDB(t)
 	store := auth.NewStore(db, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
 	store.SetLazyMode(true)
 	t.Cleanup(store.Stop)
@@ -1290,7 +1290,7 @@ func TestImportAccountsCommonSeparatesCredentialWorkspaceRoutes(t *testing.T) {
 func TestAddAccountDedupsRefreshToken(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	db := newTestAdminDB(t)
+	db := newTestImportDB(t)
 	store := auth.NewStore(db, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
 	handler := &Handler{
 		db:    db,
@@ -1344,7 +1344,7 @@ func TestAddAccountDedupsRefreshToken(t *testing.T) {
 func TestAddAccountSeparatesRefreshTokenWorkspaceRoutes(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	db := newTestAdminDB(t)
+	db := newTestImportDB(t)
 	store := auth.NewStore(db, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
 	store.SetLazyMode(true)
 	t.Cleanup(store.Stop)
@@ -1418,7 +1418,7 @@ func TestAddAccountSeparatesRefreshTokenWorkspaceRoutes(t *testing.T) {
 func TestAddATAccountCountsUpdateNotNew(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	db := newTestAdminDB(t)
+	db := newTestImportDB(t)
 	store := auth.NewStore(db, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
 	handler := &Handler{
 		db:    db,
@@ -1482,7 +1482,7 @@ func TestAddATAccountCountsUpdateNotNew(t *testing.T) {
 func TestAddOpaqueATPersistsAndDeduplicatesWorkspaceRoutes(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	db := newTestAdminDB(t)
+	db := newTestImportDB(t)
 	store := auth.NewStore(db, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
 	t.Cleanup(store.Stop)
 	handler := &Handler{
@@ -1565,7 +1565,7 @@ func TestAddOpaqueATPersistsAndDeduplicatesWorkspaceRoutes(t *testing.T) {
 func TestStreamAddOpaqueATPersistsWorkspaceRoute(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	db := newTestAdminDB(t)
+	db := newTestImportDB(t)
 	store := auth.NewStore(db, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
 	t.Cleanup(store.Stop)
 	handler := &Handler{
@@ -1606,7 +1606,7 @@ func TestStreamAddOpaqueATPersistsWorkspaceRoute(t *testing.T) {
 func TestMergeRefreshedDuplicateIntoExisting(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	db := newTestAdminDB(t)
+	db := newTestImportDB(t)
 	store := auth.NewStore(db, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
 	handler := &Handler{db: db, store: store}
 
@@ -1685,7 +1685,7 @@ func TestMergeRefreshedDuplicateIntoExisting(t *testing.T) {
 func TestMergeRefreshedDuplicateKeepsDifferentWorkspaceRoutes(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	db := newTestAdminDB(t)
+	db := newTestImportDB(t)
 	store := auth.NewStore(db, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
 	handler := &Handler{db: db, store: store}
 
@@ -1758,7 +1758,7 @@ func TestMergeRefreshedDuplicateKeepsDifferentWorkspaceRoutes(t *testing.T) {
 func TestMergeRefreshedDuplicatePreservesOverrideBackedRoute(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	db := newTestAdminDB(t)
+	db := newTestImportDB(t)
 	store := auth.NewStore(db, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
 	handler := &Handler{db: db, store: store}
 	ctx := context.Background()
@@ -1809,7 +1809,7 @@ func TestMergeRefreshedDuplicatePreservesOverrideBackedRoute(t *testing.T) {
 func TestProbeImportedAccountUsageKeepsUnknownWorkspaceDuplicate(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	db := newTestAdminDB(t)
+	db := newTestImportDB(t)
 	store := auth.NewStore(db, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
 	handler := &Handler{db: db, store: store}
 
@@ -1873,7 +1873,7 @@ func TestProbeImportedAccountUsageKeepsUnknownWorkspaceDuplicate(t *testing.T) {
 func TestMergeRefreshedDuplicateIgnoresAllowDuplicate(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	db := newTestAdminDB(t)
+	db := newTestImportDB(t)
 	store := auth.NewStore(db, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
 	handler := &Handler{db: db, store: store}
 
@@ -2259,4 +2259,16 @@ func TestRunImportProbeTaskConcurrencyGate(t *testing.T) {
 	if peak := atomic.LoadInt32(&maxSeen); peak == 0 {
 		t.Fatal("no probe task ran")
 	}
+}
+
+// Import tests exercise identity/persistence and stub their usage probes. Disable
+// the unrelated default-on invite probe so synthetic credentials never go online.
+func newTestImportDB(t *testing.T) *database.DB {
+	t.Helper()
+	db := newTestAdminDB(t)
+	enabled := false
+	if err := db.SaveInviteGuideConfig(context.Background(), database.InviteGuideConfig{Enabled: &enabled}); err != nil {
+		t.Fatal(err)
+	}
+	return db
 }

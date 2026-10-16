@@ -146,14 +146,17 @@ func TestIntelligenceActualCodexHTTPAndWebsocketIdentity(t *testing.T) {
 	settings.CodexUserAgentConfig = `{"client_kind":"codex-exec","client_version":"0.162.1","os_name":"Linux","arch":"x86_64"}`
 	// A context supplied by an admin browser is intentionally not used by this API.
 	prompt := "<environment_context>\n<timezone>Asia/Shanghai</timezone>\n</environment_context>\n21"
-	for i := 0; i < 3; i++ {
-		settings.CodexForceWebsocket = i == 2
+	for i := 0; i < 4; i++ {
+		settings.CodexForceWebsocket = i >= 2
 		if i == 1 {
 			settings.CodexUserAgentConfig = `{"client_kind":"codex-exec","client_version":"0.162.2","os_name":"Linux","arch":"x86_64"}`
 		}
 		if i == 2 {
 			account.CustomHeaders = map[string]string{"User-Agent": "codex_exec/0.163.0 (Linux; x86_64)", "Originator": "codex_exec", "Version": "0.163.0"}
 			account.CodexFingerprintMode = auth.CodexFingerprintModeSingleMachineMultiWindow
+		}
+		if i == 3 {
+			account.CodexFingerprintMode = auth.CodexFingerprintModeOff
 		}
 		proxy.ApplyRuntimeSettings(settings)
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -163,14 +166,14 @@ func TestIntelligenceActualCodexHTTPAndWebsocketIdentity(t *testing.T) {
 			t.Fatalf("run%d: %+v", i, result)
 		}
 		got := <-captured
-		if got.ws != (i == 2) || got.header.Get("Authorization") != "Bearer local-fixture-only" || got.header.Get("Cookie") != "" {
+		if got.ws != (i >= 2) || got.header.Get("Authorization") != "Bearer local-fixture-only" || got.header.Get("Cookie") != "" {
 			t.Fatalf("wrong transport/identity: %+v", got)
 		}
-		expectedVersion := []string{"0.162.1", "0.162.2", "0.163.0"}[i]
+		expectedVersion := []string{"0.162.1", "0.162.2", "0.162.2", "0.163.0"}[i]
 		if !strings.Contains(got.header.Get("User-Agent"), expectedVersion) || got.header.Get("Version") != expectedVersion {
 			t.Fatalf("actual identity not inherited: %v", got.header)
 		}
-		if i == 2 && got.header.Get("Originator") != "codex_exec" {
+		if i == 3 && got.header.Get("Originator") != "codex_exec" {
 			t.Fatalf("custom originator lost: %v", got.header)
 		}
 		if !strings.Contains(gjson.GetBytes(got.body, "input.0.content.0.text").String(), "America/Los_Angeles") {
@@ -179,7 +182,7 @@ func TestIntelligenceActualCodexHTTPAndWebsocketIdentity(t *testing.T) {
 		if gjson.GetBytes(got.body, "model").String() != "gpt-5.4" || gjson.GetBytes(got.body, "reasoning.effort").String() != "high" {
 			t.Fatalf("model/effort changed: %s", got.body)
 		}
-		if i == 2 && result.EffectiveContext["transport"] != "websocket" {
+		if i >= 2 && result.EffectiveContext["transport"] != "websocket" {
 			t.Fatal("transport audit lost")
 		}
 	}

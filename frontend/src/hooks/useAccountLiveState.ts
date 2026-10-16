@@ -7,7 +7,15 @@ import { syncStateClock } from './useStateClock'
 // Merge a live poll response into an account list. Rows whose live concurrency
 // counters did not change keep their object identity, and a no-op poll returns the
 // original array, so the 1s polling cadence cannot defeat row-level memoization.
-export function mergeAccountLiveState<T extends { id: number; active_requests?: number; occupied_requests?: number; session_slot_buffer_enabled?: boolean; state_models?: AccountStateModel[]; dynamic_concurrency_limit?: number; base_concurrency_effective?: number }>(
+export function mergeAccountLiveState<T extends {
+  state_models?: AccountStateModel[]
+  id: number
+  active_requests?: number
+  occupied_requests?: number
+  session_slot_buffer_enabled?: boolean
+  dynamic_concurrency_limit?: number
+  base_concurrency_effective?: number
+}>(
   current: T[],
   response: AccountLiveStateResponse,
 ): T[] {
@@ -18,15 +26,20 @@ export function mergeAccountLiveState<T extends { id: number; active_requests?: 
     const occupiedRequests = live?.occupied_requests ?? activeRequests
     const slotBufferEnabled = response.session_slot_buffer_enabled === true
     const stateModels = response.accounts[String(account.id)]?.state_models
-    const dynamicLimit = live?.dynamic_concurrency_limit ?? account.dynamic_concurrency_limit
-    const baseConcurrency = live?.base_concurrency_effective ?? account.base_concurrency_effective
+    // Concurrency caps are optional so an older backend keeps the list values.
+    const dynamicLimit = typeof live?.dynamic_concurrency_limit === 'number'
+      ? live.dynamic_concurrency_limit
+      : account.dynamic_concurrency_limit
+    const baseConcurrency = typeof live?.base_concurrency_effective === 'number'
+      ? live.base_concurrency_effective
+      : account.base_concurrency_effective
     if (
       (account.active_requests ?? 0) === activeRequests &&
       (account.occupied_requests ?? account.active_requests ?? 0) === occupiedRequests &&
       (account.session_slot_buffer_enabled ?? false) === slotBufferEnabled &&
+      JSON.stringify(account.state_models) === JSON.stringify(stateModels) &&
       account.dynamic_concurrency_limit === dynamicLimit &&
-      account.base_concurrency_effective === baseConcurrency &&
-      JSON.stringify(account.state_models) === JSON.stringify(stateModels)
+      account.base_concurrency_effective === baseConcurrency
     ) return account
     changed = true
     return {

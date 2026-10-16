@@ -8,11 +8,15 @@ import (
 )
 
 type accountLiveItem struct {
-	DynamicConcurrencyLimit  int64               `json:"dynamic_concurrency_limit"`
-	BaseConcurrencyEffective int64               `json:"base_concurrency_effective"`
-	StateModels              []accountStateModel `json:"state_models,omitempty"`
-	ActiveRequests           int64               `json:"active_requests"`
-	OccupiedRequests         int64               `json:"occupied_requests"`
+	StateModels      []accountStateModel `json:"state_models,omitempty"`
+	ActiveRequests   int64               `json:"active_requests"`
+	OccupiedRequests int64               `json:"occupied_requests"`
+	// DynamicConcurrencyLimit is the admission cap the scheduler currently
+	// enforces (base concurrency after health-tier and quota guards).
+	DynamicConcurrencyLimit int64 `json:"dynamic_concurrency_limit"`
+	// BaseConcurrencyEffective is the configured cap (account override,
+	// then group, then the global default) before any runtime reduction.
+	BaseConcurrencyEffective int64 `json:"base_concurrency_effective"`
 }
 
 // GetAccountLiveState returns request-local runtime counters for the visible
@@ -37,11 +41,11 @@ func (h *Handler) GetAccountLiveState(c *gin.Context) {
 			continue
 		}
 		live[id] = accountLiveItem{
-			DynamicConcurrencyLimit:  account.GetDynamicConcurrencyLimit(),
-			BaseConcurrencyEffective: account.GetBaseConcurrencyEffective(),
 			StateModels:              state.Accounts[id],
 			ActiveRequests:           account.GetActiveRequests(),
 			OccupiedRequests:         account.GetOccupiedRequests(),
+			DynamicConcurrencyLimit:  account.GetDynamicConcurrencyLimit(),
+			BaseConcurrencyEffective: account.GetBaseConcurrencyEffective(),
 		}
 	}
 	c.JSON(http.StatusOK, gin.H{

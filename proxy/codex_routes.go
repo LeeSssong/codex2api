@@ -409,6 +409,7 @@ func executeCodexRoute(ctx context.Context, account *auth.Account, body []byte, 
 	if !compact && !responsesBodyRequestsImageGeneration(body) && !isCodexDetectorRequest(ctx) {
 		RecordObservedInstructions(body, headers)
 		body = ApplyPayloadRulesToBody(body, model, headers, PayloadRuleIdentityFromContext(ctx))
+		body = sanitizeServiceTierForUpstream(body)
 	}
 	if d == nil {
 		limits, _ := ctx.Value(codexRouteLimitsKey{}).(database.APIKeyLimits)
@@ -463,27 +464,36 @@ func executeCodexRoute(ctx context.Context, account *auth.Account, body []byte, 
 	if selected == database.CodexPathNative && d.Preferred == database.CodexPathBasispoints {
 		nativeReason = basispoints.NativeCodexReason(canonical, basispointsImageHostAvailable())
 	}
-	// Queued image jobs must not retain a replay copy while the transport waits.
-	pipeline := pipelineFromContext(ctx)
+	// Durable image jobs must not retain a replay copy while the native executor
+	// waits upstream. Keep the canonical body on disk and reload under its memory
+	// gate only for dispatch or a permitted fallback decision.
 	var canonicalFile *os.File
-	if pipeline != nil {
+	if pipeline := pipelineFromContext(ctx); pipeline != nil {
 		var err error
 		canonicalFile, err = pipeline.spool(canonical)
 		if err != nil {
-			return nil, ErrInternalError("cannot spool route image request", err)
+			return nil, ErrInternalError("cannot spool upstream route request", err)
 		}
 		defer removePipelineFile(canonicalFile)
 		canonical = nil
 		body = nil
 	}
+	replayBody := func() ([]byte, error) {
+		if canonicalFile == nil {
+			return append([]byte(nil), canonical...), nil
+		}
+		if err := pipelineFromContext(ctx).Acquire(ctx); err != nil {
+			return nil, err
+		}
+		data, err := os.ReadFile(canonicalFile.Name())
+		if err != nil {
+			return nil, ErrInternalError("cannot read spooled upstream route request", err)
+		}
+		return data, nil
+	}
 	for {
 		if err := ctx.Err(); err != nil {
 			return nil, err
-		}
-		if canonicalFile != nil {
-			if err := pipeline.Acquire(ctx); err != nil {
-				return nil, err
-			}
 		}
 		if err := d.begin(account, selected, model); err != nil {
 			return nil, err
@@ -494,14 +504,13 @@ func executeCodexRoute(ctx context.Context, account *auth.Account, body []byte, 
 		}
 		a := &codexRouteAttemptState{decision: d, account: account, path: selected, model: model, started: time.Now(), release: release, generation: account.GetCredentialGeneration()}
 		attemptCtx := context.WithValue(ctx, codexAttemptKey{}, a)
-		attemptBody, loadErr := loadCodexRouteBody(canonical, canonicalFile)
-		if loadErr != nil {
+		attemptBody, err := replayBody()
+		if err != nil {
 			release()
-			return nil, ErrInternalError("cannot read route image request", loadErr)
+			return nil, err
 		}
 		attemptHeaders := headers.Clone()
 		var resp *http.Response
-		var err error
 		if selected == database.CodexPathBasispoints {
 			var images basispointsImageRewrite
 			attemptBody, images, err = rewriteBasispointsImages(attemptCtx, attemptBody)
@@ -509,8 +518,13 @@ func executeCodexRoute(ctx context.Context, account *auth.Account, body []byte, 
 				log.Printf("[Basispoints] stage=images result=hosted converted=%d reused=%d account=%d", images.converted, images.reused, account.ID())
 			}
 			if err != nil && !d.NoSwitch && !d.Switched && d.Remaining > 0 {
+				fallbackBody, replayErr := replayBody()
+				if replayErr != nil {
+					release()
+					return nil, replayErr
+				}
 				for _, path := range paths {
-					if path == database.CodexPathNative && d.pathEligible(account, path, model, attemptBody) {
+					if path == database.CodexPathNative && d.pathEligible(account, path, model, fallbackBody) {
 						release()
 						selected, nativeReason = path, basispoints.RouteImageInput
 						d.mu.Lock()
@@ -562,21 +576,16 @@ func executeCodexRoute(ctx context.Context, account *auth.Account, body []byte, 
 			canSwitch := failure.Switch && !d.NoSwitch && !d.Switched && !d.Committed && d.Remaining > 0
 			d.mu.Unlock()
 			if canSwitch && d.client.Err() == nil && ctx.Err() == nil {
-				if canonicalFile != nil {
-					if err := pipeline.Acquire(ctx); err != nil {
-						resp.Body.Close()
-						release()
-						return nil, err
+				fallbackBody, replayErr := replayBody()
+				if replayErr != nil {
+					if resp.Body != nil {
+						_ = resp.Body.Close()
 					}
-					canonical, err = loadCodexRouteBody(nil, canonicalFile)
-					if err != nil {
-						resp.Body.Close()
-						release()
-						return nil, ErrInternalError("cannot read route image request", err)
-					}
+					release()
+					return nil, replayErr
 				}
 				for _, p := range paths {
-					if p != selected && d.pathEligible(account, p, model, canonical) {
+					if p != selected && d.pathEligible(account, p, model, fallbackBody) {
 						alternate = p
 						break
 					}

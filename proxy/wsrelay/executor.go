@@ -100,8 +100,8 @@ func NewExecutorWithManager(manager *Manager) *Executor {
 	}
 }
 
-// ExecuteRequestViaWebsocket 通过 WebSocket 发送请求
-func (e *Executor) ExecuteRequestViaWebsocket(
+// executeRequestViaWebsocket executes one request using a resolved, stable route.
+func (e *Executor) executeRequestViaWebsocket(
 	ctx context.Context,
 	account *auth.Account,
 	requestBody []byte,
@@ -139,7 +139,10 @@ func (e *Executor) ExecuteRequestViaWebsocket(
 
 	// 出口链路统一由 ResolveCodexWebsocketEgress 决定(Resin > 代理 > 直连):
 	// Resin 模式下 WS 地址改写为反代路径,拨号侧(createConnection)同样按它跳过代理。
-	egress := proxy.ResolveCodexRequestEgress(ctx, account, wsURL, effectiveProxyURL(account, proxyOverride), true)
+	egress := proxy.ResolveCodexWebsocketEgress(account, wsURL, effectiveProxyURL(account, proxyOverride))
+	if _, bound := proxy.AccountBoundEgress(ctx); bound {
+		egress = proxy.ResolveCodexRequestEgress(ctx, account, wsURL, effectiveProxyURL(account, proxyOverride), true)
+	}
 	wsURL = egress.URL
 
 	// 准备请求头
@@ -196,7 +199,7 @@ func (e *Executor) ExecuteRequestViaWebsocket(
 	if prevRespID := strings.TrimSpace(gjson.GetBytes(wsBody, "previous_response_id").String()); prevRespID != "" {
 		wc, pr, poolSessionID, err2 = e.acquireContinuation(ctx, websocketContinuation{
 			responseID: prevRespID, accountID: account.ID(), apiKey: apiKey, identity: websocketClientIdentity(headers),
-			model: gjson.GetBytes(wsBody, "model").String(), url: wsURL, proxyURL: requestProxyKey(ctx, account, proxyOverride),
+			route: proxyOverride, model: gjson.GetBytes(wsBody, "model").String(), url: wsURL, proxyURL: requestProxyKey(ctx, account, proxyOverride),
 		})
 		if err2 != nil {
 			return nil, err2
@@ -427,6 +430,7 @@ func (e *Executor) prepareWebsocketHeadersChecked(ctx context.Context, accessTok
 			headers.Set("X-Codex-Turn-State", state)
 		}
 	}
+	proxy.ApplyCodexTurnStateInjectionHeader(ctx, headers)
 	proxy.GuardCodexTurnStateEcho(affinityKey, account, headers)
 	// 指纹收敛：在透传之后覆盖客户端原值，在账号自定义头之前保留运维覆盖优先级。
 	// 握手头是逐连接冻结的，复用连接沿用建连时的取值；收敛值按账号恒定，正好与
@@ -477,13 +481,15 @@ func (e *Executor) sendRequest(wc *WsConnection, body []byte, requestID string) 
 
 // WsResponse WebSocket 响应包装器
 type WsResponse struct {
-	model       string
-	conn        *WsConnection
-	pendingReq  *PendingRequest
-	sessionID   string
-	manager     *Manager
-	readErrChan chan error
-	closed      bool
+	model           string
+	conn            *WsConnection
+	pendingReq      *PendingRequest
+	sessionID       string
+	manager         *Manager
+	readErrChan     chan error
+	closed          bool
+	ipv6Attempt     *ipv6WSAttempt
+	ipv6Replacement *WsResponse
 	// apiKey 发起本请求的下游 API Key，用于 response_id → 连接绑定的归属校验。
 	apiKey string
 	// connBroken 标记读流因上游 WS 异常(非正常关闭)或下游写入失败而终止；
@@ -499,7 +505,7 @@ type WsResponse struct {
 }
 
 // ReadStream 读取 SSE 流
-func (r *WsResponse) ReadStream(callback func(data []byte) bool) error {
+func (r *WsResponse) readStream(callback func(data []byte) bool) error {
 	if r.conn == nil {
 		return fmt.Errorf("websocket connection is not available")
 	}
@@ -696,6 +702,9 @@ func (r *WsResponse) Close() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	if r.ipv6Replacement != nil {
+		return r.ipv6Replacement.Close()
+	}
 	if r.closed {
 		return nil
 	}

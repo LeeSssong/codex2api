@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -28,16 +29,17 @@ func TestPostgresTraceAndCapabilities(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.InsertUsageLog(ctx, &UsageLogInput{AccountID: id, Endpoint: "/v1/responses", Model: "gpt-5.6-sol", StatusCode: 200, RequestID: "pg-request", UpstreamRequestID: "pg-upstream", UpstreamProxyID: 9, UpstreamProxyName: "snapshot"}); err != nil {
+	requestID := fmt.Sprintf("pg-request-%d", id)
+	if err := db.InsertUsageLog(ctx, &UsageLogInput{AccountID: id, Endpoint: "/v1/responses", Model: "gpt-5.6-sol", StatusCode: 200, RequestID: requestID, UpstreamRequestID: "pg-upstream", UpstreamProxyID: 9, UpstreamProxyName: "snapshot", CodexFingerprint: "fixture-fingerprint"}); err != nil {
 		t.Fatal(err)
 	}
 	db.FlushUsageLogs()
-	f := UsageLogFilter{Start: time.Now().Add(-time.Hour), End: time.Now().Add(time.Hour), RequestID: "pg-request", Page: 1, PageSize: 10}
+	f := UsageLogFilter{Start: time.Now().Add(-time.Hour), End: time.Now().Add(time.Hour), RequestID: requestID, Page: 1, PageSize: 10}
 	logs, err := db.ListUsageLogsByFilter(ctx, f)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(logs) != 1 || logs[0].UpstreamRequestID != "pg-upstream" || logs[0].UpstreamProxyID != 9 || logs[0].UpstreamProxyName != "snapshot" {
+	if len(logs) != 1 || logs[0].UpstreamRequestID != "pg-upstream" || logs[0].UpstreamProxyID != 9 || logs[0].UpstreamProxyName != "snapshot" || logs[0].CodexFingerprint != "fixture-fingerprint" {
 		t.Fatalf("PostgreSQL trace did not round-trip: %+v", logs)
 	}
 	if _, err := db.ListUsageLogsByTimeRangePaged(ctx, f); err != nil {

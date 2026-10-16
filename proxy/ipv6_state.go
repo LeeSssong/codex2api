@@ -19,6 +19,9 @@ import (
 
 const ipv6StateDirectRoute = "direct://ipv6-state"
 
+// IsStateDirectRoute preserves the verified State manager's explicit direct egress.
+func IsStateDirectRoute(route string) bool { return route == ipv6StateDirectRoute }
+
 type IPv6StateProvider struct {
 	EligibleAccounts func(string) (bool, map[int64]bool)
 	Resolve          func(*auth.Account, string) (string, bool, error)

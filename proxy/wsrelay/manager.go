@@ -50,7 +50,8 @@ type WsConnection struct {
 	URL string
 
 	// 连接池键
-	PoolKey string
+	PoolKey   string
+	ipv6Route string
 
 	// 连接状态
 	state atomic.Int32
