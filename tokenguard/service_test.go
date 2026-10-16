@@ -193,7 +193,7 @@ func TestGuardPublicationLeavesManualDisabledAndAuditSecretsOut(t *testing.T) {
 	db, store, id, cfg := serviceFixture(t)
 	ctx := context.Background()
 	runtimeAccount := store.FindByID(id)
-	atomic.StoreInt64(&runtimeAccount.ActiveRequests, 3)
+	runtimeAccount.ActiveRequests.Store(3)
 	if e := db.SetAccountEnabled(ctx, id, false); e != nil {
 		t.Fatal(e)
 	}

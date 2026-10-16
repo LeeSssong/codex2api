@@ -30,6 +30,7 @@ const navDefs: NavDef[] = [
   { to: '/api-keys', labelKey: 'nav.apiKeys', icon: <KeyRound className="size-[18px]" /> },
   { to: '/proxies', labelKey: 'nav.proxies', icon: <Globe className="size-[18px]" /> },
   { to: '/images/studio', labelKey: 'nav.images', icon: <ImageIcon className="size-[18px]" />, activePrefix: '/images' },
+  { to: '/intelligence-check', labelKey: 'nav.intelligenceCheck', icon: <FlaskConical className="size-[18px]" /> },
   { to: '/quality-test', labelKey: 'nav.qualityTest', icon: <FlaskConical className="size-[18px]" /> },
   { to: '/smart-ops/plugins', labelKey: 'smartOps.title', icon: <Puzzle className="size-[18px]" />, activePrefix: '/smart-ops' },
   { to: '/state-pool', labelKey: 'statePool.title', icon: <Braces className="size-[18px]" /> },

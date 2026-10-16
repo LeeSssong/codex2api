@@ -10,7 +10,7 @@ import (
 func TestSmartOpsNativeSelectionAndDisabledFallback(t *testing.T) {
 	first := newFastSchedulerTestAccount(1, HealthTierHealthy, 90, 4)
 	second := newFastSchedulerTestAccount(2, HealthTierHealthy, 80, 4)
-	store := &Store{accounts: []*Account{first, second}, maxConcurrency: 4}
+	store := (&Store{accounts: []*Account{first, second}}).withMaxConcurrency(4)
 	var on atomic.Bool
 	on.Store(true)
 	adapter := &smartOpsAdapter{gate: func(context.Context, string) bool { return on.Load() }}
@@ -61,7 +61,7 @@ func TestSmartOpsSessionProxyIsStableAndNativePoolOnly(t *testing.T) {
 func TestSmartOpsFastSchedulerRanksBeforeNativeAdmission(t *testing.T) {
 	first := newFastSchedulerTestAccount(1, HealthTierHealthy, 90, 4)
 	second := newFastSchedulerTestAccount(2, HealthTierHealthy, 80, 4)
-	store := &Store{accounts: []*Account{first, second}, maxConcurrency: 4}
+	store := (&Store{accounts: []*Account{first, second}}).withMaxConcurrency(4)
 	adapter := &smartOpsAdapter{gate: func(context.Context, string) bool { return true }}
 	cfg := smartops.DefaultPriorityConfig()
 	cfg.Enabled = true

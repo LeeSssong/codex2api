@@ -11,7 +11,7 @@ import StatePolicySettings from '../components/StatePolicySettings'
 import { useDataLoader } from '../hooks/useDataLoader'
 import { useToast } from '../hooks/useToast'
 import type { AntigravityOAuthClientSetting, AntigravitySettingsResponse, ChannelTestSettings, CodexClientVersionSyncResult, CodexClientVersionTarget, CodexUserAgentCatalog, CodexUserAgentPreview, HealthResponse, ModelInfo, SiteBranding, SystemSettings, UpstreamChannel } from '../types'
-import { ANTIGRAVITY_DEFAULT_MODELS } from '../lib/antigravityModels'
+import { ANTIGRAVITY_DEFAULT_MODELS, isAntigravityDisabledModel } from '../lib/antigravityModels'
 import { countPayloadRules, PAYLOAD_RULE_GROUPS } from './PayloadRules'
 import { getErrorMessage } from '../utils/error'
 import { DEFAULT_CLAUDE_MODEL_MAP } from '../lib/modelMapping'
@@ -864,7 +864,9 @@ function ChannelConnectivityTestCard({ channel }: { channel: 'antigravity' | 'cl
     const list = current && !base.includes(current) ? [current, ...base] : base
     return [
       { value: '', label: t('settings.channelTest.autoModel') },
-      ...list.map((model) => ({ value: model, label: model })),
+      ...list
+        .filter((model) => channel !== 'antigravity' || !isAntigravityDisabledModel(model))
+        .map((model) => ({ value: model, label: model })),
     ]
   }, [catalogChoices, channel, settings?.test_model, t])
 
@@ -878,7 +880,7 @@ function ChannelConnectivityTestCard({ channel }: { channel: 'antigravity' | 'cl
         <div className={SETTINGS_FIELD_GRID}>
           <SettingField label={t('settings.testModelLabel')} description={t('settings.channelTest.modelHint')}>
             <Select
-              value={settings?.test_model ?? ''}
+              value={channel === 'antigravity' && isAntigravityDisabledModel(settings?.test_model ?? '') ? '' : settings?.test_model ?? ''}
               onValueChange={(value) => void save({ test_model: value })}
               options={modelChoices}
               disabled={settings === null || saving}
@@ -2557,6 +2559,7 @@ export default function Settings() {
       codex_images_main_model: cacheNormalized.codex_images_main_model ?? '',
       codex_telemetry_enabled: cacheNormalized.codex_telemetry_enabled ?? false,
       codex_telemetry_timing_debug: cacheNormalized.codex_telemetry_timing_debug ?? false,
+      codex_unified_client_identity_enabled: cacheNormalized.codex_unified_client_identity_enabled ?? false,
       billing_tier_policy: normalizeBillingTierPolicyValue(cacheNormalized.billing_tier_policy),
       first_token_mode: 'loose',
       models_list_read_max_bytes:
@@ -2612,6 +2615,7 @@ export default function Settings() {
     codex_force_websocket: false,
     codex_telemetry_enabled: false,
     codex_telemetry_timing_debug: false,
+    codex_unified_client_identity_enabled: false,
     codex_request_compression: true,
     codex_ws_weak_network_mode: false,
     codex_ws_keepalive_enabled: false,
@@ -2624,6 +2628,7 @@ export default function Settings() {
     codex_ws_busy_overflow_enabled: false,
     codex_ws_busy_patience_sec: 2,
     codex_ws_stateless_slots: 8,
+    codex_ws_downstream_keepalive_slots: 8,
     github_token_configured: false,
     github_proxy_url: '',
     codex_overload_pause_enabled: false,
@@ -2682,6 +2687,7 @@ export default function Settings() {
     oauth_model_cooldown_mode: 'adaptive',
     oauth_model_cooldown_seconds: 300,
     oauth_model_cooldown_backoff_enabled: true,
+    oauth_unsupported_model_cooldown_seconds: 1800,
     model_mapping: '{}',
     codex_model_mapping: '{}',
     payload_rules: '{}',
@@ -4276,11 +4282,26 @@ export default function Settings() {
                       />
                     </SettingField>
                     <SettingField
+                      label={t('settings.codexWSDownstreamKeepaliveSlots')}
+                      description={t('settings.codexWSDownstreamKeepaliveSlotsDesc')}
+                    >
+                      <DraftNumberInput
+                        min={0}
+                        max={32}
+                        value={settingsForm.codex_ws_downstream_keepalive_slots}
+                        emptyValue={8}
+                        onValueChange={(value) => setSettingsForm(f => ({ ...f, codex_ws_downstream_keepalive_slots: value }))}
+                        onValueCommit={(value) => {
+                          void autoSaveSettingsPatch({ codex_ws_downstream_keepalive_slots: value })
+                        }}
+                      />
+                    </SettingField>
+                    <SettingField
                       label={t('settings.codexWSStatelessSlots')}
                       description={t('settings.codexWSStatelessSlotsDesc')}
                     >
                       <DraftNumberInput
-                        min={1}
+                        min={0}
                         max={32}
                         value={settingsForm.codex_ws_stateless_slots}
                         emptyValue={8}
@@ -4936,6 +4957,24 @@ export default function Settings() {
                       </div>
                     </>
                   )}
+                </div>
+                <div className="mt-4 border-t border-border/60 pt-4">
+                  <SettingField
+                    label={t('settings.codexUnifiedClientIdentity')}
+                    description={t('settings.codexUnifiedClientIdentityDesc')}
+                    layout="row"
+                  >
+                    <Switch
+                      aria-label={t('settings.codexUnifiedClientIdentity')}
+                      checked={settingsForm.codex_unified_client_identity_enabled}
+                      onCheckedChange={(checked) => autoSaveBooleanField('codex_unified_client_identity_enabled', checked)}
+                    />
+                  </SettingField>
+                  {settingsForm.codex_unified_client_identity_enabled && settingsForm.client_compat_mode !== 'force' ? (
+                    <p className="mt-2 text-[11px] leading-relaxed text-amber-600 dark:text-amber-400 sm:text-xs">
+                      {t('settings.codexUnifiedClientIdentityCompatHint')}
+                    </p>
+                  ) : null}
                 </div>
               </SettingsCard>
               </SettingsSection>
@@ -5991,6 +6030,19 @@ export default function Settings() {
                         checked={settingsForm.oauth_model_cooldown_backoff_enabled}
                         disabled={settingsForm.oauth_model_cooldown_mode !== 'adaptive'}
                         onCheckedChange={(checked) => autoSaveBooleanField('oauth_model_cooldown_backoff_enabled', checked)}
+                      />
+                    </SettingField>
+                    <SettingField
+                      label={t('settings.unsupportedModelCooldownSeconds')}
+                      description={t('settings.unsupportedModelCooldownSecondsDesc')}
+                      suffix={t('settings.unit.sec')}
+                    >
+                      <DraftNumberInput
+                        min={0}
+                        max={1800}
+                        value={settingsForm.oauth_unsupported_model_cooldown_seconds}
+                        onValueChange={(value) => setSettingsForm(f => ({ ...f, oauth_unsupported_model_cooldown_seconds: value }))}
+                        onValueCommit={(value) => void autoSaveSettingsPatch({ oauth_unsupported_model_cooldown_seconds: value })}
                       />
                     </SettingField>
                   </div>

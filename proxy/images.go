@@ -682,6 +682,9 @@ func responsesBodyRequestsImageGeneration(body []byte) bool {
 	}
 	for _, key := range responsesImageGenerationOptionFields {
 		value := gjson.GetBytes(body, key)
+		if key == "background" && value.Type != gjson.String {
+			continue
+		}
 		if value.Exists() && value.Type != gjson.Null {
 			return true
 		}
@@ -1810,7 +1813,7 @@ func (h *Handler) forwardImagesRequest(c *gin.Context, inboundEndpoint, requestM
 				h.store.Release(account)
 				return
 			}
-			if kind := classifyHTTPFailure(resp.StatusCode); kind != "" {
+			if kind := classifyHTTPFailure(resp.StatusCode, errBody); kind != "" {
 				h.store.ReportRequestFailure(account, kind, time.Duration(durationMs)*time.Millisecond)
 			}
 			SyncCodexUsageState(h.store, account, resp)

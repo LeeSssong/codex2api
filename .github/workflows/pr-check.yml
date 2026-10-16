@@ -81,6 +81,10 @@ jobs:
           include-hidden-files: true
           if-no-files-found: ignore
 
+      - name: Test intelligence checks in the browser
+        working-directory: frontend
+        run: npm run test:intelligence
+
       - name: Build frontend
         working-directory: frontend
         env:
@@ -146,10 +150,10 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-      - name: Test PostgreSQL trace, capabilities, Codex routes and legacy daily usage
+      - name: Test PostgreSQL trace, capabilities, Codex routes and legacy daily usage and intelligence checks
         env:
           CODEX2API_TEST_POSTGRES_DSN: postgres://codex2api_test:test-only@localhost:5432/codex2api_test?sslmode=disable
-        run: go test -race -count=1 ./database -run '^Test(Postgres(TraceAndCapabilities|CodexRoutes|CodexProbePersistenceAndGeneration)|CodexRefreshPreservesEvidenceAndProbeFence)$'
+        run: go test -race -count=1 ./database -run '^Test(Postgres(TraceAndCapabilities|CodexRoutes|CodexProbePersistenceAndGeneration)|CodexRefreshPreservesEvidenceAndProbeFence|IntelligenceCheckPostgres)$'
 
   redis-route-cache:
     runs-on: ubuntu-latest

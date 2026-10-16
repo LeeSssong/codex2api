@@ -1,7 +1,6 @@
 package auth
 
 import (
-	"sync/atomic"
 	"time"
 )
 
@@ -30,7 +29,7 @@ func (s *Store) TakeAccountQualityProbe(id int64) *Account {
 		return nil
 	}
 	account.mu.RLock()
-	limit := account.effectiveBaseConcurrencyLocked(atomic.LoadInt64(&s.maxConcurrency))
+	limit := account.effectiveBaseConcurrencyLocked(s.maxConcurrency.Load())
 	if account.DynamicConcurrencyLimit > 0 && account.DynamicConcurrencyLimit < limit {
 		limit = account.DynamicConcurrencyLimit
 	}
@@ -41,12 +40,12 @@ func (s *Store) TakeAccountQualityProbe(id int64) *Account {
 	account.stateAdmissionMu.Lock()
 	defer account.stateAdmissionMu.Unlock()
 	for {
-		occupied := atomic.LoadInt64(&account.OccupiedRequests)
-		if occupied >= limit || atomic.LoadInt64(&account.ActiveRequests) >= limit {
+		occupied := account.OccupiedRequests.Load()
+		if occupied >= limit || account.ActiveRequests.Load() >= limit {
 			return nil
 		}
-		if atomic.CompareAndSwapInt64(&account.OccupiedRequests, occupied, occupied+1) {
-			atomic.AddInt64(&account.ActiveRequests, 1)
+		if account.OccupiedRequests.CompareAndSwap(occupied, occupied+1) {
+			account.ActiveRequests.Add(1)
 			return account
 		}
 	}

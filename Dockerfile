@@ -17,7 +17,7 @@ RUN VITE_APP_VERSION=${BUILD_VERSION} npm run build
 # ============================================================
 # Stage 2: Cross-compile the backend on the build platform.
 # ============================================================
-FROM --platform=$BUILDPLATFORM golang:1.26.6-alpine AS go-builder
+FROM --platform=$BUILDPLATFORM golang:1.26.9-alpine AS go-builder
 
 ARG TARGETARCH
 ARG BUILD_VERSION=dev

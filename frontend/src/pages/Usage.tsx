@@ -180,6 +180,7 @@ function UpstreamResponseModelBadge({
 // 其余未知原因统一显示为"内部请求"。
 const INTERNAL_REQUEST_PRESENTATION: Record<string, { labelKey: string; tooltipKey: string; Icon: typeof Brain }> = {
   connection_test: { labelKey: 'usage.internalConnectionTest', tooltipKey: 'usage.internalConnectionTestTooltip', Icon: PlugZap },
+  intelligence_check: { labelKey: 'usage.internalIntelligenceCheck', tooltipKey: 'usage.internalIntelligenceCheckTooltip', Icon: Brain },
   quality_test: { labelKey: 'usage.internalQualityTest', tooltipKey: 'usage.internalQualityTestTooltip', Icon: FlaskConical },
   overflow_compact_summary: { labelKey: 'usage.internalOverflowSummary', tooltipKey: 'usage.internalRequestTooltip', Icon: Brain },
 }
@@ -1064,12 +1065,7 @@ function UserAgentCell({ log, mobile = false }: { log: UsageLog; mobile?: boolea
       ? t('usage.userAgentOverridden')
       : t('usage.userAgentPreserved')
 
-  // Turn State 注入/回带观测:有任一值就要把 trace 单元格渲染出来,否则运维看不到注入证据。
-  const injectedTurnState = (log.injected_turn_state ?? '').trim()
-  const upstreamTurnState = (log.upstream_turn_state ?? '').trim()
-  const hasTurnState = Boolean(injectedTurnState || upstreamTurnState)
-
-  if (!hasAudit && !log.request_id && !log.upstream_request_id && !hasTurnState) {
+  if (!hasAudit && !log.request_id && !log.upstream_request_id) {
     return (
       <div className="font-mono text-[11px] text-muted-foreground" title={t('usage.userAgentNotRecorded')}>
         UA: -
@@ -1092,39 +1088,10 @@ function UserAgentCell({ log, mobile = false }: { log: UsageLog; mobile?: boolea
   // 客户端与上游 UA 完全一致且未改写:合成一行(C=U),两行会重复同一串字符串白占行高。
   const sameUA = !log.user_agent_overridden && Boolean(clientUserAgent) && clientUserAgent === upstreamUserAgent
 
-  // 单元格里只放一个 TS 小标记,完整值进 tooltip,避免撑宽列。
-  const turnStateChip = hasTurnState ? (
-    <span
-      className="ml-1.5 inline-flex shrink-0 items-center rounded bg-muted px-1 font-sans text-[9px] font-semibold uppercase tracking-wide text-muted-foreground/80"
-      title={[
-        injectedTurnState ? `${t('usage.injectedTurnState')}: ${injectedTurnState}` : '',
-        upstreamTurnState ? `${t('usage.upstreamTurnState')}: ${upstreamTurnState}` : '',
-      ].filter(Boolean).join('\n')}
-    >
-      TS
-    </span>
-  ) : null
-  const idLine = log.request_id || hasTurnState ? (
-    <div className="flex min-w-0 items-center text-muted-foreground" title={log.request_id ? `Request ID: ${log.request_id}` : undefined}>
-      {log.request_id ? <span className="min-w-0 truncate">ID: {log.request_id}</span> : null}
-      {turnStateChip}
+  const idLine = log.request_id ? (
+    <div className="min-w-0 truncate text-muted-foreground" title={`Request ID: ${log.request_id}`}>
+      ID: {log.request_id}
     </div>
-  ) : null
-  const turnStateRows = hasTurnState ? (
-    <>
-      {injectedTurnState ? (
-        <div className="flex items-start gap-2">
-          <div className="min-w-0 flex-1 break-all font-mono">{t('usage.injectedTurnState')}: {injectedTurnState}</div>
-          <button type="button" onClick={() => void navigator.clipboard?.writeText(injectedTurnState)} className="shrink-0 text-xs font-medium text-primary hover:underline">{t('common.copy')}</button>
-        </div>
-      ) : null}
-      {upstreamTurnState ? (
-        <div className="flex items-start gap-2">
-          <div className="min-w-0 flex-1 break-all font-mono">{t('usage.upstreamTurnState')}: {upstreamTurnState}</div>
-          <button type="button" onClick={() => void navigator.clipboard?.writeText(upstreamTurnState)} className="shrink-0 text-xs font-medium text-primary hover:underline">{t('common.copy')}</button>
-        </div>
-      ) : null}
-    </>
   ) : null
 
   const content = sameUA ? (
@@ -1175,7 +1142,6 @@ function UserAgentCell({ log, mobile = false }: { log: UsageLog; mobile?: boolea
           {log.request_id ? <div className="break-all font-mono">Request ID: {log.request_id}</div> : null}
           {log.upstream_request_id ? <div className="break-all font-mono">Upstream ID: {log.upstream_request_id}</div> : null}
           {log.upstream_proxy_name ? <div className="break-all">Proxy: {log.upstream_proxy_name}{log.upstream_proxy_id ? ` (#${log.upstream_proxy_id})` : ''}</div> : null}
-          {turnStateRows}
           <div className="font-semibold">{statusLabel}</div>
           {log.via_websocket ? (
             <div className="leading-relaxed text-background/70">{t('usage.userAgentWebSocketHint')}</div>
@@ -1188,34 +1154,6 @@ function UserAgentCell({ log, mobile = false }: { log: UsageLog; mobile?: boolea
 
 // New usage rows resolve by immutable incident ID. Only historical rows without
 // an ID fall back to the legacy nearest-timestamp inference endpoint.
-function TurnStateCell({ log }: { log: UsageLog }) {
-  const { t } = useTranslation()
-  const note = log.turn_state_rewrite_note?.trim() || ''
-  const overridden = Boolean(log.turn_state_overridden)
-  if (!note && !overridden) {
-    return null
-  }
-  const label = overridden
-    ? (note || t('usage.turnStateOverridden'))
-    : (note === 'pass' ? t('usage.turnStatePreserved') : (note || t('usage.turnStatePreserved')))
-  return (
-    <div className="mt-1 flex min-w-0 items-center gap-1.5 font-mono text-[11px] leading-relaxed" title={t('usage.turnStateLabel')}>
-      <span className="shrink-0 font-sans font-semibold text-muted-foreground">TS</span>
-      <Badge
-        variant="outline"
-        className={`shrink-0 border-transparent px-1.5 py-0 text-[10px] font-semibold ${
-          overridden
-            ? 'bg-amber-500/12 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300'
-            : 'bg-emerald-500/12 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300'
-        }`}
-      >
-        {label}
-      </Badge>
-    </div>
-  )
-}
-
-
 function CyberPolicyDetailButton({ log }: { log: UsageLog }) {
   const { t } = useTranslation()
   const [open, setOpen] = useState(false)
@@ -1808,7 +1746,7 @@ export default function Usage() {
 
   const loadAPIKeys = useCallback(async () => {
     try {
-      const response = await api.getAPIKeys()
+      const response = await api.getAPIKeys({ view: 'lite' })
       setAPIKeys(response.keys ?? [])
       setAPIKeyLoadFailed(false)
     } catch {
@@ -1857,22 +1795,33 @@ export default function Usage() {
   // 后续筛选变化由下方 useEffect 用 reloadSilently 原地静默刷新,搜索框焦点不丢失。
   const statsFilterParamsRef = useRef(buildDimensionFilterParams)
   statsFilterParamsRef.current = buildDimensionFilterParams
+  // 每次维度筛选变化加一;加载结果带上发起时的版本号,用来判断卡片上的数字是不是当前筛选的。
+  const statsFiltersVersionRef = useRef(0)
+  const [statsFiltersVersion, setStatsFiltersVersion] = useState(0)
+  const [statsLoadError, setStatsLoadError] = useState<string | null>(null)
 
   const loadStats = useCallback(async () => {
+    const version = statsFiltersVersionRef.current
     const [stats, settings] = await Promise.all([
       api.getUsageStats(statsFilterParamsRef.current()),
       api.getSettings().catch((): SystemSettings | null => null),
     ])
-    return { stats, settings }
+    return { stats, settings, version }
   }, [])
 
   const { data, loading, error, reload, reloadSilently } = useDataLoader<{
     stats: UsageStats | null
     settings: SystemSettings | null
+    version: number
   }>({
-    initialData: { stats: null, settings: null },
+    initialData: { stats: null, settings: null, version: 0 },
     load: loadStats,
+    onError: setStatsLoadError,
   })
+
+  useEffect(() => {
+    setStatsLoadError(null)
+  }, [data])
 
   // 维度筛选(时间范围/账号/密钥/模型/端点/搜索/形态)变化时,静默原地刷新统计卡片:
   // 保留页面与搜索框焦点,避免整页骨架屏闪烁;首次加载已由 useDataLoader 全页骨架屏承担。
@@ -1882,6 +1831,9 @@ export default function Usage() {
       statsFiltersFirstRunRef.current = false
       return
     }
+    statsFiltersVersionRef.current += 1
+    setStatsFiltersVersion(statsFiltersVersionRef.current)
+    setStatsLoadError(null)
     void reloadSilently()
   }, [buildDimensionFilterParams, reloadSilently])
 
@@ -1972,6 +1924,10 @@ export default function Usage() {
   }, [showAnalysis])
 
   const { stats, settings } = data
+  // 卡片还停留在上一组筛选的结果上:加载中先压暗,加载失败(慢库超时等)就遮住旧数字,
+  // 不能让旧区间的数字顶着新区间的标签显示。
+  const statsOutdated = data.version !== statsFiltersVersion
+  const statsOutdatedFailed = statsOutdated && statsLoadError !== null
   const showFullUsageNumbers = settings?.show_full_usage_numbers ?? false
   const showUpstreamModelMismatch = settings?.show_upstream_model_mismatch !== false
   showUpstreamModelMismatchRef.current = showUpstreamModelMismatch
@@ -2164,6 +2120,23 @@ export default function Usage() {
         />
 
         <div key={channel || 'all'} className="space-y-6 animate-channel-switch-in">
+        <div className="relative space-y-6">
+        {statsOutdatedFailed && (
+          <div role="alert" className="absolute inset-0 z-10 flex items-start justify-center rounded-xl bg-background/85 p-6 backdrop-blur-sm">
+            <div className="flex max-w-xl flex-col items-center gap-3 text-center text-sm">
+              <div className="flex items-center gap-2 font-semibold text-foreground">
+                <AlertTriangle className="size-4 shrink-0 text-amber-500" />
+                {t('usage.statsLoadFailed')}
+              </div>
+              <div className="break-words text-xs text-muted-foreground">{statsLoadError}</div>
+              <Button size="sm" variant="outline" onClick={() => { setStatsLoadError(null); void reloadSilently() }}>
+                <RefreshCw className="size-3.5" />
+                {t('common.retry')}
+              </Button>
+            </div>
+          </div>
+        )}
+        <div className={cn('space-y-6 transition-opacity', statsOutdated && 'opacity-60')} aria-busy={statsOutdated && !statsOutdatedFailed}>
         {/* Stat overview: 6 metrics in a single row */}
         <div className="grid grid-cols-2 gap-2.5 sm:gap-3 md:grid-cols-3 xl:grid-cols-6">
           <Card className="min-w-0 py-0">
@@ -2276,6 +2249,8 @@ export default function Usage() {
             <APIKeyStatsPanel stats={apiKeyStats} totalRequests={rangeRequests} showFullUsageNumbers={showFullUsageNumbers} />
           </section>
         )}
+        </div>
+        </div>
 
         {/* Logs table */}
         <Card>
@@ -2671,20 +2646,20 @@ export default function Usage() {
               emptyTitle={t('usage.emptyTitle')}
               emptyDescription={hasActiveFilters ? t('usage.emptyFilteredDesc') : t('usage.emptyDesc')}
             >
-              {/* Mobile log cards */}
+              {/* 手机日志卡片：显式单列避免长 UA / 模型名撑宽隐式 Grid 列。 */}
               <TooltipProvider>
-              <div className="grid gap-3 lg:hidden">
+              <div className="grid grid-cols-1 gap-3 lg:hidden">
                 {logs.map((log: UsageLog) => {
                   const hasDetails = visibleColumns.account || visibleColumns.apiKey || visibleColumns.clientIp || visibleColumns.endpoint || visibleColumns.userAgent
                   const hasMetrics = visibleColumns.token || visibleColumns.cached || visibleColumns.timing || visibleColumns.tokensPerSec || visibleColumns.cost
                   return (
                     <div
                       key={log.id}
-                      className="rounded-xl border border-border bg-background/70 p-3.5 shadow-sm"
+                      className="min-w-0 rounded-xl border border-border bg-background/70 p-3.5 shadow-sm"
                     >
                       {/* flex-wrap + nowrap 时间：徽标再多也只会把时间挤到下一行，不会挤出视口（issue #522） */}
                       <div className="flex flex-wrap items-start justify-between gap-2">
-                        <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+                        <div className="flex min-w-0 max-w-full flex-wrap items-center gap-1.5">
                           {visibleColumns.status && (
                             <button
                               type="button"
@@ -2707,7 +2682,7 @@ export default function Usage() {
                           {visibleColumns.model && (
                             <Badge
                               variant="outline"
-                              className={`${usageTableBadgeClass} ${usageClickableFilterClass} ${log.ultra ? 'usage-ultra-model' : ''} ${filterModel === log.model ? 'border-primary/50 text-primary' : ''}`}
+                              className={`${usageTableBadgeClass} ${usageClickableFilterClass} max-w-full whitespace-normal ${log.ultra ? 'usage-ultra-model' : ''} ${filterModel === log.model ? 'border-primary/50 text-primary' : ''}`}
                               role="button"
                               tabIndex={0}
                               title={usageRequestedModelTitle(
@@ -2726,7 +2701,7 @@ export default function Usage() {
                                   title={log.channel === 'grok' ? 'Grok' : log.channel === 'antigravity' ? 'Antigravity' : log.channel === 'claude' ? 'Claude' : 'Codex'}
                                 />
                               )}
-                              {log.model || '-'}
+                              <span className="min-w-0 break-all text-left">{log.model || '-'}</span>
                             </Badge>
                           )}
                           {log.reasoning_effort ? (
@@ -2798,14 +2773,14 @@ export default function Usage() {
                           )}
                           {visibleColumns.userAgent && (
                             <div className="border-t border-border/60 pt-2">
-                              <div><UserAgentCell log={log} mobile /><TurnStateCell log={log} /></div>
+                              <UserAgentCell log={log} mobile />
                             </div>
                           )}
                         </div>
                       )}
 
                       {hasMetrics && (
-                        <div className="mt-3 grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
+                        <div className="mt-3 grid grid-cols-1 gap-2 text-xs sm:grid-cols-2">
                           {visibleColumns.token && (
                             <div className="rounded-lg border border-border/70 bg-card/60 px-2.5 py-2">
                               <div className="text-[11px] font-semibold text-muted-foreground">{t('usage.tableToken')}</div>
@@ -3013,7 +2988,7 @@ export default function Usage() {
                           </span>
                         </TableCell>}
                         {visibleColumns.userAgent && <TableCell>
-                          <div><UserAgentCell log={log} /><TurnStateCell log={log} /></div>
+                          <UserAgentCell log={log} />
                         </TableCell>}
                         {visibleColumns.endpoint && <TableCell>
                           <div

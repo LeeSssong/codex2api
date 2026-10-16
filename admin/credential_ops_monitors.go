@@ -109,7 +109,7 @@ func (h *Handler) runCredentialProbe(ctx context.Context, m database.CredentialO
 			if h.probeUsage != nil {
 				err = h.probeUsage(probeCtx, account)
 			} else {
-				_, err = proxy.FetchCodexModelsManifest(probeCtx, account, h.store.ResolveProxyForAccount(account), "", "")
+				_, err = proxy.FetchCodexModelsManifest(probeCtx, account, h.store.ResolveProxyForAccount(account), "", "", nil)
 			}
 			cancel()
 			if err == nil {

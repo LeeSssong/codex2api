@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -289,7 +290,7 @@ func (h *Handler) handleGeminiCountTokens(c *gin.Context, model string, rawBody 
 				}
 			}
 
-			if kind := classifyHTTPFailure(resp.StatusCode); kind != "" && !antigravityNonPenalizingUpstreamFailure(account, resp.StatusCode, errBody) {
+			if kind := classifyHTTPFailure(resp.StatusCode, errBody); kind != "" && !antigravityNonPenalizingUpstreamFailure(account, resp.StatusCode, errBody) {
 				h.store.ReportRequestFailure(account, kind, time.Duration(durationMs)*time.Millisecond)
 			}
 			h.store.Release(account)
@@ -567,7 +568,7 @@ func (h *Handler) handleGeminiGenerateContent(c *gin.Context, model string, rawB
 			}
 
 			antigravityRefreshFailed := resp.StatusCode == http.StatusUnauthorized && antigravityRefreshRetried[account.ID()]
-			if kind := classifyHTTPFailure(resp.StatusCode); kind != "" && !antigravityRefreshFailed && !antigravityNonPenalizingUpstreamFailure(account, resp.StatusCode, errBody) {
+			if kind := classifyHTTPFailure(resp.StatusCode, errBody); kind != "" && !antigravityRefreshFailed && !antigravityNonPenalizingUpstreamFailure(account, resp.StatusCode, errBody) {
 				h.store.ReportRequestFailure(account, kind, time.Duration(durationMs)*time.Millisecond)
 			}
 			h.store.Release(account)
@@ -624,6 +625,10 @@ func (h *Handler) handleGeminiGenerateContent(c *gin.Context, model string, rawB
 			// downstream client before this request can be recorded as successful.
 			completed := result.readErr == nil && result.writeErr == nil && ctxErr == nil
 			outcome := classifyStreamOutcome(ctxErr, result.readErr, result.writeErr, completed)
+			var upstreamStreamErr *antigravityStreamError
+			if ctxErr == nil && result.writeErr == nil && errors.As(result.readErr, &upstreamStreamErr) {
+				outcome = h.antigravityStreamErrorOutcome(account, upstreamStreamErr, resp, model)
+			}
 			if !claimContinuousRetrySuccessContext(c.Request.Context()) {
 				outcome = classifyStreamOutcome(errContinuousRetryDeadlineExceeded, nil, nil, false)
 			}
@@ -633,7 +638,16 @@ func (h *Handler) handleGeminiGenerateContent(c *gin.Context, model string, rawB
 			}
 			if outcome.logStatusCode != http.StatusOK {
 				if !writeContinuousRetryTimeoutResponse(c, continuousRetryProtocolGemini) && ctxErr == nil && result.writeErr == nil {
-					writeGeminiNativeError(c, http.StatusBadGateway, "Upstream Gemini stream failed before completion")
+					status, message := http.StatusBadGateway, "Upstream Gemini stream failed before completion"
+					if upstreamStreamErr != nil {
+						// Gemini clients retry RESOURCE_EXHAUSTED/UNAVAILABLE themselves,
+						// so keep the upstream status instead of a generic 502.
+						status = upstreamStreamErr.StatusCode
+						if text := strings.TrimSpace(gjson.GetBytes(upstreamStreamErr.Body, "error.message").String()); text != "" {
+							message = text
+						}
+					}
+					writeGeminiNativeError(c, status, message)
 				}
 			}
 			h.logUsageForRequest(c, &database.UsageLogInput{

@@ -51,28 +51,31 @@ import (
 
 // Handler 管理后台 API 处理器
 type Handler struct {
-	tokenGuard         *tokenguard.Service
-	accountOps         *accountOpsRuntime
-	smartOps           *smartops.Runtime
-	imageQueue         *imageJobQueue
-	ipv6State          *ipv6state.Manager
-	statePool          *statepool.Manager
-	qualityTestContext context.Context
-	qualityTestWG      sync.WaitGroup
-	store              *auth.Store
-	modelRefreshFuncs  map[string]channelModelRefreshFunc // nil = 各渠道默认实现；测试注入用
-	proxyRiskJobsMu    sync.RWMutex
-	proxyRiskJobs      map[string]*proxyRiskScoringJob
-	cache              cache.TokenCache
-	authCacheProxy     *proxy.Handler
-	db                 *database.DB
-	pluginRegistry     *plugins.Registry
-	cacheCfgStore      responseCacheSettingsStore
-	rateLimiter        *proxy.RateLimiter
-	systemUpdate       *systemUpdater
-	systemUpdateOnce   sync.Once
-	refreshAccount     func(context.Context, int64) error
-	probeUsage         func(context.Context, *auth.Account) error
+	intelligenceDeviceConfig *proxy.DeviceProfileConfig
+	intelligenceOnce         sync.Once
+	intelligenceWG           sync.WaitGroup
+	tokenGuard               *tokenguard.Service
+	accountOps               *accountOpsRuntime
+	smartOps                 *smartops.Runtime
+	imageQueue               *imageJobQueue
+	ipv6State                *ipv6state.Manager
+	statePool                *statepool.Manager
+	qualityTestContext       context.Context
+	qualityTestWG            sync.WaitGroup
+	store                    *auth.Store
+	modelRefreshFuncs        map[string]channelModelRefreshFunc // nil = 各渠道默认实现；测试注入用
+	proxyRiskJobsMu          sync.RWMutex
+	proxyRiskJobs            map[string]*proxyRiskScoringJob
+	cache                    cache.TokenCache
+	authCacheProxy           *proxy.Handler
+	db                       *database.DB
+	pluginRegistry           *plugins.Registry
+	cacheCfgStore            responseCacheSettingsStore
+	rateLimiter              *proxy.RateLimiter
+	systemUpdate             *systemUpdater
+	systemUpdateOnce         sync.Once
+	refreshAccount           func(context.Context, int64) error
+	probeUsage               func(context.Context, *auth.Account) error
 
 	codexCapabilityProbe func(context.Context, *auth.Account, proxy.CodexCapabilityProbeOptions) proxy.CodexProbeResult
 	codexProbeMu         sync.Mutex
@@ -1261,6 +1264,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	h.RegisterTokenGuardRoutes(api)
 	h.RegisterCredentialOpsRoutes(api)
 	h.RegisterSmartOps(api)
+	h.registerIntelligenceCheckRoutes(api)
 	api.GET("/quality-tests", h.ListQualityTests)
 	h.registerStatePoolRoutes(api)
 	api.GET("/quality-tests/:id", h.GetQualityTest)
@@ -1301,6 +1305,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.DELETE("/usage/logs", h.ClearUsageLogs)
 	api.GET("/setup-hints", h.GetSetupHints)
 	api.GET("/keys", h.ListAPIKeys)
+	api.GET("/keys-concurrency", h.GetAPIKeyConcurrency)
 	api.POST("/keys", h.CreateAPIKey)
 	api.POST("/keys/reset-all-quotas", h.ResetAllAPIKeyQuotas)
 	api.PATCH("/keys/:id", h.UpdateAPIKey)
@@ -4529,7 +4534,13 @@ func (h *Handler) FetchOpenAIResponsesModels(c *gin.Context) {
 
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 20*time.Second)
 	defer cancel()
-	models, err := fetchOpenAIResponsesModelIDs(ctx, baseURL, req.APIKey, req.ProxyURL, customHeaders)
+	// 编辑已有账号时带上账号本身：号池画像按账号抽取，统一身份开关下与该账号的
+	// 对话请求取同一份身份（issue #774）；新建账号尚未落库，为空。
+	var account *auth.Account
+	if req.AccountID > 0 && h.store != nil {
+		account = h.store.FindByID(req.AccountID)
+	}
+	models, err := fetchOpenAIResponsesModelIDs(ctx, account, baseURL, req.APIKey, req.ProxyURL, customHeaders)
 	if err != nil {
 		writeError(c, http.StatusBadGateway, err.Error())
 		return
@@ -4686,7 +4697,7 @@ func (h *Handler) UpdateOpenAIResponsesAccount(c *gin.Context) {
 	writeMessage(c, http.StatusOK, "OpenAI Responses API 账号设置已更新")
 }
 
-func fetchOpenAIResponsesModelIDs(ctx context.Context, baseURL, apiKey, proxyURL string, customHeaders map[string]string) ([]string, error) {
+func fetchOpenAIResponsesModelIDs(ctx context.Context, account *auth.Account, baseURL, apiKey, proxyURL string, customHeaders map[string]string) ([]string, error) {
 	endpoint := auth.OpenAIResponsesEndpoint(baseURL, "/v1/models")
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	baseDialer := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
@@ -4704,7 +4715,7 @@ func fetchOpenAIResponsesModelIDs(ctx context.Context, baseURL, apiKey, proxyURL
 	}
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("Accept", "application/json")
-	proxy.ApplyCodexModelDiscoveryHeaders(req.Header, baseURL+"|"+apiKey)
+	proxy.ApplyCodexModelDiscoveryHeaders(req.Header, account, baseURL, apiKey)
 	for name, value := range customHeaders {
 		name = strings.TrimSpace(name)
 		if name == "" {
@@ -4881,7 +4892,7 @@ func (h *Handler) SyncAccountUpstreamModels(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 20*time.Second)
 	defer cancel()
 	daybreakSnapshot := account.BeginDaybreakObservation()
-	manifest, err := proxy.FetchCodexModelsManifest(ctx, account, h.store.ResolveProxyForAccount(account), "", "")
+	manifest, err := proxy.FetchCodexModelsManifest(ctx, account, h.store.ResolveProxyForAccount(account), "", "", nil)
 	if err != nil {
 		writeError(c, http.StatusBadGateway, fmt.Sprintf("拉取上游模型清单失败: %s", err.Error()))
 		return
@@ -7135,6 +7146,11 @@ func (h *Handler) BatchRefreshAccounts(c *gin.Context) {
 }
 
 func (h *Handler) refreshAccountByID(ctx context.Context, id int64) error {
+	// Antigravity 没有 Codex 式的 AT 刷新：单号/批量刷新统一走控制面同步，
+	// 同时刷新凭据、项目、权限与配额快照。
+	if h.isAntigravityAccountID(ctx, id) {
+		return h.syncAntigravityAccountByID(ctx, id)
+	}
 	return h.refreshAccountByIDWithProbe(ctx, id, true)
 }
 
@@ -8646,7 +8662,9 @@ func (h *Handler) ClearUsageLogs(c *gin.Context) {
 
 // ==================== API Keys ====================
 
-// ListAPIKeys 获取所有 API 密钥（脱敏版本）
+// ListAPIKeys 获取所有 API 密钥（脱敏版本）。
+// view=lite 只返回密钥行本身,跳过窗口费用与最近使用时间:这两项要聚合 usage_logs,
+// 而筛选下拉、横幅等场景用不到,慢盘 SQLite 上每次打开页面都白扫一遍。
 func (h *Handler) ListAPIKeys(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
@@ -8654,6 +8672,14 @@ func (h *Handler) ListAPIKeys(c *gin.Context) {
 	keys, err := h.db.ListAPIKeys(ctx)
 	if err != nil {
 		writeInternalError(c, err)
+		return
+	}
+	if strings.EqualFold(strings.TrimSpace(c.Query("view")), "lite") {
+		maskedKeys := make([]*MaskedAPIKeyRow, 0, len(keys))
+		for _, k := range keys {
+			maskedKeys = append(maskedKeys, NewMaskedAPIKeyRow(k))
+		}
+		c.JSON(http.StatusOK, apiKeysResponse{Keys: maskedKeys})
 		return
 	}
 
@@ -9401,6 +9427,7 @@ type settingsResponse struct {
 	CodexWSBusyOverflowEnabled          bool   `json:"codex_ws_busy_overflow_enabled"`
 	CodexWSBusyPatienceSec              int    `json:"codex_ws_busy_patience_sec"`
 	CodexWSStatelessSlots               int    `json:"codex_ws_stateless_slots"`
+	CodexWSDownstreamKeepaliveSlots     int    `json:"codex_ws_downstream_keepalive_slots"`
 	GithubTokenConfigured               bool   `json:"github_token_configured"`
 	GithubProxyURL                      string `json:"github_proxy_url"`
 	CodexOverloadPauseEnabled           bool   `json:"codex_overload_pause_enabled"`
@@ -9502,6 +9529,7 @@ type settingsResponse struct {
 	CodexUserAgentConfig               string                           `json:"codex_user_agent_config"`
 	CodexTelemetryEnabled              bool                             `json:"codex_telemetry_enabled"`
 	CodexTelemetryTimingDebug          bool                             `json:"codex_telemetry_timing_debug"`
+	CodexUnifiedClientIdentityEnabled  bool                             `json:"codex_unified_client_identity_enabled"`
 	UsageLogMode                       string                           `json:"usage_log_mode"`
 	UsageLogBatchSize                  int                              `json:"usage_log_batch_size"`
 	UsageLogFlushIntervalSeconds       int                              `json:"usage_log_flush_interval_seconds"`
@@ -9543,6 +9571,7 @@ type settingsResponse struct {
 	OAuthModelCooldownMode             string                           `json:"oauth_model_cooldown_mode"`
 	OAuthModelCooldownSeconds          int                              `json:"oauth_model_cooldown_seconds"`
 	OAuthModelCooldownBackoffEnabled   bool                             `json:"oauth_model_cooldown_backoff_enabled"`
+	OAuthUnsupportedCooldownSeconds    int                              `json:"oauth_unsupported_model_cooldown_seconds"`
 }
 
 type rawJSON = json.RawMessage
@@ -9598,6 +9627,7 @@ type updateSettingsReq struct {
 	CodexWSBusyOverflowEnabled          *bool                            `json:"codex_ws_busy_overflow_enabled"`
 	CodexWSBusyPatienceSec              *int                             `json:"codex_ws_busy_patience_sec"`
 	CodexWSStatelessSlots               *int                             `json:"codex_ws_stateless_slots"`
+	CodexWSDownstreamKeepaliveSlots     *int                             `json:"codex_ws_downstream_keepalive_slots"`
 	GithubToken                         *string                          `json:"github_token"`
 	GithubProxyURL                      *string                          `json:"github_proxy_url"`
 	CodexOverloadPauseEnabled           *bool                            `json:"codex_overload_pause_enabled"`
@@ -9674,6 +9704,7 @@ type updateSettingsReq struct {
 	CodexUserAgentConfig                *string                          `json:"codex_user_agent_config"`
 	CodexTelemetryEnabled               *bool                            `json:"codex_telemetry_enabled"`
 	CodexTelemetryTimingDebug           *bool                            `json:"codex_telemetry_timing_debug"`
+	CodexUnifiedClientIdentityEnabled   *bool                            `json:"codex_unified_client_identity_enabled"`
 	UsageLogMode                        *string                          `json:"usage_log_mode"`
 	UsageLogBatchSize                   *int                             `json:"usage_log_batch_size"`
 	UsageLogFlushIntervalSeconds        *int                             `json:"usage_log_flush_interval_seconds"`
@@ -9715,6 +9746,7 @@ type updateSettingsReq struct {
 	OAuthModelCooldownMode              *string                          `json:"oauth_model_cooldown_mode"`
 	OAuthModelCooldownSeconds           *int                             `json:"oauth_model_cooldown_seconds"`
 	OAuthModelCooldownBackoffEnabled    *bool                            `json:"oauth_model_cooldown_backoff_enabled"`
+	OAuthUnsupportedCooldownSeconds     *int                             `json:"oauth_unsupported_model_cooldown_seconds"`
 }
 
 func updateSettingsHasFieldsOtherThanCustomPatterns(req updateSettingsReq) bool {
@@ -10397,6 +10429,7 @@ func (h *Handler) GetSettings(c *gin.Context) {
 		OAuthModelCooldownMode:              modelCooldownSettings.OAuthMode,
 		OAuthModelCooldownSeconds:           modelCooldownSettings.OAuthSeconds,
 		OAuthModelCooldownBackoffEnabled:    modelCooldownSettings.OAuthBackoffEnabled,
+		OAuthUnsupportedCooldownSeconds:     modelCooldownSettings.UnsupportedCooldownSeconds(),
 		BackgroundRefreshIntervalMinutes:    h.store.GetBackgroundRefreshIntervalMinutes(),
 		UsageProbeMaxAgeMinutes:             h.store.GetUsageProbeMaxAgeMinutes(),
 		UsageProbeConcurrency:               h.store.GetUsageProbeConcurrency(),
@@ -10435,6 +10468,7 @@ func (h *Handler) GetSettings(c *gin.Context) {
 		CodexWSBusyOverflowEnabled:          h.store.CodexWSBusyOverflowEnabled(),
 		CodexWSBusyPatienceSec:              h.store.CodexWSBusyPatienceSec(),
 		CodexWSStatelessSlots:               h.store.CodexWSStatelessSlots(),
+		CodexWSDownstreamKeepaliveSlots:     h.store.CodexWSDownstreamKeepaliveSlots(),
 		GithubTokenConfigured:               h.store.GithubToken() != "",
 		GithubProxyURL:                      h.store.GithubProxyURL(),
 		CodexOverloadPauseEnabled:           runtimeCfg.CodexOverloadPauseEnabled,
@@ -10523,6 +10557,7 @@ func (h *Handler) GetSettings(c *gin.Context) {
 		CodexUserAgentConfig:                runtimeCfg.CodexUserAgentConfig,
 		CodexTelemetryEnabled:               runtimeCfg.CodexTelemetryEnabled,
 		CodexTelemetryTimingDebug:           runtimeCfg.CodexTelemetryTimingDebug,
+		CodexUnifiedClientIdentityEnabled:   runtimeCfg.CodexUnifiedClientIdentityEnabled,
 		UsageLogMode:                        h.db.GetUsageLogMode(),
 		UsageLogBatchSize:                   h.db.GetUsageLogBatchSize(),
 		UsageLogFlushIntervalSeconds:        h.db.GetUsageLogFlushIntervalSeconds(),
@@ -10692,7 +10727,8 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		req.RelayModelCooldownBackoffEnabled != nil ||
 		req.OAuthModelCooldownMode != nil ||
 		req.OAuthModelCooldownSeconds != nil ||
-		req.OAuthModelCooldownBackoffEnabled != nil
+		req.OAuthModelCooldownBackoffEnabled != nil ||
+		req.OAuthUnsupportedCooldownSeconds != nil
 	if req.RelayModelCooldownMode != nil && !database.IsValidModelCooldownMode(*req.RelayModelCooldownMode) {
 		writeError(c, http.StatusBadRequest, "relay_model_cooldown_mode 必须是 off、fixed 或 adaptive")
 		return
@@ -10709,6 +10745,10 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 			writeError(c, http.StatusBadRequest, fmt.Sprintf("%s 必须在 1-%d 之间", field, database.MaxModelCooldownSeconds))
 			return
 		}
+	}
+	if value := req.OAuthUnsupportedCooldownSeconds; value != nil && (*value < 0 || *value > database.MaxModelCooldownSeconds) {
+		writeError(c, http.StatusBadRequest, fmt.Sprintf("oauth_unsupported_model_cooldown_seconds 必须在 0-%d 之间（0 表示关闭）", database.MaxModelCooldownSeconds))
+		return
 	}
 	var submittedPromptFilterCustomPatterns []promptfilter.PatternConfig
 	var promptFilterPatternQuarantines []promptfilter.PatternQuarantine
@@ -11247,6 +11287,13 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		log.Printf("设置已更新: codex_ws_stateless_slots = %d", v)
 	}
 
+	if req.CodexWSDownstreamKeepaliveSlots != nil {
+		v := database.NormalizeCodexWSDownstreamKeepaliveSlots(*req.CodexWSDownstreamKeepaliveSlots)
+		h.store.SetCodexWSDownstreamKeepaliveSlots(v)
+		runtimeCfg.CodexWSDownstreamKeepaliveSlots = v
+		log.Printf("设置已更新: codex_ws_downstream_keepalive_slots = %d", v)
+	}
+
 	// GitHub 访问设置（issue #522）。token 不回显也不落日志，空串表示清除。
 	if req.GithubToken != nil {
 		v := strings.TrimSpace(*req.GithubToken)
@@ -11609,6 +11656,10 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	if req.CodexTelemetryTimingDebug != nil {
 		runtimeCfg.CodexTelemetryTimingDebug = *req.CodexTelemetryTimingDebug
 		log.Printf("设置已更新: codex_telemetry_timing_debug = %t", runtimeCfg.CodexTelemetryTimingDebug)
+	}
+	if req.CodexUnifiedClientIdentityEnabled != nil {
+		runtimeCfg.CodexUnifiedClientIdentityEnabled = *req.CodexUnifiedClientIdentityEnabled
+		log.Printf("设置已更新: codex_unified_client_identity_enabled = %t", runtimeCfg.CodexUnifiedClientIdentityEnabled)
 	}
 	if req.StreamFlushPolicy != nil {
 		runtimeCfg.StreamFlushPolicy = proxy.NormalizeStreamFlushPolicy(*req.StreamFlushPolicy)
@@ -11983,6 +12034,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		CodexWSBusyOverflowEnabled:          h.store.CodexWSBusyOverflowEnabled(),
 		CodexWSBusyPatienceSec:              h.store.CodexWSBusyPatienceSec(),
 		CodexWSStatelessSlots:               h.store.CodexWSStatelessSlots(),
+		CodexWSDownstreamKeepaliveSlots:     h.store.CodexWSDownstreamKeepaliveSlots(),
 		GithubToken:                         h.store.GithubToken(),
 		GithubProxyURL:                      h.store.GithubProxyURL(),
 		CodexOverloadPauseEnabled:           runtimeCfg.CodexOverloadPauseEnabled,
@@ -12044,6 +12096,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		CodexUserAgentConfig:                runtimeCfg.CodexUserAgentConfig,
 		CodexTelemetryEnabled:               runtimeCfg.CodexTelemetryEnabled,
 		CodexTelemetryTimingDebug:           runtimeCfg.CodexTelemetryTimingDebug,
+		CodexUnifiedClientIdentityEnabled:   runtimeCfg.CodexUnifiedClientIdentityEnabled,
 		UsageLogMode:                        usageLogMode,
 		UsageLogBatchSize:                   usageLogBatchSize,
 		UsageLogFlushIntervalSeconds:        usageLogFlushIntervalSeconds,
@@ -12209,12 +12262,22 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 			OAuthMode:           req.OAuthModelCooldownMode,
 			OAuthSeconds:        req.OAuthModelCooldownSeconds,
 			OAuthBackoffEnabled: req.OAuthModelCooldownBackoffEnabled,
+
+			OAuthUnsupportedSeconds: req.OAuthUnsupportedCooldownSeconds,
 		})
 		if updateErr != nil {
 			writeError(c, http.StatusInternalServerError, updateErr.Error())
 			return
 		}
+		previousUnsupported := h.store.UnsupportedModelCooldown()
 		h.store.SetModelCooldownSettings(committed)
+		// Existing cooldowns longer than the new setting would otherwise keep
+		// blocking the model after it was disabled or shortened.
+		if next := h.store.UnsupportedModelCooldown(); next < previousUnsupported {
+			if cleared := h.store.ClearModelCooldownsByReason(auth.ModelCooldownReasonUnsupported, next); cleared > 0 {
+				log.Printf("设置已更新: oauth_unsupported_model_cooldown_seconds = %d，已清除 %d 条超出新时长的模型不支持冷却", committed.UnsupportedCooldownSeconds(), cleared)
+			}
+		}
 	}
 
 	if responseCacheUpdateRequested {
@@ -12282,6 +12345,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		OAuthModelCooldownMode:              modelCooldownSettings.OAuthMode,
 		OAuthModelCooldownSeconds:           modelCooldownSettings.OAuthSeconds,
 		OAuthModelCooldownBackoffEnabled:    modelCooldownSettings.OAuthBackoffEnabled,
+		OAuthUnsupportedCooldownSeconds:     modelCooldownSettings.UnsupportedCooldownSeconds(),
 		BackgroundRefreshIntervalMinutes:    h.store.GetBackgroundRefreshIntervalMinutes(),
 		UsageProbeMaxAgeMinutes:             h.store.GetUsageProbeMaxAgeMinutes(),
 		UsageProbeConcurrency:               h.store.GetUsageProbeConcurrency(),
@@ -12320,6 +12384,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		CodexWSBusyOverflowEnabled:          h.store.CodexWSBusyOverflowEnabled(),
 		CodexWSBusyPatienceSec:              h.store.CodexWSBusyPatienceSec(),
 		CodexWSStatelessSlots:               h.store.CodexWSStatelessSlots(),
+		CodexWSDownstreamKeepaliveSlots:     h.store.CodexWSDownstreamKeepaliveSlots(),
 		GithubTokenConfigured:               h.store.GithubToken() != "",
 		GithubProxyURL:                      h.store.GithubProxyURL(),
 		CodexOverloadPauseEnabled:           runtimeCfg.CodexOverloadPauseEnabled,
@@ -12410,6 +12475,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		CodexUserAgentConfig:                runtimeCfg.CodexUserAgentConfig,
 		CodexTelemetryEnabled:               runtimeCfg.CodexTelemetryEnabled,
 		CodexTelemetryTimingDebug:           runtimeCfg.CodexTelemetryTimingDebug,
+		CodexUnifiedClientIdentityEnabled:   runtimeCfg.CodexUnifiedClientIdentityEnabled,
 		UsageLogMode:                        usageLogMode,
 		UsageLogBatchSize:                   usageLogBatchSize,
 		UsageLogFlushIntervalSeconds:        usageLogFlushIntervalSeconds,

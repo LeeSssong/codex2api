@@ -316,7 +316,7 @@ func (s *Store) smartOpsAcquire(apiKeyID int64, exclude map[int64]bool, filter A
 	candidates := []smartops.Candidate{}
 	accounts := map[int64]*Account{}
 	limits := map[int64]int64{}
-	maxConcurrency := atomic.LoadInt64(&s.maxConcurrency)
+	maxConcurrency := s.maxConcurrency.Load()
 	for _, acc := range s.accountSnapshotAccounts() {
 		if len(snapshot.config.GroupIDs) > 0 {
 			matches := false
@@ -341,7 +341,7 @@ func (s *Store) smartOpsAcquire(apiKeyID int64, exclude map[int64]bool, filter A
 		}
 		signal := snapshot.signals[acc.DBID]
 		signal.LoadPercent = float64(load) * 100 / float64(limit)
-		signal.LastUsedUnix = atomic.LoadInt64(&acc.LastUsedAt) / int64(time.Second)
+		signal.LastUsedUnix = acc.LastUsedAt.Load() / int64(time.Second)
 		signal.Protocol = acc.UpstreamType
 		acc.mu.RLock()
 		factor := acc.smartOpsLoadFactor
@@ -451,11 +451,11 @@ func (s *Store) rankSmartOpsFastCandidates(candidates []fastSchedulerCandidate) 
 	scored := make([]smartops.Candidate, 0, len(candidates))
 	for _, c := range candidates {
 		signal := snapshot.signals[c.acc.DBID]
-		_, _, _, limit := c.acc.schedulerSnapshot(atomic.LoadInt64(&s.maxConcurrency))
+		_, _, _, limit := c.acc.schedulerSnapshot(s.maxConcurrency.Load())
 		if limit > 0 {
 			signal.LoadPercent = float64(accountOccupiedRequests(c.acc)) * 100 / float64(limit)
 		}
-		signal.LastUsedUnix = atomic.LoadInt64(&c.acc.LastUsedAt) / int64(time.Second)
+		signal.LastUsedUnix = c.acc.LastUsedAt.Load() / int64(time.Second)
 		scored = append(scored, smartops.Candidate{ID: c.acc.DBID, Eligible: true, Signal: signal})
 	}
 	ranked := smartops.RankCandidates(snapshot.config, scored)

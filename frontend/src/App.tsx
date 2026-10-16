@@ -24,6 +24,7 @@ const ImageStudioPortal = lazy(() => import('./pages/ImageStudioPortal'))
 const AccountPortal = lazy(() => import('./pages/AccountPortal'))
 const Usage = lazy(() => import('./pages/Usage'))
 const ImageStudio = lazy(() => import('./pages/ImageStudio'))
+const IntelligenceCheck = lazy(() => import('./pages/IntelligenceCheck'))
 const QualityTest = lazy(() => import('./pages/QualityTest'))
 const StatePool = lazy(() => import('./pages/StatePool'))
 const PromptFilter = lazy(() => import('./pages/PromptFilter'))
@@ -80,6 +81,7 @@ function AdminApp() {
           <Route path="/proxies" element={<Proxies />} />
           <Route path="/images" element={<Navigate to="/images/studio" replace />} />
           <Route path="/images/:view" element={<ImageStudio />} />
+          <Route path="/intelligence-check" element={<IntelligenceCheck />} />
           <Route path="/quality-test" element={<QualityTest />} />
           <Route path="/smart-ops" element={<Navigate to="/smart-ops/plugins" replace />} />
           <Route path="/smart-ops/plugins" element={<Plugins />} />
