@@ -772,7 +772,6 @@ func (h *Handler) createClaudeAccountWithRefreshLease(ctx context.Context, name,
 			CustomHeaders:         customHeaders,
 			Models:                claudeModels,
 		}
-		h.store.ApplySmartOpsAccountRow(account)
 		h.store.AddAccount(account)
 	}
 	warnings := make([]string, 0, 2)

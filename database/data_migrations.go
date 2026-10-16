@@ -30,6 +30,7 @@ const (
 	// 识别的记录；不把混合分组或历史不明请求强行改写成 Claude。
 	dataMigrationClaudeProviderV1 = "20260829_claude_provider_backfill_v1"
 	dataMigrationDaybreakUsageV1  = "20260926_daybreak_usage_program_v1"
+	dataMigrationRetireSmartOpsV1 = "20261017_retire_smart_ops_v1"
 	dataMigrationTimeout          = 5 * time.Minute
 )
 
@@ -64,7 +65,10 @@ func (db *DB) runDataMigrations(ctx context.Context) error {
 	if err := db.runDataMigrationOnce(ctx, dataMigrationClaudeProviderV1, db.backfillClaudeProviderData); err != nil {
 		return err
 	}
-	return db.runDataMigrationOnce(ctx, dataMigrationDaybreakUsageV1, db.backfillDaybreakUsageProgram)
+	if err := db.runDataMigrationOnce(ctx, dataMigrationDaybreakUsageV1, db.backfillDaybreakUsageProgram); err != nil {
+		return err
+	}
+	return db.runDataMigrationOnce(ctx, dataMigrationRetireSmartOpsV1, db.retireSmartOps)
 }
 
 // classifyAccountGroupChannels 把成员清一色是 Grok 账号的存量分组归到 grok 渠道。
@@ -294,6 +298,352 @@ func (db *DB) runDataMigrationOnce(ctx context.Context, version string, migrate 
 		}
 		return tx.Commit()
 	})
+}
+
+// retireSmartOps removes the dedicated smart-operations persistence after
+// restoring only effects whose ownership fence still matches the legacy
+// snapshot. Every statement is explicit and runs in the one-shot migration
+// transaction; no CASCADE is used so an unexpected dependency aborts safely.
+func (db *DB) retireSmartOps(ctx context.Context, tx *sql.Tx) error {
+	if err := db.restoreRetiredOwnership(ctx, tx); err != nil {
+		return err
+	}
+	if err := db.removeRetiredCredentialKeys(ctx, tx); err != nil {
+		return err
+	}
+	for _, trigger := range []string{"token_guard_module_fence", "account_quality_removed_group_ownership", "account_quality_removed_group_insert", "account_quality_removed_group_update", "account_quality_removed_group_delete", "account_paths_control_revision", "account_paths_control_update"} {
+		table := "account_ops_settings"
+		if strings.HasPrefix(trigger, "account_quality") {
+			table = "account_groups"
+		} else if strings.HasPrefix(trigger, "account_paths") {
+			table = "account_codex_paths"
+		}
+		if exists, err := db.retiredTableExists(ctx, tx, table); err != nil {
+			return err
+		} else if !exists {
+			continue
+		}
+		q := "DROP TRIGGER IF EXISTS " + trigger
+		if !db.isSQLite() {
+			q += " ON account_ops_settings"
+			if strings.HasPrefix(trigger, "account_quality") {
+				q = "DROP TRIGGER IF EXISTS " + trigger + " ON account_groups"
+			} else if strings.HasPrefix(trigger, "account_paths") {
+				q = "DROP TRIGGER IF EXISTS " + trigger + " ON account_codex_paths"
+			}
+		}
+		if _, err := tx.ExecContext(ctx, q); err != nil {
+			return fmt.Errorf("drop retired trigger %s: %w", trigger, err)
+		}
+	}
+	if !db.isSQLite() {
+		if _, err := tx.ExecContext(ctx, "DROP FUNCTION IF EXISTS invalidate_quality_removed_group_ownership()"); err != nil {
+			return fmt.Errorf("drop retired quality function: %w", err)
+		}
+	}
+	for _, table := range []string{
+		"account_quality_recovery", "account_quality_rounds", "account_quality_plans", "account_ops_alerts", "account_ops_settings",
+		"account_token_guard_events", "account_token_guard_ownership", "account_token_guard_states", "account_token_guard_jobs", "account_token_guard_config",
+		"credential_ops_task_inputs", "credential_ops_monitors", "credential_ops_tasks", "credential_ops_login_configs", "credential_ops_rules",
+		"smart_ops_test_results", "smart_ops_test_jobs", "smart_ops_test_plans", "smart_ops_concurrency", "smart_ops_plugin_epochs", "smart_ops_settings", "plugin_settings",
+	} {
+		if exists, err := db.retiredTableExists(ctx, tx, table); err != nil {
+			return err
+		} else if exists {
+			if _, err := tx.ExecContext(ctx, "DROP TABLE "+table); err != nil {
+				return fmt.Errorf("drop retired table %s: %w", table, err)
+			}
+		}
+	}
+	for _, column := range []string{"quality_bps", "quality_bps_disabled_at", "quality_bps_recovery_at", "quality_bps_owner_revision", "quality_bps_recovery_epoch"} {
+		if exists, err := db.retiredColumnExists(ctx, tx, "account_codex_paths", column); err != nil {
+			return err
+		} else if exists {
+			if _, err := tx.ExecContext(ctx, "ALTER TABLE account_codex_paths DROP COLUMN "+column); err != nil {
+				return fmt.Errorf("drop retired column %s: %w", column, err)
+			}
+		}
+	}
+	return nil
+}
+
+func (db *DB) retiredTableExists(ctx context.Context, tx *sql.Tx, table string) (bool, error) {
+	var exists bool
+	q := `SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_schema=current_schema() AND table_name=$1)`
+	if db.isSQLite() {
+		q = `SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=$1)`
+	}
+	if err := tx.QueryRowContext(ctx, q, table).Scan(&exists); err != nil {
+		return false, fmt.Errorf("check retired table %s: %w", table, err)
+	}
+	return exists, nil
+}
+
+func (db *DB) retiredColumnExists(ctx context.Context, tx *sql.Tx, table, column string) (bool, error) {
+	var exists bool
+	q := `SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name=$1 AND column_name=$2)`
+	if db.isSQLite() {
+		q = `SELECT EXISTS(SELECT 1 FROM pragma_table_info($1) WHERE name=$2)`
+	}
+	if err := tx.QueryRowContext(ctx, q, table, column).Scan(&exists); err != nil {
+		return false, fmt.Errorf("check retired column %s.%s: %w", table, column, err)
+	}
+	return exists, nil
+}
+
+func (db *DB) restoreRetiredOwnership(ctx context.Context, tx *sql.Tx) error {
+	if ok, err := db.retiredTableExists(ctx, tx, "smart_ops_concurrency"); err != nil {
+		return err
+	} else if ok {
+		rows, err := tx.QueryContext(ctx, `SELECT account_id,payload FROM smart_ops_concurrency`)
+		if err != nil {
+			return err
+		}
+		var items []struct {
+			id  int64
+			raw string
+		}
+		for rows.Next() {
+			var id int64
+			var raw string
+			if err := rows.Scan(&id, &raw); err != nil {
+				return err
+			}
+			items = append(items, struct {
+				id  int64
+				raw string
+			}{id, raw})
+		}
+		if err := rows.Close(); err != nil {
+			return err
+		}
+		for _, item := range items {
+			id, raw := item.id, item.raw
+			var envelope struct {
+				Quality struct {
+					Generation        int64 `json:"generation"`
+					PreviousCooldowns map[string]struct {
+						Reason  string    `json:"reason"`
+						ResetAt time.Time `json:"reset_at"`
+					} `json:"previous_cooldowns"`
+					AppliedCooldowns map[string]time.Time `json:"applied_cooldowns"`
+				} `json:"quality_5xx"`
+			}
+			if json.Unmarshal([]byte(raw), &envelope) != nil {
+				continue
+			}
+			var generation int64
+			if err := tx.QueryRowContext(ctx, `SELECT credential_generation FROM accounts WHERE id=$1`, id).Scan(&generation); err != nil {
+				return err
+			}
+			if envelope.Quality.Generation > 0 && generation != envelope.Quality.Generation {
+				continue
+			}
+			for model, applied := range envelope.Quality.AppliedCooldowns {
+				var reason string
+				var reset any
+				err := tx.QueryRowContext(ctx, `SELECT reason,reset_at FROM account_model_cooldowns WHERE account_id=$1 AND model=$2`, id, model).Scan(&reason, &reset)
+				if err != nil && err != sql.ErrNoRows {
+					return err
+				}
+				if err != nil {
+					continue
+				}
+				current, err := parseDBTimeValue(reset)
+				if err != nil || reason != "quality_5xx_ramp" || !current.Equal(applied) {
+					continue
+				}
+				before, exists := envelope.Quality.PreviousCooldowns[model]
+				if !exists || before.ResetAt.After(time.Now()) {
+					if exists {
+						_, err = tx.ExecContext(ctx, `UPDATE account_model_cooldowns SET reason=$1,reset_at=$2,updated_at=CURRENT_TIMESTAMP WHERE account_id=$3 AND model=$4`, before.Reason, db.timeArg(before.ResetAt), id, model)
+					} else {
+						_, err = tx.ExecContext(ctx, `DELETE FROM account_model_cooldowns WHERE account_id=$1 AND model=$2`, id, model)
+					}
+				} else {
+					_, err = tx.ExecContext(ctx, `DELETE FROM account_model_cooldowns WHERE account_id=$1 AND model=$2`, id, model)
+				}
+				if err != nil {
+					return err
+				}
+			}
+		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
+	}
+	if ok, err := db.retiredTableExists(ctx, tx, "account_token_guard_ownership"); err != nil {
+		return err
+	} else if ok {
+		rows, err := tx.QueryContext(ctx, `SELECT account_id,control_revision,previous_status,previous_error FROM account_token_guard_ownership`)
+		if err != nil {
+			return err
+		}
+		var items []struct {
+			id, rev          int64
+			status, previous string
+		}
+		for rows.Next() {
+			var id, rev int64
+			var status, previous string
+			if err := rows.Scan(&id, &rev, &status, &previous); err != nil {
+				return err
+			}
+			items = append(items, struct {
+				id, rev          int64
+				status, previous string
+			}{id, rev, status, previous})
+		}
+		if err := rows.Close(); err != nil {
+			return err
+		}
+		for _, item := range items {
+			if _, err := tx.ExecContext(ctx, `UPDATE accounts SET status=$1,error_message=$2,updated_at=CURRENT_TIMESTAMP WHERE id=$3 AND control_revision=$4 AND status='error' AND error_message=$5`, item.status, item.previous, item.id, item.rev, "token_guard:verified_auth_failure"); err != nil {
+				return err
+			}
+		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
+	}
+	if ok, err := db.retiredTableExists(ctx, tx, "account_quality_recovery"); err != nil {
+		return err
+	} else if ok {
+		rows, err := tx.QueryContext(ctx, `SELECT p.account_id,p.version,r.snapshot FROM account_quality_recovery r JOIN account_quality_plans p ON p.id=r.plan_id`)
+		if err != nil {
+			return err
+		}
+		var items []struct {
+			id, version int64
+			raw         string
+		}
+		for rows.Next() {
+			var id, version int64
+			var raw string
+			if err := rows.Scan(&id, &version, &raw); err != nil {
+				return err
+			}
+			items = append(items, struct {
+				id, version int64
+				raw         string
+			}{id, version, raw})
+		}
+		if err := rows.Close(); err != nil {
+			return err
+		}
+		for _, item := range items {
+			id, version, raw := item.id, item.version, item.raw
+			var snap struct {
+				BPSPrevious     string  `json:"bps_previous,omitempty"`
+				BPSApplied      string  `json:"bps_applied,omitempty"`
+				ControlRevision int64   `json:"control_revision"`
+				PlanVersion     int64   `json:"plan_version"`
+				Action          string  `json:"action"`
+				GroupsBefore    []int64 `json:"groups_before"`
+				GroupsAfter     []int64 `json:"groups_after"`
+				Removed         []int64 `json:"removed"`
+				EnabledBefore   bool    `json:"enabled_before"`
+			}
+			if json.Unmarshal([]byte(raw), &snap) != nil || snap.ControlRevision <= 0 || snap.PlanVersion != version {
+				continue
+			}
+			var currentRev int64
+			if err := tx.QueryRowContext(ctx, `SELECT control_revision FROM accounts WHERE id=$1`, id).Scan(&currentRev); err != nil {
+				if err != sql.ErrNoRows {
+					return err
+				}
+				continue
+			}
+			if currentRev != snap.ControlRevision {
+				continue
+			}
+			if snap.Action != "enable_bps" && snap.Action != "disable_scheduling" && snap.Action != "remove_groups" {
+				continue
+			}
+			if snap.Action == "enable_bps" {
+				var allowed int
+				var owner int64
+				var raw string
+				var disabled int64
+				err := tx.QueryRowContext(ctx, `SELECT allowed,quality_bps_owner_revision,quality_bps,quality_bps_disabled_at FROM account_codex_paths WHERE account_id=$1 AND upstream='basispoints'`, id).Scan(&allowed, &owner, &raw, &disabled)
+				if err != nil && err != sql.ErrNoRows {
+					return err
+				}
+				if err == nil && allowed == 0 && disabled > 0 && owner == snap.ControlRevision && raw == snap.BPSApplied && snap.BPSApplied != "" {
+					if _, err := tx.ExecContext(ctx, `UPDATE account_codex_paths SET allowed=1 WHERE account_id=$1 AND upstream='basispoints' AND allowed=0 AND quality_bps_owner_revision=$2 AND quality_bps=$3`, id, snap.ControlRevision, snap.BPSApplied); err != nil {
+						return err
+					}
+				}
+				continue
+			}
+			if snap.Action == "disable_scheduling" && snap.EnabledBefore {
+				if _, err := tx.ExecContext(ctx, `UPDATE accounts SET enabled=TRUE WHERE id=$1 AND control_revision=$2 AND status='active' AND COALESCE(locked,FALSE)=FALSE`, id, snap.ControlRevision); err != nil {
+					return err
+				}
+			}
+			if snap.Action == "remove_groups" && len(snap.GroupsBefore) > 0 {
+				var count int
+				if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM account_group_members WHERE account_id=$1`, id).Scan(&count); err != nil {
+					if err != sql.ErrNoRows {
+						return err
+					}
+					continue
+				} else if count != len(snap.GroupsAfter) {
+					continue
+				}
+				rows, err := tx.QueryContext(ctx, `SELECT group_id FROM account_group_members WHERE account_id=$1 ORDER BY group_id`, id)
+				if err != nil {
+					return err
+				}
+				var current []int64
+				for rows.Next() {
+					var gid int64
+					if err := rows.Scan(&gid); err != nil {
+						rows.Close()
+						return err
+					}
+					current = append(current, gid)
+				}
+				if err := rows.Close(); err != nil {
+					return err
+				}
+				if len(current) != len(snap.GroupsAfter) {
+					continue
+				}
+				mismatch := false
+				for i := range current {
+					if current[i] != snap.GroupsAfter[i] {
+						mismatch = true
+						break
+					}
+				}
+				if mismatch {
+					continue
+				}
+				for _, gid := range snap.Removed {
+					if _, err := tx.ExecContext(ctx, `INSERT INTO account_group_members(account_id,group_id) VALUES($1,$2) ON CONFLICT DO NOTHING`, id, gid); err != nil {
+						return err
+					}
+				}
+			}
+		}
+		return rows.Err()
+	}
+	return nil
+}
+
+func (db *DB) removeRetiredCredentialKeys(ctx context.Context, tx *sql.Tx) error {
+	if ok, err := db.retiredTableExists(ctx, tx, "accounts"); err != nil {
+		return err
+	} else if !ok {
+		return nil
+	}
+	if db.isSQLite() {
+		_, err := tx.ExecContext(ctx, `UPDATE accounts SET credentials=json_remove(credentials,'$.smart_ops_load_factor','$.smart_ops_initial_revision','$.smart_ops_bps_defaults') WHERE json_type(credentials,'$.smart_ops_load_factor') IS NOT NULL OR json_type(credentials,'$.smart_ops_initial_revision') IS NOT NULL OR json_type(credentials,'$.smart_ops_bps_defaults') IS NOT NULL`)
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `UPDATE accounts SET credentials=credentials-'smart_ops_load_factor'-'smart_ops_initial_revision'-'smart_ops_bps_defaults' WHERE credentials ?| ARRAY['smart_ops_load_factor','smart_ops_initial_revision','smart_ops_bps_defaults']`)
+	return err
 }
 
 func (db *DB) dedupeOAuthIdentityAccounts(ctx context.Context, tx *sql.Tx) error {

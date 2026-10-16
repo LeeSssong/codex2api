@@ -74,7 +74,7 @@ func basispointsModelAllowed(model string) bool {
 	}
 	return false
 }
-func BasispointsModelSupported(model string)bool{return basispointsModelAllowed(model)}
+func BasispointsModelSupported(model string) bool { return basispointsModelAllowed(model) }
 
 // basispointsActiveForModel is the per-request truth: the switch is on and this
 // model is one Basispoints serves. Every request-scoped Basispoints decision
@@ -180,8 +180,6 @@ func executeBasispointsRequest(ctx context.Context, account *auth.Account, reque
 	}
 	// Native stateless session IDs change per request; they cannot identify a tool loop.
 	explicitSessionID := ResolveExplicitSessionID(headers, requestBody)
-	bpsPolicy,bpsActive:=activeSmartOpsBPS(account)
-	if bpsActive{requestBody=prepareSmartOpsBPSBody(bpsPolicy,requestBody);identity:=explicitSessionID;if identity==""{identity=sessionID};if bpsPolicy.SessionProxy{chosen,e:=smartOpsBPSSessionProxy(account,bpsPolicy,identity);if e!=nil{return nil,newBasispointsPreparationError(e)};proxyURL=chosen}}
 	if explicitSessionID != "" {
 		requestBody, _ = sjson.SetBytes(requestBody, "prompt_cache_key", explicitSessionID)
 	}
@@ -203,7 +201,6 @@ func executeBasispointsRequest(ctx context.Context, account *auth.Account, reque
 		log.Printf("[Basispoints] stage=prepare result=rejected code=%s category=%s account=%d", ErrorCodeBasispointsInvalidRequest, basispointsPreparationCategory(err), account.ID())
 		return nil, newBasispointsPreparationError(err)
 	}
-	bridge.CacheCreationAsInput=bpsActive&&bpsPolicy.CacheCreationAsInput
 	endpoint := basispoints.ResponsesURL
 	client, err := getBasispointsClient(account, proxyURL)
 	if err != nil {
@@ -249,7 +246,6 @@ func executeBasispointsRequest(ctx context.Context, account *auth.Account, reque
 	if resp.Header == nil {
 		resp.Header = make(http.Header)
 	}
-	observeAccountOpsResponse(account, resp)
 	inspectCodexRouteResponse(ctx, resp)
 	resp.Header.Set("X-Codex2API-Upstream", "basispoints")
 	resp.Header.Set("X-Codex2API-Reasoning-Effort", bridge.Effort)
@@ -290,7 +286,6 @@ func executeBasispointsCompactRequest(ctx context.Context, account *auth.Account
 	resp.Body = io.NopCloser(bytes.NewReader(result))
 	resp.ContentLength = int64(len(result))
 	resp.Header.Set("Content-Type", "application/json")
-	observeAccountOpsResponse(account, resp)
 	return resp, nil
 }
 

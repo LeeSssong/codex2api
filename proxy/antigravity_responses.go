@@ -120,7 +120,6 @@ func AntigravityBuffersUpstream(account *auth.Account, downstreamStream bool, bo
 }
 
 func executeAntigravityResponses(ctx context.Context, account *auth.Account, model string, body []byte, upstreamStream, sseOut bool, proxyURL string) (opsResponse *http.Response, opsErr error) {
-	defer func() { observeAccountOpsResponse(account, opsResponse) }()
 	resetUpstreamAttemptTrace(ctx)
 	if account == nil {
 		return nil, fmt.Errorf("antigravity account is nil")

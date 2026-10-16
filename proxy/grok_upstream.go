@@ -301,7 +301,6 @@ func grokResponsesEndpoint(baseURL string) string {
 // 复用 relay（openai_responses）的整条下游管道：进入这里的 requestBody 已是
 // Responses 协议体，直接投递到 Grok chat-proxy / xAI API 的 /responses 端点。
 func ExecuteGrokRequest(ctx context.Context, account *auth.Account, requestBody []byte, proxyOverride string, headers http.Header) (opsResponse *http.Response, opsErr error) {
-	defer func() { observeAccountOpsResponse(account, opsResponse) }()
 	if ctx == nil {
 		ctx = context.Background()
 	}

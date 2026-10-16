@@ -201,13 +201,10 @@ type sqlExecer interface {
 
 // DB PostgreSQL 数据库操作
 type DB struct {
-	smartOpsBilling     atomic.Pointer[smartOpsBillingPolicy]
-	smartOpsSchemaMu    sync.Mutex
-	smartOpsSchemaReady bool
-	conn                *sql.DB
-	driver              string
-	authCacheScope      string
-	runtimeCacheScope   string
+	conn              *sql.DB
+	driver            string
+	authCacheScope    string
+	runtimeCacheScope string
 
 	promptFilterAudit *promptFilterAuditQueue
 
@@ -543,30 +540,10 @@ func New(driver string, dsn string, schema ...string) (*DB, error) {
 			return nil, fmt.Errorf("initialize image asset retention: %w", err)
 		}
 	}
-	if err := db.ensurePluginSettingsSchema(ctx); err != nil {
-		backgroundTaskCancel()
-		_ = conn.Close()
-		return nil, fmt.Errorf("initialize plugin settings schema: %w", err)
-	}
 	if err := db.ensureAccountControlSchema(ctx); err != nil {
 		backgroundTaskCancel()
 		_ = conn.Close()
 		return nil, fmt.Errorf("initialize account control revision: %w", err)
-	}
-	if err := db.ensureAccountOpsSchema(ctx); err != nil {
-		backgroundTaskCancel()
-		_ = conn.Close()
-		return nil, fmt.Errorf("initialize account operations schema: %w", err)
-	}
-	if err := db.ensureAccountQualityOwnershipTriggers(ctx); err != nil {
-		backgroundTaskCancel()
-		_ = conn.Close()
-		return nil, fmt.Errorf("initialize account quality schema: %w", err)
-	}
-	if err := db.ensureTokenGuardSchema(ctx); err != nil {
-		backgroundTaskCancel()
-		_ = conn.Close()
-		return nil, fmt.Errorf("initialize token guard schema: %w", err)
 	}
 	if err := db.ensureProxyRiskScoringTables(ctx); err != nil {
 		return nil, fmt.Errorf("创建代理风险评分表失败: %w", err)
@@ -969,7 +946,6 @@ func applyUsageStatsRollupWithExec(ctx context.Context, execer sqlExecer, batch 
 
 // Close 关闭数据库连接
 func (db *DB) Close() error {
-	db.SetSmartOpsOAuthDefaultsProvider(nil)
 	if !db.DrainBackgroundTasks(2 * time.Second) {
 		log.Printf("数据库后台任务超过优雅关闭窗口，已取消并等待退出")
 	}
@@ -4515,7 +4491,7 @@ func (db *DB) InsertUsageLog(ctx context.Context, log *UsageLogInput) error {
 	if db == nil || log == nil {
 		return nil
 	}
-	log = db.SnapshotSmartOpsBilling(SnapshotUsageLogBilling(log))
+	log = SnapshotUsageLogBilling(log)
 	storeUsageLog := db.shouldStoreUsageLog(log)
 
 	billingServiceTier := usageLogBillingServiceTier(log)
@@ -8943,11 +8919,6 @@ func (db *DB) insertAccountRowWithFamily(ctx context.Context, postgresQuery, sql
 		}
 		if _, err = tx.ExecContext(ctx, `UPDATE accounts SET credential_family_id=$1 WHERE id=$2 AND COALESCE(credential_family_id,'')=''`, candidate, returnID); err != nil {
 			return err
-		}
-		if platform := smartOpsOAuthPlatform(credentials); platform != "" {
-			if err = db.ApplySmartOpsOAuthDefaultsTx(ctx, tx, returnID, platform); err != nil {
-				return err
-			}
 		}
 		return tx.Commit()
 	})

@@ -1525,7 +1525,7 @@ func (h *Handler) logUsage(input *database.UsageLogInput) {
 	// failure and transport-retry paths cannot accidentally omit it. A retry
 	// that switches accounts naturally resolves the replacement account here.
 	// Non-Grok and unresolved accounts deliberately remain legacy/unscoped (0).
-	input = h.db.SnapshotSmartOpsBilling(database.SnapshotUsageLogBilling(input))
+	input = database.SnapshotUsageLogBilling(input)
 	h.populateUsageCredentialGeneration(input)
 	// scope 维度预算（issue #439）在日志落库前先吃到这笔消耗，抵掉窗口聚合缓存的滞后。
 	h.recordAPIKeyScopeUsage(input)
@@ -1612,9 +1612,6 @@ func (h *Handler) logUsageForRequest(c *gin.Context, input *database.UsageLogInp
 	populateCompactUsageMetaFromRequest(c, input)
 	populateUltraUsageMetaFromRequest(c, input)
 	markCyberPolicyUsageKind(input)
-	if a := concurrencyAuditFromContext(c.Request.Context()); a != nil {
-		a.result(input)
-	}
 	input = database.SnapshotUsageLogBilling(input)
 	if deferImageUsage(c, h, input) {
 		return
@@ -2421,9 +2418,6 @@ func (h *Handler) reportStreamOutcomeFailure(account *auth.Account, outcome stre
 		return
 	}
 	h.store.ReportRequestFailure(account, outcome.failureKind, d)
-	if outcome.logStatusCode >= 500 {
-		h.store.ReportQuality5xx(account)
-	}
 }
 
 // unbindOrRetainAffinityForCapacityShed 在首包前透明重试时决定是否保留会话亲和。
@@ -3928,7 +3922,6 @@ func (h *Handler) Responses(c *gin.Context) {
 		api.SendError(c, contextErr)
 		return
 	}
-	defer h.beginConcurrencyRequest(c, rawBody)()
 	h.capturePromptRequestIngress(c, rawBody)
 	bodyReadDone := time.Now()
 	compactionMeta := requestCompactionMetaForHTTP(c, rawBody)
@@ -6925,7 +6918,6 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		api.SendError(c, api.NewAPIError(api.ErrCodeInvalidRequest, "Failed to read request body", api.ErrorTypeInvalidRequest))
 		return
 	}
-	defer h.beginConcurrencyRequest(c, rawBody)()
 	h.capturePromptRequestIngress(c, rawBody)
 
 	supportedModels := h.supportedModelIDs(c.Request.Context())
@@ -8612,9 +8604,6 @@ func (h *Handler) applyCooldown(account *auth.Account, statusCode int, body []by
 func (h *Handler) applyCooldownForModel(account *auth.Account, statusCode int, body []byte, resp *http.Response, model string) codex429Decision {
 	// Only a real transport 5xx belongs here. Stream semantic failures are
 	// observed by reportStreamOutcomeFailure, avoiding duplicate episodes.
-	if h != nil && h.store != nil && resp != nil && resp.StatusCode == statusCode && statusCode >= 500 && statusCode <= 599 {
-		h.store.ReportQuality5xx(account)
-	}
 	// Basispoints model availability and relay-format failures do not invalidate credentials.
 	if basispointsRequestErrorCode(body) != "" {
 		return codex429Decision{}

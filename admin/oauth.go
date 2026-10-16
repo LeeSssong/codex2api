@@ -69,6 +69,10 @@ type oauthSessionStore struct {
 	sessions map[string]*oauthSession
 }
 
+func (h *Handler) insertOAuthAccount(ctx context.Context, name string, credentials map[string]interface{}, proxyURL string) (int64, error) {
+	return h.db.InsertAccountWithCredentials(ctx, name, credentials, proxyURL)
+}
+
 var globalOAuthStore = &oauthSessionStore{sessions: make(map[string]*oauthSession)}
 
 func init() {
@@ -346,7 +350,7 @@ func (h *Handler) upsertOAuthIdentityAccountDeferred(ctx context.Context, name, 
 func (h *Handler) upsertOAuthIdentityAccountWithRuntime(ctx context.Context, name, proxyURL string, seed tokenCredentialSeed, source string, loadRuntime bool, proxyPolicy proxyOverwritePolicy) (int64, bool, *auth.Account, error) {
 	seed = normalizeTokenCredentialSeed(seed)
 	if seed.email == "" || effectiveWorkspaceIDFromSeed(seed) == "" {
-		id, err := h.insertSmartOpsOAuthAccount(ctx, name, h.newCodexAccountCredentials(seed), proxyURL)
+		id, err := h.insertOAuthAccount(ctx, name, h.newCodexAccountCredentials(seed), proxyURL)
 		if err != nil {
 			return 0, false, nil, err
 		}
@@ -389,7 +393,7 @@ func (h *Handler) upsertOAuthIdentityAccountWithRuntime(ctx context.Context, nam
 		return duplicateID, true, nil, nil
 	}
 
-	id, err := h.insertSmartOpsOAuthAccount(ctx, name, h.newCodexAccountCredentials(seed), proxyURL)
+	id, err := h.insertOAuthAccount(ctx, name, h.newCodexAccountCredentials(seed), proxyURL)
 	if err != nil {
 		return 0, false, nil, err
 	}

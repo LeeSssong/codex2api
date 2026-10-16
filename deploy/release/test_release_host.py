@@ -1,18 +1,6 @@
 import copy, unittest
-from release_host import maintenance_config, replace_image, check_source, module_state, assert_unchanged_containers, image_pinned_compose
+from release_host import maintenance_config, replace_image, check_source, assert_unchanged_containers, image_pinned_compose
 class ReleaseTests(unittest.TestCase):
- def test_plugin_smoke_requires_complete_manifest_and_respects_disabled_guard(self):
-  from release_host import plugin_smoke_endpoints
-  value={'plugins':[{'id':id,'enabled':False,'sdk_compatibility':'plugins/v1'} for id in ['auto-config','priority-scheduling','quality-ops','account-ops','token-guard','credential-ops','pelican-tests']]}
-  self.assertNotIn('/api/admin/account-ops/token-guard/status',plugin_smoke_endpoints(value))
-  value['plugins'][4]['enabled']=True
-  self.assertIn('/api/admin/account-ops/token-guard/status',plugin_smoke_endpoints(value))
-  value['plugins'].pop()
-  with self.assertRaises(RuntimeError):plugin_smoke_endpoints(value)
- def test_standard_image_uses_persisted_module_flag(self):
-  self.assertTrue(module_state(None, 'true'))
-  self.assertFalse(module_state(None, None))
-  self.assertFalse(module_state({'enabled':False}, 'true'))
  def test_rollback_pins_the_original_image_id(self):
   before='services:\n  codex2api:\n    image: ghcr.io/hloolx/codex2api:latest\n'
   self.assertIn('image: sha256:old',image_pinned_compose(before,{'Image':'sha256:old'}))
@@ -105,17 +93,8 @@ class RollbackDecisionTests(unittest.TestCase):
   r=self.fake('public')
   with self.assertRaises(RuntimeError):r.execute()
   self.assertIn(('rollback',True),r.calls);self.assertTrue(r.opened)
- def test_worker_starts_after_private_gate_opens_before_public_route(self):
-  r=self.fake('none');r.execute()
-  self.assertIn(('runtime-start',False,True,True),r.calls)
 
 class MigratorCleanupTests(unittest.TestCase):
- def test_runtime_is_restored_when_stop_failed_before_application_stop(self):
-  from release_host import Release
-  r=Release.__new__(Release);r.stopped=False;r.old_runtime_stopping=True;r.runtime_started=False;calls=[]
-  r.event=lambda name:None;r.stop_migrator=lambda:None;r.dc=lambda *args,**kwargs:calls.append(args)
-  r.rollback()
-  self.assertIn(('up','-d','--no-deps','credential-runtime'),calls)
  def test_orphan_migrator_removed_before_recovery(self):
   import types
   from release_host import Release
@@ -291,8 +270,7 @@ class BPSReleaseSafetyTests(unittest.TestCase):
   r.sql=lambda query:'3' if 'accounts' in query else '1'
   def request(path,auth=False,public=False):
    value={}
-   if path.endswith('/plugins'):value={'plugins':[{'id':id,'enabled':True,'sdk_compatibility':'plugins/v1'} for id in ['auto-config','priority-scheduling','quality-ops','account-ops','token-guard','credential-ops','pelican-tests']]}
-   elif path.endswith('/settings'):value=payload
+   if path.endswith('/settings'):value=payload
    elif path=='/health':value={'build_version':'release-test'}
    elif path.startswith('/admin/'):return 200,{'Content-Type':'text/html'},b'<!doctype html>'
    return 200,{'Content-Type':'application/json'},json.dumps(value).encode()

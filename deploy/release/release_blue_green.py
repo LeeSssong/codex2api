@@ -127,8 +127,8 @@ class BlueGreenRelease(Release):
    health=json.loads(self.request('/health')[2])
    if health.get('build_version')!='release-'+self.args.release_id:raise RuntimeError('candidate version mismatch')
    if self.inspect(self.candidate)['Image']!=self.args.digest:raise RuntimeError('candidate digest mismatch')
-   overview=json.loads(self.request('/api/admin/credential-ops',True)[2])
-   if not isinstance(overview.get('rules'),dict):raise RuntimeError('global rules unavailable')
+   overview=json.loads(self.request('/api/admin/settings',True)[2])
+   if not isinstance(overview,dict):raise RuntimeError('settings unavailable')
    self.event('candidate-ready')
    # Persist the host source before loading the live JSON route.
    persist_caddyfile(self.caddyfile,oldport,newport,self.caddyfile_backup)
@@ -137,8 +137,8 @@ class BlueGreenRelease(Release):
    self.event('traffic-switched')
    health=json.loads(self.request('/health',public=True)[2])
    if health.get('build_version')!='release-'+self.args.release_id:raise RuntimeError('public version mismatch')
-   self.request('/api/admin/credential-ops',True,public=True)
-   if b'<html' not in self.request('/admin/smart-ops/credentials',public=True)[2].lower():raise RuntimeError('admin shell missing')
+   self.request('/api/admin/settings',True,public=True)
+   if b'<html' not in self.request('/admin/accounts',public=True)[2].lower():raise RuntimeError('admin shell missing')
    for name,expected in self.protected_before.items():
     actual=self.inspect(name)
     if actual['Id']!=expected['id'] or actual['State']['StartedAt']!=expected['started_at']:raise RuntimeError('unrelated container changed: '+name)

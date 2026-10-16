@@ -1,5 +1,4 @@
 import { CodexRouteBadges, CodexRouteManager } from "../components/CodexRoutes";
-import TwoFAImport from "../components/TwoFAImport";
 import { useIntelligenceBars } from "../hooks/useIntelligenceBars";
 import AccountIntelligenceBar, { AccountIntelligenceActions } from "../components/AccountIntelligenceBar";
 import type { IntelligenceBar } from "../lib/intelligenceCheck";
@@ -7,7 +6,7 @@ import type { ChangeEvent, DragEvent, ReactNode } from "react";
 import { memo, useCallback, useEffect, useRef, useState, useMemo } from "react";
 import "./accounts-cards.css";
 import { useLocation, useNavigate } from "react-router-dom";
-import { api, getAdminKey, getSmartOpsConcurrencyProgress, resetAdminAuthState } from "../api";
+import { api, getAdminKey, resetAdminAuthState } from "../api";
 import type { ProxyRow } from "../api";
 import { ProxyField } from "../components/ProxyField";
 import AccountProxyBadge from "../components/AccountProxyBadge";
@@ -93,8 +92,6 @@ import type {
   ChannelMonitorBillingSnapshot,
   SubscriptionFilter,
 } from "../types";
-import type { ConcurrencyProgress } from "../lib/smartOps";
-import { chunkConcurrencyProgressIDs, formatConcurrencyProgress, projectConcurrencyProgress } from "../lib/concurrencyProgress";
 import { SUBSCRIPTION_FILTER_OPTIONS } from "../types";
 import { getErrorMessage } from "../utils/error";
 import { formatRelativeTime, formatBeijingTime } from "../utils/time";
@@ -387,29 +384,6 @@ function AccountConcurrencyBadge({ account }: { account: AccountRow }) {
       ) : (
         formatAccountConcurrencyText(display)
       )}
-    </span>
-  );
-}
-
-function AccountConcurrencyProgressBadge({
-  progress,
-  t,
-}: {
-  progress: ConcurrencyProgress | null | undefined;
-  t: ReturnType<typeof useTranslation>["t"];
-}) {
-  const remaining = useCountdownRemaining(progress?.paused_until);
-  if (!progress) return null;
-  const display = formatConcurrencyProgress(progress);
-  const title = remaining
-    ? t("smartOps.progressCooldown", { remaining })
-    : display.capped
-      ? t("smartOps.progressMaximum")
-      : t("smartOps.progressNext", { concurrency: display.next });
-  return (
-    <span className="inline-flex items-center gap-1.5 text-[11px] tabular-nums text-muted-foreground" title={title}>
-      <progress className="h-1.5 w-14 accent-emerald-600" value={display.successes} max={display.required} />
-      <span>{t("smartOps.progressStep", display)}</span>
     </span>
   );
 }
@@ -1225,7 +1199,6 @@ function useCountdownRemaining(until?: string): string {
 // 整树重渲染;行数据没变时这里直接跳过,交互卡顿的大头就在这。
 const AccountTableRow = memo(function AccountTableRow({
   account,
-  concurrencyProgress,
   channelMonitorBilling,
   sequence,
   selected,
@@ -1244,7 +1217,6 @@ const AccountTableRow = memo(function AccountTableRow({
   actions,
 }: {
   account: AccountRow;
-  concurrencyProgress?: ConcurrencyProgress | null;
   channelMonitorBilling?: ChannelMonitorBillingSnapshot;
   sequence: number;
   selected: boolean;
@@ -1618,7 +1590,6 @@ const AccountTableRow = memo(function AccountTableRow({
                                         <AccountStatusCountdown account={account} />
                                       )}
                                       <AccountConcurrencyBadge account={account} />
-                                      <AccountConcurrencyProgressBadge progress={concurrencyProgress} t={t} />
                                     </div>
                                     <AccountHealthBar
                                       buckets={healthBuckets}
@@ -1776,7 +1747,6 @@ const AccountTableRow = memo(function AccountTableRow({
 // 行数据不变则整卡跳过。
 const AccountCardItem = memo(function AccountCardItem({
   account,
-  concurrencyProgress,
   channelMonitorBilling,
   sequence,
   selected,
@@ -1796,7 +1766,6 @@ const AccountCardItem = memo(function AccountCardItem({
   actions,
 }: {
   account: AccountRow;
-  concurrencyProgress?: ConcurrencyProgress | null;
   channelMonitorBilling?: ChannelMonitorBillingSnapshot;
   sequence: number;
   selected: boolean;
@@ -1818,7 +1787,6 @@ const AccountCardItem = memo(function AccountCardItem({
   return (
     <AccountMobileCard
       account={account}
-      concurrencyProgress={concurrencyProgress}
       channelMonitorBilling={channelMonitorBilling}
       sequence={sequence}
       selected={selected}
@@ -2199,7 +2167,7 @@ export default function Accounts() {
     ids: [],
   });
   const [addMethod, setAddMethod] = useState<
-    "rt" | "st" | "at" | "session" | "openai" | "oauth" | "agentIdentity" | "twofa"
+    "rt" | "st" | "at" | "session" | "openai" | "oauth" | "agentIdentity"
   >("oauth");
   const [agentIdentityJson, setAgentIdentityJson] = useState("");
   const [agentIdentityProxyUrl, setAgentIdentityProxyUrl] = useState("");
@@ -2900,7 +2868,6 @@ export default function Accounts() {
   const [pagedHealthBars, setPagedHealthBars] = useState<
     Record<string, AccountHealthBucket[]>
   >({});
-  const [concurrencyProgressReloadToken, setConcurrencyProgressReloadToken] = useState(0);
 
   const loadAccounts = useCallback(async (_options?: LoadOptions) => {
     accountPageAbortRef.current?.abort();
@@ -2934,9 +2901,6 @@ export default function Accounts() {
     if (!controller.signal.aborted && accountsResponse.state_summary) {
       setStateSummary(accountsResponse.state_summary);
       stateRevision.current = accountsResponse.state_summary.revision;
-    }
-    if (!controller.signal.aborted) {
-      setConcurrencyProgressReloadToken((token) => token + 1);
     }
     return {
       accounts: accountsResponse.accounts ?? [],
@@ -3235,40 +3199,10 @@ export default function Accounts() {
     () => allAccounts.filter((account) => !account.grok_api),
     [allAccounts],
   );
-  const [concurrencyProgress, setConcurrencyProgress] = useState<{
-    enabled: boolean;
-    paused: boolean;
-    reason: string;
-    progress: Record<string, ConcurrencyProgress>;
-  }>({ enabled: false, paused: false, reason: "", progress: {} });
   const accountPageIDsKey = useMemo(
     () => accounts.map((account) => account.id).join(","),
     [accounts],
   );
-  useEffect(() => {
-    if (providerView !== "codex" || !accountPageIDsKey) {
-      setConcurrencyProgress({ enabled: false, paused: false, reason: "", progress: {} });
-      return undefined;
-    }
-    const controller = new AbortController();
-    const ids = accountPageIDsKey.split(",").map(Number);
-    void Promise.all(chunkConcurrencyProgressIDs(ids).map((chunk) =>
-      getSmartOpsConcurrencyProgress(chunk, controller.signal),
-    )).then((responses) => {
-      if (controller.signal.aborted) return;
-      const pausedResponse = responses.find((response) => response.paused);
-      const progress = Object.assign({}, ...responses.map((response) => response.progress));
-      setConcurrencyProgress({
-        enabled: responses.some((response) => response.enabled),
-        paused: Boolean(pausedResponse),
-        reason: pausedResponse?.reason ?? "",
-        progress: pausedResponse ? {} : progress,
-      });
-    }).catch(() => {
-      if (!controller.signal.aborted) setConcurrencyProgress({ enabled: false, paused: false, reason: "", progress: {} });
-    });
-    return () => controller.abort();
-  }, [accountPageIDsKey, concurrencyProgressReloadToken, providerView]);
   const healthBars = pagedHealthBars;
   // 自动刷新按节流 bump,账号 ID 不变时也能刷新健康条。
   const [healthBarsReloadToken, setHealthBarsReloadToken] = useState(0);
@@ -7797,12 +7731,6 @@ export default function Accounts() {
             />
           ) : null}
 
-          {concurrencyProgress.enabled && concurrencyProgress.paused ? (
-            <p className="text-sm text-amber-700 dark:text-amber-400" role="status">
-              {t("smartOps.progressPaused", { reason: concurrencyProgress.reason })}
-            </p>
-          ) : null}
-
           <Card className={shouldRenderMobileCards ? "codex-account-list" : undefined}>
             <CardContent className={shouldRenderMobileCards ? "p-0" : "p-3 sm:p-4"}>
               <StateShell
@@ -7828,7 +7756,6 @@ export default function Accounts() {
                       <AccountCardItem
                         key={account.id}
                         account={account}
-                        concurrencyProgress={projectConcurrencyProgress(concurrencyProgress.enabled, concurrencyProgress.paused, concurrencyProgress.progress[String(account.id)])}
                         channelMonitorBilling={channelMonitorBillingByAccount[account.id]}
                         sequence={(currentPage - 1) * pageSize + index + 1}
                         selected={selected.has(account.id)}
@@ -8114,7 +8041,6 @@ export default function Accounts() {
                         <AccountTableRow
                           key={account.id}
                           account={account}
-                          concurrencyProgress={projectConcurrencyProgress(concurrencyProgress.enabled, concurrencyProgress.paused, concurrencyProgress.progress[String(account.id)])}
                           channelMonitorBilling={channelMonitorBillingByAccount[account.id]}
                           sequence={(currentPage - 1) * pageSize + index + 1}
                           selected={selected.has(account.id)}
@@ -8272,7 +8198,7 @@ export default function Accounts() {
                       ? t("accounts.adding")
                       : t("accounts.agentIdentityImportBtn")}
                   </Button>
-                ) : addMethod === "twofa" ? null : oauthStep === "generate" ? (
+                ) : oauthStep === "generate" ? (
                   <Button
                     onClick={() => void handleOAuthGenerate()}
                     disabled={oauthGenerating}
@@ -8296,9 +8222,6 @@ export default function Accounts() {
           >
             {/* Tab switcher */}
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-1 p-1 mb-5 rounded-xl bg-muted/50 border border-border">
-              <Button type="button" variant="ghost" onClick={() => setAddMethod("twofa")} className={cn("min-w-0 gap-1.5",addMethod === "twofa" && "bg-background shadow-sm")}>
-                <KeyRound className="size-3.5" />{t("accounts.addMethodTwoFA")}
-              </Button>
               <button
                 onClick={() => {
                   setAddMethod("oauth");
@@ -8383,9 +8306,7 @@ export default function Accounts() {
               </button>
             </div>
 
-            {addMethod === "twofa" ? (
-              <TwoFAImport accountId={0} onSaved={() => void reloadSilently()} />
-            ) : addMethod === "rt" ? (
+            {addMethod === "rt" ? (
               <div className="space-y-4">
                 <div>
                   <label className="block mb-2 text-sm font-semibold text-muted-foreground">
@@ -14259,7 +14180,6 @@ function GroupChipList({
 
 function AccountMobileCard({
   account,
-  concurrencyProgress,
   channelMonitorBilling,
   sequence,
   selected,
@@ -14299,7 +14219,6 @@ function AccountMobileCard({
   onChannelMonitor,
 }: {
   account: AccountRow;
-  concurrencyProgress?: ConcurrencyProgress | null;
   channelMonitorBilling?: ChannelMonitorBillingSnapshot;
   sequence: number;
   selected: boolean;
@@ -14496,7 +14415,6 @@ function AccountMobileCard({
                     <AccountStatusCountdown account={account} />
                   )}
                   {overlayKind && <AccountConcurrencyBadge account={account} />}
-                  <AccountConcurrencyProgressBadge progress={concurrencyProgress} t={t} />
                 </>
               )}
               <DaybreakBadge models={account.daybreak_models} />

@@ -551,7 +551,6 @@ func (h *Handler) Messages(c *gin.Context) {
 		rejectAnthropicMessagesRequest(c, http.StatusBadRequest, "invalid_request_error", "Failed to read request body")
 		return
 	}
-	defer h.beginConcurrencyRequest(c, rawBody)()
 	h.capturePromptRequestIngress(c, rawBody)
 
 	if len(rawBody) == 0 {
@@ -650,7 +649,6 @@ func (h *Handler) Messages(c *gin.Context) {
 			routingBody, _ = sjson.SetBytes(routingBody, "reasoning.effort", variant.level)
 		}
 	}
-	c.Request = c.Request.WithContext(auth.WithPrioritySchedulingModel(c.Request.Context(), effectiveModel))
 	if isMediaOnlyModel(effectiveModel) {
 		sendAnthropicError(c, http.StatusServiceUnavailable, "overloaded_error", fmt.Sprintf("model %s is only supported on %s", effectiveModel, mediaOnlyModelEndpoints(effectiveModel)))
 		return

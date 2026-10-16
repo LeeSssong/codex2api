@@ -38,13 +38,10 @@ import (
 	"github.com/codex2api/internal/openaiidentity"
 	"github.com/codex2api/internal/version"
 	"github.com/codex2api/ipv6state"
-	"github.com/codex2api/plugins"
 	"github.com/codex2api/proxy"
 	"github.com/codex2api/security"
 	"github.com/codex2api/security/promptfilter"
-	"github.com/codex2api/smartops"
 	"github.com/codex2api/statepool"
-	"github.com/codex2api/tokenguard"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 )
@@ -54,9 +51,6 @@ type Handler struct {
 	intelligenceDeviceConfig *proxy.DeviceProfileConfig
 	intelligenceOnce         sync.Once
 	intelligenceWG           sync.WaitGroup
-	tokenGuard               *tokenguard.Service
-	accountOps               *accountOpsRuntime
-	smartOps                 *smartops.Runtime
 	imageQueue               *imageJobQueue
 	ipv6State                *ipv6state.Manager
 	statePool                *statepool.Manager
@@ -69,7 +63,6 @@ type Handler struct {
 	cache                    cache.TokenCache
 	authCacheProxy           *proxy.Handler
 	db                       *database.DB
-	pluginRegistry           *plugins.Registry
 	cacheCfgStore            responseCacheSettingsStore
 	rateLimiter              *proxy.RateLimiter
 	systemUpdate             *systemUpdater
@@ -1048,7 +1041,6 @@ func NewHandler(store *auth.Store, db *database.DB, tc cache.TokenCache, rl *pro
 		proxyRiskJobs:        make(map[string]*proxyRiskScoringJob),
 		cache:                tc,
 		db:                   db,
-		pluginRegistry:       plugins.NewRegistry(database.NewPluginStore(db)),
 		cacheCfgStore:        db,
 		rateLimiter:          rl,
 		cpuSampler:           newCPUSampler(),
@@ -1146,8 +1138,6 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		}
 	})
 	api.GET("/stats", h.GetStats)
-	api.GET("/plugins", h.ListPlugins)
-	api.PUT("/plugins/:id", h.UpdatePlugin)
 	api.GET("/accounts", h.ListAccounts)
 	api.GET("/accounts/analysis", h.GetAccountAnalysis)
 	api.GET("/accounts/page-stats", h.GetAccountPageStats)
@@ -1251,20 +1241,6 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.DELETE("/modeltrace/bank", h.ResetModelTraceBank)
 	api.GET("/accounts/:id/quality-test/options", h.QualityTestOptions)
 	api.POST("/accounts/:id/quality-test", h.CreateQualityTestJob)
-	api.GET("/account-ops/module", h.GetAccountOpsModule)
-	api.PUT("/account-ops/module", h.SaveAccountOpsModule)
-	api.GET("/account-ops/config", h.GetAccountOpsConfig)
-	api.PUT("/account-ops/config", h.SaveAccountOpsConfig)
-	api.GET("/account-ops/alerts", h.ListAccountOpsAlerts)
-	api.GET("/quality-ops/plans", h.ListAccountQualityPlans)
-	api.POST("/quality-ops/plans", h.SaveAccountQualityPlan)
-	api.DELETE("/quality-ops/plans/:id", h.DeleteAccountQualityPlan)
-	api.POST("/quality-ops/plans/:id/trigger", h.TriggerAccountQualityPlan)
-	api.GET("/quality-ops/history", h.ListAccountQualityHistory)
-	api.GET("/quality-ops/history/:id", h.GetAccountQualityRound)
-	h.RegisterTokenGuardRoutes(api)
-	h.RegisterCredentialOpsRoutes(api)
-	h.RegisterSmartOps(api)
 	h.registerIntelligenceCheckRoutes(api)
 	api.GET("/quality-tests", h.ListQualityTests)
 	api.GET("/ipv6-egress", h.GetIPv6Egress)

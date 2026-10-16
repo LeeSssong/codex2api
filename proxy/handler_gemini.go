@@ -185,7 +185,6 @@ func (h *Handler) handleGeminiCountTokens(c *gin.Context, model string, rawBody 
 
 	accountFilter := antigravityOAuthChannelAccountFilter(model)
 	accountFilter = h.withModelCooldownFilter(c.Request.Context(), model, accountFilter)
-	c.Request=c.Request.WithContext(auth.WithPrioritySchedulingModel(c.Request.Context(),model))
 	accountFilter = h.applyUpstreamChannelFilter(c, model, accountFilter)
 	accountFilter = h.applyScopeBudgetFilter(c, accountFilter)
 	defer h.ReleaseAPIKeyScopeConcurrency(c)
@@ -414,7 +413,6 @@ func writeGeminiNativeError(c *gin.Context, status int, message string) {
 }
 
 func (h *Handler) handleGeminiGenerateContent(c *gin.Context, model string, rawBody []byte, stream bool) {
-	defer h.beginConcurrencyRequest(c, rawBody)()
 	if h.enforceAPIKeyLimitsAndReply(c, model) {
 		return
 	}
@@ -428,7 +426,6 @@ func (h *Handler) handleGeminiGenerateContent(c *gin.Context, model string, rawB
 
 	accountFilter := antigravityOAuthChannelAccountFilter(model)
 	accountFilter = h.withModelCooldownFilter(c.Request.Context(), model, accountFilter)
-	c.Request=c.Request.WithContext(auth.WithPrioritySchedulingModel(c.Request.Context(),model))
 	accountFilter = h.applyUpstreamChannelFilter(c, model, accountFilter)
 	accountFilter = h.applyScopeBudgetFilter(c, accountFilter)
 	defer h.ReleaseAPIKeyScopeConcurrency(c)

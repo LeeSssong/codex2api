@@ -25,7 +25,6 @@ import (
 	"github.com/codex2api/egressipv6"
 	"github.com/codex2api/internal/openaiidentity"
 	"github.com/codex2api/security/promptfilter"
-	"github.com/codex2api/smartops"
 )
 
 // AccountStatus 账号状态
@@ -158,9 +157,6 @@ func NormalizeTestContent(content string) string {
 
 // Account 运行时账号状态
 type Account struct {
-	smartOpsLoadFactor        int
-	smartOpsBPS               smartops.BPSDefaults
-	smartOpsBPSSet            bool
 	daybreak                  database.DaybreakSnapshot
 	modelQuality              *modelQualityGate
 	codexRoutes               codexAccountRoutes
@@ -3529,7 +3525,6 @@ func (a *Account) GetLastUsedAt() time.Time {
 
 // Store 多账号管理器（数据库 + Token 缓存）
 type Store struct {
-	smartOps                           atomic.Pointer[smartOpsAdapter]
 	modelQuality                       modelQualityGate
 	proxyAuditLabels                   map[string]ProxyAuditLabel
 	mu                                 sync.RWMutex
@@ -4416,7 +4411,6 @@ func (s *Store) configureFastScheduler(scheduler *FastScheduler) {
 	}
 	scheduler.mu.Lock()
 	scheduler.metrics = s.schedulerMetrics
-	scheduler.rankCandidates = s.rankSmartOpsFastCandidates
 	scheduler.mu.Unlock()
 	scheduler.SetGroupCheck(s.APIKeyAllowsAccount)
 	scheduler.SetAcquireFunc(func(acc *Account, concurrencyLimit int64) bool {
@@ -5922,11 +5916,6 @@ func (s *Store) buildAccountFromRow(ctx context.Context, row *database.AccountRo
 	if priority, ok := row.GetCredentialInt64("scheduler_priority"); ok {
 		account.SetSchedulerPriority(priority)
 	}
-	if factor, ok := row.GetCredentialInt64("smart_ops_load_factor"); ok {
-		account.smartOpsLoadFactor = int(factor)
-	}
-	account.smartOpsBPSSet = row.GetCredential("smart_ops_bps_defaults") != ""
-	_ = json.Unmarshal([]byte(row.GetCredential("smart_ops_bps_defaults")), &account.smartOpsBPS)
 	account.recomputeEffectiveAutoPause(s)
 	for _, cooldown := range modelCooldowns[row.ID] {
 		account.RestoreModelCooldown(cooldown.Model, cooldown.Reason, cooldown.ResetAt, cooldown.UpdatedAt)
@@ -6681,9 +6670,6 @@ func (s *Store) tryIndexedMissFallback() bool {
 func (s *Store) NextExcludingWithDispatch(apiKeyID int64, exclude map[int64]bool, filter AccountFilter, policy DispatchPolicy, modelScope ...string) *Account {
 	started := time.Now()
 	filter = s.withUsableEgressFilter(filter)
-	if account, used := s.smartOpsAcquire(apiKeyID, exclude, filter, policy, modelScope...); used {
-		return account
-	}
 	lazyMode := s.GetLazyMode()
 	shadowChecked := false
 	shadowIndexedHit := false
@@ -7307,9 +7293,6 @@ func (s *Store) nextAccountForFreshAffinityWithDispatch(key string, apiKeyID int
 		return s.NextExcludingWithDispatch(apiKeyID, exclude, filter, policy, modelScope...)
 	}
 	filter = s.withUsableEgressFilter(filter)
-	if account, used := s.smartOpsAcquire(apiKeyID, exclude, filter, policy, modelScope...); used {
-		return account
-	}
 	if s.SchedulerEngine() == "indexed" {
 		if scheduler := s.routingFastScheduler(apiKeyID); scheduler != nil {
 			started := time.Now()
@@ -8011,7 +7994,7 @@ func (s *Store) waitForSessionAvailableWithFilter(ctx context.Context, key strin
 		if preserveBinding {
 			acc, proxyURL = s.NextForContinuationWithDispatch(key, apiKeyID, exclude, filter, policy)
 		} else {
-			acc, proxyURL, guard = s.NextForSessionWithDispatchGuard(key, apiKeyID, exclude, filter, policy, PrioritySchedulingModel(ctx))
+			acc, proxyURL, guard = s.NextForSessionWithDispatchGuard(key, apiKeyID, exclude, filter, policy, "")
 		}
 		if acc != nil {
 			if ctx.Err() != nil || !time.Now().Before(expires) {

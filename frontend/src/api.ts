@@ -1,6 +1,5 @@
 import type { IPv6EgressConfig, IPv6EgressData } from './lib/ipv6Egress'
 import type { CodexPathSnapshot } from "./types"
-import type { SmartOpsConfig, OAuthAutoConfig, PriorityConfig, PelicanJob, PelicanRecord, PelicanPlan, ConcurrencyProgressResponse } from './lib/smartOps'
 import type { ModelQualityConfig, ModelQualityData } from './lib/modelQuality'
 import { readCodexProbeEvents, type CodexProbeBatch, type CodexProbeEvent, type CodexProbeLevel, type CodexProbeResult } from './lib/codexProbe.ts'
 import { intelligenceQuery, type IntelligenceSettings, type IntelligenceAccount, type IntelligenceRun, type IntelligenceBar, type IntelligencePage } from './lib/intelligenceCheck.ts'
@@ -170,18 +169,6 @@ import type {
 
 const BASE = '/api/admin'
 
-export const getSmartOpsConfig = () => request<SmartOpsConfig>('/smart-ops');
-export const getSmartOpsConcurrencyProgress = (ids: number[], signal?: AbortSignal) => request<ConcurrencyProgressResponse>(`/smart-ops/concurrency-progress?ids=${ids.join(',')}`, { signal });
-export const putOAuthAutoConfig = (config: OAuthAutoConfig) => request('/smart-ops/oauth-auto-config', { method: 'PUT', body: JSON.stringify(config) });
-export const putPriorityScheduling = (config: PriorityConfig) => request('/smart-ops/priority-scheduling', { method: 'PUT', body: JSON.stringify(config) });
-export const listPelicanTests = () => request<{ jobs: PelicanRecord[] }>('/smart-ops/pelican-tests');
-export const getPelicanTest = (id: number) => request<PelicanRecord>(`/smart-ops/pelican-tests/${id}`);
-export const createPelicanTest = (job: PelicanJob) => request<PelicanRecord>('/smart-ops/pelican-tests', { method: 'POST', body: JSON.stringify(job) });
-export const cancelPelicanTest = (id: number) => request(`/smart-ops/pelican-tests/${id}/cancel`, { method: 'POST' });
-export const listPelicanPlans = () => request<{ plans: PelicanPlan[] }>('/smart-ops/pelican-plans');
-export const savePelicanPlan = (plan: PelicanPlan) => request<PelicanPlan>('/smart-ops/pelican-plans', { method: plan.id ? 'PUT' : 'POST', body: JSON.stringify(plan) });
-export const deletePelicanPlan = (id: number) => request(`/smart-ops/pelican-plans/${id}`, { method: 'DELETE' });
-export const runPelicanPlan = (id: number) => request<PelicanRecord>(`/smart-ops/pelican-plans/${id}/run`, { method: 'POST' });
 export const ADMIN_AUTH_REQUIRED_EVENT = 'codex2api:admin-auth-required'
 const ADMIN_AUTH_RESET_KEY = 'admin_auth_reset_at'
 
@@ -585,18 +572,7 @@ export interface ModelTraceBankUpdateResult extends ModelTraceBankStatus {
   removed_models?: string[]
 }
 
-export interface PluginManifest {
-  id: string
-  version: string
-  source_sha: string
-  sdk_compatibility: string
-  update_mode: string
-  enabled: boolean
-}
-
 export const api = {
-  getPlugins: () => request<{ plugins: PluginManifest[] }>('/plugins'),
-  updatePlugin: (id: string, enabled: boolean) => request<PluginManifest>(`/plugins/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify({ enabled }) }),
   getIPv6State: (signal?: AbortSignal) => request<IPv6StateStatus>('/state-pool/ipv6', { signal }),
   configureIPv6State: (body: IPv6StateConfig) => request<IPv6StateStatus>('/state-pool/ipv6', { method: 'PUT', body: JSON.stringify(body) }).then(notifyStateChange),
   configureStatePolicy: (require_valid_state: boolean) => request<IPv6StateStatus>('/state-pool/ipv6/policy', { method: 'PATCH', body: JSON.stringify({ require_valid_state }) }).then(notifyStateChange),
@@ -1593,24 +1569,6 @@ export const api = {
   dismissPromptIntelligenceCandidate: (id: number) =>
     request<import('./types').PromptIntelligenceCandidate>(`/prompt-filter/intelligence/candidates/${id}/dismiss`, { method: 'POST' }),
   getModels: () => request<ModelsResponse>('/models'),
-  getAccountOpsModule: () => request<{enabled:boolean}>('/account-ops/module'),
-  saveAccountOpsModule: (enabled:boolean) => request<{enabled:boolean}>('/account-ops/module',{method:'PUT',body:JSON.stringify({enabled})}),
-  getAccountOpsSettings: () => request<import('./lib/accountOps').AccountOpsSettings>('/account-ops/config'),
-  saveAccountOpsSettings: (body:Pick<import('./lib/accountOps').AccountOpsSettings,'config'|'smtp'>) => request<import('./lib/accountOps').AccountOpsSettings>('/account-ops/config',{method:'PUT',body:JSON.stringify(body)}),
-  getAccountOpsAlerts: (offset=0) => request<{items:import('./lib/accountOps').AccountOpsEvent[]}>(`/account-ops/alerts?offset=${offset}`),
-  getAccountQualityPlans: () => request<{items:import('./lib/accountOps').AccountQualityPlan[]}>('/quality-ops/plans'),
-  saveAccountQualityPlan: (body:import('./lib/accountOps').AccountQualityPlan) => request<import('./lib/accountOps').AccountQualityPlan>('/quality-ops/plans',{method:'POST',body:JSON.stringify(body)}),
-  deleteAccountQualityPlan: (id:number) => request(`/quality-ops/plans/${id}`,{method:'DELETE'}),
-  triggerAccountQualityPlan: (id:number) => request(`/quality-ops/plans/${id}/trigger`,{method:'POST'}),
-  getAccountQualityHistory: (before=0) => request<{items:import('./lib/accountOps').AccountQualityRound[];next_cursor:number}>(`/quality-ops/history?before=${before}`),
-  getAccountQualityRound: (id:number) => request<import('./lib/accountOps').AccountQualityRound>(`/quality-ops/history/${id}`),
-  getTokenGuardStatus: () => request<import('./lib/tokenGuard').TokenGuardStatus>('/account-ops/token-guard/status'),
-  getTokenGuardConfig: () => request<import('./lib/tokenGuard').TokenGuardConfig>('/account-ops/token-guard/config'),
-  saveTokenGuardConfig: (body: import('./lib/tokenGuard').TokenGuardConfig) => request<import('./lib/tokenGuard').TokenGuardConfig>('/account-ops/token-guard/config', {method:'PUT',body:JSON.stringify(body)}),
-  runTokenGuard: () => request<import('./lib/tokenGuard').TokenGuardJob>('/account-ops/token-guard/run', {method:'POST'}),
-  reloginTokenGuardAccount: (id: number) => request<import('./lib/tokenGuard').TokenGuardJob>('/account-ops/token-guard/accounts/'+id+'/relogin', {method:'POST'}),
-  cancelTokenGuardJob: (id: string) => request<{cancelled:boolean}>('/account-ops/token-guard/jobs/'+encodeURIComponent(id)+'/cancel', {method:'POST'}),
-  getTokenGuardEvents: (before = 0) => request<{items: import('./lib/tokenGuard').TokenGuardEvent[];next_cursor:number}>('/account-ops/token-guard/events?before_id='+before+'&limit=100'),
   getIntelligenceSettings: (signal?: AbortSignal) => request<IntelligenceSettings>('/intelligence-check/settings', { signal }),
   saveIntelligenceSettings: (body: IntelligenceSettings) => request<IntelligenceSettings>('/intelligence-check/settings', { method: 'PUT', body: JSON.stringify(body) }),
   getIntelligenceAccounts: (page = 1, filters: Record<string, string | number | undefined> = {}, signal?: AbortSignal) => request<IntelligencePage<IntelligenceAccount>>(`/intelligence-check/accounts?${intelligenceQuery(page, filters)}`, { signal }),
