@@ -54,6 +54,11 @@ while queue:
             shutil.copy2(dependency.resolve(), target)
             queue.append(dependency)
 loader = next(lib.glob("ld-linux*.so.*"))
+# Keep the compatibility object even where glibc's loader tracing omits it.
+# Node's pinned binary still names libdl.so.2 on both supported architectures.
+triplet = {"x86_64": "x86_64-linux-gnu", "aarch64": "aarch64-linux-gnu"}[platform.machine()]
+libdl = Path("/lib") / triplet / "libdl.so.2"
+shutil.copy2(libdl.resolve(strict=True), lib / libdl.name)
 for name, binary in (("python", "python-root/bin/python3"), ("node", "node.bin")):
     # The bundled loader scopes library lookup to this executable. Exporting it
     # would also load the bundled libc into a host shell launched by Python.
