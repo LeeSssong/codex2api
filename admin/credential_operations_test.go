@@ -198,3 +198,64 @@ func TestCredentialOperationsConcurrentFirstImportRetryPostsReuseOneJob(t *testi
 		t.Fatalf("durable task count=%d, want two: %v", len(tasks), e)
 	}
 }
+
+func TestCredentialOperationsDirectSelectorRoundtripClearsStaticID(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db, e := database.New("sqlite", filepath.Join(t.TempDir(), "selector-roundtrip.db"))
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	t.Setenv("CODEX2API_CREDENTIAL_OPS_KEY", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")
+	id, e := db.InsertAccountWithCredentials(ctx, "selector", map[string]any{"email": "selector@example.test", "access_token": "native"}, "")
+	if e != nil {
+		t.Fatal(e)
+	}
+	enc, _ := credentialops.EnvCrypto()
+	password, e := enc("synthetic-password")
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e = db.UpsertCredentialOpsLoginConfig(ctx, database.CredentialOpsLoginConfigRow{AccountID: id, LoginEmail: "selector@example.test", CredentialMode: "password_totp", Engine: "local_worker", ProxySource: "proxy", ProxyID: 9, PasswordCiphertext: password}); e != nil {
+		t.Fatal(e)
+	}
+	h := &Handler{db: db}
+	r := gin.New()
+	h.RegisterCredentialOpsRoutes(r.Group("/api/admin"))
+	path := fmt.Sprintf("/api/admin/accounts/%d/credential-ops/config", id)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", path, strings.NewReader("{\"proxy_source\":\"direct\",\"proxy_id\":null,\"revision\":1}")))
+	if w.Code != 200 {
+		t.Fatalf("save %d %s", w.Code, w.Body.String())
+	}
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", path, nil))
+	if w.Code != 200 {
+		t.Fatal(w.Code)
+	}
+	var view map[string]any
+	if e = json.Unmarshal(w.Body.Bytes(), &view); e != nil {
+		t.Fatal(e)
+	}
+	if view["proxy_source"] != "direct" || view["proxy_id"] != float64(0) {
+		t.Fatalf("saved view retained stale selector: %v", view)
+	}
+	body, _ := json.Marshal(view)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", fmt.Sprintf("/api/admin/accounts/%d/credential-ops/login", id), bytes.NewReader(body)))
+	if w.Code != 202 {
+		t.Fatalf("reopened login %d %s", w.Code, w.Body.String())
+	}
+	var task database.CredentialOpsTaskRow
+	if e = json.Unmarshal(w.Body.Bytes(), &task); e != nil {
+		t.Fatal(e)
+	}
+	cfg, e := db.CredentialOpsTaskConfig(ctx, task.ID)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if cfg.ProxySource != "direct" || cfg.ProxyID != 0 {
+		t.Fatalf("reopened login changed route: %#v", cfg)
+	}
+}

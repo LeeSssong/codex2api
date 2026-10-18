@@ -377,7 +377,7 @@ export default function CredentialOps() {
                           : t("credentialOps.localWorker")}
                       </p>
                       <p>
-                        {row.effective_proxy || t("credentialOps.accountProxy")}
+                        {row.effective_egress || t("credentialOps.accountProxy")}
                       </p>
                       <p>
                         {t("credentialOps.nextProbe")}:{" "}
@@ -565,7 +565,7 @@ export default function CredentialOps() {
                               `#${row.account_id}`}
                           </p>
                           <p className="mt-1 text-xs text-muted-foreground">
-                            {row.effective_proxy ||
+                            {row.effective_egress ||
                               t("credentialOps.accountProxy")}
                           </p>
                         </td>

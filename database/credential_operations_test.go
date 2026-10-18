@@ -759,3 +759,46 @@ func TestCredentialOperationsRetryRejectsStaleResolvedConfig(t *testing.T) {
 		t.Fatalf("stale retry inserted a job: %d %v", len(tasks), e)
 	}
 }
+
+func TestCredentialOperationsTOTPSnapshotRejectsConcurrentRouteEdit(t *testing.T) {
+	db, e := New("sqlite", filepath.Join(t.TempDir(), "totp-route-revision.db"))
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	t.Setenv("CODEX2API_CREDENTIAL_OPS_KEY", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")
+	id, e := db.InsertAccountWithCredentials(ctx, "totp route", map[string]any{"email": "totp-route@example.test", "access_token": "native"}, "http://account-b:9001")
+	if e != nil {
+		t.Fatal(e)
+	}
+	cfg := CredentialOpsLoginConfigRow{AccountID: id, LoginEmail: "totp-route@example.test", CredentialMode: "password_totp", Engine: "local_worker", ProxySource: "global", PasswordCiphertext: "sealed", TOTPCiphertext: "sealed"}
+	if e = db.UpsertCredentialOpsLoginConfig(ctx, cfg); e != nil {
+		t.Fatal(e)
+	}
+	before, _ := db.GetCredentialOpsLoginConfig(ctx, id)
+	// The handler resolved A using this revision; an edit commits before task creation.
+	edited := *before
+	edited.ProxySource = "account"
+	if e = db.UpsertCredentialOpsLoginConfig(ctx, edited); e != nil {
+		t.Fatal(e)
+	}
+	if _, e = db.CreateCredentialOpsTOTPTask(ctx, id, "rotate", CredentialOpsRetryRoute{ProxyURL: "http://global-a:9000", ConfigRevision: before.Revision}); !errors.Is(e, ErrCredentialOpsStale) {
+		t.Fatalf("rotation accepted older route snapshot: %v", e)
+	}
+	tasks, e := db.ListCredentialOpsTasks(ctx)
+	if e != nil || len(tasks) != 0 {
+		t.Fatalf("stale route queued mutation: %#v %v", tasks, e)
+	}
+	current, _ := db.GetCredentialOpsLoginConfig(ctx, id)
+	task, e := db.CreateCredentialOpsTOTPTask(ctx, id, "rotate", CredentialOpsRetryRoute{ProxyURL: "http://account-b:9001", ConfigRevision: current.Revision})
+	if e != nil {
+		t.Fatal(e)
+	}
+	input, _ := db.CredentialOpsTaskConfig(ctx, task.ID)
+	_, dec := credentialops.EnvCrypto()
+	route, e := dec(input.ProxyURLCiphertext)
+	if e != nil || route != "http://account-b:9001" {
+		t.Fatalf("current route was not preserved: %q %v", route, e)
+	}
+}

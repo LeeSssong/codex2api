@@ -37,6 +37,9 @@ func PrepareConfig(in LoginConfigInput, old LoginConfig) (LoginConfig, error) {
 	if out.ProxySource == "" {
 		out.ProxySource = "account"
 	}
+	if out.ProxySource != "proxy" {
+		out.ProxyID = 0
+	}
 	address, err := mail.ParseAddress(out.Email)
 	if err != nil || address.Address != out.Email {
 		return out, errors.New("valid login email is required")

@@ -62,7 +62,7 @@ export default function CredentialConfigEditor({
         setMode(value.mode);
         setEngine(value.engine || "inherit");
         setProxy(
-          value.proxy_id
+          value.proxy_source === "proxy" && value.proxy_id
             ? String(value.proxy_id)
             : value.proxy_source || "account",
         );

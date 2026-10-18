@@ -3,6 +3,7 @@ package admin
 import (
 	"fmt"
 	"github.com/codex2api/credentialops"
+	"github.com/codex2api/database"
 	"github.com/gin-gonic/gin"
 	"net/url"
 	"strconv"
@@ -47,7 +48,7 @@ func (h *Handler) queueCredentialOpsTOTP(c *gin.Context, action string) {
 		c.JSON(409, gin.H{"error": "configured egress unavailable"})
 		return
 	}
-	task, e := h.db.CreateCredentialOpsTOTPTask(c.Request.Context(), id, action, resolved)
+	task, e := h.db.CreateCredentialOpsTOTPTask(c.Request.Context(), id, action, database.CredentialOpsRetryRoute{ProxyURL: resolved, ConfigRevision: cfg.Revision})
 	if e != nil {
 		c.JSON(409, gin.H{"error": e.Error()})
 		return

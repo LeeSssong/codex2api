@@ -25,8 +25,9 @@ before(async () => {
    import CredentialConfigEditor from ${JSON.stringify(path.join(root,'src/components/CredentialConfigEditor.tsx'))};
    import {ToastProvider} from ${JSON.stringify(path.join(root,'src/components/ToastProvider.tsx'))};
    import ${JSON.stringify(path.join(root,'src/i18n.ts'))}; import ${JSON.stringify(path.join(root,'src/index.css'))};
+   function ConfigFixture(){const [open,setOpen]=React.useState(true);return open?React.createElement(React.Fragment,null,React.createElement('button',{onClick:()=>setOpen(false)},'Close config fixture'),React.createElement(CredentialConfigEditor,{accountId:1,email:'demo@example.test',studioConfigured:true,globalEngine:window.__globalEngine})):React.createElement('button',{onClick:()=>setOpen(true)},'Reopen config fixture');}
    function TotpFixture(){const [open,setOpen]=React.useState(true);return open?React.createElement(CredentialTOTPDialog,{accountId:1,name:'Fixture',onClose:()=>setOpen(false)}):null;}
-   createRoot(document.getElementById('root')).render(React.createElement(MemoryRouter,{initialEntries:[window.__initialPath||'/']},React.createElement(ToastProvider,null,React.createElement('main',{style:{padding:'24px',maxWidth:'1440px',margin:'0 auto'}},window.__surface==='import'?React.createElement(TwoFAImport):window.__surface==='totp'?React.createElement(TotpFixture):window.__surface==='config'?React.createElement(CredentialConfigEditor,{accountId:1,email:'demo@example.test',studioConfigured:true,globalEngine:window.__globalEngine}):React.createElement(CredentialOps)))));`;}
+   createRoot(document.getElementById('root')).render(React.createElement(MemoryRouter,{initialEntries:[window.__initialPath||'/']},React.createElement(ToastProvider,null,React.createElement('main',{style:{padding:'24px',maxWidth:'1440px',margin:'0 auto'}},window.__surface==='import'?React.createElement(TwoFAImport):window.__surface==='totp'?React.createElement(TotpFixture):window.__surface==='config'?React.createElement(ConfigFixture):React.createElement(CredentialOps)))));`;}
  }],resolve:{alias:{'@':path.join(root,'src')}},define:{'process.env.NODE_ENV':'"production"'},build:{write:false,minify:false,rollupOptions:{input:'virtual:credential-fixture'},lib:{entry:'virtual:credential-fixture',formats:['iife'],name:'CredentialFixture'}}})
  const bundle=Array.isArray(output)?output[0]:output
  script=bundle.output.find(value=>value.type==='chunk').code
@@ -34,13 +35,13 @@ before(async () => {
  browser=await chromium.launch({headless:true})
 })
 after(async()=>{await browser?.close()})
-async function fixture(t,{surface='operations',mobile=false,dark=false,encryption=true,exportDelay=0,globalEngine='local_worker',savedEngine='local_worker',initialPath='/'}={}){
+async function fixture(t,{surface='operations',mobile=false,dark=false,encryption=true,exportDelay=0,globalEngine='local_worker',savedEngine='local_worker',initialPath='/',savedProxySource='proxy',savedProxyID=9,overviewAccounts}={}){
  const page=await browser.newPage({viewport:mobile?{width:390,height:844}:{width:1440,height:960},colorScheme:dark?'dark':'light'})
  page.setDefaultTimeout(6000); t.after(()=>page.close())
  const errors=[];page.on('pageerror',error=>errors.push(error.message));t.after(()=>assert.deepEqual(errors,[]))
  const calls=[]
  let exported=0
- let config={account_id:1,email:'demo@example.test',mode:'password_totp',engine:savedEngine,proxy_source:'proxy',proxy_id:9,password_configured:true,totp_configured:true,otp_url_configured:false,revision:1}
+ let config={account_id:1,email:'demo@example.test',mode:'password_totp',engine:savedEngine,proxy_source:savedProxySource,proxy_id:savedProxyID,password_configured:true,totp_configured:true,otp_url_configured:false,revision:1}
  await page.route('http://credential.test/**',async route=>{
   const req=route.request(); const url=new URL(req.url());const p=url.pathname.replace('/api/admin','');const body=req.postDataJSON?.()
   if(!url.pathname.startsWith('/api/'))return route.fulfill({contentType:'text/html; charset=utf-8',body:'<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1"></head><body><div id="root"></div></body></html>'})
@@ -58,7 +59,7 @@ async function fixture(t,{surface='operations',mobile=false,dark=false,encryptio
   if(p==='/credential-ops/login/41')return ok({ID:41,AccountID:1,Status:'succeeded',Stage:'succeeded',Attempt:1,CreatedAt:new Date().toISOString()})
   if(p.endsWith('/totp/export')){exported++;if(exportDelay)await new Promise(resolve=>setTimeout(resolve,exportDelay));return ok({email:'demo@example.test',totp_secret:'JBSWY3DPEHPK3PXP'})}
   if(p.endsWith('/totp'))return ok({status:'idle',candidate_available:false,previous_available:false})
-  if(p==='/credential-ops')return ok({enabled:true,accounts:[{account_id:1,name:'演示 Plus 账号',email:'demo@example.test',enabled:true,auto_relogin:true,probe_state:'ok',probe_detail:'',fail_streak:0,last_probe_at:new Date().toISOString(),next_probe_at:new Date().toISOString(),cooldown_until:new Date(Date.now()+1800000).toISOString(),config}],tasks:[{ID:42,AccountID:0,Status:'failed',Stage:'failed',Kind:'login',CreatedAt:new Date().toISOString()}],rules:{interval_seconds:1800,retry_seconds:300,failure_threshold:2,cooldown_seconds:1800},login_configured:{'1':true},session_studio_configured:true,runtime_settings:{engine:globalEngine,worker_concurrency:3},worker:{state:'running',mode:'managed',capabilities:['login_codex_v1','totp_rotation_v1']},encryption:{configured:true,source:'local_file'}})
+  if(p==='/credential-ops')return ok({enabled:true,accounts:overviewAccounts||[{account_id:1,name:'演示 Plus 账号',email:'demo@example.test',enabled:true,auto_relogin:true,probe_state:'ok',probe_detail:'',fail_streak:0,last_probe_at:new Date().toISOString(),next_probe_at:new Date().toISOString(),cooldown_until:new Date(Date.now()+1800000).toISOString(),config}],tasks:[{ID:42,AccountID:0,Status:'failed',Stage:'failed',Kind:'login',CreatedAt:new Date().toISOString()}],rules:{interval_seconds:1800,retry_seconds:300,failure_threshold:2,cooldown_seconds:1800},login_configured:{'1':true},session_studio_configured:true,runtime_settings:{engine:globalEngine,worker_concurrency:3},worker:{state:'running',mode:'managed',capabilities:['login_codex_v1','totp_rotation_v1']},encryption:{configured:true,source:'local_file'}})
   return route.fulfill({status:404,contentType:'application/json',body:'{"error":"Unexpected fixture API"}'})
  })
  await page.goto('http://credential.test/')
@@ -178,4 +179,34 @@ test('operator diagnostics include secret presence, cooldown and Worker capabili
  await accounts.page.getByText(/冷却至/).filter({visible:true}).waitFor()
  const runtime=await fixture(t,{initialPath:'/?view=runtime'})
  await runtime.page.getByText(/Worker 支持能力.*Codex 登录.*2FA 更换与恢复/).waitFor()
+})
+
+test('nonstatic proxy selector survives save reopen and login using server config shape',async t=>{
+ const {page,calls}=await fixture(t,{surface:'config'})
+ await page.getByRole('button',{name:'登录出口',exact:true}).click()
+ await page.getByRole('option',{name:'直连',exact:true}).click()
+ await page.getByRole('button',{name:'保存登录配置',exact:true}).click()
+ await page.getByText('登录配置已保存',{exact:true}).waitFor()
+ await page.getByRole('button',{name:'Close config fixture',exact:true}).click()
+ await page.getByRole('button',{name:'Reopen config fixture',exact:true}).click()
+ await page.getByRole('button',{name:'登录出口',exact:true}).filter({hasText:'直连'}).waitFor()
+ await page.getByRole('button',{name:'保存并重登',exact:true}).click()
+ await page.getByText('重登任务已排队',{exact:true}).waitFor()
+ const login=calls.find(call=>call.path.endsWith('/login')&&call.method==='POST')
+ assert.equal(login.body.proxy_source,'direct');assert.equal(login.body.proxy_id,null)
+})
+test('nonstatic selector ignores legacy stale static ID after reopening',async t=>{
+ const {page,calls}=await fixture(t,{surface:'config',savedProxySource:'direct',savedProxyID:9})
+ await page.getByRole('button',{name:'登录出口',exact:true}).filter({hasText:'直连'}).waitFor()
+ await page.getByRole('button',{name:'保存并重登',exact:true}).click()
+ await page.getByText('重登任务已排队',{exact:true}).waitFor()
+ const login=calls.find(call=>call.path.endsWith('/login')&&call.method==='POST')
+ assert.equal(login.body.proxy_source,'direct');assert.equal(login.body.proxy_id,null)
+})
+test('backend effective_egress diagnostics render on desktop and mobile',async t=>{
+ for(const mobile of [false,true]){
+  const accounts=['direct','proxy #9','mihomo'].map((egress,index)=>({account_id:index+1,name:'egress '+egress,email:'route'+index+'@example.test',enabled:true,auto_relogin:true,probe_state:'ok',probe_detail:'',fail_streak:0,next_probe_at:new Date().toISOString(),effective_engine:'local_worker',effective_egress:egress}))
+  const {page}=await fixture(t,{mobile,overviewAccounts:accounts})
+  for(const egress of ['direct','proxy #9','mihomo'])await page.getByText(egress,{exact:true}).filter({visible:true}).waitFor()
+ }
 })

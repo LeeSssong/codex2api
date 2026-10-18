@@ -23,7 +23,7 @@ func (db *DB) GetCredentialOpsTOTPRecovery(ctx context.Context, id int64) (*Cred
 	}
 	return r, e
 }
-func (db *DB) CreateCredentialOpsTOTPTask(ctx context.Context, id int64, action string, resolvedRoute ...string) (*CredentialOpsTaskRow, error) {
+func (db *DB) CreateCredentialOpsTOTPTask(ctx context.Context, id int64, action string, resolvedRoute ...CredentialOpsRetryRoute) (*CredentialOpsTaskRow, error) {
 	if action != "rotate" && action != "verify_new" && action != "verify_old" {
 		return nil, errors.New("invalid recovery action")
 	}
@@ -34,14 +34,22 @@ func (db *DB) CreateCredentialOpsTOTPTask(ctx context.Context, id int64, action 
 			return e
 		}
 		defer tx.Rollback()
+		if !db.isSQLite() {
+			if _, e = tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock($1)", id); e != nil {
+				return e
+			}
+		}
 		var cfg CredentialOpsLoginConfigRow
 		cfg.AccountID = id
 		if len(resolvedRoute) > 0 {
-			cfg.ResolvedProxyURL = resolvedRoute[0]
+			cfg.ResolvedProxyURL = resolvedRoute[0].ProxyURL
 			cfg.RouteResolved = true
 		}
 		if e = tx.QueryRowContext(ctx, "SELECT login_email,credential_mode,engine,proxy_source,COALESCE(proxy_id,0),password_ciphertext,totp_ciphertext,otp_url_ciphertext,revision FROM credential_operations_login_configs WHERE account_id=$1", id).Scan(&cfg.LoginEmail, &cfg.CredentialMode, &cfg.Engine, &cfg.ProxySource, &cfg.ProxyID, &cfg.PasswordCiphertext, &cfg.TOTPCiphertext, &cfg.OTPURLCiphertext, &cfg.Revision); e != nil {
 			return e
+		}
+		if len(resolvedRoute) > 0 && resolvedRoute[0].ConfigRevision != cfg.Revision {
+			return ErrCredentialOpsStale
 		}
 		if cfg.CredentialMode != "password_totp" || cfg.PasswordCiphertext == "" || cfg.TOTPCiphertext == "" {
 			return errors.New("saved password and current TOTP are required")
@@ -52,11 +60,6 @@ func (db *DB) CreateCredentialOpsTOTPTask(ctx context.Context, id int64, action 
 		var generation int64
 		if e = tx.QueryRowContext(ctx, "SELECT credential_generation FROM accounts WHERE id=$1 AND platform='openai' AND type='oauth' AND status<>'deleted'", id).Scan(&generation); e != nil {
 			return e
-		}
-		if !db.isSQLite() {
-			if _, e = tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock($1)", id); e != nil {
-				return e
-			}
 		}
 		active, e := credentialOpsActiveTaskTx(ctx, tx, id)
 		if e == nil {

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/codex2api/auth"
+	"github.com/codex2api/credentialops"
 	"github.com/codex2api/database"
 )
 
@@ -53,8 +54,18 @@ func (s *credentialGrantService) queueExcel(ctx context.Context, account *auth.A
 	if err != nil || !database.CredentialOperationsExcelEligible(row) {
 		return
 	}
-	proxyURL, usable := s.store.ResolveUsableProxyForAccount(account)
-	if !usable {
+	proxyURL := ""
+	switch cfg.ProxySource {
+	case "account":
+		var usable bool
+		proxyURL, usable = s.store.ResolveUsableProxyForAccount(account)
+		if !usable {
+			return
+		}
+	case "global":
+		proxyURL = s.store.GetProxyURL()
+	case "direct", "mihomo", "proxy": // Database freezes static/direct selectors; Mihomo is acquired at claim.
+	default:
 		return
 	}
 	cfg.OAuthProfile = "excel"
@@ -167,17 +178,14 @@ func (s *credentialGrantService) refreshExcel(ctx context.Context, account *auth
 			return routeLocalError("basispoints_excel_refresh_pending", "Cannot durably reserve the Excel refresh token")
 		}
 		refreshCtx := auth.WithAccountBoundEgress(critical, proxyURL)
-		token, identity, refreshErr := auth.RefreshAccessTokenForClient(refreshCtx, rt, proxyURL, auth.ExcelClientID, fmt.Sprint(account.ID()))
+		token, _, refreshErr := auth.RefreshAccessTokenForClient(refreshCtx, rt, proxyURL, auth.ExcelClientID, fmt.Sprint(account.ID()))
 		if refreshErr != nil {
 			// Do not consume an old RT again after an uncertain result or write loss.
 			_, _ = s.db.InvalidateCredentialOpsProfileGrantCAS(critical, account.ID(), "excel", grant.Generation)
 			s.queueExcel(critical, account)
 			return routeLocalError("basispoints_excel_auth_pending", "Excel refresh failed; recovery is queued")
 		}
-		if identity != nil && identity.ChatGPTAccountID != "" && identity.ChatGPTAccountID != account.EffectiveAccountID() {
-			_, _ = s.db.InvalidateCredentialOpsProfileGrantCAS(critical, account.ID(), "excel", grant.Generation)
-			return routeLocalError("basispoints_excel_identity_mismatch", "Refreshed Excel authorization belongs to a different workspace")
-		}
+
 		next := make(map[string]any, len(grant.Credentials)+1)
 		for k, v := range grant.Credentials {
 			next[k] = v
@@ -188,6 +196,23 @@ func (s *credentialGrantService) refreshExcel(ctx context.Context, account *auth
 		next["client_id"] = auth.ExcelClientID
 		if token.IDToken != "" {
 			next["id_token"] = token.IDToken
+		}
+		row, readErr := s.db.GetAccountByID(critical, account.ID())
+		validationErr := readErr
+		if validationErr == nil && row == nil {
+			validationErr = errors.New("native account unavailable")
+		}
+		if validationErr == nil {
+			expectedUser := row.GetCredential("user_id")
+			if expectedUser == "" {
+				expectedUser = row.GetCredential("chatgpt_user_id")
+			}
+			validationErr = credentialops.ValidateExcelRefreshCredentials(next, grant.Credentials, row.GetCredential("email"), account.EffectiveAccountID(), expectedUser)
+		}
+		if validationErr != nil {
+			_, _ = s.db.InvalidateCredentialOpsProfileGrantCAS(critical, account.ID(), "excel", grant.Generation)
+			s.queueExcel(critical, account)
+			return routeLocalError("basispoints_excel_identity_mismatch", "Refreshed Excel authorization failed client and account identity validation")
 		}
 		ok, saveErr := s.db.UpdateCredentialOpsProfileGrantCAS(critical, account.ID(), "excel", grant.Generation, next)
 		if saveErr != nil {

@@ -105,3 +105,20 @@ func TestCredentialOperationsCodexCallbackRejectsExcelClient(t *testing.T) {
 		t.Fatal("Excel access token accepted for Codex profile")
 	}
 }
+
+func TestCredentialOperationsSwitchingProxySourceClearsStaticSelection(t *testing.T) {
+	t.Setenv("CODEX2API_CREDENTIAL_OPS_KEY", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")
+	old, e := PrepareConfig(LoginConfigInput{Email: "proxy@example.test", Password: "secret", ProxySource: "proxy", ProxyID: 9}, LoginConfig{})
+	if e != nil {
+		t.Fatal(e)
+	}
+	for _, source := range []string{"direct", "account", "mihomo", "global"} {
+		changed, e := PrepareConfig(LoginConfigInput{ProxySource: source}, old)
+		if e != nil {
+			t.Fatal(e)
+		}
+		if changed.ProxySource != source || changed.ProxyID != 0 {
+			t.Fatalf("source %s retained stale static selector: %#v", source, changed)
+		}
+	}
+}

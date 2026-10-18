@@ -50,7 +50,7 @@ export interface CredentialAccount {
   config?: CredentialConfig | null;
   excel_configured?: boolean;
   effective_engine?: string;
-  effective_proxy?: string;
+  effective_egress?: string;
 }
 export interface CredentialJob {
   ID: number;
