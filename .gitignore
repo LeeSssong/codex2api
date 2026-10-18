@@ -1,0 +1,64 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+codex2api
+
+# Go
+/vendor/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env
+.env
+.env.local
+.env.bak.*
+.deploy/
+USAGE_WINDOW_LOGIC.md
+.claude/settings.local.json
+.pi
+scripts
+# 上面的 scripts 会匹配任意层级的同名目录;前端构建/CI 用的脚本需要入库。
+!frontend/scripts/
+!.github/scripts/
+
+# Logs
+logs/
+AGENTS.md
+CLIProxyAPI/
+CLIProxyAPI-Pro/
+sub2api/
+new-api/
+CPA-Manager-Plus/
+grok2api/
+grokcli2api-go/
+grok-build-main/
+.private-account-fixtures/
+.gstack/
+.superpowers/
+CLAUDE.md
+.cursor
+diagrams/
+# local run artifacts
+/data/
+/codex2api_local
+/server.log
+/.dev/
+__pycache__/
+
+# local e2e test scaffolding (mock upstream + scripts, not for CI)
+/local-test/

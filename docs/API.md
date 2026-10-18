@@ -1,0 +1,2874 @@
+# Codex2API API 文档
+
+本文档详细描述 Codex2API 的所有 API 端点、请求/响应格式以及错误码说明。
+
+## 目录
+
+- [概述](#概述)
+- [认证](#认证)
+- [公共 API](#公共-api)
+  - [Chat Completions](#1-chat-completions)
+  - [Responses](#2-responses)
+  - [Images](#3-images)
+  - [Videos (Grok 生视频)](#4-videos-grok-生视频)
+  - [List Models](#5-list-models)
+  - [Health Check](#6-health-check)
+- [管理 API](#管理-api)
+  - [统计接口](#统计接口)
+  - [账号管理](#账号管理) — 添加 RT / AT 账号、批量导入、导出、迁移
+  - [降智检测](#降智检测) — 固定账号检测、自动处置和逐次历史
+  - [Claude OAuth 与原生 Messages](#claude-oauth-与原生-messages) — 导入、采样、模型与指纹配置
+  - [用量统计](#用量统计)
+  - [API Key 管理](#api-key-管理)
+  - [系统设置](#系统设置)
+  - [代理池管理](#代理池管理)
+  - [运维监控](#运维监控)
+  - [模型管理](#模型管理)
+  - [生图工作台](#生图工作台) — 文生图、图生图任务与图库管理
+  - [OAuth 授权](#oauth-授权) — PKCE 流程获取 Token
+- [支持模型](#支持模型)
+- [错误码](#错误码)
+- [限流说明](#限流说明)
+
+---
+
+## 概述
+
+Codex2API 提供兼容 OpenAI 风格的 API 接口，同时包含完整的管理后台 API。
+
+Anthropic `/v1/messages` 在没有可用 Claude OAuth 账号时，才将官方 `speed:"fast"` 映射为上游 Codex `service_tier:"priority"`；Claude OAuth 账号优先走原生 Anthropic Messages 透传，不经过该转换。Anthropic 请求侧 `service_tier`（Priority Tier）不在此映射范围内。用量日志的 `service_tier` / `fast` 过滤反映该解析结果。
+
+Claude 原生请求的显式会话来源依次为 `X-Claude-Code-Session-Id`、JSON 字符串形式的
+`metadata.user_id.session_id`、已有通用会话头/`prompt_cache_key`。最终会话仍按 API Key
+隔离，并在同一次请求的换号重试中保持不变；缺少显式会话时遵守现有请求隔离配置。
+出站会话头与 Claude 结构化身份中的 `session_id` 使用同一值，`device_id` 和
+`account_uuid` 则跟随实际选中账号；其他 metadata 字段及普通业务字符串 `user_id` 保留。
+system 前导块整理为计费标识、CLI 声明、其余原始块，保留原块属性及其余内容顺序。
+
+用量日志 API 的 Claude `input_tokens` 使用包含缓存读写的总输入口径，供统一统计和计费。
+管理后台明细中的 `↓` 则显示未缓存输入（总输入减去缓存读取及 5 分钟／1 小时缓存写入），
+悬浮说明展示完整拆分；缓存列分别用读取和创建图标显示对应数量。汇总卡仍显示含缓存的总输入。
+
+**Service Tier 语义说明**：请求侧 `fast` / `priority` 会统一以 `priority` 转发上游，其余取值（`auto`/`default`/`flex`/`scale` 等）不转发。用量日志区分三个字段：`requested_service_tier`（客户端请求意图）、`actual_service_tier`（上游回传 Tier，原样取自 `response.completed.response.service_tier`）、`billing_service_tier`（计费采用值，由 Tier 计费策略 `BillingTierPolicy` 决定）。默认 `actual` 以请求 Tier 为上限：上游只可用更便宜档位降低计费，不能把未请求 Fast 的调用抬升为 Fast，也不能用未知档位改变计费；`requested` 始终按请求意图计费。注意：在 ChatGPT OAuth / Codex backend 路径上，Fast 由上游服务端路由处理，`service_tier` 不是端到端可校验字段——上游回传 `default` 并不代表 Fast 未生效（openai/codex#14204 官方说明；#494 的交错 A/B 实测在回传 `default` 时仍有约 1.5× 生成吞吐提升）。因此"上游回传 Tier"仅反映上游申报值，不能单独用于判断加速是否生效。
+
+**Base URL:** `http://localhost:8080` (默认端口)
+
+**请求格式:**
+
+- 请求头: `Content-Type: application/json`
+- 认证头: `Authorization: Bearer <api_key>`
+
+---
+
+## 认证
+
+### API Key 认证
+
+公共 API (`/v1/*`) 需要 API Key 进行认证。
+
+**请求头:**
+
+```http
+Authorization: Bearer sk-xxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+多个最终用户共享同一个 API Key 时，可选传入稳定的本地亲和标识：
+
+```http
+X-Codex2API-Affinity-Key: tenant-user-or-conversation-id
+```
+
+该请求头优先于其他会话亲和信号。Codex2API 会先对原始值做 SHA-256 派生，只保留本地路由标识；原始值不会保存，也不会转发给上游。
+
+**配置方式:**
+
+1. 通过管理后台 `/admin/settings` 页面配置
+2. 普通公共接口仅在没有配置任何 API Key 且显式开启 `CODEX_ALLOW_ANONYMOUS=true` 时允许匿名访问；默认禁止。异步图片任务要求后台创建的 API Key。
+
+### Admin Secret 认证
+
+管理 API (`/api/admin/*`) 需要 Admin Secret 进行认证。
+
+**请求头:**
+
+```http
+X-Admin-Key: your-admin-secret
+```
+
+或
+
+```http
+Authorization: Bearer your-admin-secret
+```
+
+**配置方式:**
+
+- 环境变量: `ADMIN_SECRET`
+- 数据库: 通过管理后台设置
+
+---
+
+## 公共 API
+
+### 1. Chat Completions
+
+**端点:** `POST /v1/chat/completions`
+
+**说明:** OpenAI 风格的 Chat Completions 接口，支持流式和非流式响应。
+
+**请求示例:**
+
+```json
+{
+  "model": "gpt-5.5",
+  "messages": [
+    { "role": "system", "content": "You are a helpful assistant." },
+    { "role": "user", "content": "Hello!" }
+  ],
+  "stream": false,
+  "reasoning_effort": "medium",
+  "service_tier": "fast"
+}
+```
+
+**参数说明:**
+
+| 参数             | 类型    | 必填 | 说明                                        |
+| ---------------- | ------- | ---- | ------------------------------------------- |
+| model            | string  | 是   | 模型名称，见 [支持模型](#支持模型)          |
+| messages         | array   | 是   | 消息列表                                    |
+| stream           | boolean | 否   | 是否启用流式响应，默认 false                |
+| reasoning_effort | string  | 否   | Codex 支持 none/minimal/low/medium/high/xhigh/ultra；max 按最终模型能力保留或归一为 xhigh |
+| service_tier     | string  | 否   | Codex 的 fast 映射为 priority，ultrafast 保留；auto/default 不指定上游档位 |
+| max_tokens       | integer | 否   | 最大输出 token 数（Codex 不支持，会被过滤） |
+| temperature      | float   | 否   | 温度参数（Codex 不支持，会被过滤）          |
+
+**非流式响应示例:**
+
+```json
+{
+  "id": "chatcmpl-xxxxxxxx",
+  "object": "chat.completion",
+  "created": 1712345678,
+  "model": "gpt-5.5",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "Hello! How can I help you today?"
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 25,
+    "completion_tokens": 15,
+    "total_tokens": 40
+  }
+}
+```
+
+**流式响应示例:**
+
+```
+data: {"id":"chatcmpl-xxx","object":"chat.completion.chunk","created":1712345678,"model":"gpt-5.5","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-xxx","object":"chat.completion.chunk","created":1712345678,"model":"gpt-5.5","choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-xxx","object":"chat.completion.chunk","created":1712345678,"model":"gpt-5.5","choices":[{"index":0,"delta":{"content":"!"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-xxx","object":"chat.completion.chunk","created":1712345678,"model":"gpt-5.5","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: [DONE]
+```
+
+**自定义工具：** Chat 请求支持 `tools[].type="custom"` 与嵌套 `custom` 声明，历史和响应使用 `tool_calls[].custom.name/input`。`custom.input` 始终是原始文本，即使其内容恰好是 JSON；普通函数仍使用 `function.arguments`。流式 custom 输入放在 `delta.tool_calls[].custom.input`，调用 ID 与工具结果的 `tool_call_id` 保持配对。非流式响应也会从 `output_item.done` 补回最终响应中缺失的调用。
+
+Messages 的 `tool_use.input` 必须使用对象，因此自由文本工具输入通过 `{"input":"原始文本"}` 包装。调用 ID 携带可逆的类型标记；客户端回传该 ID 和输入对象后，网关恢复原始 custom 调用及对应结果。需要这种桥接的工具应声明仅包含字符串 `input` 属性的 `input_schema`；后续请求依据已标记的调用历史恢复工具类型和命名空间。普通函数输入不会依据字段名被猜测为 custom。`input.done`/`output_item.done` 可补齐遗漏的末尾增量；与已发送输入矛盾或超过输入上限的 custom 调用按上游协议错误结束。
+
+### 2. Responses
+
+**端点:** `POST /v1/responses`
+
+**说明:** Codex Responses 兼容接口。网关会为 Codex 上游做必要的输入规范化；这不是对官方 Responses 全部字段的无条件原样透传。
+
+完整的分阶段边界与后续实现顺序见 [Responses 兼容性说明](RESPONSES_COMPATIBILITY.md)。
+
+默认模式保持现有兼容行为。若客户端需要检查已知有损转换，可发送 `X-Codex2API-Strict-Compatibility: true`，或设置 `CODEX_STRICT_RESPONSES_COMPAT=true`。网关按实际选中的原生 Codex 账号检查字段及 schema，无法保留时，尚未提交的 HTTP 请求返回 `400 unsupported_feature` 和字段列表，已提交的 SSE 返回 `response.failed`，WebSocket 返回 `status:400` 错误帧；Responses 中转不受 Codex 专用限制。`background:false/null` 等空操作可通过，`background:true`、非空 `conversation` 和 `store:true` 会拒绝；reasoning、格式别名、服务档位按实际转换语义校验。工具或输出 schema 约束会被清洗改变时同样拒绝。完整范围与限制见 [Responses 兼容性说明](RESPONSES_COMPATIBILITY.md)。
+
+**请求示例:**
+
+```json
+{
+  "model": "gpt-5.5",
+  "input": [
+    { "role": "system", "content": "You are a helpful assistant." },
+    { "role": "user", "content": "Hello!" }
+  ],
+  "stream": false,
+  "reasoning": {
+    "effort": "medium"
+  },
+  "service_tier": "fast",
+  "include": ["reasoning.encrypted_content"]
+}
+```
+
+**参数说明:**
+
+| 参数                 | 类型         | 必填 | 说明                                                                                               |
+| -------------------- | ------------ | ---- | -------------------------------------------------------------------------------------------------- |
+| model                | string       | 是   | 模型名称                                                                                           |
+| input                | array/string | 是   | 输入内容（支持数组或字符串）                                                                       |
+| stream               | boolean      | 否   | 是否启用流式响应，默认 false。仅当显式传 `stream=true` 时返回 SSE（流式响应），否则返回普通 JSON。 |
+| reasoning.effort     | string       | 否   | Codex 支持 none/minimal/low/medium/high/xhigh/ultra；max 按最终模型能力保留或归一为 xhigh |
+| service_tier         | string       | 否   | fast 映射为 priority，ultrafast 保留；auto/default 不指定上游档位 |
+| include              | array        | 否   | 包含的额外字段                                                                                     |
+| previous_response_id | string       | 否   | 上一响应 ID，用于上下文连续                                                                        |
+
+`previous_response_id` 的上下文先查当前进程的有界 L1。本地与 Redis 共享上下文的默认绝对 TTL 为 45 分钟，覆盖聊天上游连接 30 分钟空闲回收后的恢复窗口，仍受缓存容量和账号兼容性限制。已认证请求按 API Key ID 隔离；未配置任何 API Key、显式启用 `CODEX_ALLOW_ANONYMOUS=true` 后放行的请求共用 `anon` 命名空间。Redis 模式在 L1 未命中时可从共享后端重建；后端值未超过重建上限但超过 L1 准入预算时仍可服务本次请求，只是不提升到 L1。Memory 模式没有共享 response context 后备，依赖上下文被判定为超限、已淘汰或缺失时可能返回 HTTP `409 response_context_unavailable`。共享后端暂时不可用且请求依赖该上下文时可能返回 HTTP `503 service_unavailable`。如果账号池存在可用的原生 OpenAI Responses relay 后备，网关可保留原始 `previous_response_id` 交给其上游恢复；其他仅做协议翻译的账号不具备这一后备能力。原生 Codex HTTP 的每个非空父引用都要求当前归属的本地或共享快照证明；普通文本父轮不新增 HTTP 会话存储，应重发完整历史并省略父 ID。重叠工具历史仅在能证明完整父前缀重放时去重，否则返回 409。客户端原生 Responses WebSocket 入口在上游连接正常时保留 `previous_response_id` 并只发送当轮增量，轮次开始时保留仍有效的 L1 祖先引用，快照合并与序列化在响应成功提交后才执行并写入本地缓存，共享后端（Redis）写入在后台完成，不占首字路径。缓存会收集 `response.output_item.done`，因此最终 `response.output` 为空时也能保留消息、`phase`、工具调用/结果及 Lite `additional_tools` 声明。`response.completed` 和 `response.incomplete` 成功提交后均可写入，仍受写入策略、TTL 和容量限制约束；按需写入模式下，`store` 未显式为 `false` 的 WebSocket 会话从根轮起即有写入资格；显式 `store:false` 的原生 WS 会话（如 Codex CLI）使用隔离的完整快照及共享后端恢复，不表示网关完全不缓存历史；仍受 TTL、容量和完整性限制。续链失效、换号或转为 HTTP 时，只有能够恢复所需上下文才继续发送；缺失、超限或不可移植的加密状态返回 `response_context_unavailable` 错误帧，共享后端故障返回 `service_unavailable`，此类恢复失败终止本轮并返回错误帧，命名流附带 `stream_id`；连接仍可接收新的完整上下文请求。协议、鉴权或连接资源错误仍可关闭连接。客户端应重发完整上下文并开始新的响应链。
+祖先在轮次开始前已过期或被淘汰时，网关不会把增量伪装成完整快照；该链后续健康轮也不能自行补全历史。缓存 TTL 为 45 分钟，Memory 模式重启会丢失缓存。设置环境变量 `CODEX_WS_CONTINUATION_FAIL_OPEN=true` 可退回旧行为：上下文不可恢复时剥离 `previous_response_id` 后按原样转发，上游将看不到历史；这次有损降级产生的响应不写回放缓存，关闭逃生阀后也不会信任残缺快照。
+
+对于原生 WebSocket 的结构化输出，`gpt-6-astra` 和 `gpt-5.6-luna` 在显式启用 Responses Lite 时保留 JSON Schema 的 `minLength` / `maxLength`。Lite 信号可来自 `client_metadata.ws_request_header_x_openai_internal_codex_responses_lite=true`、`X-OpenAI-Internal-Codex-Responses-Lite: true` 请求头，或由 Payload Rules 注入该元数据标记。该放行仅用于结构化输出；已有工具参数清洗继续使用保守规则。长度约束在入口准备阶段暂时保留，最终出站前才根据最终模型、规则改写后的 Lite 信号、账号 Lite 能力和实际传输统一处理。其他模型、最终未启用 Lite、HTTP 和 Compact 请求沿用原有清洗策略，HTTP 降级请求不会携带不适用的约束。
+
+OpenAI Responses 中转账号默认仍用 HTTP POST `/v1/responses`。账号设置 `responses_upstream_transport=websocket` 后，这个账号的 Responses 出站改为 WebSocket：地址由 Base URL 换成 `ws`/`wss`，路径仍是 `/v1/responses`，握手使用该账号的 API Key 和 `OpenAI-Beta: responses_websockets=2026-02-06`，上行帧为 `response.create`。这个开关只作用于 OpenAI Responses 中转账号，和全局 `codex_force_websocket` 无关；Grok、Antigravity、Claude 不会走这条连接。握手失败返回上游状态或传输错误，不会改回 HTTP。生图请求仍走 HTTP。连接按账号、Base URL 和 API Key 隔离；带 `previous_response_id` 时优先复用产出该响应的连接。客户端 `GET /v1/responses` 也会选中已打开该开关的中转账号。
+
+原生 WebSocket 入口为 `GET /v1/responses`。客户端每轮发送 `response.create`；当前网关明确拒绝 `response.append` 和官方 GPT-6 `response.steer`，返回 `status:400` 的 `unsupported_feature` WebSocket 错误帧，不会伪装成已完成的 steer。需要中途改向时，应等待当前轮结束后用 `previous_response_id` 发起新的 `response.create`。通过校验与 API Key 限制后，较新的同 API Key、同渠道/分组路由作用域、同会话请求会抢占仍在运行的旧请求，并先取消旧上游以释放账号与并发位。相同 `stream_id`（含缺省流）内 FIFO，不同独立流可并行；每连接最多 16 个活动轮次、32 个命名流。命名流事件和请求级错误带回 `stream_id`，命名流请求错误或抢占不会关闭其他健康流，缺省流保留原有协议错误关闭行为。上游连接池按流隔离；同一客户端连接可从另一流已提交的 `store:false` 响应分叉，仍须命中完整缓存并满足授权范围，且指向同一父响应时仍可能等待上游原连接租约。不同 API Key 或不同路由作用域不会互相取消。只有 `prompt_cache_key`、显式会话头、`previous_response_id`、turn state、专用 affinity key 或可稳定派生的内容会话存在时才启用，纯 API Key 兜底身份不会把无关请求合并。Redis 模式支持跨实例抢占，Memory 模式仅在当前进程内生效。
+
+**响应示例:**
+
+```json
+{
+  "id": "resp_xxxxxxxx",
+  "object": "response",
+  "created": 1712345678,
+  "model": "gpt-5.5",
+  "output": [
+    {
+      "type": "message",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "output_text",
+          "text": "Hello! How can I help you today?"
+        }
+      ]
+    }
+  ],
+  "usage": {
+    "input_tokens": 25,
+    "output_tokens": 15,
+    "total_tokens": 40
+  }
+}
+```
+
+### 3. Images
+
+#### 公开工作台额度查询
+
+`GET /api/image-studio/quota` 使用 `Authorization: Bearer YOUR_API_KEY` 查询当前 Key 的累计美元额度。只受生图门户开关控制，不依赖公开用量页开关，也不接受通过查询参数指定其他 Key。
+
+```json
+{
+  "quota_limit": 25,
+  "quota_used": 6.4,
+  "quota_remaining": 18.6,
+  "expires_at": null,
+  "status": "active",
+  "refresh_after_seconds": 6,
+  "image_pricing": {
+    "gpt-image-2": { "user_billing_mode": "per_image", "image_unit_price": 0.05 }
+  }
+}
+```
+
+`quota_remaining` 为 `null` 表示没有累计额度上限，有限额度的剩余值最低为 `0`。`status` 为 `active`、`quota_exhausted` 或 `expired`；无效或停用的 Key 返回 `401`，生图门户关闭时返回 `404`。响应设置 `Cache-Control: no-store`，不返回原始 Key。
+
+公开工作台在 Key 旁显示剩余额度，可点击查看已用、总额和有效期。页面可见时每 30 秒刷新，回到页面或任务完成时也会刷新；消费异步结算，任务完成后按 `refresh_after_seconds` 再查询一次，该值为当前用量入库间隔加 1 秒。模型次数及其他限流规则仍单独生效。
+
+额度耗尽后，当前 Key 仍可查询自己的额度及读取公开工作台已有任务和图片；生成、编辑及删除操作继续拒绝。过期 Key 只能查询额度，不能读取作品或生成；停用 Key 无法使用这些接口。`/v1/*` 的现有额度检查不变。
+
+#### 生成图片
+
+**端点:** `POST /v1/images/generations`
+
+**说明:** OpenAI Images 兼容入口。外部请求使用 `gpt-image-2`、`gpt-image-2.5-flare` 或 `gpt-image-2.5-sunburst`（支持日期快照及 `-2k` / `-4k` 档位后缀），内部按 `CLIProxyAPI/` 与 `sub2api/` 的链路转换为 Codex `/responses`：主模型默认 `gpt-5.6-luna`（优先使用「系统设置 → Codex → 生图设置」中的文本模型，未配置时沿用环境变量 `CODEX_IMAGES_MAIN_MODEL`；被上游拒绝时按 `gpt-5.5` → `gpt-5.6-terra` → `gpt-5.6-sol` → `gpt-6-astra` 顺序换驱动重试），图像模型写入 `tools[0].model`。
+
+GPT Image 2.5 支持 `auto`、`low`、`medium`、`high`、`xhigh`、`max`。质量参数原样传给图片工具；工作台切回旧型号时会将 `xhigh` / `max` 调整为 `high`。省略模型仍默认使用 `gpt-image-2`。`-2k` / `-4k` 是本项目的尺寸与超分别名，发往上游前会剥掉该后缀。
+
+直接使用 `/v1/responses` 时，文本主控放在顶层 `model`，图片模型放在 `tools[].model`；显式文本主控优先于后台生图设置及 `CODEX_IMAGES_MAIN_MODEL`。顶层 `model` 直接填图像模型时，则使用后台配置的文本主控。工具模型省略时仍补为 `gpt-image-2`。
+
+Images 入口的 2.5 token 计费区分文本输入、图片输入与各自缓存：内置费率分别为 $5、$8、$1.25、$2 / 百万 token，图片输出 $30 / 百万 token（[官方价格](https://developers.openai.com/api/docs/models/gpt-image-2.5-sunburst)，2026-09-09 核对）。Flare/Sunburst 各有独立定价键，日期快照和尺寸别名使用对应基础型号费率；自定义覆盖优先。usage 日志新增 `image_input_tokens`、`image_output_tokens`、`cached_image_input_tokens`，是总输入/输出/缓存的子集，不重复计费。历史日志无法补回未记录的图片 token 明细。
+
+**请求示例:**
+
+```json
+{
+  "model": "gpt-image-2",
+  "prompt": "Draw a small orange cat",
+  "size": "1024x1024",
+  "quality": "high",
+  "response_format": "b64_json"
+}
+```
+
+#### Grok 生图（grok-imagine 系列）
+
+同一个 `/v1/images/generations` / `/v1/images/edits` 端点也接受 Grok Imagine 模型，按模型名自动分派到 Grok 媒体上游（官方 REST），响应为标准 OpenAI Images 形状原样透传。
+
+**可用模型:**
+
+| 模型 | 说明 |
+| --- | --- |
+| `grok-imagine-image` | 标准档生图 |
+| `grok-imagine-image-quality` | 质量档生图（`grok-imagine` 是它的别名） |
+
+**Grok 专属参数:**
+
+| 参数 | 说明 |
+| --- | --- |
+| `aspect_ratio` | 宽高比，如 `16:9` / `1:1` |
+| `resolution` | `1k` / `2k`；未显式给出时，`size` 任一边 ≥2048 自动映射为 `2k`（`size` 字段本身不发给上游） |
+| `quality` | 上游质量档位 |
+| `n` | 生成张数 |
+| `response_format` | `url` / `b64_json` |
+
+**请求示例:**
+
+```json
+{
+  "model": "grok-imagine-image",
+  "prompt": "a red apple on a wooden table, studio lighting",
+  "response_format": "url",
+  "n": 1
+}
+```
+
+**响应示例（上游原样透传，含成本信息）:**
+
+```json
+{
+  "data": [
+    { "url": "https://imgen.x.ai/xai-imgen/....jpeg", "mime_type": "image/jpeg" }
+  ],
+  "usage": { "cost_in_usd_ticks": 200000000 }
+}
+```
+
+**注意事项:**
+
+- 需要**付费 Grok 账号**（API Key 或 SuperGrok/Heavy 等付费 OAuth 订阅）；free 计划账号上游直接 403。调度层优先选择付费凭据账号。
+- 不支持 `stream=true`（返回 400）。
+- 编辑（`/v1/images/edits`）源图最多 **3 张**（`images[].image_url` 支持 https URL 与 data URL）。
+- `upstream_channel=codex` 的 API Key 无法调用 grok-imagine 模型（403）。
+
+#### 编辑图片
+
+**端点:** `POST /v1/images/edits`
+
+**说明:** 支持 JSON `images[].image_url` 和 multipart `image` / `image[]` 上传。`mask.image_url` 或 multipart `mask` 可用于遮罩编辑（遮罩仅 gpt-image 系列支持）。
+
+**JSON 请求示例:**
+
+```json
+{
+  "model": "gpt-image-2",
+  "prompt": "Replace the background with aurora lights",
+  "images": [{ "image_url": "https://example.com/source.png" }],
+  "output_format": "png"
+}
+```
+
+**响应示例:**
+
+```json
+{
+  "created": 1710000000,
+  "model": "gpt-image-2",
+  "data": [
+    {
+      "b64_json": "..."
+    }
+  ],
+  "usage": {
+    "images": 1
+  }
+}
+```
+
+#### 异步图片任务
+
+- `POST /v1/images/jobs`：以后台创建的 API Key 认证，返回 HTTP 202 和 `job`。
+- `GET /v1/images/jobs/:id`：使用创建时的同一 API Key 查询，其他密钥返回 404。
+- `POST /v1/images/jobs/results`：批量查询最多 500 个任务的精简结果，兼容 `/v1/images/jobs/result`。
+- `GET /v1/images/jobs/:id/output`：流式返回生成结果 Base64；仅对主动选择 `delete_after_read` 的图片在完整交付后清理。
+- `POST /v1/images/jobs/:id/ack`：URL 下载方确认已保存结果，幂等清理本任务中 `delete_after_read` 的图片。
+- `GET /v1/images/jobs/:id/result`：使用同一 API Key 查询精简状态和结果；不返回提示词、`params_json`、输入图片、密钥展示信息或图片 Base64 缓存。适合频繁轮询，原创建和查询接口保持不变。
+
+创建接口可选 `storage_mode`（legacy/temporary/delete_after_read）与 `retention_seconds`；不传保留旧逻辑。临时存储 2 小时示例：`"storage_mode":"temporary","retention_seconds":7200`。详见 [图片结果存储策略](IMAGE_RESULT_STORAGE.md)，包括过期时间、消费接口和安全重试语义。
+
+精简查询在 queued/running 时也返回 HTTP 200，`assets` 为空数组；成功后通过 `job.assets[].proxy_url` 下载图片文件，相对路径按服务地址解析。失败原因在 `error_message`，部分成功的提示在 `warning`。该接口忽略 `include_cache`，始终不附带图片缓存。不存在或不属于当前 Key 的任务均返回 404。
+
+```bash
+curl 'https://your-host/v1/images/jobs/42/result' \
+  --header 'Authorization: Bearer YOUR_API_KEY'
+```
+
+成功响应示例（签名 URL 仅为占位）：
+
+```json
+{"job":{"id":42,"status":"succeeded","assets":[{"id":123,"proxy_url":"/p/img/123?exp=...&sig=...","mime_type":"image/png","bytes":1500000,"width":1024,"height":1536,"model":"gpt-image-2","output_format":"png"}],"error_message":"","duration_ms":45000,"created_at":"2026-09-19T06:50:40Z"}}
+```
+
+请求示例：
+
+```json
+{"model":"gpt-image-2.5-flare","prompt":"A small orange cat","size":"1024x1024","quality":"high","n":1}
+```
+
+编辑模式在同一创建接口传入 `input_images`（图片 URL / data URL 数组）。`prompt` 必填，最多 8000 字符。轮询 `job.id`，根据 `job.status` 的 `queued/running/succeeded/failed` 判断状态；成功后使用 `job.assets[].proxy_url` 下载图片，相对路径按本服务地址解析。返回对象由 `ImageGenerationJob` 定义，错误信息在 `job.error_message`。
+
+### 4. Videos (Grok 生视频)
+
+基于 Grok Imagine 的视频生成，异步任务模式：创建返回 `request_id`，客户端轮询状态，产物经网关代理下载。需要**付费 Grok 账号**（free 计划上游 403）。
+
+**可用模型与操作支持矩阵**（上游实测）:
+
+| 操作 | `grok-imagine-video` | `grok-imagine-video-1.5` |
+| --- | --- | --- |
+| generations | ✓ | ✓（默认） |
+| edits | ✓（默认） | ✗ 上游 400 "not supported for this model" |
+| extensions | ✓（默认） | ✗ 同上 |
+
+`model` 省略时按操作自动选默认模型；xAI 公开 API 上的 `grok-imagine-video-1.5-preview` 也接受，转发时自动归一。
+
+#### 创建视频任务
+
+**端点:**
+
+- `POST /v1/videos/generations` — 文生视频 / 图生视频
+- `POST /v1/videos/edits` — 视频编辑（`video` 字段必填）
+- `POST /v1/videos/extensions` — 视频延展（`video` 字段必填）
+
+**请求参数:**
+
+| 参数 | 说明 |
+| --- | --- |
+| `model` | 可省略，generations 默认 `grok-imagine-video-1.5`，edits/extensions 默认 `grok-imagine-video` |
+| `prompt` | 提示词（generations 无图片输入时必填） |
+| `duration` | 时长秒数，1–15，默认 8 |
+| `resolution` | `480p` / `720p` / `1080p`（1080p 仅 1.5 且无参考图） |
+| `aspect_ratio` | 如 `16:9` / `9:16` / `1:1` |
+| `image` | 首帧图（图生视频），`{"url": "https://... 或 data:..."}` |
+| `reference_images` | 参考图数组（最多 7 张，与 `image` 互斥），元素为 URL 字符串或 `{"url": ...}` |
+| `video` | edits/extensions 的源视频，`{"url": ...}` |
+
+**请求示例:**
+
+```json
+{
+  "model": "grok-imagine-video-1.5",
+  "prompt": "ocean waves rolling onto a sandy beach at sunset, cinematic",
+  "duration": 4,
+  "resolution": "480p",
+  "aspect_ratio": "16:9"
+}
+```
+
+**响应:** `{"request_id": "1a293702-..."}`
+
+#### 查询任务状态
+
+**端点:** `GET /v1/videos/:request_id`
+
+由客户端轮询（建议间隔 2–5 秒）。状态机：`pending → done | failed | expired`。进行中响应形如 `{"status":"pending","progress":42}`（上游以 202 返回，网关统一按 200 透传，客户端只需看 `status` 字段）。**必须用创建任务的同一个 API Key 查询**，否则 404；任务绑定创建时选中的上游账号，绑定有效期 24 小时。
+
+**完成响应示例:**
+
+```json
+{
+  "status": "done",
+  "progress": 100,
+  "model": "grok-imagine-video-1.5",
+  "video": {
+    "url": "http://<gateway>/v1/videos/1a293702-.../content",
+    "duration": 4,
+    "respect_moderation": true
+  },
+  "usage": { "cost_in_usd_ticks": 3200000000 }
+}
+```
+
+`video.url` 已被重写为网关自己的 `/content` 代理地址（上游签名 URL 会过期，统一走网关下载）。
+
+#### 下载视频产物
+
+**端点:** `GET /v1/videos/:request_id/content`
+
+返回 `video/mp4` 字节流，支持 `Range` 请求（206）。网关优先匿名拉取上游签名资产 URL（仅限官方资产域白名单、禁跳转），失败时回退带凭据的上游下载端点。
+
+**注意事项:**
+
+- 网关不做后台轮询与产物落盘；重启后（内存缓存模式）或超过 24 小时，任务绑定丢失，状态查询返回 404。Redis 部署的绑定跨实例、跨重启有效。
+- `upstream_channel=codex` 的 API Key 无法调用视频端点（403）。
+
+### 5. List Models
+
+**端点:** `GET /v1/models`
+
+**说明:** 获取支持的模型列表。
+
+**响应示例:**
+
+```json
+{
+  "object": "list",
+  "data": [
+    { "id": "gpt-6-astra", "object": "model", "owned_by": "openai" },
+    { "id": "gpt-5.6-sol", "object": "model", "owned_by": "openai" },
+    { "id": "gpt-5.6-terra", "object": "model", "owned_by": "openai" },
+    { "id": "gpt-5.6-luna", "object": "model", "owned_by": "openai" },
+    { "id": "gpt-5.5", "object": "model", "owned_by": "openai" },
+    { "id": "gpt-5.3-codex-spark", "object": "model", "owned_by": "openai" },
+    { "id": "gpt-image-2", "object": "model", "owned_by": "openai" },
+    { "id": "grok-imagine-image", "object": "model", "owned_by": "xai" },
+    { "id": "grok-imagine-video-1.5", "object": "model", "owned_by": "xai" }
+  ]
+}
+```
+
+池内存在 Grok 账号时会一并列出其文本模型（如 `grok-4.7`、`grok-4.7-fast`）与媒体模型（`grok-imagine-*`）。`grok-4.7-fast` 是对外名字，转发到上游时改成 `grok-4.7-build-fast`。媒体模型与账号的文本模型列表相互独立：模型列表只写了文本模型不会关闭媒体能力；模型列表里写了 `grok-imagine` 条目时，只开放列表里的媒体模型。文本模型列表如果写了，也要包含 `grok-4.7-fast` 才会暴露这个名字。目录里有 `grok-4.7` 不会把 `grok-4.7-fast` 加进已保存的模型列表。
+
+#### Grok 的 GPT 兼容别名
+
+Grok 账号编辑页支持账号级模型映射，可让只请求 GPT 模型名的客户端改走 Grok。例如：
+
+```json
+{
+  "gpt-5.5": "grok-4.5",
+  "gpt-5.6-sol": "grok-4.5",
+  "gpt-6-astra": "grok-4.5"
+}
+```
+
+推荐逐个配置精确别名，不要默认使用 `gpt-*`，以免把未来的专用或媒体模型也纳入映射。别名目标必须存在于该 Grok 账号的可见模型目录中；显式 `models` 白名单会进一步收窄目标，隐藏或目录外模型不会因映射重新开放。账号尚未同步目录且未声明白名单时，仅使用保守的 Grok 默认模型集。满足这些条件的精确别名会出现在该 API Key 的 `GET /v1/models` 结果中。
+
+映射适用于普通 HTTP `POST /v1/responses`、`POST /v1/chat/completions` 和 `POST /v1/messages`。Responses WebSocket 与 `/v1/responses/compact` 不会路由到 Grok。Codex 客户端的 function、namespace、custom、deferred `additional_tools` 和 `tool_search` 可经现有协议桥接；Web Search、File Search、Code Interpreter、Shell、MCP、图片生成等托管工具仍取决于具体 Grok 上游及协议能力，不能仅靠模型别名获得 OpenAI 后端的等价能力。
+
+Codex 的流式 remote compact v2（`POST /v1/responses`，`stream:true`，`input` 含 `compaction_trigger`）允许路由到模型目录中使用 Responses 协议的 Grok 账号，沿用 compact 模型映射。该请求继续发送到 Grok 实际路由的 `/responses`。若上游以 400/422 明确拒绝 `compaction_trigger` 类型，网关使用同一账号、模型和上下文追加一次摘要请求，并返回可回传的 `compaction` 项；其他鉴权、限流或校验错误不会触发该兼容分支。摘要为空、不完整或产生工具调用时会返回失败，不会清空历史伪装成压缩成功。独立 `/v1/responses/compact` 和非流式触发器仍使用专用 compact 链路，不开放给 Grok。
+
+网关记录成功返回的压缩状态来源。已知 Grok 压缩状态只回到创建它的账号，并按项原样保留密文；来源账号不可用时返回 `503 compaction_upstream_unavailable`，不会改用其他账号。未知来源或来源缓存不可用时仍沿用既有调度和外来密文降级规则，不保证保留这些压缩项中的上下文。上游拒绝已知来源的 Grok 压缩状态时，网关保留错误，不通过删除该状态重试来掩盖上下文丢失。
+
+上述来源绑定适用于上游原生不透明状态。网关生成的兼容摘要使用 `codex2api-emulated-compaction-v1:` 前缀和 Base64 封装，是可解码的文本摘要，不是上游加密密文。续聊时会还原成摘要消息并恢复正常调度，无需依赖原账号或来源缓存；摘要请求的 token 用量沿用上游返回值计入本次请求。
+
+### 6. Health Check
+
+**端点:** `GET /health`
+
+**说明:** 健康检查端点，返回服务状态。
+
+**响应示例:**
+
+```json
+{
+  "status": "ok",
+  "available": 5,
+  "total": 8
+}
+```
+
+---
+
+### Token 估算与上下文压缩
+
+`POST /v1/messages/count_tokens` 接受 `messages/system/tools`，`POST /v1/responses/input_tokens` 接受 `input/instructions/tools`，均返回 `{"input_tokens":32}` 这样的本地估算结果。它们按 JSON 字符量粗估，不调用上游、不消耗账号额度，不能用作准确 tokenizer 或最终计费依据。
+
+`POST /v1/responses/compact` 接受 `model` 和完整必需 `input` 历史，用于压缩上下文。保留返回的 `output` 压缩项及不透明字段，用于后续请求；可用性取决于最终模型和渠道。交互示例见 `/admin/docs#api-compact`。
+
+## 管理 API
+
+所有管理 API 需要 `X-Admin-Key` 请求头进行认证。
+
+### 统计接口
+
+#### GET /api/admin/stats
+
+获取仪表盘统计数据。
+
+**响应:**
+
+```json
+{
+  "total": 10,
+  "available": 8,
+  "error": 2,
+  "today_requests": 1234
+}
+```
+
+#### GET /api/admin/health
+
+系统健康检查（扩展版）。
+
+**响应:**
+
+```json
+{
+  "status": "ok",
+  "available": 8,
+  "total": 10
+}
+```
+
+### 降智检测
+
+管理页面为 `/admin/intelligence-check`。接口沿用 Admin Secret 鉴权；完整配置、
+判定及自动处置说明见 [降智检测](INTELLIGENCE_CHECK.md)。
+
+| 方法 | 路径 | 请求与响应 |
+| --- | --- | --- |
+| GET | `/api/admin/intelligence-check/settings` | 返回当前配置和题库，含 `revision` |
+| PUT | `/api/admin/intelligence-check/settings` | 提交完整配置及读取到的 `revision`；返回新配置，版本冲突为 409 |
+| GET | `/api/admin/intelligence-check/accounts` | 分页账号状态；支持 `account_id`、`search`、`channel`、`status` 筛选 |
+| PATCH | `/api/admin/intelligence-check/accounts` | `{ "account_ids": [1], "enabled": true }`，返回 `{ "updated": 1 }` |
+| POST | `/api/admin/intelligence-check/runs` | `{ "account_ids": [1] }`，返回 202 和 `{ "runs": [...] }`；同账号已有活动任务时复用 |
+| GET | `/api/admin/intelligence-check/runs` | 分页历史；支持与账号列表相同的筛选参数 |
+| GET | `/api/admin/intelligence-check/runs/:id` | 返回 `{ "run": {...} }`，不存在为 404 |
+| GET | `/api/admin/intelligence-check/bars?account_ids=1,2` | 返回 `{ "bars": { "1": {...}, "2": {...} } }` |
+
+分页使用 `page`（默认 1）和 `page_size`（默认 20，最多 100），响应为
+`{ "items": [...], "total": 0, "page": 1, "page_size": 20 }`。
+账号开关及手动检测每次最多提交 200 个账号，状态条每次最多读取 500 个账号。
+`channel` 使用 `codex` 或 `claude`。任务 `status` 为 `queued`、`running`、
+`normal`、`degraded`、`error`、`interrupted`；未检测账号的 `latest_status` 为 `unknown`。
+
+任务详情包含配置版本、题目快照、请求及响应模型、推理强度、判定模式、最终输出、
+耗时、token 用量、错误、发起来源及自动处置。`source` 为 `manual` 或 `automatic`，
+时间使用 RFC3339。状态条只返回最近 20 条终态摘要及 `enabled`、`quality_paused`、
+`action`，存在运行中或当前可执行的排队任务时附带 `active_run_id` 和 `active_status`。
+关闭自动检测后，不可执行的自动排队任务不占用按钮的活动状态，仍可提交手动检测。
+
+### 账号管理
+
+#### HTML 动画降智检测
+
+管理后台侧边栏「降智检测」位于 `/admin/quality-test`，可切换「检测工作台」、「提示词预设」（`?view=presets`）和「检测记录」（`?view=history`）。默认题目为用 SVG 绘制鹈鹕骑自行车的 2D 动画，可以编辑提示词并选择账号、模型和思考强度；账号下拉按订阅类型显示颜色标识。
+
+提示词预设分两类：内置预设随前端发布（鹈鹕骑自行车、模拟时钟、太阳系轨道、弹跳小球物理、齿轮传动、城市夜景视差、汉字笔顺共 7 套），不落库、不可编辑，可「复制为自定义预设」后修改；自定义预设保存在数据库表 `quality_test_prompts` 中。工作台的「提示词预设」下拉两类都能选用；不选预设或恢复默认时使用内置鹈鹕题目。当前提示词与某条预设完全一致即视为选中该预设，改动后视为「自定义」，可从工作台一键存为新预设或更新原预设。
+
+检测作为服务端后台任务执行，切换页面、刷新或关闭标签页不会取消任务。账号身份与订阅快照、模型、思考强度、提示词、检测时间、状态、用量及生成内容保存在数据库中。记录分页展示，点击结果可重新预览和下载 HTML；`?job=<id>` 可直接定位结果。
+
+预览使用隔离 iframe，仅允许内联脚本、样式及数据资源，不授予后台同源访问权限。`GET /api/quality-test/preview` 是无凭据、无用户数据的静态预览容器，通过父页面消息接收 HTML；它不接收持久化写入，其独立 CSP 不放宽管理后台的脚本限制。
+
+「下载 HTML」保留模型生成的完整动画和交互；「导出 SVG 静态快照」需要先打开预览，保存当前最大的可见 SVG 图形，包含脚本生成的路径、当前变换和图形样式，不包含 HTML 标题、控制按钮或动画脚本。导出通过隔离预览的消息通道完成，不开放同源访问；重放、切换记录或离开预览会取消尚未完成的导出。Canvas、包含 `foreignObject` 或依赖外部资源的图形应下载 HTML。SVG 导出最多处理 10000 个元素、8 MiB 内容，超过限制或导出超时会提示重试或下载 HTML。
+
+- `GET /api/admin/accounts/:id/quality-test/options`：返回所选运行时账号的 `models` 和 `reasoning_efforts`。空字符串表示模型默认；Antigravity 的强度由模型名称固定，因此只返回默认项。
+- `POST /api/admin/accounts/:id/quality-test`：创建指定账号的后台检测任务，返回 `202 {"job": {...}}`，不切换到其他账号。
+- `GET /api/admin/quality-tests?page=1&page_size=20`：返回 `jobs`、`total`、`active_jobs` 和 `concurrency_limit`。列表不包含完整提示词与 HTML；每页最多 50 条。
+- `GET /api/admin/quality-tests/:id`：返回 `{"job": {...}}`，包含完整提示词、当前生成内容与统计；运行中可轮询。
+- `POST /api/admin/quality-tests/:id/cancel`：将运行任务标记为 `cancelling`，执行器收到停止请求后取消上游并保存 `stopped` 结果。
+- `GET /api/admin/quality-test-prompts`：返回 `{"prompts": [...]}`，按更新时间倒序；每条包含 `id`、`name`、`prompt`、`usage_count`、`last_used_at`、`created_at`、`updated_at`。
+- `POST /api/admin/quality-test-prompts`：创建预设，请求体 `{"name": "...", "prompt": "..."}`。`prompt` 必填且不超过 16000 字节；`name` 留空时取提示词前 24 个字符，最长 100 字符。返回 `{"prompt": {...}}`。
+- `PATCH /api/admin/quality-test-prompts/:id`：局部更新，只传需要修改的字段；不存在返回 `404`。
+- `DELETE /api/admin/quality-test-prompts/:id`：删除预设，已发起的检测记录不受影响。
+- 创建检测任务时可附带 `prompt_id`，仅用于累计该预设的 `usage_count` 与 `last_used_at`，预设已删除时静默忽略。
+
+创建请求示例：
+
+```json
+{
+  "model": "gpt-5.5",
+  "reasoning_effort": "high",
+  "prompt": "创建一个 HTML，内容是用 SVG 绘制一个鹈鹕骑自行车的 2D 动画。你不需要任何测试。"
+}
+```
+
+以上 `/api/admin/*` 端点均要求 `X-Admin-Key`。模型及提示词必填；提示词不超过 16000 字节，单次任务最多 10 分钟，生成内容不超过 1 MiB。数据库唯一槽位将全部管理员、标签页及共享数据库实例的运行任务合计限制为 3 个，同一账号仅允许 1 个活动任务；名额用满或账号重复时返回 `409`，不排队。正在停止的任务仍占用名额，执行器退出后释放。
+
+任务状态为 `running`、`cancelling`、`completed`、`error`、`stopped`、`interrupted`。正常关闭服务会取消活动任务并保存中断结果；进程崩溃留下的任务在原 10 分钟截止时间加 30 秒宽限后清理，不自动重试上游。新表 `quality_test_jobs` 自动创建，兼容 PostgreSQL 和 SQLite。原先仅存在页面内存中的结果无法追溯迁移。
+
+思考强度按渠道构造：Codex/Responses/Grok 使用 `reasoning.effort`，Claude 使用原生 Messages 的自适应 `thinking` 与 `output_config.effort`；具体模型不支持该档位时会返回上游错误。测试沿用账号连接测试的代理、凭据、用量及冷却处理，会消耗上游额度，不经过公共 `/v1/*` 的 API Key 调度、计费或请求体重写规则。
+
+后台执行器消费完整上游流，保留纯模型文本和完成事件之后到达的最终统计，前端通过任务接口读取进度。耗时、首段输出时间及上游提供的 token 数据用于辅助比较，不返回自动「降智评分」；一次动画结果不能证明模型质量下降。
+
+#### GET /api/admin/accounts
+
+获取账号列表。
+
+**响应:**
+
+```json
+{
+  "accounts": [
+    {
+      "id": 1,
+      "name": "account-1",
+      "email": "user@example.com",
+      "token_workspace_id": "personal-workspace-id",
+      "workspace_id_override": "team-workspace-id",
+      "effective_workspace_id": "team-workspace-id",
+      "plan_type": "pro",
+      "status": "ready",
+      "health_tier": "healthy",
+      "scheduler_score": 100,
+      "dispatch_score": 150,
+      "score_bias_override": null,
+      "score_bias_effective": 50,
+      "base_concurrency_override": null,
+      "base_concurrency_effective": 2,
+      "skip_warm_tier": false,
+      "dynamic_concurrency_limit": 2,
+      "allowed_api_key_ids": [1, 3],
+      "proxy_url": "http://proxy.example.com:8080",
+      "created_at": "2024-01-01T00:00:00Z",
+      "updated_at": "2024-01-01T12:00:00Z",
+      "active_requests": 0,
+      "total_requests": 100,
+      "last_used_at": "2024-01-01T11:00:00Z",
+      "success_requests": 95,
+      "error_requests": 5,
+      "credit_enabled": false,
+      "credit_skip_usage_window": false,
+      "billed_5h": 0.25,
+      "billed_7d": 3.50,
+      "usage_percent_7d": 45.2,
+      "usage_percent_5h": 12.5,
+      "reset_5h_at": "2024-01-01T17:00:00Z",
+      "reset_7d_at": "2024-01-08T00:00:00Z",
+      "scheduler_breakdown": {
+        "unauthorized_penalty": 0,
+        "rate_limit_penalty": 0,
+        "timeout_penalty": 0,
+        "server_penalty": 0,
+        "failure_penalty": 0,
+        "success_bonus": 12,
+        "usage_penalty_7d": -5,
+        "usage_urgency_bonus_5h": 0,
+        "latency_penalty": 0,
+        "success_rate_penalty": 0
+      }
+    }
+  ]
+}
+```
+
+字段说明补充：
+
+| 字段                       | 类型         | 说明                                                              |
+| -------------------------- | ------------ | ----------------------------------------------------------------- |
+| scheduler_score            | number       | 原始健康分，仅反映动态调度健康状态                                |
+| dispatch_score             | number       | 最终用于调度排序的分数；优先读取运行时快照                        |
+| score_bias_override        | integer/null | 手工配置的总加权分覆盖值，`null` 表示跟随套餐默认                 |
+| score_bias_effective       | integer      | 当前生效的加权分                                                  |
+| base_concurrency_override  | integer/null | 手工配置的基础并发覆盖值，`null` 表示跟随全局 `max_concurrency`   |
+| base_concurrency_effective | integer      | 当前生效的基础并发值                                              |
+| skip_warm_tier             | bool         | 是否跳过 warm 层级；仅把 warm 提升为 healthy，不覆盖 risky/banned |
+| allowed_api_key_ids        | integer[]    | 允许调用该账号的 API Key ID 列表；空数组表示所有 API Key 均可调用 |
+| token_workspace_id         | string       | Token 中识别出的默认工作区 ID                                    |
+| workspace_id_override      | string       | `Chatgpt-Account-Id` 指定的目标工作区；未指定时为空               |
+| effective_workspace_id     | string       | 实际路由工作区；优先使用覆盖值，否则使用 Token 默认工作区         |
+| credit_enabled             | bool         | 是否为信用计费模式账号                                            |
+| credit_skip_usage_window   | bool         | 是否跳过 7 天/5 小时用量窗口惩罚                                  |
+| billed_5h                  | number/null  | 过去 5 小时窗口内的累计计费金额（USD）                            |
+| billed_7d                  | number/null  | 过去 7 天窗口内的累计计费金额（USD）                              |
+
+#### PATCH /api/admin/accounts/:id/scheduler
+
+更新账号调度配置。
+
+**请求:**
+
+```json
+{
+  "score_bias_override": 80,
+  "base_concurrency_override": 6,
+  "skip_warm_tier": true,
+  "allowed_api_key_ids": [1, 3]
+}
+```
+
+字段可分别传 `null` 恢复自动值：
+
+```json
+{
+  "score_bias_override": null,
+  "base_concurrency_override": null,
+  "allowed_api_key_ids": null
+}
+```
+
+**参数说明:**
+
+| 参数                      | 类型           | 必填 | 说明                                                                                                       |
+| ------------------------- | -------------- | ---- | ---------------------------------------------------------------------------------------------------------- |
+| score_bias_override       | integer/null   | 否   | 总加权分覆盖值，范围 `-200..200`，`null` 表示恢复套餐默认                                                  |
+| base_concurrency_override | integer/null   | 否   | 基础并发覆盖值，`≥1` 无上限，`null` 表示恢复全局默认                                                      |
+| skip_warm_tier            | boolean/null   | 否   | 是否跳过 warm 层级；`null` 等同 `false`，字段省略时保持原值                                                |
+| allowed_api_key_ids       | integer[]/null | 否   | 允许调用该账号的 API Key ID 列表，去重升序保存；字段省略时保持原值，传 `null` 或 `[]` 表示恢复为全部可调用 |
+
+**响应:**
+
+```json
+{
+  "message": "账号调度配置已更新"
+}
+```
+
+#### PATCH /api/admin/accounts/:id/credit
+
+更新账号信用设置。
+
+**请求:**
+
+```json
+{
+  "credit_enabled": true,
+  "credit_skip_usage_window": true
+}
+```
+
+**参数说明:**
+
+| 参数                       | 类型  | 必填 | 说明                                     |
+| -------------------------- | ----- | ---- | ---------------------------------------- |
+| credit_enabled             | bool  | 否   | 标记账号为信用计费模式，省略时保持原值   |
+| credit_skip_usage_window   | bool  | 否   | 跳过 7 天/5 小时用量窗口惩罚（仅在 `credit_enabled=true` 时生效），省略时保持原值 |
+
+**响应:**
+
+```json
+{
+  "message": "信用设置已更新",
+  "credit_enabled": true,
+  "credit_skip_usage_window": true
+}
+```
+
+#### POST /api/admin/accounts/batch-update
+
+批量更新账号启用、锁定、标签、分组和调度元信息。字段省略时保持原值；`ids` 会自动去重，已删除或不存在的账号计入 `failed`。
+
+必须至少提供一个更新字段；仅提交 `ids` 会返回 `400 Bad Request`：
+
+```json
+{
+  "error": "请提供要更新的字段"
+}
+```
+
+**请求:**
+
+```json
+{
+  "ids": [1, 2, 3],
+  "enabled": false,
+  "locked": true,
+  "score_bias_override": 25,
+  "base_concurrency_override": 4,
+  "scheduler_priority": 10,
+  "tags": ["ops", "paid"],
+  "group_ids": [1],
+  "auto_pause_5h_threshold": 0.8,
+  "auto_pause_7d_disabled": true
+}
+```
+
+常用批量调度字段：
+
+| 字段 | 类型 | 范围/语义 |
+|------|------|-----------|
+| `score_bias_override` | integer/null | `-200..200`；`null` 恢复套餐默认分数偏置 |
+| `base_concurrency_override` | integer/null | `≥1` 无上限；`null` 恢复分组或全局继承值 |
+| `scheduler_priority` | integer/null | `-100..100`；`null` 恢复默认优先级 `0` |
+| `tags` | string[] | 替换账号标签；空数组清空 |
+| `group_ids` | integer[] | 替换账号分组；空数组清空 |
+| `timezone` | string | 绑定 IANA 时区（如 `America/New_York`）；空串清除。Codex 官方账号据此改写出站请求体 `environment_context` 里的 `<timezone>` 与 `<current_date>`（日期按账号时区与客户端时区的当日差整体平移），空=透传客户端值；中转与 Grok 账号忽略。Claude 账号沿用该字段做身份时区 |
+
+**响应:**
+
+```json
+{
+  "message": "已更新 3 个账号，失败 0 个",
+  "success": 3,
+  "failed": 0
+}
+```
+
+#### POST /api/admin/accounts/grok/batch-models
+
+批量替换 Grok 账号的模型列表。`ids` 会自动去重；非 Grok 或不存在的账号计入 `failed`，不中断整批。空数组表示清空模型列表，之后按账号可见目录或首次同步前的默认模型列表准入。
+
+**请求:**
+
+```json
+{
+  "ids": [1, 2, 3],
+  "models": ["grok-4.5"]
+}
+```
+
+| 参数 | 类型 | 必填 | 说明 |
+| ---- | ---- | ---- | ---- |
+| ids | integer[] | 是 | 要更新的 Grok 账号 ID |
+| models | string[] | 否 | 替换后的模型列表；省略或空数组表示清空模型列表并恢复目录/默认集准入 |
+
+**响应:**
+
+```json
+{
+  "message": "已更新 3 个账号，失败 0 个",
+  "success": 3,
+  "failed": 0,
+  "models": ["grok-4.5"]
+}
+```
+
+#### POST /api/admin/accounts/batch-refresh-usage
+
+批量刷新当前运行池中所有支持 WHAM 的 Codex 账号用量，对应账号管理页
+「管理 → 一键刷新用量」。目标范围覆盖所有分页，独立于当前搜索、筛选和勾选；
+无 Access Token、Agent Identity、第三方中转及其他渠道账号不参与。
+
+此操作只查询 `/backend-api/wham/usage`，更新 5 小时/周用量快照，不刷新登录
+令牌，也不回退到会消耗 Token 的 `/responses` 探针。查询失败保留原用量，
+单独的 WHAM 401 不会将账号判为凭据失效。
+
+无需请求参数。默认返回 `type: "complete"`、`total`、`current`、`success` 和
+`failed`；追加 `?stream=true` 返回 `start` / `progress` / `complete` SSE 事件，
+`action` 固定为 `batch_usage_refresh`。逐账号进度包含账号标识、状态和错误说明。
+
+并发数遵循 `usage_probe_concurrency`，单个查询最多 15 秒。同一实例正在执行
+此批量操作时，再次调用返回 409；客户端断开后取消查询和待处理任务。完成事件
+发出前会使账号列表与分析缓存失效，随后读取即可更新用量进度条。
+
+### Claude 凭据与原生 Messages
+
+Claude Code OAuth 账号使用原生 Anthropic Messages 上游，不会进入 Codex WHAM
+或 Responses 探针。以下端点均受现有 `X-Admin-Key` 管理鉴权保护；请求示例中的
+Token、授权码和账号 ID 仅为占位符，服务端不会在响应或日志中回显 access/refresh
+token。
+
+Claude 账号有三种凭据形态，记录在 `credentials.claude_auth_kind`，列表/详情响应以
+`claude_auth_kind` 回传，账号列表 `auth_kind` 筛选与 `summary.oauth / summary.setup_token / summary.api_key`
+按此区分：
+
+- `oauth`：完整 Claude Code OAuth，`access_token + refresh_token`，AT 临期自动续期，
+  可读 profile / 官方 usage 端点；历史账号未写该键时一律视为 `oauth`。
+- `setup_token`：官方 `claude setup-token` 同款长效令牌（`sk-ant-oat01-…`），仅
+  `user:inference` scope，有效期 1 年，没有 refresh token，到期只能重新授权；用量改由
+  原生 Messages 探针采样，套餐信息缺省。适合批量号池。
+- `api_key`：Anthropic 或 Messages 兼容服务的 API Key，必填 `api_key` 与 `base_url`；
+  无 OAuth 刷新和订阅用量采样。`base_url` 支持路径前缀和末尾 `/v1`，移除尾部斜杠，
+  已含 `/v1` 时不重复追加。拒绝 URL 中的用户名/密码、query 和 fragment；允许 HTTP 和私网服务。
+  列表/详情返回 `claude_base_url`，按 `auth_kind=api_key` 筛选。
+
+API Key 请求体原样转发，不应用 Claude Code 指纹、客户端平台/版本策略或 OAuth 的
+`ClaudeSecurityConfig` 请求上限与字段净化；网关通用鉴权、限流和提示词过滤仍生效。
+
+#### POST /api/admin/accounts/claude/oauth/auth-url
+
+创建一次性 PKCE 登录会话，返回授权地址与 `state`。请求体可选 `{"mode":"oauth"|"setup_token"}`，
+默认 `oauth`；`setup_token` 只申请 `user:inference` 并在交换时请求 1 年有效期。回调地址
+为托管页 `https://platform.claude.com/oauth/code/callback`，授权后页面直接展示 `code#state`
+供复制（响应同时回传 `mode` 与 `redirect_uri`）。`state` 默认 15 分钟有效且只能兑换一次。
+
+#### POST /api/admin/accounts/claude/oauth/exchange-code
+
+使用 `state` 与回调 `code`（接受 `code#state`、纯 code 或整条回调 URL）换取 Claude
+凭据并入库，形态沿用生成链接时的 `mode`。可选 `proxy_url`、`use_proxy_pool`、
+`timezone` 和 `name`；入库后会异步执行一次受控原生 Messages 用量采样。
+
+#### POST /api/admin/accounts/claude/oauth/exchange-session-key
+
+用从已登录 claude.ai 浏览器复制的 `session_key`（sessionKey cookie，接受
+`sessionKey=...` 整段）一键换号：服务端代替浏览器完成组织选择、PKCE 授权与 token
+交换后直接入库，`mode` 同上决定换出 OAuth 凭据或 Setup Token。sessionKey 不落库、
+不回显，换号成功后即可作废。前两步打 claude.ai 网页端，走账号代理并使用浏览器指纹
+客户端；401/403 表示 sessionKey 失效，3xx 视为被 Cloudflare 拦截。
+OAuth 刷新省略 `scope`，沿用最初授予的权限，避免把网页授权的较窄范围扩成完整 CLI 范围。
+
+#### POST /api/admin/accounts/claude/import
+
+直接导入 `cmd/claude_login -out` 生成的 JSON，或下面导出端点生成的 version 1
+Claude 凭据。同时接受单对象、对象数组和 `{"accounts":[...]}`。单对象保持历史
+`{message,id,email}` 响应，批量导入返回 `total`、`imported`、`failed` 与逐账号
+`items/warnings`。`auth_kind` 允许 `oauth`（默认，`refresh_token` 必填，`access_token` 可缺省——
+缺省时服务端先用 RT 走 refresh 授权换出 AT 并补齐邮箱/账号 UUID/套餐，RT 无效返回
+502）、`setup_token`（只需 `access_token`，`expires_at` 缺省为 1 年）或 `api_key`；未声明
+`auth_kind` 且没有 `refresh_token` 的文档仅当 `access_token` 形如 `sk-ant-oat01-`
+才按 `setup_token` 接受。模型列表仅允许 `claude-*`；API Key 自动发现会过滤兼容网关返回的其他模型。
+
+API Key 导入示例：
+
+```json
+{"auth_kind":"api_key","api_key":"example-key","base_url":"https://gateway.example/v1","name":"Messages gateway"}
+```
+
+API Key 账号还可选配置两项客户端请求特征（默认都不启用，出站保持"按原始内容转发"）：
+
+- `custom_headers`：账号级自定义出站请求头（对象），附加到该账号的每个上游请求
+  （含 `/v1/models` 模型发现），最后套用、优先级最高，可显式指定 `User-Agent`。
+  `Authorization`、`x-api-key`、`Content-Type`、`Content-Length`、`Host`、`Accept`、
+  `Accept-Encoding`、`Transfer-Encoding`、`Connection` 为网关保留头，出现即返回 400。
+  `PATCH /api/admin/accounts/:id/scheduler` 的 `custom_headers` 对 API Key 账号执行同样校验，
+  传 `null` 清空。
+- `claude_fingerprint_mode`：Claude Code 客户端身份仿真。空（默认）= 透传，只保留下游
+  `User-Agent`（缺失时为 `Codex2API`）；`force` = 始终携带 Claude Code CLI 的基础身份头
+  （`User-Agent: claude-cli/<版本> (external, cli)`、`X-App`、`X-Stainless-*`、
+  `X-Stainless-Retry-Count/Timeout`、`anthropic-dangerous-direct-browser-access`）；
+  `preserve` = 下游是真实 Claude Code CLI 时保留其身份头、缺失才补齐，非 CLI 客户端按 `force` 处理。
+  只改请求头，不复制 OAuth 会话状态、系统提示词或 `metadata` 身份，也不改变 `x-api-key` 鉴权；
+  `custom_headers` 中的同名头优先于仿真值。该字段对 API Key 账号不继承 OAuth 的全局默认。
+
+```json
+{"auth_kind":"api_key","api_key":"example-key","base_url":"https://gateway.example/v1","claude_fingerprint_mode":"force","custom_headers":{"X-Gateway-Tenant":"team-a"}}
+```
+
+裸 RT 导入在刷新前检查已存凭据，命中直接返回 409；有运行时账号池时，与后台刷新使用同一刷新租约。
+
+#### POST /api/admin/accounts/claude/import-tokens
+
+（旧名 `/import-setup-tokens` 仍可用。）批量粘贴令牌：`text`（任意分隔的自由文本）
+与 `tokens` 数组都会按前缀抽取、保序去重，单次最多 200 枚。`sk-ant-oat01-` 按
+`setup_token` 长效令牌入库；`sk-ant-ort01-` 是 OAuth refresh token，入库前先刷新换出
+AT，按 `oauth` 形态保存，备注默认取邮箱。可选 `name`（Setup Token 的备注前缀，默认
+`claude`，按现有 `<prefix>-N` 最大序号继续编号；单枚且给了 `name` 时直接用作备注）、
+`proxy_url` / `use_proxy_pool`（代理池模式下每枚令牌各取一条）、`timezone`、
+`group_refs`。返回与批量导入相同的 `total/imported/failed/items`；同一令牌（Setup
+Token 按 AT、Refresh Token 刷新前按原 RT，刷新后再按账号 UUID/RT）已存在返回 409（多枚时逐项失败）。
+
+导入文件可恢复账号名称、代理、时区、标签、启用状态、账号级指纹模式和受限身份头。
+分组使用 `group_refs: [{"name":"...","channel":"claude"}]` 按名称映射；不会复用
+另一实例的数字分组 ID，不存在的组会作为 warning 返回且不会自动创建。锁定、冷却和
+历史用量属于目标实例运行状态，不随凭据迁移。
+
+#### GET /api/admin/accounts/claude/export
+
+导出管理员专用的完整 Claude 凭据。`ids=1,2` 可精确选择账号，省略时导出全部；
+`filter=all|healthy` 控制是否只包含当前健康账号；`format=auto|json|zip` 控制输出格式
+（默认 auto：单条 JSON、多条 ZIP；`format=json` 可得到可直接再次导入的对象数组）。响应设置 `Content-Disposition`、实际数量
+`X-Export-Count`、`Cache-Control: no-store, max-age=0`、`Pragma: no-cache` 和
+`X-Content-Type-Options: nosniff`。
+
+version 1 文档包含 `type=claude`、`auth_kind`（`oauth`、`setup_token` 或 `api_key`，后两者 `refresh_token` 为空）、access/refresh token、账号 ID、
+过期时间、套餐、模型、代理、时区、`claude_fingerprint_mode`、标签、启用状态及
+`group_refs`。`fingerprint_headers` 允许 `User-Agent`、`X-App` 和
+`X-Stainless-*` 身份头，以及可选的 `claude_device_id` 账号身份元数据；后者兼容键名大小写，
+在导入、导出及时区指纹重建时保留，仅用于请求体中的设备身份，不作为 HTTP 头发送。
+`fingerprint_headers` 不包含 `Authorization`、Cookie、API Key 或其它自定义头。
+`api_key` 形态会在凭据字段中导出 `api_key` 和 `base_url`，用于完整恢复账号。下载内容为明文高敏凭据，下载后应立即加密保存或在迁移完成后删除。
+
+#### POST /api/admin/accounts/:id/claude/models
+
+刷新单个 Claude 账号的上游模型目录并保存到账号凭据。该操作只接受 Claude OAuth
+账号，返回 `models` 与 `count`。
+
+#### POST /api/admin/accounts/claude/models/refresh
+
+批量刷新启用的 Claude 账号模型目录，返回 `refreshed`、`failed` 和去重后的
+`model_count`。单账号失败不会回滚其他成功结果。
+
+#### POST /api/admin/accounts/:id/models/sync-upstream
+
+只读拉取指定 Claude 账号的上游模型目录，不覆盖账号白名单。确认后可用下面的
+PATCH 端点保存。
+
+#### PATCH /api/admin/accounts/:id/models
+
+设置账号级 Claude 模型白名单。非空数组只能包含 `claude-*` 模型；传空数组清除
+覆盖，恢复按账号目录/默认目录准入。服务端会拒绝跨 provider 的模型名。
+
+```json
+{
+  "models": ["claude-haiku-4-5", "claude-sonnet-4-5"]
+}
+```
+
+#### POST /api/admin/accounts/:id/usage/refresh
+
+执行一次有界的原生 Messages 用量探针，返回 5 小时/7 天窗口、重置时间和
+`claude_usage_probe_at` / `claude_usage_probe_error`。缺少上游用量头时仍记录采样
+时间；失败不会把未知用量伪造成 `0%`。
+
+Claude 账号详情还会返回脱敏的 `claude_user_agent` 指纹摘要；不会返回 OAuth token，
+也不会把任意自定义请求头暴露给管理页面。
+
+#### POST /api/admin/accounts/:id/models/probe
+
+只读并发探测账号可见的 `claude-*` 文本模型，返回 `available` 与逐模型
+`outcome`（`available`、`unsupported`、`throttled`、`error`）。模型探测不会写入
+账号冷却、错误或调度状态；追加 `?stream=true` 可接收 SSE 进度。
+
+#### GET /api/admin/accounts/:id/test
+
+执行一次手动原生 Messages 测连并以 SSE 返回 `test_start`、`content`、`diagnostics`、
+`error`、`test_complete`。与只读模型探测不同，手动测连会同步真实账号的用量/限流与错误
+状态；上游明确 rejected/耗尽时不会被“成功”结果清除。
+
+Claude 测连的 `diagnostics` 对象包含本次上游 HTTP 状态、响应头耗时、首段文本/思考
+内容耗时、总耗时（均为毫秒）、请求/响应模型、实际使用的指纹模式，以及可观测到的
+Request ID、Organization ID、Message ID、结束原因和错误类型。`usage` 保留原生
+`input_tokens`（未缓存输入）、`output_tokens`、缓存读取/写入及 5m/1h 缓存写入明细；
+流式累计用量按最新值更新，不重复相加。未观测到的字段省略，不以零代替。
+
+`response_headers` 是经过白名单筛选的诊断响应头（限流、请求标识等，不含 Cookie 或
+认证头），`response_body` 是已读取的 JSON/SSE 脱敏预览，最多 64 KiB；截断时
+`body_truncated=true`。成功和失败均可携带诊断信息。最终 `diagnostics` 事件可能位于
+`test_complete`/`error` 之后，客户端应读到 SSE 关闭再刷新账号快照。
+
+Claude 模型探测和连接测试的输出预算默认 4096；配置了正数 `max_output_tokens` 时取两者
+较小值，`0` 表示不设应用层上限。完整响应只有 thinking 时也可通过；流式响应仍要求终止
+事件，空响应或错误不能算成功。测试预算不等于实际消耗，实际输出可能包含 thinking token。
+
+#### GET/PUT /api/admin/settings/claude-config
+
+读取或更新 Claude 全局默认配置：`fingerprint_mode`（`preserve`/`force`）、
+`default_timezone` 与 `session_window_limit`。账号级调度设置可覆盖这些默认值；
+更新会热应用到运行时且不会改变 OAuth token。`force` 会把最终 User-Agent 与
+X-Stainless 身份头收敛为账号绑定指纹；显式修改账号时区会轮换该账号的身份指纹，
+最终上游 User-Agent 会写入 UsageLog 审计字段。
+
+### Antigravity credential and state administration
+
+Every endpoint in this section is registered under the existing `/api/admin` authentication middleware and requires the configured admin secret.
+
+#### GET /api/admin/accounts/antigravity/export
+
+Downloads active Antigravity credentials. Optional `ids=1,2` selects accounts; omitting it exports all active Antigravity accounts. A single match returns `application/json; charset=utf-8`; multiple matches return `application/zip`, one sanitized-name JSON member per account. Responses set `Content-Disposition: attachment`, `X-Export-Count` to the actual number of exported credentials, `Cache-Control: no-store, max-age=0`, `Pragma: no-cache`, and `X-Content-Type-Options: nosniff`. No match (including a wrong-channel-only selection) returns `404`.
+
+The response is intentionally secret-bearing and is accepted by the Antigravity batch importer for backup restoration. OAuth JSON includes usable access/refresh/ID tokens and OAuth client metadata. API-key JSON explicitly includes `auth_kind: "api_key"`, `api_key`, declared models, model mapping, and the exported enabled state. Never log, cache, or expose this download to non-admin callers.
+
+Unlike the other export endpoints, `include_proxy` defaults to **enabled** here: this channel has always emitted the account's bound `proxy_url`, and dropping it would silently break the round-trip of existing backups. Pass `include_proxy=0` to exclude it. When enabled, entries also carry `proxy_label` and `proxy_enabled`; proxy URLs frequently embed credentials, so treat the download accordingly. The importer registers those proxies into the proxy table only when its own `import_proxy` flag is set — see [proxy_pool.md](proxy_pool.md#随账号导出导入迁移代理绑定).
+
+#### GET /api/admin/accounts/:id/antigravity/state
+
+Returns persisted sanitized state without an upstream call:
+
+```json
+{
+  "account_id": 42,
+  "credential_generation": 3,
+  "credential_kind": "api_key",
+  "catalog": {
+    "models": ["gemini-2.5-flash"],
+    "source": "declared",
+    "verified": false,
+    "synchronized": true
+  },
+  "identity": {
+    "status": "not_applicable",
+    "email_verified": false,
+    "subject_known": false,
+    "project_status": "not_applicable"
+  },
+  "capabilities": [],
+  "warnings": ["API-key catalog is local and unverified; run an explicit capability probe before claiming Interactions compatibility"]
+}
+```
+
+OAuth state can additionally include sanitized `permissions`, `quota`, project status/ID, synchronization timestamps, and explicit capability observations. Tokens, client secrets, and API keys are never returned.
+
+#### POST /api/admin/accounts/:id/antigravity/sync
+
+OAuth accounts refresh/synchronize the read-only Google identity, project, entitlement, quota, and model control plane. API-key accounts perform no remote catalog/control-plane verification; the response uses `remote: false`, `verified: false`, and `catalog_source: "declared"` or `"default"`.
+
+#### POST /api/admin/accounts/:id/antigravity/capabilities/probe
+
+Explicitly performs one bounded non-stream generation request against the first configured/default model and persists the result under the current credential generation. This action consumes minimal generation quota and never runs during ordinary state reads or sync. API-key Interactions compatibility is `verified: true` only after a successful HTTP response with a valid JSON content type/envelope. Error responses return a sanitized observation/warning without tokens or keys.
+
+Wrong-channel accounts return `400`; missing accounts return `404`; a concurrent credential generation change returns `409`.
+
+#### POST /api/admin/accounts
+
+添加 Refresh Token 账号（支持批量）。
+
+**请求:**
+
+```json
+{
+  "name": "my-account",
+  "refresh_token": "rt_xxxxxxxxxxxx",
+  "proxy_url": "http://proxy.example.com:8080",
+  "custom_headers": {
+    "Chatgpt-Account-Id": "team-workspace-id"
+  }
+}
+```
+
+**参数说明:**
+
+| 参数          | 类型   | 必填 | 说明                                                   |
+| ------------- | ------ | ---- | ------------------------------------------------------ |
+| name          | string | 否   | 账号名称，批量时自动追加序号，默认 `account-{n}`       |
+| refresh_token | string | 是   | Refresh Token，多个用 `\n` 换行分隔（单次最多 100 个） |
+| proxy_url     | string | 否   | 代理 URL                                               |
+| custom_headers | object | 否   | 自定义上游请求头；`Chatgpt-Account-Id` 用于指定目标工作区 |
+
+同一份 RT 可以分别以“默认工作区”和多个 `Chatgpt-Account-Id` 路由加入账号池。额度、冷却、调度和统计按账号记录独立维护；同一登录身份下的相同目标工作区仍会去重。
+
+批量添加（使用换行分隔）:
+
+```json
+{
+  "name": "batch",
+  "refresh_token": "rt_xxx1\nrt_xxx2\nrt_xxx3",
+  "proxy_url": ""
+}
+```
+
+**响应:**
+
+```json
+{
+  "message": "成功添加 3 个账号",
+  "success": 3,
+  "failed": 0
+}
+```
+
+**curl 示例:**
+
+单个添加:
+
+```bash
+curl -X POST http://localhost:8080/api/admin/accounts \
+  -H "X-Admin-Key: your-admin-secret" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "my-account", "refresh_token": "rt_xxxxxxxxxxxx", "proxy_url": ""}'
+```
+
+批量添加（换行分隔）:
+
+```bash
+curl -X POST http://localhost:8080/api/admin/accounts \
+  -H "X-Admin-Key: your-admin-secret" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "batch", "refresh_token": "rt_xxx1\nrt_xxx2\nrt_xxx3"}'
+```
+
+> 添加后系统自动在后台刷新 Access Token，无需手动触发。
+
+#### POST /api/admin/accounts/at
+
+添加 Access Token（AT-only）账号（支持批量）。适用于只有 AT 没有 RT 的场景。
+
+**请求:**
+
+```json
+{
+  "name": "my-at-account",
+  "access_token": "eyJhbGciOiJSUzI1NiIs...",
+  "proxy_url": "http://proxy.example.com:8080",
+  "custom_headers": {
+    "Chatgpt-Account-Id": "team-workspace-id"
+  }
+}
+```
+
+**参数说明:**
+
+| 参数         | 类型   | 必填 | 说明                                                  |
+| ------------ | ------ | ---- | ----------------------------------------------------- |
+| name         | string | 否   | 账号名称，批量时自动追加序号，默认 `at-account-{n}`   |
+| access_token | string | 是   | Access Token，多个用 `\n` 换行分隔（单次最多 100 个） |
+| proxy_url    | string | 否   | 代理 URL                                              |
+| custom_headers | object | 否 | 自定义上游请求头；`Chatgpt-Account-Id` 用于指定目标工作区 |
+
+同一个 AT 可以按不同目标工作区保存为多条独立路由。对于无法从 AT 解析登录身份的情况，系统至少会按“AT 原文 + 目标工作区”避免同一路由重复写入。
+
+批量添加:
+
+```json
+{
+  "name": "batch-at",
+  "access_token": "eyJtoken1...\neyJtoken2...\neyJtoken3...",
+  "proxy_url": ""
+}
+```
+
+**响应:**
+
+```json
+{
+  "message": "成功添加 3 个 AT 账号",
+  "success": 3,
+  "failed": 0
+}
+```
+
+**curl 示例:**
+
+```bash
+curl -X POST http://localhost:8080/api/admin/accounts/at \
+  -H "X-Admin-Key: your-admin-secret" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "my-at", "access_token": "eyJhbGciOiJSUzI1NiIs..."}'
+```
+
+> AT-only 账号无法自动刷新，过期后需重新添加。系统会自动解析 JWT 提取 email、plan_type 等信息。
+
+#### DELETE /api/admin/accounts/:id
+
+删除账号（软删除，标记为 deleted）。
+
+**响应:**
+
+```json
+{
+  "message": "账号已删除"
+}
+```
+
+#### POST /api/admin/accounts/:id/refresh
+
+手动刷新账号 Access Token。
+
+**响应:**
+
+```json
+{
+  "message": "账号刷新成功"
+}
+```
+
+#### GET /api/admin/accounts/:id/test
+
+测试账号连接。
+
+**响应:** `text/event-stream`。以下为成功测连的事件示例：
+
+```text
+data: {"type":"test_start","model":"claude-haiku-4-5"}
+
+data: {"type":"content","text":"pong"}
+
+data: {"type":"test_complete","success":true}
+
+data: {"type":"diagnostics","diagnostics":{"model":"claude-haiku-4-5","http_status":200,"duration_ms":523}}
+```
+
+`diagnostics` 事件按渠道携带各自形态的诊断对象，失败由 `error` 事件返回。Claude 账号携带
+`diagnostics` 字段（具体字段见上文 Claude 原生 Messages 测连说明）；Codex / OpenAI Responses
+账号携带 `codex_diagnostics` 字段，两者不会同时出现。两种渠道都遵守同一顺序约定：拿到上游
+响应头后先推一帧只含状态码/响应头信息的诊断，流结束后再推带 `duration_ms` 的最终帧，最终帧
+可能位于 `test_complete`/`error` 之后，客户端应读到 SSE 关闭再刷新账号快照。请求在拿到响应
+头之前就失败（DNS/代理/超时）时不单发 `diagnostics` 事件，诊断对象直接挂在 `error` 事件上，
+只含 `model` 与 `duration_ms`。
+
+WebSocket 诊断不使用连接池的旧握手头：`headers_ms` 留空，`first_frame_ms` 表示本次请求首个上游帧的等待时间。
+`request_id`、`cf_ray` 和响应头来自本次 metadata 帧；同名头以最新帧覆盖。未收到相应字段时留空。
+
+Codex 测连的 `codex_diagnostics` 对象包含：
+
+- `http_status`、`headers_ms`（HTTP 拿到响应头耗时）、`first_frame_ms`（WS 首帧耗时）、`first_content_ms`（首段文本耗时）、
+  `duration_ms`（总耗时），单位毫秒；未观测到的字段省略，不以零代替。
+- `model`（请求模型）、`response_model`（上游 `response.model`）、`transport`
+  （`http` / `websocket`，强制 WS 模式下用量窗口来自 `codex.rate_limits` 帧而非响应头）。
+- `request_id`（优先账号自定义的 `upstream_request_id_header`，否则依次取 `x-request-id`、
+  `request-id`、`x-openai-request-id`、`x-oai-request-id`、`x-goog-request-id`）、`response_id`
+  （`response.id`）、`cf_ray`、`plan_type`（`x-codex-plan-type`）。
+- `safety_buffering_enabled` / `safety_buffering_faster_model`：上游 `x-codex-safety-buffering-*`
+  头（HTTP 响应头或 WS 的 `codex.response.metadata` 帧）。enabled 只表示该模型开着"安全缓冲"
+  能力（上游可能为额外审查扣住输出），faster_model 是官方 CLI "Retry with a faster model"
+  的切换目标，不是本次的回答模型；`safety_buffered=true` 才表示本轮事件里出现过
+  `safety_buffering: true`。
+- `response_status`（最后观测到的 `response.status`，正常终态为 `completed` / `failed` /
+  `incomplete`；流在终态前中断时会停在 `in_progress` 等中间态）、`incomplete_reason`、
+  `error_type`、`error_code`（来自流内 `error` 事件、`response.error`、
+  `response.status_details.error` 或非 200 的 JSON 正文）。
+- `primary_window` / `secondary_window`：`x-codex-primary-*` / `x-codex-secondary-*` 三件套的
+  原样投影 `{used_percent, window_minutes, reset_after_seconds}`，按 `window_minutes` 判断是
+  5h（≥ 60）还是 7d（≥ 1440）窗口。
+- `usage`：终态 `input_tokens`、`output_tokens`、`total_tokens`、`cached_input_tokens`
+  （`input_tokens_details.cached_tokens`）、`reasoning_output_tokens`
+  （`output_tokens_details.reasoning_tokens`），按最新终态值覆盖。
+- `response_headers`：白名单筛选的诊断响应头（`x-codex-*`、`x-ratelimit-*`、`openai-*`、
+  请求标识、`retry-after`、`cf-ray` 等，不含 Cookie 或认证头）；`response_body`：已读取的
+  JSON/SSE 脱敏预览（Access Token / API Key / 代理凭据已替换），最多 64 KiB，截断时
+  `body_truncated=true`。
+
+```text
+data: {"type":"test_start","model":"gpt-5.5"}
+
+data: {"type":"diagnostics","codex_diagnostics":{"model":"gpt-5.5","http_status":200,"headers_ms":412,"transport":"http","request_id":"req_x","plan_type":"plus","primary_window":{"used_percent":12.5,"window_minutes":300,"reset_after_seconds":1800}}}
+
+data: {"type":"content","text":"pong"}
+
+data: {"type":"test_complete","success":true}
+
+data: {"type":"diagnostics","codex_diagnostics":{"model":"gpt-5.5","http_status":200,"headers_ms":412,"first_content_ms":980,"duration_ms":1210,"response_id":"resp_x","response_status":"completed","usage":{"input_tokens":20,"output_tokens":3,"total_tokens":23}}}
+```
+
+#### GET /api/admin/accounts/:id/usage
+
+获取单个账号用量统计。
+
+**响应:**
+
+```json
+{
+  "id": 1,
+  "name": "account-1",
+  "total_requests": 100,
+  "total_tokens": 5000,
+  "last_7d_requests": 500,
+  "last_7d_tokens": 25000
+}
+```
+
+#### POST /api/admin/accounts/import
+
+批量导入账号（支持 TXT/JSON/AT-TXT 三种格式）。
+
+**请求:**
+
+- Method: POST
+- Content-Type: multipart/form-data
+
+**Form 字段:**
+
+| 字段         | 类型   | 必填 | 说明                                       |
+| ------------ | ------ | ---- | ------------------------------------------ |
+| file         | file   | 是   | 上传文件（最大 20MB，JSON 格式支持多文件） |
+| format       | string | 否   | 文件格式：`txt`（默认）、`json`、`at_txt`  |
+| proxy_url    | string | 否   | 代理 URL                                   |
+| import_proxy | bool   | 否   | 采用文件内携带的代理，并注册进代理池       |
+
+**import_proxy 说明:**
+
+传 `true` 时，JSON 文件里每个账号携带的 `proxy_url` 生效（优先于表单的 `proxy_url`），
+这些代理会先写进代理表、同步进内存代理池，然后才写账号——顺序不能颠倒，账号先绑上
+一个尚未入池的托管代理会被判定为无可用出口而不可调度。TXT 格式一行一个 Token，
+物理上带不了代理，该开关对其无效。
+
+行为细节：
+
+- 单次最多注册 500 条代理，超限则一条都不注册、全部账号退回表单代理；
+- 格式非法的代理条目被跳过，对应账号退回表单代理，不会绑上未入池的 URL；
+- 已存在的同 URL 代理按 `ON CONFLICT DO NOTHING` 跳过，**不会**被复活或改标签，
+  若它在本机是禁用/测试失败状态，绑定它的账号不会被调度，响应里会给出告警；
+- 源端标记为禁用的代理一律以启用态导入，并在响应里告警；
+- 新注册的代理打上 `imported-<YYYYMMDD-HHmm>` 标签，便于事后按批筛选清理；
+- 命中已有账号时，文件带来的代理**不覆盖**该账号已有的绑定（只填补空绑定）；
+  表单填写的 `proxy_url` 维持既有的覆盖语义。
+
+SSE 的 `complete` 事件会带上 `proxies_imported` / `proxies_skipped` / `warning`。
+
+**其它渠道:**
+
+Grok 与 Antigravity 的批量导入支持同名开关，但走 JSON 请求体而非 form 字段，
+响应里的告警字段叫 `proxy_warning`（与 `proxies_imported` / `proxies_skipped` 一起，
+仅在开关打开时出现）：
+
+| 端点                                   | 字段                    | 生效范围                                                       |
+| -------------------------------------- | ----------------------- | -------------------------------------------------------------- |
+| `POST /api/admin/accounts/grok/import` | `import_proxy` (bool)   | 只对 JSON 凭据文件生效；`sso.txt` / `refreshtoken.txt` 一行一个 Token，物理上带不了代理 |
+| `POST /api/admin/accounts/antigravity/import` | `import_proxy` (bool) | 只控制「是否入代理表」，见下                                     |
+
+Antigravity 的导入**一直**会采用文件里的 `proxy_url`，只是从不入表：账号绑的是一个
+代理池不认识的 URL，管理页看不见、也进不了轮转。该开关只补上入表这一步，关闭时维持
+既有行为，不改变代理的取用优先级。
+
+上述规则（写入顺序、500 条上限、非法条目回退、不复活既有代理、不覆盖已有绑定）三个
+渠道完全一致，详见 [proxy_pool.md](proxy_pool.md#随账号导出导入迁移代理绑定)。
+
+**format 格式说明:**
+
+- **`txt`** — 每行一个 Refresh Token:
+
+  ```text
+  rt_xxxxxx1
+  rt_xxxxxx2
+  rt_xxxxxx3
+  ```
+
+- **`json`** — CLIProxyAPI 凭证 JSON 格式（支持数组或单对象）:
+
+  ```json
+  [
+    { "refresh_token": "rt_xxx1", "email": "user1@example.com" },
+    { "refresh_token": "rt_xxx2", "email": "user2@example.com" }
+  ]
+  ```
+
+- **`at_txt`** — 每行一个 Access Token（AT-only 模式）:
+
+  ```text
+  eyJhbGciOiJSUzI1NiIs...token1
+  eyJhbGciOiJSUzI1NiIs...token2
+  ```
+
+> 所有格式均自动文件内去重 + 数据库去重，已存在的 Token 计入 `duplicate` 不重复导入。
+
+**curl 示例:**
+
+导入 RT（TXT 格式）:
+
+```bash
+curl -X POST http://localhost:8080/api/admin/accounts/import \
+  -H "X-Admin-Key: your-admin-secret" \
+  -F "file=@tokens.txt" \
+  -F "format=txt" \
+  -F "proxy_url=http://proxy.example.com:8080"
+```
+
+导入 RT（JSON 格式）:
+
+```bash
+curl -X POST http://localhost:8080/api/admin/accounts/import \
+  -H "X-Admin-Key: your-admin-secret" \
+  -F "file=@credentials.json" \
+  -F "format=json"
+```
+
+导入 AT（AT-TXT 格式）:
+
+```bash
+curl -X POST http://localhost:8080/api/admin/accounts/import \
+  -H "X-Admin-Key: your-admin-secret" \
+  -F "file=@access_tokens.txt" \
+  -F "format=at_txt"
+```
+
+**响应:** SSE 流式进度
+
+```text
+data: {"type":"progress","current":5,"total":10,"success":3,"duplicate":1,"failed":1}
+
+data: {"type":"complete","current":10,"total":10,"success":8,"duplicate":1,"failed":1}
+```
+
+若所有 Token 均已存在，返回普通 JSON（非 SSE）:
+
+```json
+{
+  "message": "所有 10 个 RT 已存在，无需导入",
+  "success": 0,
+  "duplicate": 10,
+  "failed": 0,
+  "total": 10
+}
+```
+
+#### POST /api/admin/accounts/batch-test
+
+批量测试账号连接。
+
+**请求:**
+
+```json
+{
+  "ids": [1, 2, 3],
+  "concurrency": 5
+}
+```
+
+**响应:** SSE 流式进度
+
+```
+data: {"type":"progress","current":3,"total":3,"success":2,"failed":1}
+
+data: {"type":"complete","current":3,"total":3,"success":2,"failed":1}
+```
+
+#### POST /api/admin/accounts/clean-banned
+
+清理 Unauthorized（401）账号。
+
+**响应:**
+
+```json
+{
+  "message": "已清理 5 个账号",
+  "cleaned": 5
+}
+```
+
+#### POST /api/admin/accounts/clean-rate-limited
+
+清理 Rate Limited（429）账号。
+
+#### POST /api/admin/accounts/clean-error
+
+清理 Error 状态账号。
+
+#### GET /api/admin/accounts/export
+
+导出账号（标准 JSON 格式）。
+
+**查询参数:**
+
+- `filter`: healthy (只导出健康账号)
+- `ids`: 1,2,3 (指定 ID 列表)
+- `remote`: true (远程迁移模式)
+- `include_proxy`: 1 (连同账号绑定的代理一起导出，默认关闭)
+
+**响应:**
+
+```json
+[
+  {
+    "type": "codex",
+    "email": "user@example.com",
+    "expired": "2024-12-31T23:59:59Z",
+    "id_token": "id_xxx",
+    "account_id": "acc_xxx",
+    "access_token": "at_xxx",
+    "last_refresh": "2024-01-01T12:00:00Z",
+    "refresh_token": "rt_xxx"
+  }
+]
+```
+
+**include_proxy 说明:**
+
+开启后每个条目追加 `proxy_url` / `proxy_label` / `proxy_enabled` 三项，配合导入端的
+`import_proxy` 即可把「号池 + 代理绑定关系」整体迁走。三项都只在账号确实绑了代理时
+出现，未绑定的账号不会多出空字段。
+
+> ⚠️ 代理 URL 常常内嵌用户名密码，导出文件本就含明文 `refresh_token`，开启后敏感度
+> 更高，请按机密文件处理。
+
+`/accounts/grok/export`、`/accounts/antigravity/export`、`/accounts/recycle-bin/export`
+同样支持该参数。其中 Antigravity 的导出**一直**会写出 `proxy_url`（历史行为，默认即为
+开启），去掉它反而会让既有的迁移流程静默丢配置；要排除代理需显式传 `include_proxy=0`。
+
+`remote=true` 的远程迁移模式默认同样不带代理：目标机未必连得上源机的代理网段，静默
+继承会让整批账号绑上不可达出口。
+
+只绑到分组、由分组下发的代理不属于账号自身的绑定，不会被账号导出携带——目标端需要
+先建好同名分组。
+
+#### POST /api/admin/accounts/migrate
+
+从远程 codex2api 实例迁移账号。
+
+**请求:**
+
+```json
+{
+  "url": "http://remote-instance:8080",
+  "admin_key": "remote-admin-secret"
+}
+```
+
+**响应:** SSE 流式进度
+
+#### GET /api/admin/accounts/event-trend
+
+获取账号增删趋势。
+
+**查询参数:**
+
+- `start`: RFC3339 格式开始时间
+- `end`: RFC3339 格式结束时间
+- `bucket_minutes`: 聚合桶大小（默认 60）
+
+**响应:**
+
+```json
+{
+  "trend": [{ "timestamp": "2024-01-01T00:00:00Z", "added": 5, "deleted": 0 }]
+}
+```
+
+### 用量统计
+
+#### GET /api/admin/usage/stats
+
+获取使用统计。
+
+**响应:**
+
+```json
+{
+  "total_requests": 10000,
+  "total_tokens": 500000,
+  "today_requests": 500,
+  "today_tokens": 25000,
+  "rpm": 50,
+  "tpm": 2500,
+  "error_rate": 0.02
+}
+```
+
+#### GET /api/admin/usage/logs
+
+获取使用日志。
+
+HTTP `/v1/*` 响应的 `X-Codex2API-Request-ID` 对应下方可检索的 `request_id`，浏览器可通过 CORS 读取。
+既有 `X-Request-ID` 是请求上下文/访问日志 ID，可能回显客户端传入值，与该网关追踪 ID 独立；排查用量请使用 `X-Codex2API-Request-ID`。
+自动压缩用量的 `parent_request_id` 优先引用父请求的网关追踪 ID；`/v1/live` 结算沿用建连请求的追踪信息。
+
+**查询参数:**
+
+- `start`: RFC3339 开始时间
+- `end`: RFC3339 结束时间
+- `page`: 页码
+- `page_size`: 每页条数 (最大 200)
+- `email`: 按账号邮箱过滤
+- `model`: 按模型过滤
+- `endpoint`: 按端点过滤
+- `api_key_id`: 按 API 密钥 ID 过滤
+- `request_id`: 网关追踪 ID，精确匹配
+- `upstream_request_id`: 上游请求 ID，精确匹配
+- `q`: 模糊搜索，包含网关及上游请求 ID
+- `fast`: true/false (是否 fast 服务)
+- `stream`: true/false (是否流式)
+
+**响应:**
+
+```json
+{
+  "logs": [
+    {
+      "id": 1,
+      "account_id": 1,
+      "request_id": "019-example-gateway-id",
+      "upstream_request_id": "req_example",
+      "upstream_proxy_id": 1,
+      "upstream_proxy_name": "local-egress",
+      "injected_turn_state": "",
+      "upstream_turn_state": "gAAAAABo...",
+      "account_email": "user@example.com",
+      "api_key_id": 3,
+      "api_key_name": "Team A",
+      "api_key_masked": "sk-t****...****1234",
+      "endpoint": "/v1/chat/completions",
+      "model": "gpt-5.5",
+      "status_code": 200,
+      "duration_ms": 523,
+      "first_token_ms": 150,
+      "prompt_tokens": 25,
+      "completion_tokens": 15,
+      "total_tokens": 40,
+      "created_at": "2024-01-01T12:00:00Z"
+    }
+  ],
+  "total": 1000
+}
+```
+
+`upstream_turn_state` 是上游响应回带的 `X-Codex-Turn-State`（HTTP 取响应头，WebSocket 取流内 metadata 帧），空串表示没有。`injected_turn_state` 与 `turn_state_overridden` 只保留给更早版本写入的用量记录。
+
+#### GET /api/admin/usage/chart-data
+
+获取图表聚合数据。
+
+**查询参数:**
+
+- `start`: RFC3339 开始时间
+- `end`: RFC3339 结束时间
+- `bucket_minutes`: 聚合桶大小（默认 5）
+
+**响应:**
+
+```json
+{
+  "buckets": [
+    {
+      "time": "2024-01-01T12:00:00Z",
+      "requests": 50,
+      "tokens": 2500,
+      "latency_ms": 500
+    }
+  ],
+  "total_requests": 1000,
+  "total_tokens": 50000
+}
+```
+
+#### DELETE /api/admin/usage/logs
+
+清空使用日志。
+
+**响应:**
+
+```json
+{
+  "message": "日志已清空"
+}
+```
+
+### 模型生图计费设置
+
+`PUT /api/admin/model-pricing`（`X-Admin-Key` 鉴权）可配置图片模型的用户计费方式：
+
+```json
+{
+  "model": "gpt-image-2",
+  "pricing": {
+    "user_billing_mode": "per_image",
+    "image_unit_price": 0.05
+  }
+}
+```
+
+`user_billing_mode` 为 `token`（默认）或 `per_image`；按张模式仅接受图片模型，且 `image_unit_price` 必须是大于 0 的美元金额。`GET /api/admin/model-pricing` 返回当前生效设置。保存时 `pricing` 替换该模型的整份手工覆盖，要保留自定义 Token 成本价格时一并提交原字段；`{"model":"gpt-image-2","reset":true}` 清除手工覆盖。
+
+按张模式下，成功图片张数 × 单价写入 `user_billed`，上游 Token 成本仍写入 `account_billed`。用量日志及 Key 公开用量记录新增 `user_billing_mode`、`image_unit_price`、`billed_image_count`；失败或未交付的图片费用为 0，历史记录不随调价重新计费。公开工作台额度响应的 `image_pricing` 仅提供用户计费方式和单价，不提供上游成本费率。完整行为见 [生图按张计费](CONFIGURATION.md#生图按张计费)。
+
+### API Key 管理
+
+#### GET /api/admin/keys
+
+获取所有 API 密钥。管理接口需要 `X-Admin-Key`，这些接口不属于对外 `/v1/*` 客户端 API。该接口会在 `raw_key` 返回完整密钥，只能在受信任后台使用。
+
+**响应:**
+
+```json
+{
+  "keys": [
+    {
+      "id": 1,
+      "name": "Claude Code",
+      "key": "sk-****...abcd",
+      "raw_key": "sk-live-full-key",
+      "quota_limit": 10,
+      "quota_used": 1.25,
+      "expires_at": "2026-06-01T00:00:00Z",
+      "allowed_group_ids": [1],
+      "status": "active",
+      "created_at": "2024-01-01T00:00:00Z"
+    }
+  ]
+}
+```
+
+#### POST /api/admin/keys
+
+创建新 API 密钥。
+
+**请求:**
+
+```json
+{
+  "name": "production",
+  "key": "sk-custom-key",
+  "quota_limit": 10,
+  "expires_in_days": 30,
+  "allowed_group_ids": [1]
+}
+```
+
+| 字段                | 类型      | 必填 | 说明                                   |
+| ------------------- | --------- | ---- | -------------------------------------- |
+| name                | string    | 是   | 显示名称                               |
+| key                 | string    | 否   | 自定义密钥；省略则自动生成             |
+| quota_limit / quota | number    | 否   | 额度上限，0 或省略表示不限额           |
+| expires_at          | string    | 否   | RFC3339 或本地日期时间                 |
+| expires_in_days     | number    | 否   | N 天后过期；0 表示不过期               |
+| allowed_group_ids   | integer[] | 否   | 允许调度的账号分组；空数组表示全部分组 |
+
+**响应:**
+
+```json
+{
+  "id": 2,
+  "key": "sk-xxxxxxxxxxxxxxxxxxxxxxxx",
+  "name": "production",
+  "quota_limit": 10,
+  "quota_used": 0,
+  "expires_at": "2026-06-12T00:00:00Z",
+  "allowed_group_ids": [1]
+}
+```
+
+#### PATCH /api/admin/keys/:id
+
+编辑 API 密钥名称、额度、过期时间和允许账号分组。字段省略时保持原值。
+
+**请求:**
+
+```json
+{
+  "name": "Cherry Studio",
+  "quota_limit": 25,
+  "expires_at": null,
+  "allowed_group_ids": []
+}
+```
+
+| 字段                | 类型        | 说明                                   |
+| ------------------- | ----------- | -------------------------------------- |
+| name                | string      | 新显示名称                             |
+| quota_limit / quota | number/null | 新额度上限；0 或 null 清除额度限制     |
+| expires_at          | string/null | 新过期时间；null 清除过期时间          |
+| expires_in_days     | number      | N 天后过期；0 清除过期时间             |
+| allowed_group_ids   | integer[]   | 允许调度的账号分组；空数组表示全部分组 |
+
+**响应:**
+
+```json
+{
+  "message": "API Key 已更新"
+}
+```
+
+#### DELETE /api/admin/keys/:id
+
+删除 API 密钥。
+
+**响应:**
+
+```json
+{
+  "message": "已删除"
+}
+```
+
+### 账号分组管理
+
+账号分组用于把账号池划分为多个可调度集合。API Key 的 `allowed_group_ids` 可以限制下游密钥只能使用指定分组；账号自己的 `allowed_api_key_ids` 也可以反向限制哪些 API Key 能调度该账号。分组还可以通过 `base_concurrency_override` 为成员账号提供基础并发继承值：账号级覆盖优先，账号属于多个分组时取最小的有效分组值，均未设置时回退到全局 `max_concurrency`。
+
+#### GET /api/admin/account-groups
+
+获取账号分组。
+
+**响应:**
+
+```json
+{
+  "groups": [
+    {
+      "id": 1,
+      "name": "Team",
+      "description": "付费团队账号",
+      "color": "#2563eb",
+      "sort_order": 0,
+      "base_concurrency_override": 4,
+      "member_count": 8,
+      "created_at": "2026-05-13T00:00:00Z",
+      "updated_at": "2026-05-13T00:00:00Z"
+    }
+  ]
+}
+```
+
+#### POST /api/admin/account-groups
+
+创建账号分组。
+
+**请求:**
+
+```json
+{
+  "name": "Team",
+  "description": "付费团队账号",
+  "color": "#2563eb",
+  "sort_order": 0,
+  "base_concurrency_override": 4
+}
+```
+
+**响应:**
+
+```json
+{
+  "id": 1,
+  "message": "分组已创建"
+}
+```
+
+#### PATCH /api/admin/account-groups/:id
+
+编辑账号分组。
+
+**请求:**
+
+```json
+{
+  "name": "Team Plus",
+  "description": "高优先级账号",
+  "color": "#16a34a",
+  "sort_order": 10,
+  "base_concurrency_override": 2
+}
+```
+
+`base_concurrency_override` 最小为 `1`，无上限。创建时省略或传 `null` 表示不设置分组覆盖；PATCH 时传 `null` 会清除已有值并恢复继承。该值只决定基础并发，健康档位、用量保护和智能配速仍可能继续下调实际并发。
+
+**响应:**
+
+```json
+{
+  "message": "分组已更新"
+}
+```
+
+#### DELETE /api/admin/account-groups/:id
+
+删除账号分组。分组仍有成员时需要 `?force=true`；删除后会从账号关系中移除该 ID，并尽量从 API Key 允许分组中清理。若某个 API Key 仅绑定该分组，为避免权限被意外放大，会保留为缺失分组状态。
+
+```bash
+curl -X DELETE "http://localhost:8080/api/admin/account-groups/1?force=true" \
+  -H "X-Admin-Key: your-secret"
+```
+
+**响应:**
+
+```json
+{
+  "message": "分组已删除"
+}
+```
+
+### 系统设置
+
+#### GET /api/admin/settings
+
+获取系统设置。
+
+**响应:**
+
+```json
+{
+  "max_concurrency": 2,
+  "global_rpm": 0,
+  "test_model": "gpt-5.5",
+  "test_content": "hi",
+  "test_concurrency": 50,
+  "proxy_url": "",
+  "pg_max_conns": 50,
+  "redis_pool_size": 30,
+  "auto_clean_unauthorized": false,
+  "auto_clean_rate_limited": false,
+  "auto_clean_full_usage": false,
+  "auto_clean_error": false,
+  "auto_activate_5h_window_enabled": false,
+  "proxy_pool_enabled": false,
+  "fast_scheduler_enabled": false,
+  "max_retries": 2,
+  "max_rate_limit_retries": 1,
+  "retry_interval_ms": 0,
+  "transport_retry_policy": "rotate",
+  "continuous_retry_enabled": false,
+  "continuous_retry_catch_all": false,
+  "continuous_retry_categories": ["transport", "http_429", "http_5xx", "stream_error"],
+  "continuous_retry_status_codes": [],
+  "continuous_retry_error_codes": [],
+  "continuous_retry_max_duration_seconds": 600,
+  "codex_fingerprint_default_mode": "off",
+  "codex_unified_client_identity_enabled": false,
+  "scheduler_mode": "round_robin",
+  "allow_remote_migration": false,
+  "database_driver": "postgres",
+  "database_label": "PostgreSQL",
+  "cache_driver": "redis",
+  "cache_label": "Redis",
+  "response_cache_local_max_bytes": 67108864,
+  "response_cache_local_max_entry_bytes": 8388608,
+  "response_cache_reconstruct_max_bytes": 67108864,
+  "response_cache_config_generation": 1,
+  "admin_secret": "",
+  "admin_auth_source": "env"
+}
+```
+
+#### PUT /api/admin/settings
+
+更新系统设置。
+
+**请求:**
+
+```json
+{
+  "max_concurrency": 4,
+  "global_rpm": 100,
+  "test_model": "gpt-5.5",
+  "test_content": "say pong",
+  "test_concurrency": 50,
+  "proxy_url": "http://proxy.example.com:8080",
+  "auto_clean_unauthorized": true,
+  "auto_clean_rate_limited": false,
+  "fast_scheduler_enabled": true,
+  "scheduler_mode": "remaining_quota",
+  "max_rate_limit_retries": 2,
+  "retry_interval_ms": 500,
+  "transport_retry_policy": "sticky",
+  "codex_fingerprint_default_mode": "session",
+  "response_cache_local_max_bytes": 134217728,
+  "response_cache_local_max_entry_bytes": 8388608,
+  "response_cache_reconstruct_max_bytes": 134217728
+}
+```
+
+**响应:** 更新后的完整设置对象
+
+`codex_fingerprint_default_mode`（`off`/`device`/`session`/`full`，默认 `off`）是新导入或新建 Codex 账号默认盖上的设备指纹收敛档位，只影响之后新加入的账号；已有账号档位不变，入库后仍可在账号级单独调整。非法取值返回 HTTP 400。
+
+`codex_unified_client_identity_enabled`（默认 `false`）控制网关自发的 Codex 维护请求是否与对话请求使用同一份客户端身份。开启后，wham 用量查询、重置券查询与消耗、每日用量、token 明细、订阅同步（Codex 形态）、模型清单（含下游透传）以及 OpenAI Responses 中转账号的模型发现，都改用与对话出站相同的解析：按 `codex_user_agent_config` 生成（号池模式按账号抽取画像），`Originator` 跟随生成的 UA，最后套用账号自定义头里的 `User-Agent` / `Originator` / `Version`。模型清单的 `client_version` 查询参数、`Version` 头与 UA 版本段取同一版本；中转账号的 installation id 改为按中转凭据派生，对话请求体与模型发现请求头取同一值。维护请求不会新增原本不发送的头（例如 wham 探针不补 `Version` 或 `X-Codex-Installation-Id`）。订阅同步被挑战时的浏览器形态回退、邀请接口与外部版本/指纹库同步不受影响。配置身份解析失败（如 `auto` 模式下版本低于最低要求）时回退内置 `codex-tui` 身份并限频记日志。该开关不改变对话请求的身份选择：`client_compat_mode` 不是 `force` 时，官方 Codex 客户端的对话请求仍透传其自身 UA，要让账号对上游只呈现一份身份需同时使用 `force`。
+
+`max_retries`、`max_rate_limit_retries` 与 `codex_ws_silent_max_retries` 是原有的有限重试预算，管理界面和 API 范围均为 `0` 到 `10`（`0` 禁用对应预算）。需要持续重试时使用独立的 `continuous_retry_enabled` 开关；它不会改变这些有限预算的含义。开关打开后，可在 `continuous_retry_categories` 选择 `transport`、`http_429`、`http_4xx`、`http_5xx`、`stream_error`、`response_failed`、`context_error`，并用 `continuous_retry_status_codes`（例如 `[403,404,501]`）或 `continuous_retry_error_codes`（例如 `["rate_limited","context_length_exceeded"]`）精确追加匹配。类别、状态码、错误代码任一命中即可进入持续重试；403、404、上下文错误及“全部 `response.failed`”默认不选中（501 已由默认的 `http_5xx` 类别覆盖）。普通自选模式不会把结构化安全策略拒绝升级为无限重试。永久额度/余额错误（如 `insufficient_quota`、`quota_exceeded`、`billing_hard_limit`、`billing_limit_reached`、`spend_limit`、`credit_balance`、`insufficient_balance`、`usage_limited`）不会因为通用类别进入无限循环；只有管理员明确选择对应额度错误代码，或明确启用下述超级开关时，才会进入持续重试。
+
+`continuous_retry_catch_all` 是默认关闭的超级开关。请求同时提交 `continuous_retry_enabled=true` 与 `continuous_retry_catch_all=true` 后，除明确的上游 `cyber_policy` 外，所有被代理识别为真实上游失败的 HTTP 状态、传输/读取失败、`error` 帧、`response.failed` 以及以后出现的未知失败都会进入持续重试，不依赖当前已知错误码清单；永久额度、余额、鉴权、无效请求和其他结构化安全策略错误也包含在内。明确的上游 `cyber_policy` 始终终止当前请求，不换号、不重放。文本推理请求只把上游 HTTP `200` 及协议正常终态视为可提交结果；201、202、204、重定向、`response.failed`、独立 `error` 帧及无终态 EOF 都会丢弃整次尝试并继续重试。无状态请求会轮换可用账号；持有账号绑定加密状态的请求只有在能够安全展开为自包含请求时才换号，否则沿用相应协议的绑定语义。`continuous_retry_enabled=false` 会规范化为 `continuous_retry_catch_all=false`。
+
+开启持续重试后，流式上游尝试会先完整暂存，只有正常终态才一次性回放给客户端。因此失败尝试的半截文本、工具调用和错误帧不会泄漏，但客户端也不再实时逐 token 收到该次结果。SSE 路径在退避、等待账号、等待响应头和读取暂存流时写注释心跳并 flush；Responses WebSocket 使用 Ping。非流式 JSON（包括 Grok 图片/视频创建）在已进入无限重试后，会在退避、等待账号、等待响应头和读取响应体时发送标准 HTTP `102 Processing` 信息响应；它不会提交最终 JSON 的状态码或响应体，但中间代理可能丢弃 1xx，因此仍需依赖墙钟上限和客户端超时。`retry_interval_ms` 是本地等待下限；实际等待取该值、带抖动的指数退避（250ms 起步、30 秒封顶）和有效 `Retry-After`（最多 5 分钟）中的较大值。
+
+`continuous_retry_max_duration_seconds`（默认 600，范围 1-900）是无限预算的墙钟上限，从请求第一次进入 `retryLimit=-1` 时开始，后续尝试不会重置。到期会取消正在进行的上游请求，并返回最近一次真实上游失败；已提交的 SSE 将该失败转换为协议错误事件，Responses WebSocket 使用错误帧并以 1013 关闭。若尚无上游失败可返回，才回退到 504 `upstream_timeout`。Grok 图片/视频创建保持非流式 JSON；无限重试期间使用 HTTP `102 Processing` 保活，不把 SSE 注释混入最终 JSON。该信息响应是 best-effort 的，中间代理仍可能过滤它。
+
+每次流式尝试最多暂存 64 MiB：前 8 MiB 保存在内存，超过后写入立即 unlink 的 mode-0600 临时文件。达到单次上限或本地存储失败会立即结束请求，不会再次调用上游；当前没有跨请求的进程级暂存总预算，高并发部署仍需自行限制并发并监控内存和临时磁盘。Responses HTTP 的 `X-Codex-Turn-State` 只能在心跳尚未提交响应头时从最终成功账号转发；若等待期间已经发出 SSE 心跳，该响应头会被省略，不能用失败账号的值替代。账号绑定的 continuation 在无法安全展开为自包含请求时也会保留原账号语义。
+
+只有真实上游失败能够触发持续重试。客户端取消、持续重试期限到达、下游写入失败、入口校验、账号池/并发调度、本地提示词或输出策略拒绝、暂存资源失败以及成功结果回放失败都会立即结束，不会伪装成上游错误继续消耗账号。期限会保证等待中的 API Key 与 scope 并发槽位最终释放。
+
+普通图片请求仍受 5 次总尝试上限约束，普通 Grok 图片/视频创建请求仍受 3 次总尝试上限约束；错误被持续重试策略选中后（含超级模式）会越过普通上限，直到成功、客户端取消或期限到达。由于上游未必提供可靠幂等键，图片/视频创建可能重复生成和重复扣费。Grok 视频状态/内容查询沿用绑定账号与各自的请求语义。任何入口收到明确的上游 `cyber_policy` 都会立即停止，并保留本地审计、signed decision、conversation lock 与已验证用户冷却；超级模式不能覆盖此安全终态。初始账号池为空、模型无任何合格账号、scope/并发预算拒绝等本地调度失败不是“上游返回错误”，仍会返回明确的本地错误。
+
+Responses 上下文缓存字段使用原始字节数：
+
+| 字段 | 类型 | 默认值 | 有效范围 |
+| --- | --- | --- | --- |
+| `response_cache_local_max_bytes` | integer | 67,108,864（64 MiB） | 8 MiB-4 GiB |
+| `response_cache_local_max_entry_bytes` | integer | 8,388,608（8 MiB） | 1-256 MiB，且不能超过本地总量 |
+| `response_cache_reconstruct_max_bytes` | integer | 67,108,864（64 MiB） | 8-512 MiB |
+| `response_cache_config_generation` | integer | 1 | 只读；任何显式写入，包括 `null`，都返回 HTTP 400 |
+
+PUT 可只提交其中一部分可写预算，服务端会在数据库事务中与当前值合并并校验。管理台使用整数 MiB 输入，并把三个可写字段作为一次原子更新发送。成功修改后 generation 递增；本实例立即应用，其他实例每 5 秒同步。
+
+### 代理池管理
+
+#### GET /api/admin/proxies
+
+获取代理列表。
+
+**响应:**
+
+```json
+{
+  "proxies": [
+    {
+      "id": 1,
+      "url": "http://proxy1.example.com:8080",
+      "label": "US Proxy",
+      "enabled": true,
+      "created_at": "2024-01-01T12:00:00Z",
+      "test_ip": "1.2.3.4",
+      "test_location": "United States·California·Los Angeles",
+      "test_latency_ms": 150,
+      "test_status": "success"
+    }
+  ]
+}
+```
+
+#### POST /api/admin/proxies
+
+添加代理（支持批量）。
+
+**请求:**
+
+```json
+{
+  "urls": ["http://proxy1.example.com:8080", "http://proxy2.example.com:8080"],
+  "label": "Batch Add"
+}
+```
+
+或单条:
+
+```json
+{
+  "url": "http://proxy.example.com:8080",
+  "label": "US Proxy"
+}
+```
+
+#### DELETE /api/admin/proxies/:id
+
+删除代理，并清空仍引用该 URL 的账号绑定。提交后立即从当前进程的运行时代理池剔除；若数据库快照重载失败，接口返回 HTTP `500` 和已完成的 `deleted` / `unbound` 数量，但不会把已删除代理重新投入调度。
+
+#### PATCH /api/admin/proxies/:id
+
+更新代理。禁用会立刻从运行时代理池剔除该 URL，但保留账号上的 `proxy_url` 绑定——这些账号在重新启用前不会改走其它代理，也不会直连。修改 URL 时，仍指向旧 URL 的账号绑定会改写为新 URL。
+
+**请求:**
+
+```json
+{
+  "label": "New Label",
+  "enabled": false
+}
+```
+
+#### POST /api/admin/proxies/batch-delete
+
+批量删除代理，并解绑仍引用这些 URL 的账号。重载失败时的语义与单条删除相同。
+
+**请求:**
+
+```json
+{
+  "ids": [1, 2, 3]
+}
+```
+
+#### POST /api/admin/proxies/test
+
+测试代理连通性。传入 `id` 时会持久化 `test_status`；可归因于代理的失败状态（包括代理端 TCP 建立失败/超时、HTTPS/SOCKS 协商失败/超时和 HTTP `407` 代理认证失败）为 `error`，成功复测后恢复为 `success`。调用方取消、已连上代理后的传输错误、SOCKS 代理开始连接目标站点后的不可达或超时、探测服务返回 429/5xx 或无效响应时，响应中的 `conclusive` 为 `false`，原测试状态保持不变。
+
+**请求:**
+
+```json
+{
+  "url": "http://proxy.example.com:8080",
+  "id": 1,
+  "lang": "zh-CN"
+}
+```
+
+`id` 可选；省略时仅测试，不持久化结果。
+
+传入 `id` 时，服务端先读取该 ID 当前保存的 URL，仅在其与请求 URL 一致时发起测试；写入结果时再次进行 ID + 原始 URL 比较，测试期间 URL 被修改会返回 HTTP `409`，避免旧结果覆盖新配置。首尾空白只在拨号时去除，兼容历史数据中的非规范 URL。
+
+**响应:**
+
+```json
+{
+  "success": true,
+  "conclusive": true,
+  "ip": "1.2.3.4",
+  "country": "United States",
+  "region": "California",
+  "city": "Los Angeles",
+  "isp": "Example ISP",
+  "latency_ms": 150,
+  "location": "United States·California·Los Angeles"
+}
+```
+
+#### POST /api/admin/proxies/test-all
+
+由服务端以最多 4 路并发测试指定代理，并通过 SSE 逐项返回进度。请求只传代理 ID，服务端使用数据库中的当前 URL；全部测试结果保存完成后只重载一次运行时代理池。代理池刷新由后台收尾路径执行，不依赖客户端持续读取 SSE。
+
+**请求:**
+
+```json
+{
+  "ids": [1, 2, 3],
+  "lang": "zh-CN"
+}
+```
+
+`ids` 必填、必须为正整数，单次最多 100 个；空数组、未知请求字段、超限请求均返回 HTTP `400`。管理后台在代理超过 100 个时会自动拆成多个顺序批次。同一服务实例同一时间只运行一个批量代理测试，已有任务运行时返回 HTTP `409`。SSE `progress` 事件示例：
+
+```text
+data: {"type":"progress","proxy_id":1,"current":1,"total":3,"success":1,"result":{"success":true,"conclusive":true,"ip":"1.2.3.4","latency_ms":150}}
+```
+
+流结束时发送 `complete` 事件；如果数据库结果已经保存但运行时代理池刷新失败，事件的 `error` 字段会说明该异常。客户端断开会取消尚未完成的探测；已经落库的结果仍会触发一次代理池刷新。
+
+#### POST /api/admin/proxies/clean-error
+
+固定本次操作开始时 `test_status=error` 的代理集合，删除这些代理，并清空实际引用它们的账号绑定。清理期间新变为 `error` 的代理留到下一次清理。提交后会立即从当前进程的运行时代理池剔除实际删除的 URL；若数据库快照重载失败，接口返回 HTTP `500` 和已完成的 `cleaned` / `unbound` 数量，但不会把已删除代理重新投入调度。
+
+**响应:**
+
+```json
+{
+  "message": "已清理 2 个错误代理并解绑 3 个账号",
+  "cleaned": 2,
+  "unbound": 3
+}
+```
+
+### 运维监控
+
+#### GET /api/admin/ops/overview
+
+获取系统运维概览。
+
+**响应:**
+
+```json
+{
+  "updated_at": "2024-01-01T12:00:00Z",
+  "uptime_seconds": 86400,
+  "database_driver": "postgres",
+  "database_label": "PostgreSQL",
+  "cache_driver": "redis",
+  "cache_label": "Redis",
+  "cpu": {
+    "percent": 25.5,
+    "cores": 8
+  },
+  "memory": {
+    "percent": 60.2,
+    "used_bytes": 6442450944,
+    "total_bytes": 10737418240,
+    "process_bytes": 268435456,
+    "heap_alloc_bytes": 100663296,
+    "heap_inuse_bytes": 117440512,
+    "heap_released_bytes": 33554432,
+    "num_gc": 421
+  },
+  "response_cache": {
+    "effective_config": {
+      "generation": 3,
+      "local_max_bytes": 67108864,
+      "local_max_entry_bytes": 8388608,
+      "reconstruct_max_bytes": 67108864
+    },
+    "applied_config": {
+      "generation": 3,
+      "local_max_bytes": 67108864,
+      "local_max_entry_bytes": 8388608,
+      "reconstruct_max_bytes": 67108864
+    },
+    "entries": 120,
+    "max_entries": 2000,
+    "current_bytes": 33554432,
+    "max_bytes": 67108864,
+    "high_water_bytes": 50331648,
+    "largest_entry_bytes": 7340032,
+    "local_hits": 920,
+    "local_misses": 80,
+    "remote_hits": 60,
+    "remote_misses": 20,
+    "expirations": 12,
+    "count_evictions": 2,
+    "byte_evictions": 8,
+    "oversize_bypasses": 4,
+    "oversize_rejections": 0,
+    "known_unavailable_errors": 1,
+    "last_config_sync_at": "2024-01-01T11:59:58Z",
+    "last_config_sync_error": ""
+  },
+  "runtime": {
+    "goroutines": 50,
+    "available_accounts": 8,
+    "total_accounts": 10
+  },
+  "requests": {
+    "active": 5,
+    "total": 10000
+  },
+  "postgres": {
+    "healthy": true,
+    "open": 10,
+    "in_use": 5,
+    "idle": 5,
+    "max_open": 50,
+    "wait_count": 0,
+    "usage_percent": 20
+  },
+  "redis": {
+    "healthy": true,
+    "total_conns": 10,
+    "idle_conns": 5,
+    "stale_conns": 0,
+    "pool_size": 30,
+    "usage_percent": 33.3
+  },
+  "traffic": {
+    "qps": 10.5,
+    "qps_peak": 50.0,
+    "tps": 500.0,
+    "tps_peak": 2000.0,
+    "rpm": 600,
+    "tpm": 30000,
+    "error_rate": 0.02,
+    "today_requests": 5000,
+    "today_tokens": 250000,
+    "rpm_limit": 0
+  }
+}
+```
+
+`response_cache.current_bytes`、`max_bytes`、`high_water_bytes` 和 `largest_entry_bytes` 都是 JSON payload 的逻辑字节，不是 RSS。`local_*` 统计 L1 查找；`remote_*` 统计共享后端的有效命中和明确未命中；`oversize_bypasses` 表示共享后端命中可服务但未提升到 L1；`oversize_rejections` 只统计 Memory 模式因字节预算无法保留的写入；`known_unavailable_errors` 只统计最终发出的上下文不可用 HTTP 409。
+
+`memory.process_bytes` 在 Linux/Docker 使用进程 RSS，非 Linux 无法读取 `/proc` 时回退到 Go `Sys`；`heap_alloc_bytes`、`heap_inuse_bytes`、`heap_released_bytes` 和 `num_gc` 来自同一次 Go runtime 采样。缓存逻辑预算不包含 Go 对象或 allocator 开销，不能当作进程内存硬上限。
+
+滚动升级时，旧后端响应可能不包含 `response_cache` 或新的 heap/GC 字段；新版管理前端会显示兼容等待状态或隐藏缺失的 heap 行。
+
+### 模型管理
+
+#### GET /api/admin/models
+
+获取当前启用的模型列表，并返回模型注册表元数据。
+
+**响应:**
+
+```json
+{
+  "models": [
+    "gpt-6-astra",
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
+    "gpt-5.5",
+    "gpt-5.3-codex-spark",
+    "gpt-image-2"
+  ],
+  "items": [
+    {
+      "id": "gpt-5.3-codex-spark",
+      "enabled": true,
+      "category": "codex",
+      "source": "official_codex_docs",
+      "pro_only": true,
+      "api_key_auth_available": true
+    }
+  ],
+  "last_synced_at": "2026-04-24T00:00:00Z",
+  "source_url": "https://developers.openai.com/codex/models"
+}
+```
+
+#### POST /api/admin/models/sync
+
+从 OpenAI 官方 Codex 模型页同步模型注册表。同步只新增或更新模型元数据，不会自动删除本地模型；`gpt-image-2` 始终作为内置图像模型保留。
+
+**响应:**
+
+```json
+{
+  "added": 0,
+  "updated": 2,
+  "unchanged": 5,
+  "skipped": ["gpt-5.2-codex"],
+  "models": [
+    "gpt-6-astra",
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
+    "gpt-5.5",
+    "gpt-5.3-codex-spark",
+    "gpt-image-2"
+  ],
+  "last_synced_at": "2026-04-24T00:00:00Z",
+  "source_url": "https://developers.openai.com/codex/models"
+}
+```
+
+### 生图工作台
+
+管理后台生图工作台的 API，支持文生图（`/images/jobs`）和图生图（`/images/edit-jobs`）任务，以及图库管理。
+
+#### POST /api/admin/images/jobs
+
+创建文生图任务。
+
+**请求:**
+
+```json
+{
+  "prompt": "A small orange cat sitting on a cloud",
+  "model": "gpt-image-2",
+  "size": "1024x1024",
+  "quality": "high",
+  "output_format": "png",
+  "style": "photorealistic",
+  "api_key_id": 0
+}
+```
+
+**参数说明:**
+
+| 参数          | 类型   | 必填 | 说明                          |
+| ------------- | ------ | ---- | ----------------------------- |
+| prompt        | string | 是   | 提示词，最长 8000 字符        |
+| model         | string | 否   | 模型，默认 `gpt-image-2`      |
+| size          | string | 否   | 输出尺寸                      |
+| quality       | string | 否   | 质量等级                      |
+| output_format | string | 否   | 输出格式，默认 `png`          |
+| style         | string | 否   | 风格说明                      |
+| upscale       | string | 否   | 超分选项                      |
+| api_key_id    | int    | 否   | 指定 API Key ID               |
+
+**响应:**
+
+```json
+{
+  "id": 1,
+  "status": "pending"
+}
+```
+
+#### POST /api/admin/images/edit-jobs
+
+创建图生图（image-to-image）任务。与文生图参数类似，但需要额外提供参考图片。
+
+**请求:**
+
+```json
+{
+  "prompt": "Replace the background with a sunset scene",
+  "model": "gpt-image-2",
+  "size": "1024x1024",
+  "output_format": "png",
+  "input_images": [
+    "https://example.com/source.png",
+    "data:image/png;base64,iVBORw0KGgo..."
+  ]
+}
+```
+
+**参数说明:**
+
+| 参数          | 类型     | 必填 | 说明                                 |
+| ------------- | -------- | ---- | ------------------------------------ |
+| prompt        | string   | 是   | 编辑提示词，最长 8000 字符           |
+| model         | string   | 否   | 模型，默认 `gpt-image-2`             |
+| input_images  | string[] | 是   | 参考图片 URL 或 data URI 列表        |
+| size          | string   | 否   | 输出尺寸                             |
+| quality       | string   | 否   | 质量等级                             |
+| output_format | string   | 否   | 输出格式，默认 `png`                 |
+| api_key_id    | int      | 否   | 指定 API Key ID                      |
+
+#### GET /api/admin/images/jobs
+
+获取生图任务列表。支持分页和状态过滤。
+
+**响应:**
+
+```json
+{
+  "jobs": [
+    {
+      "id": 1,
+      "prompt": "A small orange cat",
+      "model": "gpt-image-2",
+      "status": "completed",
+      "created_at": "2024-01-01T12:00:00Z"
+    }
+  ],
+  "total": 50
+}
+```
+
+#### GET /api/admin/images/jobs/:id
+
+获取单个生图任务详情及结果。
+
+#### DELETE /api/admin/images/jobs/:id
+
+删除一个生图任务及其关联的所有图库资产。
+
+```bash
+curl -X DELETE http://localhost:8080/api/admin/images/jobs/1 \
+  -H "X-Admin-Key: your-secret"
+```
+
+#### GET /api/admin/images/assets
+
+获取图库资产列表。
+
+#### GET /api/admin/images/assets/:id/file
+
+获取单个图库资产文件（返回图片二进制或签名 URL）。
+
+#### DELETE /api/admin/images/assets/:id
+
+删除单个图库资产。
+
+### OAuth 授权
+
+通过 OAuth PKCE 流程授权获取 Codex 账号的 Refresh Token，适用于无法手动获取 RT 的场景。
+
+**流程:** 生成授权 URL → 用户在浏览器中完成授权 → 用授权码兑换 Token 并写入系统
+
+#### POST /api/admin/oauth/generate-auth-url
+
+生成 OAuth 授权 URL（PKCE 模式）。
+
+**请求:**
+
+```json
+{
+  "proxy_url": "http://proxy.example.com:8080",
+  "redirect_uri": "https://example.com/callback"
+}
+```
+
+**参数说明:**
+
+| 参数         | 类型   | 必填 | 说明                         |
+| ------------ | ------ | ---- | ---------------------------- |
+| proxy_url    | string | 否   | 账号使用的代理 URL           |
+| redirect_uri | string | 否   | 回调地址，默认为系统内置地址 |
+
+**响应:**
+
+```json
+{
+  "auth_url": "https://auth.openai.com/authorize?response_type=code&client_id=...&state=...",
+  "session_id": "a1b2c3d4e5f6..."
+}
+```
+
+> 将 `auth_url` 在浏览器中打开，完成授权后获取回调 URL 中的 `code` 和 `state` 参数。`session_id` 有效期 30 分钟。
+
+#### POST /api/admin/oauth/exchange-code
+
+用授权码兑换 Token，自动创建新账号并加入号池。
+
+**请求:**
+
+```json
+{
+  "session_id": "a1b2c3d4e5f6...",
+  "code": "auth_code_from_callback",
+  "state": "state_from_callback",
+  "name": "my-oauth-account",
+  "proxy_url": "http://proxy.example.com:8080"
+}
+```
+
+**参数说明:**
+
+| 参数       | 类型   | 必填 | 说明                                     |
+| ---------- | ------ | ---- | ---------------------------------------- |
+| session_id | string | 是   | `generate-auth-url` 返回的 session_id    |
+| code       | string | 是   | 授权回调 URL 中的 `code` 参数            |
+| state      | string | 是   | 授权回调 URL 中的 `state` 参数           |
+| name       | string | 否   | 账号名称，默认使用邮箱或 `oauth-account` |
+| proxy_url  | string | 否   | 代理 URL，覆盖生成 URL 时的设置          |
+
+**响应:**
+
+```json
+{
+  "message": "OAuth 账号 user@example.com 添加成功",
+  "id": 42,
+  "email": "user@example.com",
+  "plan_type": "pro"
+}
+```
+
+---
+
+## 支持模型
+
+| 模型                       | 说明                                                                                      |
+| -------------------------- | ----------------------------------------------------------------------------------------- |
+| gpt-6-astra                | 最强旗舰模型                                                                              |
+| gpt-5.6-sol / terra / luna | gpt-5.6 系列（luna 为更快档位）                                                           |
+| gpt-5.5                    | 旗舰模型。计费：$5.00/M 输入 / $30.00/M 输出（标准），priority 分别为 $12.50/M / $75.00/M |
+| gpt-5.3-codex-spark        | Codex Spark 模型，仅 Pro 订阅账号可调用                                                   |
+| gpt-image-2                | GPT Image 2 图像生成模型                                                                  |
+
+> 提示：实际支持的模型以 `/v1/models` 接口返回为准，文档可能未及时更新。
+
+---
+
+## 错误码
+
+### HTTP 状态码
+
+| 状态码 | 说明                     |
+| ------ | ------------------------ |
+| 200    | 请求成功                 |
+| 400    | 请求参数错误             |
+| 401    | 认证失败                 |
+| 403    | 权限不足                 |
+| 404    | 资源不存在               |
+| 409    | 资源冲突或上一响应上下文不可用 |
+| 429    | 请求过于频繁（限流）     |
+| 499    | 客户端断开连接           |
+| 500    | 服务器内部错误           |
+| 502    | 网关错误（上游服务异常） |
+| 503    | 服务不可用（账号池耗尽或依赖的共享上下文后端暂时故障） |
+| 598    | 上游流中断               |
+
+499 表示客户端取消或连接提前断开，原始请求日志及已记录的 Token 用量保留。
+账号列表的“请求（7D）”失败数、重试失败数和错误码分布均排除 499，避免将客户端取消
+归为账号故障；原有健康率、用量和计费汇总规则保持不变。
+
+### 错误响应格式
+
+```json
+{
+  "error": {
+    "message": "错误描述",
+    "type": "错误类型",
+    "code": "错误代码"
+  }
+}
+```
+
+### 常见错误代码
+
+| 代码                             | 说明             | 处理建议                         |
+| -------------------------------- | ---------------- | -------------------------------- |
+| missing_api_key                  | 缺少 API Key     | 添加 Authorization 请求头        |
+| invalid_api_key                  | API Key 无效     | 检查密钥是否正确                 |
+| authentication_error             | 认证错误         | 检查 Admin Secret 或 API Key     |
+| invalid_request_error            | 请求参数错误     | 检查请求体格式                   |
+| server_error                     | 服务器错误       | 查看日志排查问题                 |
+| upstream_error                   | 上游服务错误     | 检查 Codex 服务状态              |
+| no_available_account             | 当前无可调度账号 | 稍后重试、启用账号或补充可用账号 |
+| account_pool_concurrency_saturated | 匹配账号的并发窗口已满 | 稍后重试，或提高单账号并发上限 |
+| account_pool_usage_limit_reached | 账号池额度耗尽   | 等待冷却或添加新账号             |
+| rate_limit_exceeded              | 限流触发         | 降低请求频率                     |
+| response_context_unavailable     | `previous_response_id` 所需上下文不可用 | 重新发送完整上下文或开始新的响应链 |
+| service_unavailable              | 依赖的共享上下文后端暂时不可用 | 退避后重试并检查 Redis 状态 |
+
+### Responses 上下文不可用
+
+在没有可用 relay fallback 时，以下情况会返回 HTTP 409：
+
+- Memory 模式命中已知超限/淘汰，或依赖的必需上下文普通缺失/已经过期。
+- Redis 模式读取到损坏的值，或逻辑上下文超过重建上限。
+
+```json
+{
+  "error": {
+    "code": "response_context_unavailable",
+    "message": "Previous response context is unavailable",
+    "type": "invalid_request_error",
+    "details": {
+      "field": "previous_response_id",
+      "message": "local_context_evicted"
+    }
+  }
+}
+```
+
+同一 `previous_response_id` 已确定不可用时，不要无条件重试；应重新发送完整必需上下文、开始新的响应链，或为后续请求调整缓存预算。若只是共享后端传输故障，依赖上下文的请求返回 HTTP 503、错误码为 `service_unavailable`，适合退避后重试并检查 Redis。
+
+---
+
+## 限流说明
+
+### 全局 RPM 限流
+
+通过 `global_rpm` 设置限制全局每分钟请求数。
+
+- `global_rpm = 0`: 无限流
+- `global_rpm > 0`: 启用 RPM 限流
+
+### API Key 模型周请求次数预算
+
+API Key 的 `limits.model_request_limits` 可按最终映射模型限制固定日历周的请求次数。支持精确模型名及 `*` 通配，一条规则的匹配模型共用预算，多条命中规则同时生效。配置字段、计数口径及更新规则详见 [配置说明](CONFIGURATION.md#api-key-模型周请求次数预算)。
+
+管理端创建 `POST /api/admin/keys` 与更新 `PATCH /api/admin/keys/:id` 均接收该字段。新增规则省略 `id`，服务端生成；读取 `GET /api/admin/keys` 返回的 `limits` 获取已保存的 ID。更新已有规则时保留 ID，只能修改次数上限或调整顺序；模型与重置安排需通过删除旧规则、新增规则更改。非法配置或未知规则 ID 返回 `400`。
+
+管理员可使用管理鉴权查询当前周用量：
+
+```http
+GET /api/admin/keys/123/model-request-usage
+X-Admin-Key: YOUR_ADMIN_SECRET
+```
+
+```json
+{
+  "model_request_usage": [
+    {
+      "rule_id": "mr_example",
+      "model": "gpt-6*",
+      "window": "week",
+      "limit": 50,
+      "used": 12,
+      "remaining": 38,
+      "window_start": "2026-08-30T16:00:00Z",
+      "reset_at": "2026-09-06T16:00:00Z",
+      "timezone": "Asia/Shanghai"
+    }
+  ]
+}
+```
+
+公开自助接口 `GET /api/key-usage/summary` 与别名 `GET /api/key-usage/me` 在原有 `key`、`range`、`usage` 之外增加相同结构的顶层 `model_request_usage`。传入 `Authorization: Bearer YOUR_API_KEY`，只返回此 Key 的预算，不能通过查询参数读取其他 Key；公开用量页关闭时继续返回 `404`。没有配置时该字段为 `[]`。此字段始终反映当前固定周，与报表的 `range` 参数独立。
+
+该接口的请求日志（`usage.recent_logs`）支持以下可选筛选参数，只影响日志列表与 `recent_logs_total`，不影响 `summary`、`windows` 和模型/端点排行：
+
+- `model`：同时匹配请求模型与实际生效模型；
+- `endpoint`：匹配入站端点（与日志中的 `endpoint` 同口径）；
+- `status`：`success`（< 400）、`error`（≥ 400）、`4xx`、`5xx`、`429`；
+- `stream`：`stream` 或 `sync`；
+- `channel`：上游渠道，`codex`、`grok`、`antigravity` 或 `claude`。
+
+非法的 `status` / `stream` / `channel` 取值或超过 128 字符的 `model` / `endpoint` 返回 `400`。响应中的 `usage.log_models` 与 `usage.log_endpoints` 列出当前 `range` 内出现过的请求模型和入站端点（按请求量降序，各最多 50 个，不受筛选影响），可用于构造筛选下拉；每条日志额外带 `channel` 字段（`codex`、`claude`、`grok`、`antigravity` 或空字符串）。
+
+预算耗尽时 HTTP 返回 `429`，错误码为 `rate_limit_reached`，`Retry-After` 表示距离该规则重置的秒数。`error.details` 包含耗尽规则的用量快照：
+
+```json
+{
+  "error": {
+    "type": "rate_limit_error",
+    "code": "rate_limit_reached",
+    "message": "API key weekly model request limit reached for \"gpt-6*\" (50/50)",
+    "details": {
+      "rule_id": "mr_example",
+      "model": "gpt-6*",
+      "window": "week",
+      "limit": 50,
+      "used": 50,
+      "remaining": 0,
+      "window_start": "2026-08-30T16:00:00Z",
+      "reset_at": "2026-09-06T16:00:00Z",
+      "timezone": "Asia/Shanghai"
+    }
+  }
+}
+```
+
+Responses WebSocket 升级后用对应错误帧返回拒绝信息，每个 `response.create` 分别计数；HTTP 流式请求在上游发送前检查。若较早的上游尝试已启动 HTTP 事件流，而后续重试映射到另一模型并耗尽其预算，已有流中会发送包含同样 `error.details` 的错误事件。该本地预算错误不会触发上游换号重试。计数依赖暂时不可用时返回 `503`，不静默放行。额度耗尽后可等待规则重置，或调用不匹配该规则且满足其他限制的模型。
+
+### 账号级别限流
+
+系统会自动根据账号状态进行限流：
+
+- **Healthy**: 正常并发
+- **Warm**: 并发减半
+- **Risky**: 固定 1 并发
+- **Banned**: 0 并发，不参与调度
+
+### 无可调度账号响应
+
+当账号池中没有账号可被调度时，接口返回 `503 Service Unavailable`：
+
+```json
+{
+  "error": {
+    "message": "无可用账号，请稍后重试",
+    "type": "server_error",
+    "code": "no_available_account"
+  }
+}
+```
+
+匹配账号都在、只是并发槽位已经占满时，接口仍返回 `503`，但错误码改为 `account_pool_concurrency_saturated`，并带 `Retry-After: 1`。这和「池里没有可调度账号」不是同一种失败：提高并发上限，或等进行中的请求释放槽位后再试。
+
+```json
+{
+  "error": {
+    "message": "账号并发窗口已满，请稍后重试或提高并发上限",
+    "type": "server_error",
+    "code": "account_pool_concurrency_saturated"
+  }
+}
+```
+
+### 账号池额度耗尽响应
+
+当上游返回账号额度耗尽类 `429` 时，系统会对外改写为 `503 Service Unavailable`，并保留 `Retry-After` 头：
+
+```http
+HTTP/1.1 503 Service Unavailable
+Retry-After: 3600
+
+{
+  "error": {
+    "message": "账号池额度已耗尽，请稍后重试",
+    "type": "server_error",
+    "code": "account_pool_usage_limit_reached",
+    "plan_type": "free",
+    "resets_at": 1712345678,
+    "resets_in_seconds": 3600
+  }
+}
+```
+
+### 建议
+
+1. 监控 `X-RateLimit-*` 响应头（如有）
+2. 实现指数退避重试策略
+3. 处理 429/503 状态码，根据 `Retry-After` 等待后重试
+4. 避免在短时内发送大量请求
+
+
+### 可选的持久化生图队列
+
+设置 `IMAGE_JOB_WORKERS=2` 可启用固定并发的数据库任务队列。启用后创建接口只返回 `job.id` 和 `job.status`；参考图在任务执行时读取。数据库增量迁移、内存限制、重启恢复及兼容性详见 [图片任务队列](IMAGE_JOB_QUEUE.md)。

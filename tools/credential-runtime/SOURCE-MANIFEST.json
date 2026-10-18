@@ -1,0 +1,20 @@
+{
+  "repository": "https://github.com/Wei-Shaw/sub2api",
+  "commit": "e46b0b00b00b37ab74d95f9d800cc6396d83f672",
+  "license": "LGPL-3.0",
+  "source_files": {
+    "openai_oauth_reauth_worker.py": "387fd4f63086ef7e934fdd4f73a498fc4a6bff71c2402cfc17780828de97de03",
+    "openai_totp_rotation.py": "26c45db1404b99d455307ecb775ddc17b7968925d5840ba6539def278c277c43",
+    "openai_totp_journal.mjs": "228ef52f39cb9a264baa47f62ff27dd4759cef3815796de37ddc17a94c479067",
+    "openai_excel_oauth_adapter.py": "698bb4b32f4c9f0480596c9ce48399b070b8669b638f4eb6b7b0b37520080fb2",
+    "openai_excel_password_flow.mjs": "aa853341de0baf16f5321d1d8bc235a4200796ff9b6b4856017aece6ad788179"
+  },
+  "adapter_differences": [
+    "native internal API, lease attempts, task capability and concurrency handshake",
+    "first import allows account_id=0",
+    "fixed one-exit proxy selection and private child environment",
+    "durable journal RPC ACK relayed by parent; independent Codex/Excel grants",
+    "application-owned Go supervisor with manifest file verification",
+    "source standalone API client and CLI removed from engine module; only owned worker performs control-plane requests"
+  ]
+}
