@@ -2,6 +2,8 @@
 
 日期：2026-10-18。开发分支：`codex/credential-operations`。本记录对应[已确认设计](superpowers/specs/2026-10-18-credential-operations-migration-design.md)；使用入口见[操作说明](credential-operations.md)。
 
+继续开发时原主仓库路径已不存在，本目录已恢复为独立 Git 快照；文件保留，原提交历史未恢复。详见[开发快照恢复记录](credential-operations-recovery.md)。
+
 ## 功能与验证矩阵
 
 下表的“通过”指代码、自动化测试或本地运行验证，真实上游账号实测另列。
@@ -17,21 +19,22 @@
 | 账号固定出口、静态代理、直连、托管 Mihomo 池 | `database/credential_operations_routes.go`、`credentialops/mihomo.go` | 固定出口代际；Mihomo 真实本地进程夹具验证每租约固定监听器、并发容量与释放；节点密文和不可用时拒绝回退 |
 | 2FA 更换、待确认恢复、显式导出与本地二维码 | `database/credential_operations_totp.go`、`openai_totp_rotation.py`、`CredentialTOTPDialog.tsx` | 本地 fsync/数据库 ACK 顺序与故障注入；PostgreSQL 强制同步提交触发器和取消锁屏障；浏览器验证仅显式导出、关闭后忽略迟到响应 |
 | Codex/Excel 独立授权、刷新与 401 代际隔离 | `proxy/credential_operations_grants.go`、`auth/token.go` | BPS 独立 grant、持久 refresh 消费标记、旧 401 不伤新 grant、Codex 主授权不变、Excel-only 拒绝原生入口、Free 保留 Codex 路由 |
-| 原生导航、账号快捷入口、移动端与多语言 | `frontend/src/pages/CredentialOps.tsx`、`Accounts.tsx` | 11 项浏览器交互检查、桌面/移动视觉检查、三语言、原生组件与主题 |
+| 原生导航、账号快捷入口、移动端与多语言 | `frontend/src/pages/CredentialOps.tsx`、`Accounts.tsx` | 14 项浏览器交互检查、桌面/移动视觉检查、三语言、原生组件与主题 |
 | 退役迁移兼容、重复启动 | `database/postgres.go`、`credential_operations_lifecycle.go` | 新表族在旧模块退役后创建；SQLite 退役夹具与真实 PostgreSQL 退役/生命周期通过 |
 
 ## 已执行验证
 
-- 前端：类型检查通过，全部 428 项单元测试通过，11 项浏览器检查通过，生产构建通过。
-- 后端：数据库/管理端/凭证服务整包及聚焦回归通过；BPS/Auth 路由与 Mihomo 进程验证通过。
+- 前端：最终类型检查通过，全部 428 项单元测试、14 项浏览器检查、生产构建通过，均无测试失败或跳过。
+- 后端：最终 `GOMAXPROCS=2 go test -p 1 ./... -count=1 -timeout=300s` 全量通过；管理端 107.146 秒、数据库 9.072 秒、凭证服务 1.901 秒、Auth 9.732 秒、Proxy 61.046 秒。BPS/Auth 路由与 Mihomo 进程验证通过。
 - Worker：镜像构建内使用固定依赖执行 Python 全部 31 项、Node 全部 9 项，均通过且无跳过；此前另在固定 toSub2 源码依赖下执行全部 6 项 Excel 适配检查通过。
-- PostgreSQL：隔离 PostgreSQL 18 数据库，真实首次导入、身份去重、独立 Excel grant、持久刷新标记、TOTP 阶段与取消保护通过。数据库默认 `synchronous_commit=off` 时，触发器确认候选 ACK 事务仍为 `on`。长数据迁移后的初始化超时回归与退役夹具通过。
+- PostgreSQL：稳定代码最终聚焦集成检查通过（7.082 秒）。隔离 PostgreSQL 18 数据库，真实首次导入、身份去重、独立 Excel grant、持久刷新标记、TOTP 阶段与取消保护通过。数据库默认 `synchronous_commit=off` 时，触发器确认候选 ACK 事务仍为 `on`。八路并发重试只生成一个子任务，失败后原任务与后代任务可共同生成下一次尝试。长数据迁移后的初始化超时回归与退役夹具通过。
 - 镜像：实际构建 Worker 镜像，非 root 用户 UID 10001、恢复目录 0700、无网络 `--check` 等价检查、`chrome146` impersonation 可用性、源许可与清单摘要通过。
 - 迁移包：从镜像导出后挂载到无 Python/Node 的 Alpine 3.21，在不同目录以非 root、禁用网络运行；Python/Node 包装器、依赖和 Worker 预检通过。
 
 关键命令：
 
 ```sh
+GOMAXPROCS=2 go test -p 1 ./... -count=1 -timeout=300s
 GOMAXPROCS=2 go test -p 1 ./database ./admin ./credentialops -count=1 -timeout=180s
 GOMAXPROCS=2 go test -p 1 ./database ./credentialops ./admin -run 'CredentialOperations|CredentialOps|TestMihomo|RetireSmartOps|RetiredOperations' -count=1 -timeout=90s
 python3 -m unittest discover -s tools/credential-runtime -p 'test*.py'
@@ -39,10 +42,17 @@ node --test tools/credential-runtime/test_openai_totp_journal.mjs tools/credenti
 cd frontend
 npm run typecheck
 npm test
+node --experimental-strip-types --test tests/credentialOps.browser.test.mjs
 npm run build
 ```
 
 PostgreSQL 集成测试通过 `CODEX2API_TEST_POSTGRES_DSN` 显式接入隔离数据库，每次创建并删除专属测试库；记录不包含连接密码。浏览器检查使用模拟 API 和虚构账号，不连接上游。
+
+## 评审结论
+
+前端独立复审通过。后端初审六项问题修正后，额外补齐重试链去重与出口/配置版本绑定。全分支评审发现的五项集成问题已在 `6331280` 修正：Excel 获取遵守保存出口、TOTP 出口绑定配置版本、刷新校验完整身份、清理旧代理 ID、统一有效出口字段。最终范围复审覆盖这五项与两项重试问题，结论为 **SPEC PASS / QUALITY PASS**，七项全部解决，无新增可操作问题。
+
+上述评审结论配合本记录的最终全量 Go、前端及 PostgreSQL 检查，作为代码交付证据；不替代下面列出的真实上游验收。
 
 ## 运行包来源
 
@@ -68,3 +78,4 @@ Mihomo 验证使用本地进程夹具，未下载真实代理节点或测量节�
 - 自动 Excel 获取要求已识别的付费母账号；未知套餐不会自动获取。这比来源中只排除明确 Free 的判断更严格，未知套餐需先补全身份/套餐资料。
 - Mihomo 使用独立进程和节点租约，单次进程期限 30 分钟；独立 Worker 需共享网络命名空间。代价是每租约进程开销及超长操作终止。
 - 本次构建使用相同官方版本的 ECR 镜像来源与 host 构建网络；未改变依赖版本。正式环境可继续使用原 Dockerfile，其他架构需要单独构建验证。
+- 原主仓库丢失后保留当前文件并恢复独立快照，未把工作树连接到另一份 `Documents/codex2api` 仓库。代价是原提交历史未恢复，后续接入目标主线需迁移差异并重新检查兼容性。

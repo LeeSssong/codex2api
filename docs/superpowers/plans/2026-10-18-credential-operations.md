@@ -40,7 +40,7 @@ Admin base `/api/admin`. Ordinary responses are direct JSON, errors include `err
 
 **Reference:** old `credentialops/{config,crypto,types}.go`, `database/credential_ops*.go`, `admin/credential_ops*.go`, `tools/credential-runtime/*`; current source `openai_oauth_reauth*`, `account_token_guard_v2*`, `openai_totp_rotation*`, `openai_excel_oauth*`, `internal/reauthruntime` and `tools/openai_*`.
 
-- [ ] Write the first-import persistence/security test before implementation. Create fake OAuth identity tokens through existing test helpers, queue account_id=0, claim, complete and assert one native account, encrypted login config and enabled monitor; duplicate import resolves same identity. Confirm ordinary task/overview serialization omits password and TOTP.
+- [x] Write the first-import persistence/security test before implementation. Create fake OAuth identity tokens through existing test helpers, queue account_id=0, claim, complete and assert one native account, encrypted login config and enabled monitor; duplicate import resolves same identity. Confirm ordinary task/overview serialization omits password and TOTP.
 
 ```go
 func TestCredentialOperationsInitialImportPersistsAndEnrolls(t *testing.T) {
@@ -52,19 +52,19 @@ func TestCredentialOperationsInitialImportPersistsAndEnrolls(t *testing.T) {
 }
 ```
 
-- [ ] Run focused `go test ./database ./admin ./credentialops -run CredentialOperations -count=1`; record expected missing-feature failure, then implement using native test helpers and real SQLite transactions.
-- [ ] Port/adapt native queue, leases, config encryption, account identity transaction and scheduler. Replace plugin dependencies with module runtime controls. Add a database unique constraint covering per-account active login/rotation, config revisions and account generations. New initialization runs after retirement on both backends.
-- [ ] Implement first import and saved-config relogin endpoints per API contract, group selection, monitor lifecycle, rules, runtime and encryption setup. Reconcile stale probe results after pause/edit and prevent transient failures triggering login. Add global engine, concurrency, worker heartbeat/capabilities and all overview fields from approved design.
-- [ ] Port current TOTP recovery state machine, private journal, admin export, recovery verification and capability gating; all activation phases retain local and DB persistence order. Persist uncertain state across worker/app failure.
-- [ ] Add separate Codex/Excel profile grants and queue/cooldown support. Expose database methods to retrieve/refresh/invalidate Excel grant with generation CAS; inform root of the exact Go interface needed by BPS consumers. Do not overwrite Codex tokens or claim grant acquisition without protocol tests.
-- [ ] Ship independent current Worker engines, pinned dependency manifest/licenses, owned runtime supervisor and Docker build, with configuration/concurrency sync, egress snapshots and cancellation/lease renewal. Adapt current source scripts with fault-injection tests for TOTP and Excel.
-- [ ] Run direct Go and Worker tests; inspect diff for source consistency, sensitive serialization, uniqueness races and re-start migration behavior. Commit only owned files. Write report with RED/GREEN commands, endpoint differences, unverified live external operations, commits and exact dependency/build requirements.
+- [x] Run focused `go test ./database ./admin ./credentialops -run CredentialOperations -count=1`; record expected missing-feature failure, then implement using native test helpers and real SQLite transactions.
+- [x] Port/adapt native queue, leases, config encryption, account identity transaction and scheduler. Replace plugin dependencies with module runtime controls. Add a database unique constraint covering per-account active login/rotation, config revisions and account generations. New initialization runs after retirement on both backends.
+- [x] Implement first import and saved-config relogin endpoints per API contract, group selection, monitor lifecycle, rules, runtime and encryption setup. Reconcile stale probe results after pause/edit and prevent transient failures triggering login. Add global engine, concurrency, worker heartbeat/capabilities and all overview fields from approved design.
+- [x] Port current TOTP recovery state machine, private journal, admin export, recovery verification and capability gating; all activation phases retain local and DB persistence order. Persist uncertain state across worker/app failure.
+- [x] Add separate Codex/Excel profile grants and queue/cooldown support. Expose database methods to retrieve/refresh/invalidate Excel grant with generation CAS; inform root of the exact Go interface needed by BPS consumers. Do not overwrite Codex tokens or claim grant acquisition without protocol tests.
+- [x] Ship independent current Worker engines, pinned dependency manifest/licenses, owned runtime supervisor and Docker build, with configuration/concurrency sync, egress snapshots and cancellation/lease renewal. Adapt current source scripts with fault-injection tests for TOTP and Excel.
+- [x] Run direct Go and Worker tests; inspect diff for source consistency, sensitive serialization, uniqueness races and re-start migration behavior. Commit only owned files. Write report with RED/GREEN commands, endpoint differences, unverified live external operations, commits and exact dependency/build requirements.
 
 ## Task 2: React operations center and first-login import
 
 **Ownership:** root owns `frontend/src/lib/credentialOps.ts`, `frontend/src/lib/credentialImport.ts`, their relevant tests, `frontend/src/components/TwoFAImport.tsx`, `frontend/src/components/CredentialConfigEditor.tsx`, `frontend/src/components/CredentialTOTPDialog.tsx`, `frontend/src/pages/CredentialOps.tsx`, `App.tsx`, `Layout.tsx`, `Accounts.tsx`, locale and navigation helpers.
 
-- [ ] Write actual parser tests first; run `node --experimental-strip-types --test src/lib/credentialImport.test.mjs` and observe missing parser failure.
+- [x] Write actual parser tests first; run `node --experimental-strip-types --test src/lib/credentialImport.test.mjs` and observe missing parser failure.
 
 ```js
 test('preserves an optional empty TOTP field and rejects over 100 entries', () => {
@@ -74,21 +74,21 @@ test('preserves an optional empty TOTP field and rejects over 100 entries', () =
 });
 ```
 
-- [ ] Implement native typed API wrapper and robust text/CSV/JSON parsing, duplicate entry validation, limits and redaction. Do not store secrets in localStorage or widget state.
-- [ ] Build shared first-login component used by `/credential-ops` and the ordinary “添加账号” dialog as a distinct password/2FA method. Provide single/batch input, persistent job progress, cancel and retry without repeat login after successful commit; auto-clear secrets after queueing and late-response protection after close.
-- [ ] Implement selected operations-center design: accounts/tasks/rules/runtime, existing-account enrollment, config editor, filtering, manual/batch relogin, inspect/pause/resume/remove, encryption init and Worker state. Use native UI components, themes, loading/error states and translations.
-- [ ] Build TOTP dialog with rotation confirmation, current/candidate/previous export, optional password, QR, JSON/combination downloads, verify-only recovery and secret clearing. Status does not fetch export automatically.
-- [ ] Wire App/sidebar/account row shortcuts without changing unrelated account behavior. Run `npm run typecheck`, relevant unit tests and `npm run build`. Record desktop/mobile browser screenshots and interaction checks against mock API, then real local server if available.
+- [x] Implement native typed API wrapper and robust text/CSV/JSON parsing, duplicate entry validation, limits and redaction. Do not store secrets in localStorage or widget state.
+- [x] Build shared first-login component used by `/credential-ops` and the ordinary “添加账号” dialog as a distinct password/2FA method. Provide single/batch input, persistent job progress, cancel and retry without repeat login after successful commit; auto-clear secrets after queueing and late-response protection after close.
+- [x] Implement selected operations-center design: accounts/tasks/rules/runtime, existing-account enrollment, config editor, filtering, manual/batch relogin, inspect/pause/resume/remove, encryption init and Worker state. Use native UI components, themes, loading/error states and translations.
+- [x] Build TOTP dialog with rotation confirmation, current/candidate/previous export, optional password, QR, JSON/combination downloads, verify-only recovery and secret clearing. Status does not fetch export automatically.
+- [x] Wire App/sidebar/account row shortcuts without changing unrelated account behavior. Run `npm run typecheck`, relevant unit tests and `npm run build`. Record desktop/mobile browser screenshots and interaction checks against mock API, then real local server if available.
 
 ## Task 3: Native BPS/egress integration and whole-feature acceptance
 
 **Ownership:** root owns `proxy/`, `auth/` integration and additional narrowly scoped native fixes; coordinate any database interface amendments with task 1 owner.
 
-- [ ] Write failing dual-grant routing tests before changing `proxy/basispoints.go`: normal Codex keeps original token, BPS uses independent Excel grant, Excel 401 invalidates only matching grant and does not poison Codex account; Excel-only accounts cannot enter native Codex path.
-- [ ] Integrate Excel grant load/refresh/CAS invalidation and auto-acquisition using the task-1 API. Cover missing grant, cancelled task, cooldown and login-profile identity rejection.
-- [ ] Verify fixed egress resolution and route generation checks in import/login/probe/Excel/TOTP paths. Source Mihomo pool adapter uses an independent manager with explicit settings; no sharing of source leases/services. Ensure source-supported proxy choices have real consumers and cancellation release.
-- [ ] Run independent scoped code review of auth/persistence/Worker/interface changes; fix actionable findings and re-run affected tests. Update spec-parity matrix with code links and evidence for every approved behavior, explicitly separating mock checks from live upstream tests.
-- [ ] Run appropriate final Go tests, frontend typecheck/tests/build and Worker tests. Persist completion/limitations in one feature handoff document and README use instructions. Keep the implementation available on `codex/credential-operations`; do not deploy without an explicit release instruction.
+- [x] Write failing dual-grant routing tests before changing `proxy/basispoints.go`: normal Codex keeps original token, BPS uses independent Excel grant, Excel 401 invalidates only matching grant and does not poison Codex account; Excel-only accounts cannot enter native Codex path.
+- [x] Integrate Excel grant load/refresh/CAS invalidation and auto-acquisition using the task-1 API. Cover missing grant, cancelled task, cooldown and login-profile identity rejection.
+- [x] Verify fixed egress resolution and route generation checks in import/login/probe/Excel/TOTP paths. Source Mihomo pool adapter uses an independent manager with explicit settings; no sharing of source leases/services. Ensure source-supported proxy choices have real consumers and cancellation release.
+- [x] Run independent scoped code review of auth/persistence/Worker/interface changes; fix actionable findings and re-run affected tests. Update spec-parity matrix with code links and evidence for every approved behavior, explicitly separating mock checks from live upstream tests.
+- [x] Run appropriate final Go tests, frontend typecheck/tests/build and Worker tests. Persist completion/limitations in one feature handoff document and README use instructions. Keep the implementation available on `codex/credential-operations`; do not deploy without an explicit release instruction.
 
 ## Plan review
 
@@ -103,3 +103,9 @@ test('preserves an optional empty TOTP field and rejects over 100 entries', () =
 | Task 3 internal consistency | Consumer tests → source parity | Do not mark source parity from unconsumed fields or unavailable controls. |
 
 Ruling: Root implements frontend while a single backend implementation agent works in owned files; no two implementation subagents run concurrently. API contract freezes cross-task interfaces, root integrates sequentially after backend report.
+
+## Completion record
+
+2026-10-18: implementation and scoped final review complete. Go full suite, frontend 428 unit/14 browser/typecheck/build, real PostgreSQL lifecycle/retry/synchronous ACK/cancellation/retirement checks, and runtime image/nonroot/Alpine relocation verified. Final review: SPEC PASS / QUALITY PASS, seven correction findings resolved. See `docs/credential-operations-validation.md` for the feature matrix, actual evidence, decisions and unverified live upstream acceptance.
+
+The original shared Git repository was removed while paused. Development files were preserved in an independent repository at the same development directory; snapshot `5a527fc`, final correction `6331280`. See `docs/credential-operations-recovery.md`; old hashes above are provenance, not claimed recovered ancestry. The branch and development files are retained. No merge, push, production deployment or real account mutation occurred. The task-owned disposable PostgreSQL container and its ephemeral connection metadata were removed after final verification.
