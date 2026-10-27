@@ -1,7 +1,6 @@
 package proxy
 
 import (
-	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
@@ -21,8 +20,7 @@ import (
 // 相互独立：绑定即生效，不依赖收敛档位。
 //
 // 改写规则：
-//   - 已有标签只改时区与日期。单机会话档位下，tui / Desktop / VS Code 且正文没有
-//     environment_context 时，只补 timezone 与 current_date，不发明路径或仓库。
+//   - 只改已存在的标签，绝不新增；请求体没有 environment_context 时原样返回。
 //   - <current_date> 不是简单替换成"账号时区的今天"：历史轮次的 environment_context
 //     会随全量历史一起重发（store:false），把旧日期一律改成今天会篡改历史。这里按
 //     "账号时区今天 − 客户端时区今天"的天数差整体平移，旧块保持相对关系不变，同一
@@ -101,85 +99,6 @@ func ApplyCodexTimezoneToBody(body []byte, account *auth.Account, now time.Time)
 		return true
 	})
 	return body
-}
-
-func codexOriginatorWantsEnvironmentContext(originator string) bool {
-	switch strings.ToLower(strings.TrimSpace(originator)) {
-	case "codex-tui", "codex desktop", "codex_vscode":
-		return true
-	default:
-		return false
-	}
-}
-
-func bodyHasEnvironmentContext(body []byte) bool {
-	if strings.Contains(string(body), environmentContextOpenTag) || strings.Contains(string(body), `\u003cenvironment_context\u003e`) {
-		return true
-	}
-	if strings.Contains(gjson.GetBytes(body, "instructions").String(), environmentContextOpenTag) {
-		return true
-	}
-	found := false
-	input := gjson.GetBytes(body, "input")
-	if input.Type == gjson.String {
-		return strings.Contains(input.String(), environmentContextOpenTag)
-	}
-	input.ForEach(func(_, item gjson.Result) bool {
-		if strings.Contains(item.Get("content").String(), environmentContextOpenTag) || strings.Contains(item.Raw, environmentContextOpenTag) {
-			found = true
-			return false
-		}
-		return true
-	})
-	return found
-}
-
-// injectCodexSingleMachineEnvironmentContext 在单机会话档位补最小环境块。
-// 其他档位、exec、以及正文里已经有环境块时原样返回。
-func injectCodexSingleMachineEnvironmentContext(body []byte, account *auth.Account, now time.Time) []byte {
-	if account == nil || account.EffectiveCodexFingerprintMode() != auth.CodexFingerprintModeSingleMachineMultiWindow {
-		return body
-	}
-	timezone := account.EffectiveCodexTimezone()
-	loc := loadLocationCached(timezone)
-	if loc == nil || len(body) == 0 || bodyHasEnvironmentContext(body) {
-		return body
-	}
-	ua, _ := generatedCodexClientHeaders(account, CurrentRuntimeSettings())
-	if !codexOriginatorWantsEnvironmentContext(CodexOriginatorForGeneratedUserAgent(ua)) {
-		return body
-	}
-	text := fmt.Sprintf("<environment_context>\n  <timezone>%s</timezone>\n  <current_date>%s</current_date>\n</environment_context>", timezone, now.In(loc).Format(environmentDateLayout))
-	item, err := json.Marshal(map[string]any{
-		"type": "message",
-		"role": "user",
-		"content": []any{
-			map[string]any{"type": "input_text", "text": text},
-		},
-	})
-	if err != nil {
-		return body
-	}
-	input := gjson.GetBytes(body, "input")
-	if input.Exists() && !input.IsArray() {
-		return body
-	}
-	merged := []json.RawMessage{item}
-	if input.IsArray() {
-		input.ForEach(func(_, value gjson.Result) bool {
-			merged = append(merged, json.RawMessage(value.Raw))
-			return true
-		})
-	}
-	raw, err := json.Marshal(merged)
-	if err != nil {
-		return body
-	}
-	updated, err := sjson.SetRawBytes(body, "input", raw)
-	if err != nil {
-		return body
-	}
-	return updated
 }
 
 func setJSONStringAtPath(body []byte, path, value string) []byte {

@@ -57,17 +57,8 @@ func TestSingleMachineFingerprintTopologyAndCarriers(t *testing.T) {
 	if embedded := bm.Get("x-codex-turn-metadata").String(); embedded != m.Raw {
 		t.Fatalf("embedded/header mismatch %s %s", embedded, m.Raw)
 	}
-	// 子代理和父线程必须是不同的上游线程，父引用指向父线程改写后的 id。
-	if ids.threadID == singleMachineIdentity(a.ID(), singleMachineWindowSlot(a.ID(), "child")) {
-		t.Fatal("child thread was folded into a window slot")
-	}
-	if ids.threadID != singleMachineIdentity(a.ID(), "child") {
-		t.Fatal("child thread was not derived from its own id")
-	}
-	// Many inbound conversations stay stable and fold onto a few outbound sessions.
-	// Their threads stay distinct.
+	// Concurrent unrelated windows stay independent and stable, not a fixed-size pool.
 	var wg sync.WaitGroup
-	seen := make(chan string, 24)
 	for i := 0; i < 24; i++ {
 		wg.Add(1)
 		go func(i int) {
@@ -75,29 +66,12 @@ func TestSingleMachineFingerprintTopologyAndCarriers(t *testing.T) {
 			h := codexClientHeaders("", fmt.Sprint(i))
 			a1 := resolveCodexFingerprintIDs(a, h)
 			a2 := resolveCodexFingerprintIDs(a, h)
-			if !reflect.DeepEqual(a1, a2) || a1.sessionID == "" || a1.threadID == "" {
+			if !reflect.DeepEqual(a1, a2) || a1.threadID == ids.threadID {
 				t.Errorf("unstable window %d", i)
 			}
-			seen <- a1.threadID
 		}(i)
 	}
 	wg.Wait()
-	close(seen)
-	threads := map[string]struct{}{}
-	sessions := map[string]struct{}{}
-	for id := range seen {
-		threads[id] = struct{}{}
-	}
-	for i := 0; i < 24; i++ {
-		got := resolveCodexFingerprintIDs(a, codexClientHeaders("", fmt.Sprint(i)))
-		sessions[got.sessionID] = struct{}{}
-	}
-	if len(threads) != 24 {
-		t.Fatalf("outbound threads = %d, want 24 distinct threads", len(threads))
-	}
-	if len(sessions) == 0 || len(sessions) > singleMachineOutboundWindows {
-		t.Fatalf("outbound sessions = %d, want 1..%d", len(sessions), singleMachineOutboundWindows)
-	}
 }
 
 func TestSingleMachineFingerprintMissingIdentityAndBodyFallback(t *testing.T) {
@@ -119,9 +93,6 @@ func TestSingleMachineFingerprintMissingIdentityAndBodyFallback(t *testing.T) {
 	ids = resolveCodexFingerprintIDs(a, prepared)
 	if ids == nil || ids.threadID != singleMachineIdentity(a.ID(), "body-thread") {
 		t.Fatal("wrong identity")
-	}
-	if ids.sessionID != singleMachineIdentity(a.ID(), singleMachineWindowSlot(a.ID(), "body-session")) {
-		t.Fatal("session was not folded onto a window")
 	}
 	for _, raw := range []string{`{}`, `{"client_metadata":null}`, `{"client_metadata":{"session_id":42}}`, `{"prompt_cache_key":"not-a-session"}`} {
 		got := resolveCodexFingerprintIDs(a, PrepareCodexFingerprintHeaders(a, nil, []byte(raw)))
@@ -219,7 +190,7 @@ func TestSingleMachineFingerprintHTTPAndCompactWire(t *testing.T) {
 			if gjson.GetBytes(gotBody, "client_metadata.thread_id").String() != expected.threadID {
 				t.Fatalf("wire body identity differs: %s", gotBody)
 			}
-			if gjson.GetBytes(gotBody, "prompt_cache_key").String() != expected.threadID {
+			if gjson.GetBytes(gotBody, "prompt_cache_key").String() != "private-cache" {
 				t.Fatalf("wire cache key differs: %s", gotBody)
 			}
 			if len(h) != 0 {

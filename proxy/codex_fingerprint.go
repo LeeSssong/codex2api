@@ -19,9 +19,9 @@ import (
 // 使上游看到的「设备数 / 会话数」收敛，而不是随共享该账号的下游用户数增长。
 // 档位语义见 auth/codex_fingerprint_mode.go。
 //
-// single_machine_multi_window folds sessions into a few windows and keeps each
-// thread, including a subagent, on its own stable id. See codex_fingerprint_modes.go.
-// Existing turn IDs/timestamps survive.
+// single_machine_multi_window preserves real conversation/subagent topology and
+// aligns session/thread headers. See codex_fingerprint_modes.go. No fixed window
+// pool or fabricated subagents are used; existing turn IDs/timestamps survive.
 // The following historical constraints describe the original four modes.
 // 收敛面严格限定在两个载体：
 //   - X-Codex-Turn-Metadata 请求头里的 JSON（本项目按白名单原样透传，见
@@ -206,9 +206,7 @@ func resolveCodexFingerprintIDs(account *auth.Account, downstreamHeaders http.He
 		if clientSession == "" {
 			return ids
 		}
-		// 会话可以折进少数窗口。线程不行：父任务和子代理必须保持不同的 thread_id，
-		// 否则上游看到一个线程同时跑多轮。
-		ids.sessionID = singleMachineIdentity(accountID, singleMachineWindowSlot(accountID, clientSession))
+		ids.sessionID = singleMachineIdentity(accountID, clientSession)
 		ids.threadID = singleMachineIdentity(accountID, clientThread)
 		ids.windowID = ids.threadID + ":0"
 		return ids

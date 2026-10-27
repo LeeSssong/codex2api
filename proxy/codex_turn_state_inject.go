@@ -180,13 +180,6 @@ func ObserveCodexTurnStateFrame(ctx context.Context, payload []byte) string {
 	state := codexTurnStateFromFrame(payload)
 	if state != "" {
 		noteUpstreamTurnState(ctx, state)
-		noteCodexThreadTurnStateFromAffinity(CodexTurnStateAffinityKeyFromContext(ctx), nil, state)
-	}
-	if id := strings.TrimSpace(gjson.GetBytes(payload, "response.id").String()); id != "" {
-		typ := gjson.GetBytes(payload, "type").String()
-		if typ == "" || typ == "response.completed" || typ == "response.created" {
-			noteCodexConversationResponseFromContext(ctx, id)
-		}
 	}
 	return state
 }

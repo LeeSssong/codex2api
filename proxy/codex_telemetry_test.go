@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/codex2api/auth"
-	"github.com/tidwall/gjson"
 )
 
 func testCodexTelemetryProfile() codexTelemetryProfile {
@@ -41,14 +40,21 @@ func TestCodexTelemetryEventContract(t *testing.T) {
 		if event.EventType == "codex_turn_event" && event.EventParams["thread_source"] == "user" {
 			mainTurn = event.EventParams
 		}
-		if event.EventParams["thread_source"] == "thread_title" || event.EventParams["thread_source"] == "guardian_review" || event.EventType == "codex_hook_run" {
-			t.Fatalf("synthetic telemetry event: %#v", event)
+		if event.EventType == "codex_turn_event" && event.EventParams["thread_source"] == "thread_title" {
+			if event.EventParams["root_turn_id"] != event.EventParams["turn_id"] || event.EventParams["total_tool_call_count"] != 0 {
+				t.Fatalf("title turn params = %#v", event.EventParams)
+			}
+		}
+		if event.EventType == "codex_thread_initialized" && event.EventParams["thread_source"] == "guardian_review" {
+			if event.EventParams["parent_thread_id"] != profile.threadID || event.EventParams["subagent_source"] != "guardian" || event.EventParams["ephemeral"] != false {
+				t.Fatalf("guardian thread params = %#v", event.EventParams)
+			}
 		}
 		if event.EventType == "codex_accepted_line_fingerprints" {
 			accepted = event.EventParams
 		}
 	}
-	if counts["codex_thread_initialized"] != 1 || counts["codex_turn_event"] != 1 || counts["codex_hook_run"] != 0 {
+	if counts["codex_thread_initialized"] != 3 || counts["codex_turn_event"] != 2 || counts["codex_hook_run"] != 4 {
 		t.Fatalf("event counts = %#v", counts)
 	}
 	if counts["codex_dynamic_tool_call_event"] != 1 || counts["codex_command_execution_event"] != 1 || counts["codex_file_change_event"] != 1 || counts["codex_accepted_line_fingerprints"] != 1 {
@@ -60,28 +66,6 @@ func TestCodexTelemetryEventContract(t *testing.T) {
 	if accepted["repo_hash"] != nil || len(accepted["line_fingerprints"].([]any)) != 0 {
 		t.Fatalf("accepted fingerprint params = %#v", accepted)
 	}
-}
-
-func TestCodexTelemetrySubagentKeepsParentThread(t *testing.T) {
-	profile := testCodexTelemetryProfile()
-	profile.threadID = "child-thread"
-	profile.turnMetadata = gjsonParse(`{"parent_thread_id":"parent-thread","thread_id":"child-thread"}`)
-	init := codexInitializationEvents(profile)
-	if len(init) != 1 || init[0].EventParams["thread_source"] != "subagent" || init[0].EventParams["parent_thread_id"] != "parent-thread" {
-		t.Fatalf("subagent init = %#v", init)
-	}
-	turn := codexMainTurnEvent(profile, codexTelemetryTerminal{status: "completed"}).EventParams
-	if turn["parent_thread_id"] != "parent-thread" || turn["thread_id"] != "child-thread" {
-		t.Fatalf("subagent turn = %#v", turn)
-	}
-	plain := testCodexTelemetryProfile()
-	if codexMainTurnEvent(plain, codexTelemetryTerminal{status: "completed"}).EventParams["parent_thread_id"] != nil {
-		t.Fatal("plain turn invented a parent thread")
-	}
-}
-
-func gjsonParse(raw string) gjson.Result {
-	return gjson.Parse(raw)
 }
 
 func TestCodexTelemetryDoesNotInferResume(t *testing.T) {

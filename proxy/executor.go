@@ -606,7 +606,6 @@ func executeNativeCodexRequest(ctx context.Context, account *auth.Account, reque
 	// 指纹收敛在 WS/HTTP 分叉前统一改写请求体，两条上游路径共享结果；请求头侧的
 	// 收敛（ApplyCodexFingerprintHeaders）从同一份「账号 + 下游头」推导，取值一致。
 	headers = PrepareCodexFingerprintHeaders(account, headers, requestBody)
-	headers = ensureSingleMachineConversationSeed(account, headers, requestBody)
 	requestBody = ApplyCodexFingerprintToBody(requestBody, account, headers)
 	// 账号绑定时区：改写 environment_context 的时区/日期，与指纹收敛一样在分叉前统一处理。
 	requestBody = ApplyCodexTimezoneToBody(requestBody, account, time.Now())
@@ -647,13 +646,11 @@ func executeNativeCodexRequest(ctx context.Context, account *auth.Account, reque
 	defer func() { telemetryAttempt.observeResult(upstreamResponse, upstreamErr) }()
 	ctx, requestBody, headers = prepareCodexTurnStateInjection(ctx, account, requestBody, headers, wantWebsocket && WebsocketExecuteFunc != nil)
 	poolRouteKey := ""
-	singleMachine := account != nil && account.EffectiveCodexFingerprintMode() == auth.CodexFingerprintModeSingleMachineMultiWindow
-	clientCacheKey := strings.TrimSpace(gjson.GetBytes(requestBody, "prompt_cache_key").String())
 	if wantWebsocket {
 		sessionID = strings.TrimSpace(sessionID)
-		if sessionID == "" && !singleMachine {
+		if sessionID == "" {
 			// stateless 连接 ID 仅用于 WS 连接池隔离，保证同一 API Key 的并发请求
-			// 不挤在一条连接上排队。会话身份收敛不走这条共享连接，避免握手会话串到别的对话。
+			// 不挤在一条连接上排队。
 			sessionID = statelessWebsocketSessionID()
 			if strings.TrimSpace(gjson.GetBytes(requestBody, "prompt_cache_key").String()) == "" {
 				det := deterministicPromptCacheKey(apiKey, account)
@@ -770,7 +767,7 @@ func executeNativeCodexRequest(ctx context.Context, account *auth.Account, reque
 	// 3. 注入 prompt_cache_key（如果请求体中没有，且 sessionID 不为空）
 	existingCacheKey := strings.TrimSpace(gjson.GetBytes(requestBody, "prompt_cache_key").String())
 	cacheKey := existingCacheKey
-	if sessionID != "" && !singleMachine {
+	if sessionID != "" {
 		cacheKey = sessionID
 		requestBody = jsonbody.SetString(requestBody, "prompt_cache_key", cacheKey)
 	}
@@ -1237,14 +1234,12 @@ func executeNativeCodexCompactRequest(ctx context.Context, account *auth.Account
 	// 必须用 prepareCodexResponsesLiteTransport 之后的 headers（它可能返回克隆），
 	// 与下方 applyCodexRequestHeaders 取同一份下游头，两处推导结果才一致。
 	headers = PrepareCodexFingerprintHeaders(account, headers, requestBody)
-	headers = ensureSingleMachineConversationSeed(account, headers, requestBody)
 	requestBody = ApplyCodexFingerprintToBody(requestBody, account, headers)
 	requestBody = ApplyCodexTimezoneToBody(requestBody, account, time.Now())
 	ctx, requestBody, headers = prepareCodexTurnStateInjection(ctx, account, requestBody, headers, false)
 	existingCacheKey := strings.TrimSpace(gjson.GetBytes(requestBody, "prompt_cache_key").String())
 	cacheKey := existingCacheKey
-	compactSingleMachine := account != nil && account.EffectiveCodexFingerprintMode() == auth.CodexFingerprintModeSingleMachineMultiWindow
-	if sessionID != "" && !compactSingleMachine {
+	if sessionID != "" {
 		cacheKey = sessionID
 		requestBody = jsonbody.SetString(requestBody, "prompt_cache_key", cacheKey)
 	}
@@ -1368,9 +1363,6 @@ func applyCodexRequestHeaders(req *http.Request, account *auth.Account, accessTo
 	}
 	userAgent, version, usedGeneratedHeaders := identity.UserAgent, identity.Version, identity.Generated
 	req.Header.Set("User-Agent", userAgent)
-	if account != nil && account.EffectiveCodexFingerprintMode() == auth.CodexFingerprintModeSingleMachineMultiWindow {
-		log.Printf("[CODEX-OUTBOUND] account=%d ua=%q originator=%q version=%q generated=%t", account.ID(), userAgent, CodexOriginatorForGeneratedUserAgent(userAgent), version, usedGeneratedHeaders)
-	}
 
 	// Agent Identity 账号用动态签名的 AgentAssertion 头替代 Bearer（task 已由调用方确保就绪）。
 	if account != nil && account.IsCodexAgentIdentity() {

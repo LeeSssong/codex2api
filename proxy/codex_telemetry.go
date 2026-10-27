@@ -62,7 +62,6 @@ type codexTelemetryProfile struct {
 	command      bool
 	fileChange   bool
 	turnMetadata gjson.Result
-	rawSeed      string
 }
 
 type codexTelemetryRequest struct {
@@ -168,10 +167,6 @@ func (m *codexTelemetryManager) enqueue(job codexTelemetryJob) {
 
 // markThread 记录账号观察到的 thread，并报告它是否首次出现。
 func (m *codexTelemetryManager) markThread(accountID int64, threadID string, now time.Time) bool {
-	threadID = strings.TrimSpace(threadID)
-	if accountID <= 0 || threadID == "" {
-		return false
-	}
 	key := strconv.FormatInt(accountID, 10) + ":" + threadID
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -258,17 +253,13 @@ func beginCodexTelemetry(input codexTelemetryRequest) *codexTelemetryAttempt {
 		return nil
 	}
 	profile := buildCodexTelemetryProfile(client, input)
-	if profile.sessionID == "" || profile.threadID == "" {
-		return nil
-	}
 	profile.firstThread = codexTelemetryGlobal.markThread(input.account.ID(), profile.threadID, profile.started)
-	profile.dynamicTool = false
-	profile.command = false
-	profile.fileChange = false
+	profile.dynamicTool = codexTelemetryRandIntN(5) < 2
+	profile.command = profile.dynamicTool && codexTelemetryRandIntN(2) == 0
+	profile.fileChange = codexTelemetryRandIntN(5) == 0
 	attempt := &codexTelemetryAttempt{profile: profile, timing: timing}
 	codexTelemetryGlobal.enqueueAnalytics(codexInitializationEvents(profile))
 	codexTelemetryGlobal.touchMetrics(profile)
-	log.Printf("[CODEX-TELEMETRY] account=%d session=%s thread=%s first_thread=%t", input.account.ID(), profile.sessionID, profile.threadID, profile.firstThread)
 	if timing {
 		log.Printf("[TELEMETRY-TIMING] begin account=%d model=%s first_thread=%t setup_ms=%d",
 			input.account.ID(), profile.model, profile.firstThread, time.Since(startedAt).Milliseconds())
@@ -298,27 +289,18 @@ func snapshotCodexTelemetryClient(input codexTelemetryRequest) (codexTelemetryCl
 	for name, value := range input.account.GetCustomHeaders() {
 		switch strings.ToLower(strings.TrimSpace(name)) {
 		case "user-agent":
-			if singleMachine {
-				continue
-			}
 			client.userAgent = value
 			userAgentOverridden = true
 		case "originator":
-			if singleMachine {
-				continue
-			}
 			client.originator = value
 			originatorOverridden = true
 		case "chatgpt-account-id":
 			client.accountID = value
 		case "version":
-			if singleMachine {
-				continue
-			}
 			client.version = value
 		}
 	}
-	if !singleMachine && userAgentOverridden && !originatorOverridden {
+	if userAgentOverridden && !originatorOverridden {
 		client.originator = CodexOriginatorForGeneratedUserAgent(client.userAgent)
 	}
 	return client, client.userAgent != "" && client.originator != ""
@@ -506,9 +488,6 @@ func (b *codexTelemetryBody) processEvent(data []byte) {
 	}
 	switch typ {
 	case "response.completed":
-		if id := strings.TrimSpace(gjson.GetBytes(data, "response.id").String()); id != "" && b.attempt.profile.client.account != nil {
-			rememberCodexConversationResponse(b.attempt.profile.client.account.ID(), id, b.attempt.profile.rawSeed)
-		}
 		b.attempt.finish("completed", data)
 	case "response.failed", "error":
 		b.attempt.finish("failed", data)
