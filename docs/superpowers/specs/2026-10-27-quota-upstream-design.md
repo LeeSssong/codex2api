@@ -65,4 +65,4 @@ interface AccountQuotaWindow {
 ## 当前进度
 
 - 已保存原工作区；已拉取双方远端；已在隔离分支以 `-X theirs` 合入上游，merge 成功。
-- 后端、前端、发布保护与线上核验尚未完成；本文件不是完成证明。
+- 后端、前端、发布保护与线上核验均已完成；已部署defac31e25eb，完整证据见docs/releases/2026-10-27-quota-upstream.md。

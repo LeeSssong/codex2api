@@ -9,12 +9,16 @@
 ## Execution
 
 - [x] Preserve original shared worktree files outside Git. Fetch origin/upstream and merge upstream into an isolated codex branch, choosing upstream conflict hunks.
-- [ ] Backend: add the spec's quota_5h/quota_7d projections, aligned current-page aggregation, missing/error/window metadata and meaningful boundary tests. Own admin/account_quota_windows*, admin/account_page_stats*, and necessary database bounded query files only.
-- [ ] Frontend: add AccountQuotaWindow type and reusable account quota component, consume page-stats in list and detail, guard outdated window results, localize and verify formatting/state behavior. Own frontend only.
-- [ ] Release: adapt build/maintenance deploy to the netcup target; add tested shared-lock and expected-current-image/container checks, preserve all unrelated containers and protected configuration; persist collaboration instructions.
-- [ ] Integrate independently committed candidates; review affected billing, API, UI and deployment behavior. Run relevant Go and frontend gates plus upstream merge regression once toolchain is ready.
-- [ ] Merge to fresh origin/main with fast-forward protection and push; prepare immutable frontend/backend/image from clean pushed main and validate source tree/digest.
-- [ ] Under the server lock, verify current baseline again, stop Codex writer, snapshot/verify backup, migrate only if required, start and validate. Record downtime, source, artifact, restored traffic and rollback entrance.
-- [ ] Preserve or archive original task changes and obsolete candidates with provenance; document the next-agent entry point and verify original shared files untouched.
+- [x] Backend: add the spec's quota_5h/quota_7d projections, aligned current-page aggregation, missing/error/window metadata and meaningful boundary tests. Own admin/account_quota_windows*, admin/account_page_stats*, and necessary database bounded query files only.
+- [x] Frontend: add AccountQuotaWindow type and reusable account quota component, consume page-stats in list and detail, guard outdated window results, localize and verify formatting/state behavior. Own frontend only.
+- [x] Release: adapt build/maintenance deploy to the netcup target; add tested shared-lock and expected-current-image/container checks, preserve all unrelated containers and protected configuration; persist collaboration instructions.
+- [x] Integrate independently committed candidates; review affected billing, API, UI and deployment behavior. Run relevant Go and frontend gates plus upstream merge regression once toolchain is ready.
+- [x] Merge to fresh origin/main with fast-forward protection and push; prepare immutable frontend/backend/image from clean pushed main and validate source tree/digest.
+- [x] Under the server lock, verify current baseline again, stop Codex writer, snapshot/verify backup, migrate only if required, start and validate. Record downtime, source, artifact, restored traffic and rollback entrance.
+- [x] Preserve or archive original task changes and obsolete candidates with provenance; document the next-agent entry point and verify original shared files untouched.
 
 Each implementer writes behavior tests first, confirms the intended failure, implements, reruns direct tests, and returns a commit plus evidence. No agent deploys except the primary coordinator. Credentials remain only in protected files; no output of raw account records or secrets.
+
+## 完成证据
+
+2026-10-27已发布defac31e25eb，维护12.603秒；结果及测试限制以docs/releases/2026-10-27-quota-upstream.md为准。原51文件hash不变，main文档收尾已推送；保留任务分支作历史，不再重复部署。
