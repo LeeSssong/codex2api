@@ -187,6 +187,14 @@ func applyAccountUsageIngressPolicy(input *database.UsageLogInput, downstreamWeb
 	if input == nil || input.QuotaUsageAdmitted == nil {
 		return
 	}
+	reason := strings.TrimSpace(input.InternalReason)
+	if reason != "" && !(input.APIKeyID > 0 && (reason == "overflow_compact_summary" || reason == "prompt_intelligence_cy_analysis")) {
+		return
+	}
+	if input.ImageCount > 0 {
+		admitted := true
+		input.QuotaUsageAdmitted = &admitted
+	}
 	failed := input.StatusCode < 200 || input.StatusCode >= 300
 	if !failed {
 		return

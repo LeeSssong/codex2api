@@ -398,3 +398,24 @@ func TestAccountUsageIngressPolicyRunsBeforeAccountFeeSink(t *testing.T) {
 		}
 	}
 }
+
+func TestAccountUsageImageResultAdmittedWithoutTokenSnapshot(t *testing.T) {
+	for _, ws := range []bool{false, true} {
+		input := &database.UsageLogInput{StatusCode: 500, ImageCount: 1}
+		observeAccountUsage(nil, false).apply(input)
+		applyAccountUsageIngressPolicy(input, ws)
+		if !*input.QuotaUsageAdmitted {
+			t.Fatalf("actual image result lost (downstreamWS=%v)", ws)
+		}
+	}
+}
+
+func TestAccountUsageImageDiagnosticRemainsOutsideGatewayLedger(t *testing.T) {
+	in := &database.UsageLogInput{StatusCode: 500, ImageCount: 1, InternalReason: "quality_test", UpstreamErrorKind: "cyber_policy"}
+	observeAccountUsage(nil, false).apply(in)
+	finalizeAccountUsageEvidence(in)
+	applyAccountUsageIngressPolicy(in, true)
+	if *in.QuotaUsageAdmitted {
+		t.Fatal("image/cyber exception admitted diagnostic probe")
+	}
+}
