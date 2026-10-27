@@ -2010,6 +2010,7 @@ export default function Accounts() {
   );
   const [concurrencyInput, setConcurrencyInput] = useState("");
   const [skipWarmTier, setSkipWarmTier] = useState(false);
+  const [keepConcurrencyOnDegrade, setKeepConcurrencyOnDegrade] = useState(false);
   const [editAutoPause5hThresholdInput, setEditAutoPause5hThresholdInput] =
     useState("");
   const [editAutoPause7dThresholdInput, setEditAutoPause7dThresholdInput] =
@@ -3140,6 +3141,12 @@ export default function Accounts() {
         const merged = { ...account };
         if (merged.billed_5h == null && stats.billed_5h != null) merged.billed_5h = stats.billed_5h;
         if (merged.billed_7d == null && stats.billed_7d != null) merged.billed_7d = stats.billed_7d;
+        if (merged.estimated_5h_quota_usd == null && stats.estimated_5h_quota_usd != null) {
+          merged.estimated_5h_quota_usd = stats.estimated_5h_quota_usd;
+        }
+        if (merged.estimated_7d_quota_usd == null && stats.estimated_7d_quota_usd != null) {
+          merged.estimated_7d_quota_usd = stats.estimated_7d_quota_usd;
+        }
         const officialUsd = stats.official_usd ?? stats.official_usd_7d;
         if (officialUsd != null) {
           merged.official_usd = officialUsd;
@@ -5834,6 +5841,7 @@ export default function Accounts() {
         : String(account.base_concurrency_override),
     );
     setSkipWarmTier(account.skip_warm_tier ?? false);
+    setKeepConcurrencyOnDegrade(account.keep_concurrency_on_degrade ?? false);
     setEditAutoPause5hThresholdInput(
       formatQuotaAutoPausePercentInput(account.auto_pause_5h_threshold),
     );
@@ -5915,6 +5923,7 @@ export default function Accounts() {
     setConcurrencyMode("default");
     setConcurrencyInput("");
     setSkipWarmTier(false);
+    setKeepConcurrencyOnDegrade(false);
     setEditAutoPause5hThresholdInput("");
     setEditAutoPause7dThresholdInput("");
     setEditAutoPause5hDisabled(false);
@@ -6025,6 +6034,7 @@ export default function Accounts() {
         healthTier,
         editingAccount,
         baseConcurrency,
+        keepConcurrencyOnDegrade,
       ),
       appliedBias,
       baseConcurrency,
@@ -6036,6 +6046,7 @@ export default function Accounts() {
     concurrencyMode,
     parsedBaseConcurrency,
     skipWarmTier,
+    keepConcurrencyOnDegrade,
   ]);
 
   const handleSaveScheduler = async () => {
@@ -6064,6 +6075,7 @@ export default function Accounts() {
         base_concurrency_override:
           concurrencyMode === "custom" ? parsedBaseConcurrency : null,
         skip_warm_tier: skipWarmTier,
+        keep_concurrency_on_degrade: keepConcurrencyOnDegrade,
         allowed_api_key_ids: allowedAPIKeySelection,
         proxy_url: editProxyUrl.trim() || null,
         tags: editTags,
@@ -10137,6 +10149,34 @@ export default function Accounts() {
                           </div>
                         </div>
 
+                        <div className="rounded-xl border border-border/70 bg-card p-4.5 shadow-2xs hover:border-border/90 transition-colors">
+                          <div className="flex items-start justify-between gap-4">
+                            <div className="space-y-1">
+                              <div className="flex items-center gap-2 font-semibold text-foreground text-sm">
+                                <Gauge className="size-4 text-sky-500" />
+                                <span>{t("accounts.schedulerKeepConcurrencyLabel")}</span>
+                              </div>
+                              <p className="text-xs text-muted-foreground leading-relaxed">
+                                {t("accounts.schedulerKeepConcurrencyHint")}
+                              </p>
+                            </div>
+                            <button
+                              type="button"
+                              role="switch"
+                              aria-label={t("accounts.schedulerKeepConcurrencyLabel")}
+                              aria-checked={keepConcurrencyOnDegrade}
+                              onClick={() =>
+                                setKeepConcurrencyOnDegrade((current) => !current)
+                              }
+                              className={`relative inline-flex h-5.5 w-10 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 focus-visible:ring-offset-2 ${keepConcurrencyOnDegrade ? "bg-primary" : "bg-muted"}`}
+                            >
+                              <span
+                                className={`pointer-events-none block size-4.5 rounded-full bg-white shadow-xs transition-transform ${keepConcurrencyOnDegrade ? "translate-x-4.5" : "translate-x-0"}`}
+                              />
+                            </button>
+                          </div>
+                        </div>
+
                         {/* 请求次数限流 */}
                         <div className="rounded-xl border border-border/70 bg-card p-4.5 shadow-2xs hover:border-border/90 transition-colors">
                           <div className="flex items-center gap-2 font-semibold text-foreground text-sm">
@@ -13641,14 +13681,17 @@ function computePreviewDynamicConcurrency(
   healthTier: string | undefined,
   account: AccountRow,
   baseConcurrency: number,
+  keepConcurrencyOnDegrade = false,
 ): number {
   switch (healthTier) {
     case "healthy":
       return baseConcurrency;
     case "warm":
-      return Math.max(1, Math.floor(baseConcurrency / 2));
+      return keepConcurrencyOnDegrade
+        ? baseConcurrency
+        : Math.max(1, Math.floor(baseConcurrency / 2));
     case "risky":
-      return 1;
+      return keepConcurrencyOnDegrade ? baseConcurrency : 1;
     case "banned":
       return 0;
     default:
@@ -14621,17 +14664,23 @@ function UsageBar({
   pct,
   resetAt,
   detail,
+  estimatedQuotaUsd,
 }: {
   label: string;
   pct: number;
   resetAt?: string;
   detail?: AccountRow["usage_5h_detail"];
+  estimatedQuotaUsd?: number;
 }) {
   const resetTime = formatResetAt(resetAt);
   const { t } = useTranslation();
   const detailText = hasUsageWindowDetail(detail)
     ? `${formatCompactUsageNumber(detail?.requests)} ${t("accounts.usageReqUnit")} / ${formatCompactUsageNumber(detail?.tokens)} ${t("accounts.usageTokUnit")}`
     : "";
+  const showEstimate =
+    typeof estimatedQuotaUsd === "number" &&
+    Number.isFinite(estimatedQuotaUsd) &&
+    estimatedQuotaUsd > 0;
   return (
     <div className="account-usage-window">
       <div className="flex items-center gap-1.5">
@@ -14656,6 +14705,16 @@ function UsageBar({
       </div>
       <div className="account-usage-window__details">
         {detailText && <div className={USAGE_BAR_META_CLASS}>{detailText}</div>}
+        {showEstimate && (
+          <div
+            className={USAGE_BAR_META_CLASS}
+            title={t("accounts.estimatedWindowQuotaHint")}
+          >
+            {t("accounts.estimatedWindowQuota", {
+              cost: estimatedQuotaUsd.toFixed(2),
+            })}
+          </div>
+        )}
         {resetTime && (
           <div className={USAGE_BAR_META_CLASS} title={resetTime.title}>
             ⏱ {resetTime.label}
@@ -14972,6 +15031,7 @@ function UsageCell({
               pct={account.usage_percent_5h!}
               resetAt={account.reset_5h_at}
               detail={account.usage_5h_detail}
+              estimatedQuotaUsd={account.estimated_5h_quota_usd}
             />
           ) : (
             <UsageWindowStat
@@ -14987,6 +15047,7 @@ function UsageCell({
               pct={account.usage_percent_7d!}
               resetAt={account.reset_7d_at}
               detail={account.usage_7d_detail}
+              estimatedQuotaUsd={account.estimated_7d_quota_usd}
             />
           ) : (
             <UsageWindowStat label={longWindowLabel} detail={account.usage_7d_detail} />
@@ -15008,6 +15069,7 @@ function UsageCell({
               pct={account.usage_percent_7d!}
               resetAt={account.reset_7d_at}
               detail={account.usage_7d_detail}
+              estimatedQuotaUsd={account.estimated_7d_quota_usd}
             />
           ) : (
             <UsageWindowStat
@@ -15032,6 +15094,7 @@ function UsageCell({
               pct={account.usage_percent_7d!}
               resetAt={account.reset_7d_at}
               detail={account.usage_7d_detail}
+              estimatedQuotaUsd={account.estimated_7d_quota_usd}
             />
           ) : (
             <UsageWindowStat

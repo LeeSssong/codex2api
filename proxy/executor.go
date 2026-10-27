@@ -190,6 +190,11 @@ const (
 	codexTransportModeUTLSChrome = "utls_chrome"
 )
 
+// CodexTransportMode 返回进程启动时的 TLS 模式。它在进程生命周期内不变。
+func CodexTransportMode() string {
+	return codexTransportModeFromEnv()
+}
+
 func codexTransportModeFromEnv() string {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("CODEX_TRANSPORT_MODE"))) {
 	case "", "standard", "go", "default":
@@ -554,9 +559,11 @@ func executeNativeCodexRequest(ctx context.Context, account *auth.Account, reque
 	// 指纹收敛在 WS/HTTP 分叉前统一改写请求体，两条上游路径共享结果；请求头侧的
 	// 收敛（ApplyCodexFingerprintHeaders）从同一份「账号 + 下游头」推导，取值一致。
 	headers = PrepareCodexFingerprintHeaders(account, headers, requestBody)
+	headers = ensureSingleMachineConversationSeed(account, headers, requestBody)
 	requestBody = ApplyCodexFingerprintToBody(requestBody, account, headers)
 	// 账号绑定时区：改写 environment_context 的时区/日期，与指纹收敛一样在分叉前统一处理。
 	requestBody = ApplyCodexTimezoneToBody(requestBody, account, time.Now())
+	requestBody = injectCodexSingleMachineEnvironmentContext(requestBody, account, time.Now())
 	var stateErr error
 	requestBody, headers, stateErr = applyVerifiedState(ctx, account, requestBody, headers, proxyOverride)
 	if stateErr != nil {
@@ -586,12 +593,15 @@ func executeNativeCodexRequest(ctx context.Context, account *auth.Account, reque
 		})
 	}
 	defer func() { telemetryAttempt.observeResult(upstreamResponse, upstreamErr) }()
+	defer func() { watchCodexConversationResponse(upstreamResponse, account, headers) }()
 	poolRouteKey := ""
+	singleMachine := account != nil && account.EffectiveCodexFingerprintMode() == auth.CodexFingerprintModeSingleMachineMultiWindow
+	clientCacheKey := strings.TrimSpace(gjson.GetBytes(requestBody, "prompt_cache_key").String())
 	if wantWebsocket {
 		sessionID = strings.TrimSpace(sessionID)
-		if sessionID == "" {
+		if sessionID == "" && !singleMachine {
 			// stateless 连接 ID 仅用于 WS 连接池隔离，保证同一 API Key 的并发请求
-			// 不挤在一条连接上排队。
+			// 不挤在一条连接上排队。会话身份收敛不走这条共享连接，避免握手会话串到别的对话。
 			sessionID = statelessWebsocketSessionID()
 			if strings.TrimSpace(gjson.GetBytes(requestBody, "prompt_cache_key").String()) == "" {
 				det := deterministicPromptCacheKey(apiKey, account)
@@ -624,6 +634,39 @@ func executeNativeCodexRequest(ctx context.Context, account *auth.Account, reque
 		// 出站前最后兜底：任何中间改写都不能把普通 input 项放到
 		// compaction_trigger 后面，否则上游直接返回 invalid_request_error。
 		requestBody = normalizeCompactionTriggerFinal(requestBody, false)
+		// 共享的无会话连接池不能把单次请求的会话写进握手头。显式会话和
+		// 客户端自带的缓存键仍然用来派生稳定会话。会话身份收敛会把
+		// prompt_cache_key 改成同一段 thread，并独占一条连接。
+		cacheSeed := ""
+		if singleMachine {
+			cacheSeed = clientCacheKey
+		} else if !(IsStatelessWebsocketSessionID(sessionID) && strings.TrimSpace(poolRouteKey) != "") {
+			cacheSeed = strings.TrimSpace(gjson.GetBytes(requestBody, "prompt_cache_key").String())
+			if sessionID != "" && !IsStatelessWebsocketSessionID(sessionID) {
+				cacheSeed = sessionID
+			}
+		}
+		headers, requestBody = FinalizeCodexSingleMachineIdentity(account, headers, requestBody, cacheSeed)
+		if singleMachine {
+			if session, thread := ConvergedCodexSessionIdentity(account, headers); session != "" || thread != "" {
+				// 连接和帧体缓存键跟 thread 走。握手里的 Session-Id 仍由下游种子收敛，
+				// 避免子线程被 session 覆盖后和 thread 各说各话。
+				if thread != "" {
+					sessionID = thread
+				} else {
+					sessionID = session
+				}
+				poolRouteKey = ""
+				stateKey := thread
+				if stateKey == "" {
+					stateKey = session
+				}
+				bindCodexThreadTurnStateSession(CodexTurnStateAffinityKeyFromContext(ctx), account.ID(), stateKey)
+				bindCodexConversationRecall(CodexTurnStateAffinityKeyFromContext(ctx), account.ID(), codexRawConversationSeed(headers))
+				log.Printf("[CODEX-IDENTITY] account=%d session=%s thread=%s cache=%s", account.ID(), session, thread, gjson.GetBytes(requestBody, "prompt_cache_key").String())
+			}
+			requestBody, headers = applyCodexThreadTurnState(account, headers, requestBody)
+		}
 		traceProxy := proxyOverride
 		if traceProxy == "" {
 			account.Mu().RLock()
@@ -696,9 +739,30 @@ func executeNativeCodexRequest(ctx context.Context, account *auth.Account, reque
 	// 3. 注入 prompt_cache_key（如果请求体中没有，且 sessionID 不为空）
 	existingCacheKey := strings.TrimSpace(gjson.GetBytes(requestBody, "prompt_cache_key").String())
 	cacheKey := existingCacheKey
-	if sessionID != "" {
+	if sessionID != "" && !singleMachine {
 		cacheKey = sessionID
 		requestBody, _ = sjson.SetBytes(requestBody, "prompt_cache_key", cacheKey)
+	}
+	if singleMachine {
+		cacheKey = clientCacheKey
+	}
+	headers, requestBody = FinalizeCodexSingleMachineIdentity(account, headers, requestBody, cacheKey)
+	if singleMachine {
+		if session, thread := ConvergedCodexSessionIdentity(account, headers); thread != "" || session != "" {
+			if thread != "" {
+				cacheKey = thread
+			} else {
+				cacheKey = session
+			}
+			stateKey := thread
+			if stateKey == "" {
+				stateKey = session
+			}
+			bindCodexThreadTurnStateSession(CodexTurnStateAffinityKeyFromContext(ctx), account.ID(), stateKey)
+			bindCodexConversationRecall(CodexTurnStateAffinityKeyFromContext(ctx), account.ID(), codexRawConversationSeed(headers))
+			log.Printf("[CODEX-IDENTITY] account=%d session=%s thread=%s cache=%s", account.ID(), session, thread, gjson.GetBytes(requestBody, "prompt_cache_key").String())
+		}
+		requestBody, headers = applyCodexThreadTurnState(account, headers, requestBody)
 	}
 
 	endpoint := CodexBaseURL + "/responses"
@@ -1130,13 +1194,34 @@ func executeNativeCodexCompactRequest(ctx context.Context, account *auth.Account
 	// 必须用 prepareCodexResponsesLiteTransport 之后的 headers（它可能返回克隆），
 	// 与下方 applyCodexRequestHeaders 取同一份下游头，两处推导结果才一致。
 	headers = PrepareCodexFingerprintHeaders(account, headers, requestBody)
+	headers = ensureSingleMachineConversationSeed(account, headers, requestBody)
 	requestBody = ApplyCodexFingerprintToBody(requestBody, account, headers)
 	requestBody = ApplyCodexTimezoneToBody(requestBody, account, time.Now())
+	requestBody = injectCodexSingleMachineEnvironmentContext(requestBody, account, time.Now())
 	existingCacheKey := strings.TrimSpace(gjson.GetBytes(requestBody, "prompt_cache_key").String())
 	cacheKey := existingCacheKey
-	if sessionID != "" {
+	compactSingleMachine := account != nil && account.EffectiveCodexFingerprintMode() == auth.CodexFingerprintModeSingleMachineMultiWindow
+	if sessionID != "" && !compactSingleMachine {
 		cacheKey = sessionID
 		requestBody, _ = sjson.SetBytes(requestBody, "prompt_cache_key", cacheKey)
+	}
+	headers, requestBody = FinalizeCodexSingleMachineIdentity(account, headers, requestBody, cacheKey)
+	if compactSingleMachine {
+		if session, thread := ConvergedCodexSessionIdentity(account, headers); thread != "" || session != "" {
+			if thread != "" {
+				cacheKey = thread
+			} else {
+				cacheKey = session
+			}
+			stateKey := thread
+			if stateKey == "" {
+				stateKey = session
+			}
+			bindCodexThreadTurnStateSession(CodexTurnStateAffinityKeyFromContext(ctx), account.ID(), stateKey)
+			bindCodexConversationRecall(CodexTurnStateAffinityKeyFromContext(ctx), account.ID(), codexRawConversationSeed(headers))
+			log.Printf("[CODEX-IDENTITY] account=%d session=%s thread=%s cache=%s", account.ID(), session, thread, gjson.GetBytes(requestBody, "prompt_cache_key").String())
+		}
+		requestBody, headers = applyCodexThreadTurnState(account, headers, requestBody)
 	}
 
 	// compact 端点
@@ -1193,6 +1278,21 @@ func codexVersionFromString(raw string) (cliVersion, bool) {
 		return cliVersion{}, false
 	}
 	return parseCodexClientVersion("codex_cli_rs/" + raw)
+}
+
+// applyCodexMaintenanceIdentity 让额度、订阅和模型清单沿用账号画像。
+// 非单机会话档位保持原来的最小 CLI 身份，避免改掉既有探针契约。
+func applyCodexMaintenanceIdentity(req *http.Request, account *auth.Account) (version string, applied bool) {
+	if req == nil || account == nil || account.EffectiveCodexFingerprintMode() != auth.CodexFingerprintModeSingleMachineMultiWindow {
+		return "", false
+	}
+	userAgent, version := generatedCodexClientHeaders(account, CurrentRuntimeSettings())
+	req.Header.Set("User-Agent", userAgent)
+	req.Header.Set("Originator", CodexOriginatorForGeneratedUserAgent(userAgent))
+	if version != "" {
+		req.Header.Set("Version", version)
+	}
+	return version, true
 }
 
 func generatedCodexClientHeaders(account *auth.Account, settings RuntimeSettings) (string, string) {
@@ -1253,6 +1353,13 @@ func resolveCodexOutboundClientHeaders(account *auth.Account, apiKey string, dev
 		}
 		return userAgent, strings.TrimSpace(version), false
 	}
+	// 会话身份收敛的出口必须是同一套客户端画像。保留客户端 / 自动兼容
+	// 会把 sub2api 传来的 UA 原样送出，同一账号就会随着下游变化。
+	if account != nil && account.EffectiveCodexFingerprintMode() == auth.CodexFingerprintModeSingleMachineMultiWindow {
+		settings := CurrentRuntimeSettings()
+		userAgent, version = generatedCodexClientHeaders(account, settings)
+		return userAgent, version, true
+	}
 
 	userAgent = strings.TrimSpace(downstreamHeaders.Get("User-Agent"))
 	originator := strings.TrimSpace(downstreamHeaders.Get("Originator"))
@@ -1301,15 +1408,26 @@ func applyCodexAllowedForwardHeaders(req *http.Request, downstreamHeaders http.H
 }
 
 func applyAccountCustomHeaders(req *http.Request, account *auth.Account) {
-	if req == nil || account == nil {
+	if req == nil {
 		return
 	}
+	ApplyAccountCustomHeaders(req.Header, account)
+}
+
+// ApplyAccountCustomHeaders copies account custom headers onto an outbound
+// header set. Session-identity convergence drops headers that would replace
+// the account's User-Agent, session, or installation identity.
+func ApplyAccountCustomHeaders(outbound http.Header, account *auth.Account) {
+	if outbound == nil || account == nil {
+		return
+	}
+	blockIdentity := account.EffectiveCodexFingerprintMode() == auth.CodexFingerprintModeSingleMachineMultiWindow
 	for name, value := range account.GetCustomHeaders() {
 		name = strings.TrimSpace(name)
-		if name == "" {
+		if name == "" || (blockIdentity && codexSingleMachineBlockedHeader(name)) {
 			continue
 		}
-		req.Header.Set(name, value)
+		outbound.Set(name, value)
 	}
 }
 
@@ -1327,6 +1445,9 @@ func applyCodexRequestHeaders(req *http.Request, account *auth.Account, accessTo
 
 	userAgent, version, usedGeneratedHeaders := resolveCodexOutboundClientHeaders(account, apiKey, deviceCfg, downstreamHeaders)
 	req.Header.Set("User-Agent", userAgent)
+	if account != nil && account.EffectiveCodexFingerprintMode() == auth.CodexFingerprintModeSingleMachineMultiWindow {
+		log.Printf("[CODEX-OUTBOUND] account=%d ua=%q originator=%q version=%q generated=%t", account.ID(), userAgent, CodexOriginatorForGeneratedUserAgent(userAgent), version, usedGeneratedHeaders)
+	}
 
 	// Agent Identity 账号用动态签名的 AgentAssertion 头替代 Bearer（task 已由调用方确保就绪）。
 	if account != nil && account.IsCodexAgentIdentity() {

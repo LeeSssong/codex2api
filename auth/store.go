@@ -157,9 +157,9 @@ func NormalizeTestContent(content string) string {
 
 // Account 运行时账号状态
 type Account struct {
-	smartOpsLoadFactor int
-	smartOpsBPS smartops.BPSDefaults
-	smartOpsBPSSet bool
+	smartOpsLoadFactor        int
+	smartOpsBPS               smartops.BPSDefaults
+	smartOpsBPSSet            bool
 	daybreak                  database.DaybreakSnapshot
 	codexRoutes               codexAccountRoutes
 	stateAdmissionMu          sync.Mutex
@@ -440,14 +440,17 @@ type Account struct {
 	IgnoreUsageLimitStatusOverride *bool
 	ignoreUsageLimitStatus         bool
 	SkipWarmTier                   bool // 跳过 warm 层级降级
-	AllowedAPIKeyIDs               []int64
-	allowedAPIKeySet               map[int64]struct{}
-	Tags                           []string
-	GroupIDs                       []int64
-	ModelCooldowns                 map[string]ModelCooldown
-	ModelCooldownModeOverride      *string
-	ModelCooldownSecondsOverride   *int
-	ModelCooldownBackoffOverride   *bool
+	// KeepConcurrencyOnDegrade 让 warm/risky 继续使用基础并发。层级和排序照常计算，
+	// banned 仍为 0，额度与节奏上限也不绕过。
+	KeepConcurrencyOnDegrade     bool
+	AllowedAPIKeyIDs             []int64
+	allowedAPIKeySet             map[int64]struct{}
+	Tags                         []string
+	GroupIDs                     []int64
+	ModelCooldowns               map[string]ModelCooldown
+	ModelCooldownModeOverride    *string
+	ModelCooldownSecondsOverride *int
+	ModelCooldownBackoffOverride *bool
 
 	SubscriptionExpiresAt time.Time
 }
@@ -1392,6 +1395,11 @@ func (a *Account) recomputeSchedulerLocked(baseLimit int64) {
 		tier = HealthTierHealthy
 	}
 
+	concurrencyTier := tier
+	if a.KeepConcurrencyOnDegrade && (tier == HealthTierWarm || tier == HealthTierRisky) {
+		concurrencyTier = HealthTierHealthy
+	}
+
 	baseConcurrencyEffective := a.effectiveBaseConcurrencyLocked(baseLimit)
 	scoreBiasEffective := a.effectiveScoreBiasLocked(now, tier)
 	if a.dispatchBonusEligibleLocked(now, tier) {
@@ -1406,7 +1414,7 @@ func (a *Account) recomputeSchedulerLocked(baseLimit int64) {
 	a.DispatchScore = dispatchScore
 	a.ScoreBiasEffective = scoreBiasEffective
 	a.BaseConcurrencyEffective = baseConcurrencyEffective
-	a.DynamicConcurrencyLimit = a.quotaAutoPause5hGuardConcurrencyLimitLocked(concurrencyLimitForTier(baseConcurrencyEffective, tier), now)
+	a.DynamicConcurrencyLimit = a.quotaAutoPause5hGuardConcurrencyLimitLocked(concurrencyLimitForTier(baseConcurrencyEffective, concurrencyTier), now)
 	a.DynamicConcurrencyLimit = a.smartPacingConcurrencyLimitLocked(a.DynamicConcurrencyLimit, now)
 	if a.premium5hRateLimitedLocked(now) && a.DynamicConcurrencyLimit > 1 {
 		a.DynamicConcurrencyLimit = 1
@@ -3509,7 +3517,7 @@ func (a *Account) GetLastUsedAt() time.Time {
 
 // Store 多账号管理器（数据库 + Token 缓存）
 type Store struct {
-	smartOps atomic.Pointer[smartOpsAdapter]
+	smartOps                           atomic.Pointer[smartOpsAdapter]
 	proxyAuditLabels                   map[string]ProxyAuditLabel
 	mu                                 sync.RWMutex
 	accountMutationMu                  sync.Mutex // serializes account-set and scheduler mutations without nesting their locks
@@ -4389,7 +4397,7 @@ func (s *Store) configureFastScheduler(scheduler *FastScheduler) {
 	}
 	scheduler.mu.Lock()
 	scheduler.metrics = s.schedulerMetrics
-	scheduler.rankCandidates=s.rankSmartOpsFastCandidates
+	scheduler.rankCandidates = s.rankSmartOpsFastCandidates
 	scheduler.mu.Unlock()
 	scheduler.SetGroupCheck(s.APIKeyAllowsAccount)
 	scheduler.SetAcquireFunc(func(acc *Account, concurrencyLimit int64) bool {
@@ -5725,6 +5733,7 @@ func (s *Store) buildAccountFromRow(ctx context.Context, row *database.AccountRo
 	account.ModelCooldownBackoffOverride = row.GetCredentialOptionalBool("model_cooldown_backoff_override")
 	account.recomputeEffectiveIgnoreUsageLimitStatus(s.IgnoreUsageLimitStatus())
 	account.SkipWarmTier = row.SkipWarmTier
+	account.KeepConcurrencyOnDegrade = row.GetCredentialBool("keep_concurrency_on_degrade")
 	if row.Status == "error" {
 		account.Status = StatusError
 		account.ErrorMsg = row.ErrorMessage
@@ -5885,9 +5894,11 @@ func (s *Store) buildAccountFromRow(ctx context.Context, row *database.AccountRo
 	if priority, ok := row.GetCredentialInt64("scheduler_priority"); ok {
 		account.SetSchedulerPriority(priority)
 	}
-	if factor,ok:=row.GetCredentialInt64("smart_ops_load_factor");ok{account.smartOpsLoadFactor=int(factor)}
-	account.smartOpsBPSSet=row.GetCredential("smart_ops_bps_defaults")!=""
-	_ = json.Unmarshal([]byte(row.GetCredential("smart_ops_bps_defaults")),&account.smartOpsBPS)
+	if factor, ok := row.GetCredentialInt64("smart_ops_load_factor"); ok {
+		account.smartOpsLoadFactor = int(factor)
+	}
+	account.smartOpsBPSSet = row.GetCredential("smart_ops_bps_defaults") != ""
+	_ = json.Unmarshal([]byte(row.GetCredential("smart_ops_bps_defaults")), &account.smartOpsBPS)
 	account.recomputeEffectiveAutoPause(s)
 	for _, cooldown := range modelCooldowns[row.ID] {
 		account.RestoreModelCooldown(cooldown.Model, cooldown.Reason, cooldown.ResetAt, cooldown.UpdatedAt)
@@ -6626,10 +6637,12 @@ func (s *Store) tryIndexedMissFallback() bool {
 }
 
 // NextExcludingWithDispatch 按用量策略选号。spark 请求忽略账号级 5h/7d。
-func (s *Store) NextExcludingWithDispatch(apiKeyID int64, exclude map[int64]bool, filter AccountFilter, policy DispatchPolicy,modelScope ...string) *Account {
+func (s *Store) NextExcludingWithDispatch(apiKeyID int64, exclude map[int64]bool, filter AccountFilter, policy DispatchPolicy, modelScope ...string) *Account {
 	started := time.Now()
 	filter = s.withUsableEgressFilter(filter)
-	if account,used:=s.smartOpsAcquire(apiKeyID,exclude,filter,policy,modelScope...);used{return account}
+	if account, used := s.smartOpsAcquire(apiKeyID, exclude, filter, policy, modelScope...); used {
+		return account
+	}
 	lazyMode := s.GetLazyMode()
 	shadowChecked := false
 	shadowIndexedHit := false
@@ -7085,8 +7098,8 @@ func (s *Store) NextForSessionWithDispatch(key string, apiKeyID int64, exclude m
 // NextForSessionWithDispatchGuard is the binding-aware variant used by proxy
 // request paths. The returned guard must be passed to BindSessionAffinityWithGuard
 // after the attempt is selected or committed.
-func (s *Store) NextForSessionWithDispatchGuard(key string, apiKeyID int64, exclude map[int64]bool, filter AccountFilter, policy DispatchPolicy,modelScope ...string) (*Account, string, SessionAffinityGuard) {
-	return s.nextForSessionWithFilter(key, apiKeyID, exclude, filter, false, policy,modelScope...)
+func (s *Store) NextForSessionWithDispatchGuard(key string, apiKeyID int64, exclude map[int64]bool, filter AccountFilter, policy DispatchPolicy, modelScope ...string) (*Account, string, SessionAffinityGuard) {
+	return s.nextForSessionWithFilter(key, apiKeyID, exclude, filter, false, policy, modelScope...)
 }
 
 // NextForContinuationWithFilter preserves an existing account binding for a
@@ -7114,13 +7127,13 @@ func (s *Store) NextForContinuationWithDispatch(key string, apiKeyID int64, excl
 //
 // 绑定本身不存在时仍走完整挑号，与普通请求一致；TTL 过期只影响普通请求，
 // preserveBinding=true 的续链请求仍保留原账号。
-func (s *Store) nextForSessionWithFilter(key string, apiKeyID int64, exclude map[int64]bool, filter AccountFilter, preserveBinding bool, policy DispatchPolicy,modelScope ...string) (*Account, string, SessionAffinityGuard) {
+func (s *Store) nextForSessionWithFilter(key string, apiKeyID int64, exclude map[int64]bool, filter AccountFilter, preserveBinding bool, policy DispatchPolicy, modelScope ...string) (*Account, string, SessionAffinityGuard) {
 	if s == nil {
 		return nil, "", SessionAffinityGuard{}
 	}
 	key = strings.TrimSpace(key)
 	if key == "" {
-		return s.NextExcludingWithDispatch(apiKeyID, exclude, filter, policy,modelScope...), "", SessionAffinityGuard{}
+		return s.NextExcludingWithDispatch(apiKeyID, exclude, filter, policy, modelScope...), "", SessionAffinityGuard{}
 	}
 
 	now := time.Now()
@@ -7180,7 +7193,7 @@ func (s *Store) nextForSessionWithFilter(key string, apiKeyID int64, exclude map
 				return nil, "", SessionAffinityGuard{}
 			}
 			if capacityFull {
-				fallback := s.nextAccountForFreshAffinityWithDispatch(key, apiKeyID, exclude, filter, policy,modelScope...)
+				fallback := s.nextAccountForFreshAffinityWithDispatch(key, apiKeyID, exclude, filter, policy, modelScope...)
 				if fallback == nil {
 					return nil, "", SessionAffinityGuard{}
 				}
@@ -7195,7 +7208,7 @@ func (s *Store) nextForSessionWithFilter(key string, apiKeyID int64, exclude map
 				return s.takeByIDForContinuation(binding.accountID, apiKeyID, exclude, filter, key, policy), "", SessionAffinityGuard{}
 			}
 			s.UnbindSessionAffinity(key, binding.accountID)
-			return s.nextAccountForFreshAffinityWithDispatch(key, apiKeyID, exclude, filter, policy,modelScope...), "", SessionAffinityGuard{}
+			return s.nextAccountForFreshAffinityWithDispatch(key, apiKeyID, exclude, filter, policy, modelScope...), "", SessionAffinityGuard{}
 		}
 		// 跨进程缓存的 binding 也按 bounded 逻辑校验账号健康；Grok 账号套用 Grok 专属模式。
 		cacheMode := mode
@@ -7219,7 +7232,7 @@ func (s *Store) nextForSessionWithFilter(key string, apiKeyID int64, exclude map
 				return nil, "", SessionAffinityGuard{}
 			}
 			if capacityFull {
-				fallback := s.nextAccountForFreshAffinityWithDispatch(key, apiKeyID, exclude, filter, policy,modelScope...)
+				fallback := s.nextAccountForFreshAffinityWithDispatch(key, apiKeyID, exclude, filter, policy, modelScope...)
 				if fallback == nil {
 					return nil, "", SessionAffinityGuard{}
 				}
@@ -7229,7 +7242,7 @@ func (s *Store) nextForSessionWithFilter(key string, apiKeyID int64, exclude map
 		}
 	}
 
-	return s.nextAccountForFreshAffinityWithDispatch(key, apiKeyID, exclude, filter, policy,modelScope...), "", SessionAffinityGuard{}
+	return s.nextAccountForFreshAffinityWithDispatch(key, apiKeyID, exclude, filter, policy, modelScope...), "", SessionAffinityGuard{}
 }
 
 // nextAccountForFreshAffinity 为"新亲和键首次绑定"选号(issue #484)。
@@ -7245,15 +7258,17 @@ func (s *Store) nextAccountForFreshAffinity(key string, apiKeyID int64, exclude 
 	return s.nextAccountForFreshAffinityWithDispatch(key, apiKeyID, exclude, filter, DispatchPolicyStandard)
 }
 
-func (s *Store) nextAccountForFreshAffinityWithDispatch(key string, apiKeyID int64, exclude map[int64]bool, filter AccountFilter, policy DispatchPolicy,modelScope ...string) *Account {
+func (s *Store) nextAccountForFreshAffinityWithDispatch(key string, apiKeyID int64, exclude map[int64]bool, filter AccountFilter, policy DispatchPolicy, modelScope ...string) *Account {
 	if s == nil {
 		return nil
 	}
 	if !s.GetSessionAffinitySpread() || strings.TrimSpace(key) == "" {
-		return s.NextExcludingWithDispatch(apiKeyID, exclude, filter, policy,modelScope...)
+		return s.NextExcludingWithDispatch(apiKeyID, exclude, filter, policy, modelScope...)
 	}
 	filter = s.withUsableEgressFilter(filter)
-	if account,used:=s.smartOpsAcquire(apiKeyID,exclude,filter,policy,modelScope...);used{return account}
+	if account, used := s.smartOpsAcquire(apiKeyID, exclude, filter, policy, modelScope...); used {
+		return account
+	}
 	if s.SchedulerEngine() == "indexed" {
 		if scheduler := s.routingFastScheduler(apiKeyID); scheduler != nil {
 			started := time.Now()
@@ -7955,7 +7970,7 @@ func (s *Store) waitForSessionAvailableWithFilter(ctx context.Context, key strin
 		if preserveBinding {
 			acc, proxyURL = s.NextForContinuationWithDispatch(key, apiKeyID, exclude, filter, policy)
 		} else {
-			acc, proxyURL, guard = s.NextForSessionWithDispatchGuard(key, apiKeyID, exclude, filter, policy,PrioritySchedulingModel(ctx))
+			acc, proxyURL, guard = s.NextForSessionWithDispatchGuard(key, apiKeyID, exclude, filter, policy, PrioritySchedulingModel(ctx))
 		}
 		if acc != nil {
 			if ctx.Err() != nil || !time.Now().Before(expires) {
@@ -9265,6 +9280,21 @@ func (s *Store) ApplyAccountSchedulerOverridePatch(dbID int64, scoreBiasSet bool
 	if skipWarmTier != nil {
 		acc.SkipWarmTier = *skipWarmTier
 	}
+	acc.recomputeSchedulerLocked(atomic.LoadInt64(&s.maxConcurrency))
+	acc.mu.Unlock()
+	s.invalidateRoutingSchedulers()
+	s.fastSchedulerUpdate(acc)
+	return true
+}
+
+func (s *Store) ApplyAccountKeepConcurrencyOnDegrade(dbID int64, keep bool) bool {
+	acc := s.FindByID(dbID)
+	if acc == nil {
+		return false
+	}
+
+	acc.mu.Lock()
+	acc.KeepConcurrencyOnDegrade = keep
 	acc.recomputeSchedulerLocked(atomic.LoadInt64(&s.maxConcurrency))
 	acc.mu.Unlock()
 	s.invalidateRoutingSchedulers()
@@ -10690,7 +10720,7 @@ func (s *Store) ReportRequestSuccess(acc *Account, latency time.Duration) {
 	if acc == nil {
 		return
 	}
-	s.observeSmartOps(acc,true)
+	s.observeSmartOps(acc, true)
 
 	acc.mu.Lock()
 	acc.recordLatencyLocked(latency)
@@ -10729,7 +10759,7 @@ func (s *Store) ReportRequestFailure(acc *Account, kind string, latency time.Dur
 	if acc == nil {
 		return
 	}
-	s.observeSmartOps(acc,false)
+	s.observeSmartOps(acc, false)
 
 	now := time.Now()
 	acc.mu.Lock()

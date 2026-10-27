@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -362,6 +363,9 @@ func (e *Executor) prepareWebsocketHeaders(ctx context.Context, accessToken stri
 		var userAgent, version string
 		userAgent, version, usedGeneratedHeaders = proxy.ResolveCodexOutboundClientHeadersWithDecision(account, apiKey, deviceCfg, ginHeaders)
 		headers.Set("User-Agent", userAgent)
+		if account != nil && account.EffectiveCodexFingerprintMode() == auth.CodexFingerprintModeSingleMachineMultiWindow {
+			log.Printf("[CODEX-OUTBOUND] account=%d ua=%q originator=%q version=%q generated=%t", account.ID(), userAgent, proxy.CodexOriginatorForGeneratedUserAgent(userAgent), version, usedGeneratedHeaders)
+		}
 		if version != "" {
 			headers.Set("Version", version)
 		}
@@ -403,7 +407,17 @@ func (e *Executor) prepareWebsocketHeaders(ctx context.Context, accessToken stri
 	// 指纹收敛：在透传之后覆盖客户端原值，在账号自定义头之前保留运维覆盖优先级。
 	// 握手头是逐连接冻结的，复用连接沿用建连时的取值；收敛值按账号恒定，正好与
 	// 这一语义相容。off 档为空操作。
-	proxy.ApplyCodexFingerprintHeaders(headers, account, ginHeaders)
+	downstreamHeaders := ginHeaders
+	// 空的握手会话表示这条连接会在多个请求间复用，不能把单次缓存键写进握手。
+	// 非空时与 HTTP 一样，用最终 prompt_cache_key 补齐缺失的会话种子。
+	if strings.TrimSpace(sessionID) != "" {
+		seed := strings.TrimSpace(gjson.GetBytes(wsBody, "prompt_cache_key").String())
+		if seed == "" || proxy.IsStatelessWebsocketSessionID(seed) {
+			seed = sessionID
+		}
+		downstreamHeaders = proxy.AttachCodexFingerprintCacheSeed(account, ginHeaders, seed)
+	}
+	proxy.ApplyCodexFingerprintHeaders(headers, account, downstreamHeaders)
 
 	// Account ID
 	if accountID != "" {
@@ -413,14 +427,8 @@ func (e *Executor) prepareWebsocketHeaders(ctx context.Context, accessToken stri
 	// （codex-rs/core/src/client.rs build_websocket_headers）与 HTTP /responses 同形，
 	// 都是 session-id / thread-id / x-client-request-id，也都不发 Conversation_id。
 	// legacy 档下该函数恢复旧的 Session_id + 清 Conversation_id 行为。
-	proxy.ApplyCodexSessionHeaders(headers, account, sessionID, ginHeaders, true)
-	for name, value := range account.GetCustomHeaders() {
-		name = strings.TrimSpace(name)
-		if name == "" {
-			continue
-		}
-		headers.Set(name, value)
-	}
+	proxy.ApplyCodexSessionHeaders(headers, account, sessionID, downstreamHeaders, true)
+	proxy.ApplyAccountCustomHeaders(headers, account)
 	proxy.ApplyWindowsDesktopAttestation(headers, account)
 
 	// routing hint 由网关按最终 WS 帧体合成，在账号自定义头之后设置。

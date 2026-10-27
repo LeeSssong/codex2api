@@ -1324,6 +1324,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.GET("/ops/errors/summary", h.GetOpsErrorSummary)
 	api.GET("/settings", h.GetSettings)
 	api.PUT("/settings", h.UpdateSettings)
+	api.POST("/settings/codex-fingerprint/migrate-session-identity", h.MigrateCodexSessionIdentity)
 	api.GET("/settings/codex-user-agent/catalog", h.GetCodexUserAgentCatalog)
 	api.POST("/settings/codex-user-agent/preview", h.PreviewCodexUserAgent)
 	api.GET("/settings/claude-config", h.GetClaudeConfig)
@@ -1445,6 +1446,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 //     设置初始密钥，或者在 .env 中显式设置 ADMIN_SECRET 后重启。
 func (h *Handler) adminAuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// 测连等管理探针走同一条出站执行器。挂上审计上下文后，用量记录才能写下
+		// 实际发给上游的 User-Agent，而不是只留下浏览器或 wget 自己的客户端头。
+		proxy.AttachUserAgentAudit(c)
 		adminSecret, source := h.resolveAdminSecret(c.Request.Context())
 		if adminSecret == "" {
 			// fail-closed：拒绝并提示用户配置 ADMIN_SECRET
@@ -1720,6 +1724,7 @@ type accountResponse struct {
 	// 状态仍是 active（可调度），前端据此在状态徽章旁并列一个「使用积分」徽章。
 	UsingCredits                  bool                        `json:"using_credits,omitempty"`
 	SkipWarmTier                  bool                        `json:"skip_warm_tier"`
+	KeepConcurrencyOnDegrade      bool                        `json:"keep_concurrency_on_degrade"`
 	AccountType                   string                      `json:"account_type,omitempty"`
 	AccessTokenType               string                      `json:"access_token_type,omitempty"`
 	OpenAIResponsesAPI            bool                        `json:"openai_responses_api,omitempty"`
@@ -2216,59 +2221,61 @@ func (h *Handler) listAccountsLite(c *gin.Context, ctx context.Context) {
 }
 
 type updateAccountSchedulerReq struct {
-	UpstreamRequestIDHeader json.RawMessage `json:"upstream_request_id_header"`
-	ScoreBiasOverride       json.RawMessage `json:"score_bias_override"`
-	BaseConcurrencyOverride json.RawMessage `json:"base_concurrency_override"`
-	SkipWarmTier            json.RawMessage `json:"skip_warm_tier"`
-	AllowedAPIKeyIDs        json.RawMessage `json:"allowed_api_key_ids"`
-	Tags                    json.RawMessage `json:"tags"`
-	GroupIDs                json.RawMessage `json:"group_ids"`
-	AutoPause5hThreshold    json.RawMessage `json:"auto_pause_5h_threshold"`
-	AutoPause7dThreshold    json.RawMessage `json:"auto_pause_7d_threshold"`
-	AutoPause5hDisabled     json.RawMessage `json:"auto_pause_5h_disabled"`
-	AutoPause7dDisabled     json.RawMessage `json:"auto_pause_7d_disabled"`
-	UsageLimitOverride      json.RawMessage `json:"ignore_usage_limit_status_override"`
-	DispatchCountLimit      json.RawMessage `json:"dispatch_count_limit"`
-	SchedulerPriority       json.RawMessage `json:"scheduler_priority"`
-	ProxyURL                json.RawMessage `json:"proxy_url"`
-	CustomHeaders           json.RawMessage `json:"custom_headers"`
-	CodexFingerprintMode    json.RawMessage `json:"codex_fingerprint_mode"`
-	ClaudeFingerprintMode   json.RawMessage `json:"claude_fingerprint_mode"`
-	ClaudeClientPlatform    json.RawMessage `json:"claude_client_platform"`
-	ClaudeVersionPolicy     json.RawMessage `json:"claude_version_policy"`
-	ClaudeClientVersion     json.RawMessage `json:"claude_client_version"`
-	Timezone                json.RawMessage `json:"timezone"`
-	CodexTurnState          json.RawMessage `json:"codex_turn_state"`
-	CodexTurnStateModels    json.RawMessage `json:"codex_turn_state_models"`
-	AccountHref             json.RawMessage `json:"account_href"`
+	UpstreamRequestIDHeader  json.RawMessage `json:"upstream_request_id_header"`
+	ScoreBiasOverride        json.RawMessage `json:"score_bias_override"`
+	BaseConcurrencyOverride  json.RawMessage `json:"base_concurrency_override"`
+	SkipWarmTier             json.RawMessage `json:"skip_warm_tier"`
+	KeepConcurrencyOnDegrade json.RawMessage `json:"keep_concurrency_on_degrade"`
+	AllowedAPIKeyIDs         json.RawMessage `json:"allowed_api_key_ids"`
+	Tags                     json.RawMessage `json:"tags"`
+	GroupIDs                 json.RawMessage `json:"group_ids"`
+	AutoPause5hThreshold     json.RawMessage `json:"auto_pause_5h_threshold"`
+	AutoPause7dThreshold     json.RawMessage `json:"auto_pause_7d_threshold"`
+	AutoPause5hDisabled      json.RawMessage `json:"auto_pause_5h_disabled"`
+	AutoPause7dDisabled      json.RawMessage `json:"auto_pause_7d_disabled"`
+	UsageLimitOverride       json.RawMessage `json:"ignore_usage_limit_status_override"`
+	DispatchCountLimit       json.RawMessage `json:"dispatch_count_limit"`
+	SchedulerPriority        json.RawMessage `json:"scheduler_priority"`
+	ProxyURL                 json.RawMessage `json:"proxy_url"`
+	CustomHeaders            json.RawMessage `json:"custom_headers"`
+	CodexFingerprintMode     json.RawMessage `json:"codex_fingerprint_mode"`
+	ClaudeFingerprintMode    json.RawMessage `json:"claude_fingerprint_mode"`
+	ClaudeClientPlatform     json.RawMessage `json:"claude_client_platform"`
+	ClaudeVersionPolicy      json.RawMessage `json:"claude_version_policy"`
+	ClaudeClientVersion      json.RawMessage `json:"claude_client_version"`
+	Timezone                 json.RawMessage `json:"timezone"`
+	CodexTurnState           json.RawMessage `json:"codex_turn_state"`
+	CodexTurnStateModels     json.RawMessage `json:"codex_turn_state_models"`
+	AccountHref              json.RawMessage `json:"account_href"`
 }
 
 type accountSchedulerUpdate struct {
-	ScoreBiasOverride       database.OptionalNullInt64
-	BaseConcurrencyOverride database.OptionalNullInt64
-	SkipWarmTier            database.OptionalBool
-	AllowedAPIKeyIDs        database.OptionalInt64Slice
-	Tags                    optionalStringSlice
-	GroupIDs                database.OptionalInt64Slice
-	AutoPause5hThreshold    optionalFloat64
-	AutoPause7dThreshold    optionalFloat64
-	AutoPause5hDisabled     database.OptionalBool
-	AutoPause7dDisabled     database.OptionalBool
-	UsageLimitOverride      optionalNullableBool
-	DispatchCountLimit      database.OptionalNullInt64
-	SchedulerPriority       database.OptionalNullInt64
-	ProxyURL                database.OptionalString
-	CustomHeaders           optionalCustomHeaders
-	CodexFingerprintMode    database.OptionalString
-	ClaudeFingerprintMode   database.OptionalString
-	ClaudeClientPlatform    database.OptionalString
-	ClaudeVersionPolicy     database.OptionalString
-	ClaudeClientVersion     database.OptionalString
-	Timezone                database.OptionalString
-	CodexTurnState          database.OptionalString
-	CodexTurnStateModels    database.OptionalString
-	AccountHref             database.OptionalString
-	CredentialUpdates       map[string]interface{}
+	ScoreBiasOverride        database.OptionalNullInt64
+	BaseConcurrencyOverride  database.OptionalNullInt64
+	SkipWarmTier             database.OptionalBool
+	KeepConcurrencyOnDegrade database.OptionalBool
+	AllowedAPIKeyIDs         database.OptionalInt64Slice
+	Tags                     optionalStringSlice
+	GroupIDs                 database.OptionalInt64Slice
+	AutoPause5hThreshold     optionalFloat64
+	AutoPause7dThreshold     optionalFloat64
+	AutoPause5hDisabled      database.OptionalBool
+	AutoPause7dDisabled      database.OptionalBool
+	UsageLimitOverride       optionalNullableBool
+	DispatchCountLimit       database.OptionalNullInt64
+	SchedulerPriority        database.OptionalNullInt64
+	ProxyURL                 database.OptionalString
+	CustomHeaders            optionalCustomHeaders
+	CodexFingerprintMode     database.OptionalString
+	ClaudeFingerprintMode    database.OptionalString
+	ClaudeClientPlatform     database.OptionalString
+	ClaudeVersionPolicy      database.OptionalString
+	ClaudeClientVersion      database.OptionalString
+	Timezone                 database.OptionalString
+	CodexTurnState           database.OptionalString
+	CodexTurnStateModels     database.OptionalString
+	AccountHref              database.OptionalString
+	CredentialUpdates        map[string]interface{}
 }
 
 func parseAccountSchedulerUpdate(req updateAccountSchedulerReq) (accountSchedulerUpdate, error) {
@@ -2282,6 +2289,10 @@ func parseAccountSchedulerUpdate(req updateAccountSchedulerReq) (accountSchedule
 		return accountSchedulerUpdate{}, err
 	}
 	skipWarmTier, err := parseOptionalBoolField(req.SkipWarmTier, "skip_warm_tier")
+	if err != nil {
+		return accountSchedulerUpdate{}, err
+	}
+	keepConcurrencyOnDegrade, err := parseOptionalBoolField(req.KeepConcurrencyOnDegrade, "keep_concurrency_on_degrade")
 	if err != nil {
 		return accountSchedulerUpdate{}, err
 	}
@@ -2474,36 +2485,40 @@ func parseAccountSchedulerUpdate(req updateAccountSchedulerReq) (accountSchedule
 			credentialUpdates["scheduler_priority"] = int64(0)
 		}
 	}
+	if keepConcurrencyOnDegrade.Set {
+		credentialUpdates["keep_concurrency_on_degrade"] = keepConcurrencyOnDegrade.Value
+	}
 	if len(credentialUpdates) == 0 {
 		credentialUpdates = nil
 	}
 
 	return accountSchedulerUpdate{
-		ScoreBiasOverride:       scoreBiasOverride,
-		BaseConcurrencyOverride: baseConcurrencyOverride,
-		SkipWarmTier:            skipWarmTier,
-		AllowedAPIKeyIDs:        allowedAPIKeyIDs,
-		Tags:                    tags,
-		GroupIDs:                groupIDs,
-		AutoPause5hThreshold:    autoPause5hThreshold,
-		AutoPause7dThreshold:    autoPause7dThreshold,
-		AutoPause5hDisabled:     autoPause5hDisabled,
-		AutoPause7dDisabled:     autoPause7dDisabled,
-		UsageLimitOverride:      ignoreUsageLimitStatusOverride,
-		DispatchCountLimit:      dispatchCountLimit,
-		SchedulerPriority:       schedulerPriority,
-		ProxyURL:                proxyURL,
-		CustomHeaders:           customHeaders,
-		CodexFingerprintMode:    codexFingerprintMode,
-		ClaudeFingerprintMode:   claudeFingerprintMode,
-		ClaudeClientPlatform:    claudeClientPlatform,
-		ClaudeVersionPolicy:     claudeVersionPolicy,
-		ClaudeClientVersion:     claudeClientVersion,
-		Timezone:                timezoneField,
-		CodexTurnState:          codexTurnStateField,
-		CodexTurnStateModels:    codexTurnStateModelsField,
-		AccountHref:             accountHref,
-		CredentialUpdates:       credentialUpdates,
+		ScoreBiasOverride:        scoreBiasOverride,
+		BaseConcurrencyOverride:  baseConcurrencyOverride,
+		SkipWarmTier:             skipWarmTier,
+		KeepConcurrencyOnDegrade: keepConcurrencyOnDegrade,
+		AllowedAPIKeyIDs:         allowedAPIKeyIDs,
+		Tags:                     tags,
+		GroupIDs:                 groupIDs,
+		AutoPause5hThreshold:     autoPause5hThreshold,
+		AutoPause7dThreshold:     autoPause7dThreshold,
+		AutoPause5hDisabled:      autoPause5hDisabled,
+		AutoPause7dDisabled:      autoPause7dDisabled,
+		UsageLimitOverride:       ignoreUsageLimitStatusOverride,
+		DispatchCountLimit:       dispatchCountLimit,
+		SchedulerPriority:        schedulerPriority,
+		ProxyURL:                 proxyURL,
+		CustomHeaders:            customHeaders,
+		CodexFingerprintMode:     codexFingerprintMode,
+		ClaudeFingerprintMode:    claudeFingerprintMode,
+		ClaudeClientPlatform:     claudeClientPlatform,
+		ClaudeVersionPolicy:      claudeVersionPolicy,
+		ClaudeClientVersion:      claudeClientVersion,
+		Timezone:                 timezoneField,
+		CodexTurnState:           codexTurnStateField,
+		CodexTurnStateModels:     codexTurnStateModelsField,
+		AccountHref:              accountHref,
+		CredentialUpdates:        credentialUpdates,
 	}, nil
 }
 
@@ -2587,6 +2602,7 @@ func (u accountSchedulerUpdate) hasChanges() bool {
 		u.CodexTurnStateModels.Set ||
 		u.BaseConcurrencyOverride.Set ||
 		u.SkipWarmTier.Set ||
+		u.KeepConcurrencyOnDegrade.Set ||
 		u.AllowedAPIKeyIDs.Set ||
 		u.Tags.Set ||
 		u.GroupIDs.Set ||
@@ -2832,6 +2848,22 @@ func (h *Handler) UpdateAccountScheduler(c *gin.Context) {
 		}
 	}
 
+	if update.CodexFingerprintMode.Set || update.CustomHeaders.Set {
+		row, err := h.db.GetAccountByID(ctx, id)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				writeError(c, http.StatusNotFound, "账号不存在")
+				return
+			}
+			writeError(c, http.StatusInternalServerError, "查询账号失败: "+err.Error())
+			return
+		}
+		if err := singleMachineIdentityHeaderConflict([]*database.AccountRow{row}, update); err != nil {
+			writeError(c, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+
 	if err := h.db.UpdateAccountSchedulerMetadata(ctx, id, update.ScoreBiasOverride, update.BaseConcurrencyOverride, update.SkipWarmTier, update.AllowedAPIKeyIDs, database.OptionalStringSlice{Set: update.Tags.Set, Values: update.Tags.Values}, update.GroupIDs, update.ProxyURL, update.CredentialUpdates); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeError(c, http.StatusNotFound, "账号不存在")
@@ -2858,6 +2890,9 @@ func (h *Handler) applyAccountSchedulerRuntimeUpdate(id int64, update accountSch
 			nullableInt64Pointer(update.BaseConcurrencyOverride.Value),
 			optionalBoolPtr(update.SkipWarmTier),
 		)
+	}
+	if update.KeepConcurrencyOnDegrade.Set {
+		h.store.ApplyAccountKeepConcurrencyOnDegrade(id, update.KeepConcurrencyOnDegrade.Value)
 	}
 	if update.AllowedAPIKeyIDs.Set {
 		h.store.ApplyAccountAllowedAPIKeys(id, update.AllowedAPIKeyIDs.Values)
@@ -6976,6 +7011,17 @@ func (h *Handler) BatchUpdateAccounts(c *gin.Context) {
 			}
 		}
 	}
+	if schedulerUpdate.CodexFingerprintMode.Set || schedulerUpdate.CustomHeaders.Set {
+		rows, err := h.db.ListActiveByIDs(ctx, ids)
+		if err != nil {
+			writeError(c, http.StatusInternalServerError, "查询账号失败: "+err.Error())
+			return
+		}
+		if err := singleMachineIdentityHeaderConflict(rows, schedulerUpdate); err != nil {
+			writeError(c, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
 
 	updatedIDs, err := h.db.BatchUpdateAccountMetadata(ctx, ids, database.BatchAccountMetadataUpdate{
 		Enabled:                 enabled,
@@ -9414,18 +9460,20 @@ type settingsResponse struct {
 	ContinuousRetryErrorCodes         []string `json:"continuous_retry_error_codes"`
 	ContinuousRetryMaxDurationSeconds int      `json:"continuous_retry_max_duration_seconds"`
 	CodexFingerprintDefaultMode       string   `json:"codex_fingerprint_default_mode"`
-	AllowRemoteMigration              bool     `json:"allow_remote_migration"`
-	DatabaseDriver                    string   `json:"database_driver"`
-	DatabaseLabel                     string   `json:"database_label"`
-	CacheDriver                       string   `json:"cache_driver"`
-	CacheLabel                        string   `json:"cache_label"`
-	ExpiredCleaned                    int      `json:"expired_cleaned,omitempty"`
-	ModelMapping                      string   `json:"model_mapping"`
-	CodexModelMapping                 string   `json:"codex_model_mapping"`
-	PayloadRules                      string   `json:"payload_rules"`
-	ReasoningEffortModels             string   `json:"reasoning_effort_models"`
-	ResinURL                          string   `json:"resin_url"`
-	ResinPlatformName                 string   `json:"resin_platform_name"`
+	// CodexTransportMode 是进程环境变量 CODEX_TRANSPORT_MODE 的只读视图，不落库。
+	CodexTransportMode    string `json:"codex_transport_mode"`
+	AllowRemoteMigration  bool   `json:"allow_remote_migration"`
+	DatabaseDriver        string `json:"database_driver"`
+	DatabaseLabel         string `json:"database_label"`
+	CacheDriver           string `json:"cache_driver"`
+	CacheLabel            string `json:"cache_label"`
+	ExpiredCleaned        int    `json:"expired_cleaned,omitempty"`
+	ModelMapping          string `json:"model_mapping"`
+	CodexModelMapping     string `json:"codex_model_mapping"`
+	PayloadRules          string `json:"payload_rules"`
+	ReasoningEffortModels string `json:"reasoning_effort_models"`
+	ResinURL              string `json:"resin_url"`
+	ResinPlatformName     string `json:"resin_platform_name"`
 	// CodexEgress 是后端权威的"Codex 渠道当前由谁承担出站"摘要:Resin 启用时代理池与
 	// proxy_url 对 Codex 不生效,界面据此标注,避免三套配置并存看不出谁在生效(issue #679)。
 	CodexEgress                        proxy.CodexEgressSummary         `json:"codex_egress"`
@@ -10433,6 +10481,7 @@ func (h *Handler) GetSettings(c *gin.Context) {
 		ContinuousRetryErrorCodes:           continuousRetryPolicy.ErrorCodes,
 		ContinuousRetryMaxDurationSeconds:   continuousRetryPolicy.MaxDurationSeconds,
 		CodexFingerprintDefaultMode:         h.store.GetCodexFingerprintDefaultMode(),
+		CodexTransportMode:                  proxy.CodexTransportMode(),
 		AllowRemoteMigration:                h.store.GetAllowRemoteMigration() && adminAuthSource != "disabled",
 		DatabaseDriver:                      h.databaseDriver,
 		DatabaseLabel:                       h.databaseLabel,
@@ -12308,6 +12357,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		ContinuousRetryErrorCodes:           continuousRetryPolicy.ErrorCodes,
 		ContinuousRetryMaxDurationSeconds:   continuousRetryPolicy.MaxDurationSeconds,
 		CodexFingerprintDefaultMode:         h.store.GetCodexFingerprintDefaultMode(),
+		CodexTransportMode:                  proxy.CodexTransportMode(),
 		AllowRemoteMigration:                h.store.GetAllowRemoteMigration() && adminAuthSource != "disabled",
 		DatabaseDriver:                      h.databaseDriver,
 		DatabaseLabel:                       h.databaseLabel,

@@ -176,8 +176,17 @@ func codexTurnStateFromFrame(payload []byte) string {
 }
 
 // ObserveCodexTurnStateFrame records upstream state in the current trace.
+// WebSocket turn-state lives in frames, not the handshake response, so the
+// same observation also stores the token for the bound thread.
 func ObserveCodexTurnStateFrame(ctx context.Context, payload []byte) {
 	if state := codexTurnStateFromFrame(payload); state != "" {
 		noteUpstreamTurnState(ctx, state)
+		noteCodexThreadTurnStateFromAffinity(CodexTurnStateAffinityKeyFromContext(ctx), nil, state)
+	}
+	if id := strings.TrimSpace(gjson.GetBytes(payload, "response.id").String()); id != "" {
+		typ := gjson.GetBytes(payload, "type").String()
+		if typ == "" || typ == "response.completed" || typ == "response.created" {
+			noteCodexConversationResponseFromContext(ctx, id)
+		}
 	}
 }

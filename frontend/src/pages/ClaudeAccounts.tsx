@@ -457,16 +457,25 @@ function UsageWindow({
   pct,
   reset,
   detail,
+  estimatedQuotaUsd,
 }: {
   label: string;
   pct: number | null;
   reset?: string;
   detail?: AccountRow["usage_5h_detail"];
+  estimatedQuotaUsd?: number;
 }) {
   const { t } = useTranslation();
   const hasDetail = hasWindowDetail(detail);
   if (pct === null && !hasDetail) return null;
   const billed = typeof detail?.account_billed === "number" && detail.account_billed > 0 ? detail.account_billed : null;
+  const showEstimate =
+    typeof estimatedQuotaUsd === "number" &&
+    Number.isFinite(estimatedQuotaUsd) &&
+    estimatedQuotaUsd > 0;
+  const estimateText = showEstimate
+    ? t("accounts.estimatedWindowQuota", { cost: estimatedQuotaUsd.toFixed(2) })
+    : "";
   const detailText = hasDetail
     ? `${formatCompactNum(detail?.requests)} ${t("accounts.usageReqUnit")} / ${formatCompactNum(detail?.tokens)} ${t("accounts.usageTokUnit")}`
     : "";
@@ -506,6 +515,11 @@ function UsageWindow({
         ) : null}
       </div>
       {detailText ? <div className={USAGE_BAR_META_CLASS}>{detailText}</div> : null}
+      {showEstimate ? (
+        <div className={USAGE_BAR_META_CLASS} title={t("accounts.estimatedWindowQuotaHint")}>
+          {estimateText}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -1112,6 +1126,12 @@ export default function ClaudeAccounts({ headerSlot }: { headerSlot?: ReactNode 
         if (!merged.usage_5h_detail && stats.usage_5h_detail) merged.usage_5h_detail = stats.usage_5h_detail;
         if (!merged.usage_7d_detail && stats.usage_7d_detail) merged.usage_7d_detail = stats.usage_7d_detail;
         if (!merged.usage_today_detail && stats.usage_today_detail) merged.usage_today_detail = stats.usage_today_detail;
+        if (merged.estimated_5h_quota_usd == null && stats.estimated_5h_quota_usd != null) {
+          merged.estimated_5h_quota_usd = stats.estimated_5h_quota_usd;
+        }
+        if (merged.estimated_7d_quota_usd == null && stats.estimated_7d_quota_usd != null) {
+          merged.estimated_7d_quota_usd = stats.estimated_7d_quota_usd;
+        }
         if (merged.official_usd == null && stats.official_usd != null) merged.official_usd = stats.official_usd;
         if (merged.official_usd_7d == null && stats.official_usd_7d != null) merged.official_usd_7d = stats.official_usd_7d;
       }
@@ -2118,8 +2138,8 @@ export default function ClaudeAccounts({ headerSlot }: { headerSlot?: ReactNode 
           healthBuckets={healthBars[String(detailTarget.id)]}
           usageSlot={detailTarget.claude_auth_kind === "api_key" ? <p className="text-xs text-muted-foreground">{t("claude.apiKeyUsageNA")}</p> :
             <div className="space-y-1.5 rounded-xl border border-border bg-card p-3">
-              <UsageWindow label={t("claude.usage5h")} pct={claudeUsagePct(detailTarget.usage_percent_5h)} reset={detailTarget.reset_5h_at} detail={detailTarget.usage_5h_detail} />
-              <UsageWindow label={t("claude.usage7d")} pct={claudeUsagePct(detailTarget.usage_percent_7d)} reset={detailTarget.reset_7d_at} detail={detailTarget.usage_7d_detail} />
+              <UsageWindow label={t("claude.usage5h")} pct={claudeUsagePct(detailTarget.usage_percent_5h)} reset={detailTarget.reset_5h_at} detail={detailTarget.usage_5h_detail} estimatedQuotaUsd={detailTarget.estimated_5h_quota_usd} />
+              <UsageWindow label={t("claude.usage7d")} pct={claudeUsagePct(detailTarget.usage_percent_7d)} reset={detailTarget.reset_7d_at} detail={detailTarget.usage_7d_detail} estimatedQuotaUsd={detailTarget.estimated_7d_quota_usd} />
               <ClaudeScopedUsageWindows windows={detailTarget.claude_usage_windows} />
             </div>
           }
@@ -2528,8 +2548,8 @@ function ClaudeAccountRow({
           {isAPIKey ? <span className="text-xs text-muted-foreground">{t("claude.apiKeyUsageNA")}</span> : hasUsage ? (
             <div className="flex min-w-[232px] items-center gap-1.5">
               <div className="min-w-0 flex-1 space-y-1">
-                <UsageWindow label={t("claude.usage5h")} pct={pct5h} reset={acc.reset_5h_at} detail={acc.usage_5h_detail} />
-                <UsageWindow label={t("claude.usage7d")} pct={pct7d} reset={acc.reset_7d_at} detail={acc.usage_7d_detail} />
+                <UsageWindow label={t("claude.usage5h")} pct={pct5h} reset={acc.reset_5h_at} detail={acc.usage_5h_detail} estimatedQuotaUsd={acc.estimated_5h_quota_usd} />
+                <UsageWindow label={t("claude.usage7d")} pct={pct7d} reset={acc.reset_7d_at} detail={acc.usage_7d_detail} estimatedQuotaUsd={acc.estimated_7d_quota_usd} />
                 <ClaudeScopedUsageWindows windows={acc.claude_usage_windows} />
               </div>
               <UsageRefreshButton onRefresh={onUsageRefreshed} title={t("accounts.refreshUsage")} />

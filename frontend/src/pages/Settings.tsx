@@ -265,7 +265,7 @@ const SETTINGS_TAB_SECTION_INDEX: Record<SettingsTabKey, ReadonlyArray<{ id: str
 // 分区滚动高亮的判定线：分区顶部越过视口该高度即视为当前分区（要盖过粘性 Tab 栏）。
 const SETTINGS_SECTION_SPY_OFFSET_PX = 140
 // 手动保存字段的脏检查里跳过的键：生成号是服务端只读，自定义 Prompt 规则由规则页单独保存。
-const SETTINGS_DIRTY_IGNORED_KEYS: ReadonlySet<string> = new Set(['response_cache_config_generation', 'prompt_filter_custom_patterns', 'codex_images_default_main_model', 'codex_egress'])
+const SETTINGS_DIRTY_IGNORED_KEYS: ReadonlySet<string> = new Set(['response_cache_config_generation', 'prompt_filter_custom_patterns', 'codex_images_default_main_model', 'codex_egress', 'codex_transport_mode'])
 
 const getDefaultModelMappingEntries = (): ModelMappingEntry[] =>
   Object.entries(DEFAULT_CLAUDE_MODEL_MAP) as ModelMappingEntry[]
@@ -2597,6 +2597,7 @@ export default function Settings() {
     continuous_retry_error_codes: [],
     continuous_retry_max_duration_seconds: 600,
     codex_fingerprint_default_mode: 'off',
+    codex_transport_mode: '',
     allow_remote_migration: false,
     database_driver: 'postgres',
     database_label: 'PostgreSQL',
@@ -2701,6 +2702,7 @@ export default function Settings() {
   const [modelsSourceURL, setModelsSourceURL] = useState('')
   const [syncingModels, setSyncingModels] = useState(false)
   const [syncingCliVersion, setSyncingCliVersion] = useState(false)
+  const [migratingFingerprint, setMigratingFingerprint] = useState(false)
   // GitHub token 只写不回显：草稿态独立于 settingsForm，提交后清空（issue #522）
   const [githubTokenDraft, setGithubTokenDraft] = useState('')
   const [syncedCliVersion, setSyncedCliVersion] = useState('')
@@ -3169,6 +3171,21 @@ export default function Settings() {
       showToast(`${t('settings.imageS3TestFailed')}: ${getErrorMessage(error)}`, 'error')
     } finally {
       setTestingImageStorage(false)
+    }
+  }
+
+  const handleMigrateSessionIdentity = async () => {
+    setMigratingFingerprint(true)
+    try {
+      const result = await api.migrateCodexSessionIdentity()
+      showToast(t('settings.codexFingerprintMigrateResult', {
+        updated: result.updated,
+        skipped: result.skipped_conflict,
+      }))
+    } catch (error) {
+      showToast(`${t('settings.codexFingerprintMigrateFailed')}: ${getErrorMessage(error)}`, 'error')
+    } finally {
+      setMigratingFingerprint(false)
     }
   }
 
@@ -4610,6 +4627,19 @@ export default function Settings() {
                         })
                       }}
                     />
+                  </SettingField>
+                </div>
+                <div className={`${SETTINGS_FIELD_GRID} mt-4`}>
+                  <SettingField label={t('settings.codexTransportMode')} description={t('settings.codexTransportModeDesc')}>
+                    <div className="rounded-md border border-border/70 bg-muted/40 px-3 py-2 font-mono text-xs text-foreground">
+                      {settingsForm.codex_transport_mode || 'standard'}
+                    </div>
+                  </SettingField>
+                  <SettingField label={t('settings.codexFingerprintMigrate')} description={t('settings.codexFingerprintMigrateDesc')}>
+                    <Button size="sm" variant="outline" className="self-start" onClick={() => void handleMigrateSessionIdentity()} disabled={migratingFingerprint}>
+                      <RefreshCw className={cn('size-3.5', migratingFingerprint && 'animate-spin')} />
+                      {migratingFingerprint ? t('settings.codexFingerprintMigrateRunning') : t('settings.codexFingerprintMigrateAction')}
+                    </Button>
                   </SettingField>
                 </div>
                 <div className="mt-4 border-t border-border/60 pt-4">

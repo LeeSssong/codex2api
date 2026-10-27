@@ -2,7 +2,9 @@ package proxy
 
 import (
 	"context"
+	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -10,6 +12,7 @@ import (
 
 	"github.com/codex2api/auth"
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/sjson"
 )
 
 // x-codex-turn-state 是上游在响应中铸造的不透明回合状态 blob,客户端在同一
@@ -51,6 +54,7 @@ func relayCodexTurnStateResponseHeader(c *gin.Context, affinityKey string, accou
 	}
 	c.Header(codexTurnStateHeader, token)
 	noteCodexTurnStateProvenance(affinityKey, account)
+	noteCodexThreadTurnStateFromAffinity(affinityKey, account, token)
 }
 
 // commitResponsesStreamAttempt publishes the winning account's turn-state only
@@ -90,6 +94,7 @@ func (h *Handler) commitResponsesStreamAttempt(c *gin.Context, attempt *continuo
 	}
 	if stagedHeader && token != "" {
 		noteCodexTurnStateProvenance(affinityKey, account)
+		noteCodexThreadTurnStateFromAffinity(affinityKey, account, token)
 	}
 	return nil
 }
@@ -163,6 +168,110 @@ func ClearCodexTurnStateProvenance(affinityKey string) {
 		return
 	}
 	codexTurnStateOrigins.Delete(affinityKey)
+}
+
+type codexThreadTurnState struct {
+	token     string
+	expiresAt time.Time
+}
+
+var (
+	codexThreadTurnStates   sync.Map // accountID:session -> codexThreadTurnState
+	codexThreadTurnSessions sync.Map // affinityKey -> accountID:session
+)
+
+func codexThreadTurnStateKey(accountID int64, sessionID string) string {
+	return fmt.Sprintf("%d:%s", accountID, strings.TrimSpace(sessionID))
+}
+
+// bindCodexThreadTurnStateSession 记下这次出站会话，响应回带的 turn-state 才能按线程存。
+func bindCodexThreadTurnStateSession(affinityKey string, accountID int64, sessionID string) {
+	affinityKey = strings.TrimSpace(affinityKey)
+	sessionID = strings.TrimSpace(sessionID)
+	if affinityKey == "" || accountID <= 0 || sessionID == "" {
+		return
+	}
+	codexThreadTurnSessions.Store(affinityKey, codexThreadTurnStateKey(accountID, sessionID))
+}
+
+func rememberCodexThreadTurnState(accountID int64, sessionID, token string) {
+	token = observedCodexTurnState(token)
+	sessionID = strings.TrimSpace(sessionID)
+	if accountID <= 0 || sessionID == "" || token == "" {
+		return
+	}
+	codexThreadTurnStates.Store(codexThreadTurnStateKey(accountID, sessionID), codexThreadTurnState{
+		token: token, expiresAt: time.Now().Add(24 * time.Hour),
+	})
+}
+
+// noteCodexThreadTurnStateFromAffinity 把这次响应的 turn-state 记到出站时绑定的线程上。
+// 没有绑定就跳过，避免把异线程或未声明会话的 blob 写进共享表。
+func noteCodexThreadTurnStateFromAffinity(affinityKey string, account *auth.Account, token string) {
+	affinityKey = strings.TrimSpace(affinityKey)
+	if affinityKey == "" {
+		return
+	}
+	raw, ok := codexThreadTurnSessions.Load(affinityKey)
+	if !ok {
+		return
+	}
+	key, _ := raw.(string)
+	accountPart, sessionID, ok := strings.Cut(key, ":")
+	if !ok {
+		return
+	}
+	id, err := strconv.ParseInt(accountPart, 10, 64)
+	if err != nil || id <= 0 || strings.TrimSpace(sessionID) == "" {
+		return
+	}
+	if account != nil && account.ID() != id {
+		return
+	}
+	rememberCodexThreadTurnState(id, sessionID, token)
+}
+
+func storedCodexThreadTurnState(accountID int64, sessionID string) string {
+	raw, ok := codexThreadTurnStates.Load(codexThreadTurnStateKey(accountID, sessionID))
+	if !ok {
+		return ""
+	}
+	state, ok := raw.(codexThreadTurnState)
+	if !ok || (!state.expiresAt.IsZero() && time.Now().After(state.expiresAt)) {
+		codexThreadTurnStates.Delete(codexThreadTurnStateKey(accountID, sessionID))
+		return ""
+	}
+	return state.token
+}
+
+// applyCodexThreadTurnState 只回带本账号本线程上游铸造过的 turn-state。
+// 新线程不发送；异账号或异线程的回带值丢掉。
+func applyCodexThreadTurnState(account *auth.Account, headers http.Header, body []byte) ([]byte, http.Header) {
+	if account == nil || account.EffectiveCodexFingerprintMode() != auth.CodexFingerprintModeSingleMachineMultiWindow {
+		return body, headers
+	}
+	if headers == nil {
+		headers = make(http.Header)
+	}
+	sessionID, threadID := ConvergedCodexSessionIdentity(account, headers)
+	token := ""
+	key := threadID
+	if key == "" {
+		key = sessionID
+	}
+	if key != "" {
+		token = storedCodexThreadTurnState(account.ID(), key)
+	}
+	if token == "" {
+		headers.Del(codexTurnStateHeader)
+		body, _ = sjson.DeleteBytes(body, "client_metadata."+codexTurnStateMetadataKey)
+		return body, headers
+	}
+	headers.Set(codexTurnStateHeader, token)
+	if updated, err := sjson.SetBytes(body, "client_metadata."+codexTurnStateMetadataKey, token); err == nil {
+		body = updated
+	}
+	return body, headers
 }
 
 func noteCodexTurnStateProvenance(affinityKey string, account *auth.Account) {
