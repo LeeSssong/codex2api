@@ -149,10 +149,10 @@ func TestAccountStatsOriginalEvidenceDoesNotAlterUserCost(t *testing.T) {
 
 func TestAccountStatsCustomIntervalAndMatching(t *testing.T) {
 	upper := 1100
-	cfg := AccountStatsPricingConfig{Rules: []AccountStatsPricingRule{
+	cfg := AccountStatsPricingConfig{Rules: []AccountStatsPricingRule{{Pricing: []AccountStatsPricingRule{
 		{Models: []string{"gpt-*"}, AccountStatsPrices: AccountStatsPrices{Input: statsFloat(99)}},
 		{Models: []string{"GPT-5.4"}, AccountStatsPrices: AccountStatsPrices{Input: statsFloat(1)}, Intervals: []AccountStatsPricingInterval{{MinTokens: 0, MaxTokens: &upper, AccountStatsPrices: AccountStatsPrices{Input: statsFloat(2), Output: statsFloat(3), CacheRead: statsFloat(1)}}}},
-	}}
+	}}}}
 	// source exact match precedes wildcard within the account's pricing list;
 	// interval includes cached input and output, with (min,max] boundaries.
 	got := SnapshotAccountStatsCost(&UsageLogInput{Model: "gpt-5.4", InputTokens: 1000, CachedTokens: 200, OutputTokens: 100}, cfg)
@@ -197,5 +197,56 @@ func TestAccountStatsLegacyFallbackAndFrozenRead(t *testing.T) {
 	}
 	if logs[0].InputPrice != 2.5 {
 		t.Fatalf("display price re-evaluated: %+v", logs[0])
+	}
+}
+
+func TestAccountStatsSourceFirstRuleBeforeSpecificModel(t *testing.T) {
+	cfg := AccountStatsPricingConfig{Rules: []AccountStatsPricingRule{
+		{AccountIDs: []int64{1}, Pricing: []AccountStatsPricingRule{{Models: []string{"gpt-*"}, AccountStatsPrices: AccountStatsPrices{Input: statsFloat(2)}}}},
+		{AccountIDs: []int64{1}, Pricing: []AccountStatsPricingRule{{Models: []string{"gpt-5.4"}, AccountStatsPrices: AccountStatsPrices{Input: statsFloat(99)}}}},
+	}}
+	got := SnapshotAccountStatsCost(&UsageLogInput{AccountID: 1, Model: "gpt-5.4", InputTokens: 1000}, cfg)
+	if *got.AccountCost != .002 {
+		t.Fatalf("later exact shadowed earlier source rule: %v", *got.AccountCost)
+	}
+	cfg.Rules[0].AccountIDs = []int64{2}
+	cfg.Rules[0].GroupIDs = []int64{8}
+	got = SnapshotAccountStatsCost(&UsageLogInput{AccountID: 1, AccountGroupIDs: []int64{8}, Model: "gpt-5.4", InputTokens: 1000}, cfg)
+	if *got.AccountCost != .002 {
+		t.Fatalf("group OR account selector %v", *got.AccountCost)
+	}
+}
+
+func TestAccountStatsSourceBuiltinLongAndUnknownModels(t *testing.T) {
+	for _, tc := range []struct {
+		model  string
+		input  int
+		want   float64
+		source string
+	}{
+		{"gpt-6-sol", 301000, .001*4 + .300*.4 + .001*15, "upstream_default"},
+		{"gpt-6.1-sol", 301000, .001*2 + .300*.1 + .001*10, "upstream_default"},
+		{"gpt-6-future", 1000, 0, "fallback"},
+	} {
+		in := &UsageLogInput{Model: tc.model, InputTokens: tc.input, CachedTokens: 300000, OutputTokens: 1000}
+		if tc.model == "gpt-6-future" {
+			in.CachedTokens = 0
+			tc.want = UsageLogBilledCost(in)
+		}
+		got := SnapshotAccountStatsCost(in, AccountStatsPricingConfig{})
+		if math.Abs(*got.AccountCost-tc.want) > 1e-10 || got.AccountCostSource != tc.source {
+			t.Fatalf("%s:cost%v source%s want%v/%s", tc.model, *got.AccountCost, got.AccountCostSource, tc.want, tc.source)
+		}
+	}
+}
+
+func TestAccountStatsObservedZeroDoesNotChargeEstimatedFallback(t *testing.T) {
+	for _, sale := range []bool{false, true} {
+		input := &UsageLogInput{Model: "unpriced-native-model", InputTokens: 1200, OutputTokens: 800, AccountUsage: &AccountUsageEvidence{}}
+		user := UsageLogUserBilledCost(input)
+		got := SnapshotAccountStatsCost(input, AccountStatsPricingConfig{ApplySalePricing: sale})
+		if *got.AccountCost != 0 || *got.StandardCost != 0 || UsageLogUserBilledCost(got) != user {
+			t.Fatalf("observed zero leaked estimates: %+v", got)
+		}
 	}
 }

@@ -4625,7 +4625,8 @@ func (db *DB) InsertUsageLog(ctx context.Context, log *UsageLogInput) error {
 
 // UsageLogInput 日志写入参数
 type UsageLogInput struct {
-	AccountUsage *AccountUsageEvidence
+	AccountUsage    *AccountUsageEvidence
+	AccountGroupIDs []int64
 	AccountCostSnapshot
 	billingSnapshot   *usageBillingSnapshot
 	RequestID         string
