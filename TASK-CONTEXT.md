@@ -1,11 +1,19 @@
-# 当前生产交接：2026-10-27 Sub2额度口径对齐已部署
+# Current task: 2026-10-28 intelligence cooldown fix (not deployed yet)
 
-用户已从“本地不部署”追加授权立即部署。权威发布记录 docs/releases/2026-10-27-sub2-quota-parity.md。
+Current live source remains 9aa624fb088a; authoritative /opt/codex2api/source-release.json.
+This task branches from latest origin/main 69abb079. User approved automatic cooldown
+pause/resume without rewriting manual switches/history, upstream integration with
+conflicts preserving current running implementation, and deployment with preference
+for no downtime. User subsequently explicitly requested direct downtime deployment (no additional
+zero-downtime preparation). Use the proven locked maintenance entry and retain
+required stopped backup/rollback safeguards; never overlap singleton writers.
 
-- 主站159.195.12.230；应用commit9aa624fb088a/tree a0fd74fe；版本release-20261027-9aa624fb088a，上游3c6adfda。
-- 维护18.027秒，19:21:44恢复入口，公网/worker/额度API检查通过。
-- 历史成本与用户计费用量纠正值保留；新普通Codex Token成本/用户价统一，媒体按次单独。
-- 静默刷新与费用快照/账本上线；schema加法迁移已完成。没有待部署应用功能。
-- 定时检测保留用户当前关闭状态false，频率600秒/revision8，历史19条；不按旧记录开启。
-- 生产基线 /opt/codex2api/source-release.json。恢复要保全上线后的新写入，不可回灌旧dump。
-- 协作先读AGENTS.md和docs/collaboration.md；共享旧目录仍是保留现场，原51文件不覆盖。文档收尾不重复构建发布。
+Candidate details and checks: docs/releases/2026-10-28-intelligence-cooldown.md.
+Owned worktree /Users/gongtengxinwen/.codex/worktrees/intelligence-quota-cooldown/codex2api,
+branch codex/intelligence-quota-cooldown. Shared original directory is preserved,
+not a release source. Upstream 3c6adfda already contained; re-fetch before deploy.
+
+Current live detection observed enabled=true, interval600, revision12, history96;
+older false/revision8 handoff is historical, never restore from it. Preserve live
+settings and account enrollment at cutover. Never restore an old dump after new
+writers have started; keep latest data and use compatible recovery/repair forward.

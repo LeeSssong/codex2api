@@ -25,3 +25,11 @@
 ## 2026-10-27最终部署基线
 
 已部署9aa624fb088a，source-release.json为准。当前sub2-quota-parity分支已整合发布；原子任务提交为历史候选，禁止重复发布旧分支。定时检测当前关闭600秒，19历史保留。详见docs/releases/2026-10-27-sub2-quota-parity.md。
+
+## 2026-10-28 Intelligence cooldown task (active)
+
+- Owner: current Codex chat; branch `codex/intelligence-quota-cooldown`; exclusive worktree `/Users/gongtengxinwen/.codex/worktrees/intelligence-quota-cooldown/codex2api`; base `69abb079e1057952f2f93c7ac5920067a94d9f41`.
+- Scope: database/intelligence_check*.go, auth/intelligence_check*.go, admin/intelligence_check_runner.go and executor/integration tests, automatic-only proxy HTTP/WebSocket dispatch guards and tests, handoff and release records. The shared preservation directory is read-only.
+- Latest user instruction overrides the old conflict policy: preserve the currently running production behavior if upstream conflicts. Upstream main is currently `3c6adfda`, already included; fetch again before publishing.
+- Approved behavior: suspend scheduled checks during cooldown, resume when available, never rewrite manual switches or erase history. User subsequently requested direct downtime deployment, without extra zero-downtime preparation. Retain required stopped backup/rollback and never run concurrent old/new singleton writers.
+- Acceptance: enqueue/claim/runtime fences, deadline and early recovery, manual switches/history preserved, SQLite/PostgreSQL, real periodic runner, and release-tool checks.

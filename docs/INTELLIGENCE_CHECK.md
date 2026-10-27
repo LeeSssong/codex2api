@@ -20,6 +20,13 @@
 所需账号及总开关。新账号默认参与检测，但仍受总开关控制；此默认值可以修改。
 手动检测使用已保存配置，不要求开启自动检测。
 
+Automatic checks are suspended while the account has an active cooldown or
+an exhausted live quota window. This applies to due, queued, and claimed-but-not-yet-sent
+checks. When the cooldown expires or availability recovers, the scheduler resumes
+without changing the saved global/account opt-ins, interval, or history. A pause
+is not a failed quality observation. Explicit manual checks retain their existing
+behavior; quality-recovery probes remain allowed during detection's own pause.
+
 | 字段 | 默认值 | 说明 |
 | --- | --- | --- |
 | `enabled` | `false` | 自动检测总开关 |

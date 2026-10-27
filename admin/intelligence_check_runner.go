@@ -66,7 +66,7 @@ func (h *Handler) intelligenceTick(ctx context.Context) error {
 			return nil
 		}
 		account := h.store.FindByID(run.AccountID)
-		if account != nil && !h.store.TryAcquireIntelligenceCheck(account) {
+		if account != nil && ((run.Source == "automatic" && !account.AutomaticIntelligenceCheckAvailable(time.Now())) || !h.store.TryAcquireIntelligenceCheck(account)) {
 			if err := h.db.RequeueIntelligenceCheck(opCtx, run.ID, owner, time.Now()); err != nil {
 				return err
 			}
@@ -84,7 +84,21 @@ func (h *Handler) intelligenceTick(ctx context.Context) error {
 	return nil
 }
 func (h *Handler) runIntelligenceCheck(parent context.Context, run database.IntelligenceCheckRun, account *auth.Account) {
+	// Recheck immediately before execution: quota/cooldown can change after
+	// the durable claim or before its asynchronous persistence. Requeue rather
+	// than grading this pause as a failed/interrupted quality observation.
+	if run.Source == "automatic" && account != nil && !account.AutomaticIntelligenceCheckAvailable(time.Now()) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := h.db.RequeueIntelligenceCheck(ctx, run.ID, run.LeaseOwner, time.Now()); err != nil {
+			log.Printf("intelligence check %d cooldown requeue failed: %v", run.ID, err)
+		}
+		return
+	}
 	ctx, cancel := context.WithTimeout(parent, time.Duration(run.Settings.TimeoutSeconds)*time.Second)
+	if run.Source == "automatic" {
+		ctx = proxy.WithAutomaticIntelligenceCheck(ctx)
+	}
 	result := intelligenceExecution{}
 	if h.db != nil {
 		if err := h.db.ValidateIntelligenceCheckAccountSettings(ctx, run.Settings, run.Channel, run.AccountID); err != nil {
@@ -96,6 +110,14 @@ func (h *Handler) runIntelligenceCheck(parent context.Context, run database.Inte
 		result = h.executeIntelligenceCheck(ctx, account, run.Model, run.ReasoningEffort, run.Question.Prompt)
 	}
 	cancel()
+	if result.Deferred {
+		requeueCtx, requeueCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer requeueCancel()
+		if err := h.db.RequeueIntelligenceCheck(requeueCtx, run.ID, run.LeaseOwner, time.Now()); err != nil {
+			log.Printf("intelligence check %d dispatch requeue failed: %v", run.ID, err)
+		}
+		return
+	}
 	observation := ic.Observation{Interrupted: result.Interrupted, Output: result.Output, Error: result.Error, Complete: result.Complete, DurationMS: result.DurationMS, InputTokens: int64(result.InputTokens), OutputTokens: int64(result.OutputTokens), ReasoningTokens: int64(result.ReasoningTokens), ResponseModel: result.ResponseModel, EffectiveContext: result.EffectiveContext}
 	if parent.Err() != nil {
 		observation.Interrupted = true

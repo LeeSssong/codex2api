@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -139,6 +140,7 @@ func executeOpenAIResponsesWebsocket(ctx context.Context, account *auth.Account,
 	record := beginUpstreamTrace(ctx, account, proxyURL, true)
 	resp, err := openAIResponsesWebsocketPool.roundTrip(ctx, openAIResponsesWSSpec{
 		accountID:    account.ID(),
+		account:      account,
 		accountBound: accountBound,
 		baseURL:      strings.TrimRight(strings.TrimSpace(baseURL), "/"),
 		keyHash:      openAIResponsesWSKeyHash(apiKey),
@@ -156,6 +158,7 @@ func openAIResponsesWSKeyHash(apiKey string) string {
 }
 
 type openAIResponsesWSSpec struct {
+	account      *auth.Account
 	accountBound bool
 	accountID    int64
 	baseURL      string
@@ -218,23 +221,32 @@ func newOpenAIResponsesWSPool() *openAIResponsesWSPool {
 }
 
 func (p *openAIResponsesWSPool) roundTrip(ctx context.Context, spec openAIResponsesWSSpec, body []byte) (*http.Response, error) {
+	if err := CheckAutomaticIntelligenceCheckDispatch(ctx, spec.account); err != nil {
+		return nil, err
+	}
 	prevID := strings.TrimSpace(gjson.GetBytes(body, "previous_response_id").String())
 	p.retireStale(spec)
 	conn, handshake, err := p.acquire(ctx, spec, prevID)
 	if handshake != nil || err != nil || conn == nil {
 		return handshake, err
 	}
-	if err := writeOpenAIResponsesWS(ctx, conn.conn, body); err != nil {
+	send := func() error {
+		if err := CheckAutomaticIntelligenceCheckDispatch(ctx, spec.account); err != nil {
+			return err
+		}
+		return writeOpenAIResponsesWS(ctx, conn.conn, body)
+	}
+	if err := send(); err != nil {
 		reused := conn.reused
 		p.retire(conn)
-		if !reused {
+		if !reused || errors.Is(err, ErrAutomaticIntelligenceCheckDeferred) {
 			return nil, fmt.Errorf("OpenAI Responses WebSocket 发送失败: %w", err)
 		}
 		conn, handshake, err = p.dial(ctx, spec)
 		if handshake != nil || err != nil || conn == nil {
 			return handshake, err
 		}
-		if err := writeOpenAIResponsesWS(ctx, conn.conn, body); err != nil {
+		if err := send(); err != nil {
 			p.retire(conn)
 			return nil, fmt.Errorf("OpenAI Responses WebSocket 发送失败: %w", err)
 		}

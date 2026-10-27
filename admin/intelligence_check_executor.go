@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -19,6 +20,7 @@ import (
 const intelligenceOutputLimit = 256 * 1024
 
 type intelligenceExecution struct {
+	Deferred         bool
 	Output           string
 	Error            string
 	Complete         bool
@@ -82,6 +84,9 @@ func (h *Handler) executeIntelligenceCheck(ctx context.Context, account *auth.Ac
 	var resp *http.Response
 	var err error
 	defer func() {
+		if result.Deferred {
+			return
+		}
 		result.DurationMS = time.Since(start).Milliseconds()
 		secrets := codexTestSecrets(account)
 		// Also mask configured header values if an upstream echoes them in an error.
@@ -113,6 +118,10 @@ func (h *Handler) executeIntelligenceCheck(ctx context.Context, account *auth.Ac
 		resp, err = proxy.ExecuteRelayStyleRequest(ctx, account, body, proxyURL, nil)
 	default:
 		resp, err = proxy.ExecuteRequest(ctx, account, body, "", proxyURL, "", h.intelligenceDeviceConfig, nil)
+	}
+	if errors.Is(err, proxy.ErrAutomaticIntelligenceCheckDeferred) {
+		result.Deferred = true
+		return
 	}
 	if err != nil {
 		result.Error = err.Error()

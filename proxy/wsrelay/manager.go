@@ -234,10 +234,17 @@ func (wc *WsConnection) SetState(state ConnectionState) {
 }
 
 // WriteMessage 安全写入消息
-func (wc *WsConnection) WriteMessage(messageType int, data []byte) error {
+func (wc *WsConnection) WriteMessage(messageType int, data []byte, guards ...func() error) error {
 	wc.writeMu.Lock()
 	defer wc.writeMu.Unlock()
 
+	// Recheck after waiting for heartbeat/control writes, before the lease is
+	// marked sent. Ordinary callers provide no scheduling guard.
+	for _, guard := range guards {
+		if err := guard(); err != nil {
+			return err
+		}
+	}
 	if !wc.IsConnected() || wc.conn == nil {
 		return fmt.Errorf("websocket connection is not connected")
 	}

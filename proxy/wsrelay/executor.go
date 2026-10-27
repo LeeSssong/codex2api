@@ -169,6 +169,10 @@ func (e *Executor) executeRequestViaWebsocket(
 
 	egress.ApplyHeaders(headers)
 
+	if err := proxy.CheckAutomaticIntelligenceCheckDispatch(ctx, account); err != nil {
+		return nil, err
+	}
+
 	// 获取或创建连接。无显式会话的请求（stateless 连接 ID）在确定性 cache key
 	// 的槽位池内复用连接，避免持续高 RPM 下逐请求握手触发上游限流。
 	//
@@ -258,7 +262,13 @@ func (e *Executor) executeRequestViaWebsocket(
 		e.manager.releaseUnusedChatCapacity(wc)
 		return nil, err
 	}
-	sendErr := e.sendRequest(wc, wsBody, pr.RequestID)
+	send := func() error {
+		if err := proxy.CheckAutomaticIntelligenceCheckDispatch(ctx, account); err != nil {
+			return err
+		}
+		return e.sendRequest(wc, wsBody, pr.RequestID, func() error { return proxy.CheckAutomaticIntelligenceCheckDispatch(ctx, account) })
+	}
+	sendErr := send()
 	if sendErr != nil && gjson.GetBytes(wsBody, "previous_response_id").String() != "" {
 		wc.session.RemovePendingRequest(pr.RequestID)
 		e.manager.DiscardConnection(wc)
@@ -281,7 +291,7 @@ func (e *Executor) executeRequestViaWebsocket(
 		if wc.upstreamUserAgentKnown {
 			proxy.RecordUpstreamUserAgent(ctx, wc.upstreamUserAgent)
 		}
-		sendErr = e.sendRequest(wc, wsBody, pr.RequestID)
+		sendErr = send()
 	}
 	if sendErr != nil {
 		wc.session.RemovePendingRequest(pr.RequestID)
@@ -316,7 +326,7 @@ func actualWebsocketPoolSessionID(wc *WsConnection, fallback string) string {
 }
 
 func shouldRetryWebsocketSendError(err error) bool {
-	if err == nil {
+	if err == nil || errors.Is(err, proxy.ErrAutomaticIntelligenceCheckDeferred) {
 		return false
 	}
 	var closeErr *websocket.CloseError
@@ -472,14 +482,14 @@ func (e *Executor) prepareWebsocketHeadersChecked(ctx context.Context, accessTok
 }
 
 // sendRequest 发送 WebSocket 请求
-func (e *Executor) sendRequest(wc *WsConnection, body []byte, requestID string) error {
+func (e *Executor) sendRequest(wc *WsConnection, body []byte, requestID string, guards ...func() error) error {
 	if !wc.IsConnected() {
 		return fmt.Errorf("websocket connection is not connected")
 	}
 	if err := wc.ensureReadLeaseForSend(requestID); err != nil {
 		return err
 	}
-	return wc.WriteMessage(websocket.TextMessage, body)
+	return wc.WriteMessage(websocket.TextMessage, body, guards...)
 }
 
 // ==================== WebSocket 响应处理 ====================
