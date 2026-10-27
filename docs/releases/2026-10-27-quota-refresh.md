@@ -1,0 +1,14 @@
+# 额度持续等待刷新修复
+
+2026-10-27已发布应用017294a8a41faf4dc427b3929802bfaa83d6a3c5，tree af74fbdba7a3b5b88c2c2ac82f2b916e1b452b1b，版本release-20261027-017294a8a41f。
+
+根因：列表/live用RFC3339秒级reset，quota接口保留纳秒；前端毫秒完全相等比较误判同窗口，隐藏费用。现按window_id相同的秒级reset比较，实际duration仍用完整时间差校验。真实换窗旧数据继续拒绝。
+
+验证：新增5h/7d分数秒回归红转绿，460前端测试/typecheck/build通过，桌面/移动明暗浏览器夹具改为生产精度后通过；线上2账号4窗口通过真实payload视图投影。
+
+刷新机制：live页面可见时每秒读服务器；金额打开/手动刷新或列表自动刷新触发，自动统计最短30秒；列表自动刷新默认关闭。后台每2分钟巡检、通常10分钟内官方快照不重复探测；真实请求返回的官方用量可更新快照。快照超10分钟暂停预测。
+
+生产首段维护16.576秒，14:41:11恢复流量。公网后置校验误把API Key quota_used/total_used动态计数变化当配置修改，触发保护停服；保留最新DB并重启新版恢复流量，没有恢复旧dump或旧程序。随后内部/公网smoke通过并保存source-release基线。发布保护工具a57a20c1将动态用量字段排除、配置字段仍校验，25项专项通过。该工具补丁无需重建应用。
+
+运行镜像sha256:f5c24dab24819dbf79f020d9e897387019d5d00eaa27554f987aef43840fc6a0；binary64f690e7454eb7b79605c3f4843deecffc0437d5fecda4f5fe578504f3d7cca2。
+备份证据/opt/codex2api/backups/20261027-quota-refresh-017294a8-production/。源码基线/opt/codex2api/source-release.json。当前DB已产生新写入，禁止旧dump回灌。原共享51文件未改动。

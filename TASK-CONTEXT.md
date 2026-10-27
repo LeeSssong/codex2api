@@ -7,3 +7,7 @@
 - 当前服务基线以服务器/opt/codex2api/source-release.json为准，禁止用旧共享目录HEAD或旧镜像标签推断。
 - 先读AGENTS.md和docs/collaboration.md。原共享目录51文件保留且hash不变；分支e2517414，独立任务worktree开发，发布锁和源码基线拒绝旧候选。
 - 已恢复写入，禁止旧dump覆盖。恢复入口见发布简报。本次无待部署功能，文档收尾commit无需重复构建或重启。
+
+## 后续修复2026-10-27
+
+已部署017294a8额度时间精度修复，见docs/releases/2026-10-27-quota-refresh.md；当前服务器source-release基线替代上述defac31e。后置保护误报已保留最新DB恢复新版，发布工具已排除用量计数。
