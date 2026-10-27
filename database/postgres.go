@@ -260,8 +260,8 @@ const (
 	maxUsageLogFlushIntervalSeconds     = 300
 
 	postgresMaxBindParams       = 65535
-	usageLogInsertColumnCount   = 72
-	maxUsageLogInsertRowsPerSQL = 900 // 72 cols * 900 = 64800 < 65535 PG bind limit
+	usageLogInsertColumnCount   = 80
+	maxUsageLogInsertRowsPerSQL = 800 // 80 cols * 800 = 64000 < 65535 PG bind limit
 
 	// usageLogBufferHardLimit 内存缓冲的硬上限。PG 长时间不可用时（维护、主从切换、
 	// 磁盘写满）失败批次会一直被放回缓冲区，没有上限的话内存一路涨到 OOM——那会把
@@ -306,6 +306,7 @@ func NormalizeUsageLogFlushIntervalSeconds(n int) int {
 
 // usageLogEntry 日志缓冲条目
 type usageLogEntry struct {
+	AccountCostSnapshot
 	UserBilling
 	RequestID            string
 	UpstreamRequestID    string
@@ -1344,6 +1345,14 @@ func (db *DB) migrate(ctx context.Context) error {
 	ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS image_format VARCHAR(100) DEFAULT '';
 	ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS image_size VARCHAR(32) DEFAULT '';
 	ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS account_billed DOUBLE PRECISION DEFAULT 0;
+ ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS account_cost DOUBLE PRECISION;
+ ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS account_stats_cost DOUBLE PRECISION;
+ ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS standard_cost DOUBLE PRECISION;
+ ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS account_rate_multiplier DOUBLE PRECISION;
+ ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS account_cost_source TEXT DEFAULT '';
+ ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS account_pricing_snapshot TEXT DEFAULT '';
+ ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS quota_usage_admitted BOOLEAN;
+ ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS quota_tokens BIGINT;
 	ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS user_billed DOUBLE PRECISION DEFAULT 0;
 	ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS is_retry_attempt BOOLEAN DEFAULT FALSE;
 	ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS attempt_index INT DEFAULT 0;
@@ -4343,6 +4352,7 @@ func (db *DB) RebindAccountProxyURLs(ctx context.Context, oldURL, newURL string)
 
 // UsageLog 请求日志行
 type UsageLog struct {
+	AccountCostSnapshot
 	UserBilling
 	RequestID            string `json:"request_id"`
 	UpstreamRequestID    string `json:"upstream_request_id"`
@@ -4505,6 +4515,7 @@ func (db *DB) InsertUsageLog(ctx context.Context, log *UsageLogInput) error {
 		return nil
 	}
 	log = SnapshotUsageLogBilling(log)
+	log = SnapshotAccountStatsCost(log, AccountStatsPricingConfig{})
 	storeUsageLog := db.shouldStoreUsageLog(log)
 
 	billingServiceTier := usageLogBillingServiceTier(log)
@@ -4590,6 +4601,7 @@ func (db *DB) InsertUsageLog(ctx context.Context, log *UsageLogInput) error {
 		ImageBytes:             log.ImageBytes,
 		ImageFormat:            clampUsageLogText(log.ImageFormat, usageLogTextMaxLen),
 		ImageSize:              clampUsageLogText(log.ImageSize, usageLogImageSizeMaxLen),
+		AccountCostSnapshot:    log.AccountCostSnapshot,
 		AccountBilled:          accountBilled,
 		UserBilled:             userBilled,
 		UserBilling:            log.UserBillingDetails(),
@@ -4613,6 +4625,8 @@ func (db *DB) InsertUsageLog(ctx context.Context, log *UsageLogInput) error {
 
 // UsageLogInput 日志写入参数
 type UsageLogInput struct {
+	AccountUsage *AccountUsageEvidence
+	AccountCostSnapshot
 	billingSnapshot   *usageBillingSnapshot
 	RequestID         string
 	UpstreamRequestID string
@@ -4705,6 +4719,17 @@ func (l *UsageLog) populateBillingBreakdown() {
 		billingServiceTier = l.ServiceTier
 	}
 	breakdown := UsageLogCostBreakdown(&UsageLogInput{Model: billingModel, DaybreakProgram: l.DaybreakProgram, BillingServiceTier: billingServiceTier, InputTokens: l.InputTokens, OutputTokens: l.OutputTokens, CachedTokens: l.CachedTokens, CacheWrite5mTokens: l.CacheWrite5mTokens, CacheWrite1hTokens: l.CacheWrite1hTokens, ImageInputTokens: l.ImageInputTokens, ImageOutputTokens: l.ImageOutputTokens, CachedImageInputTokens: l.CachedImageInputTokens})
+	// New rows carry the exact sale breakdown from request logging time. Legacy
+	// rows keep the existing approximate display path; never backfill old prices.
+	if l.StandardCost != nil && l.AccountPricingSnapshot != "" {
+		var frozen struct {
+			SaleBreakdown *CostBreakdown `json:"sale_breakdown"`
+		}
+		if json.Unmarshal([]byte(l.AccountPricingSnapshot), &frozen) == nil && frozen.SaleBreakdown != nil {
+			breakdown = *frozen.SaleBreakdown
+		}
+	}
+
 	l.ImageInputCost, l.ImageCacheReadCost = breakdown.ImageInputCost, breakdown.ImageCacheReadCost
 	l.ImageInputPrice, l.CachedImageInputPrice = breakdown.ImageInputPricePerMToken, breakdown.CacheReadImagePricePerMToken
 	l.InputCost = breakdown.InputCost
@@ -5013,8 +5038,8 @@ func (db *DB) insertSQLiteUsageLogBatch(ctx context.Context, batch []usageLogEnt
 				  requested_service_tier, actual_service_tier, billing_service_tier,
 				  api_key_id, api_key_name, api_key_masked, image_count, image_width, image_height, image_bytes, image_format, image_size, account_billed, user_billed,
 				  is_retry_attempt, attempt_index, upstream_error_kind, error_message, via_websocket,
-				  client_user_agent, upstream_user_agent, user_agent_overridden, turn_state_overridden, turn_state_rewrite_note, internal_reason, parent_request_id, prompt_policy_incident_id, request_id, upstream_request_id, upstream_proxy_id, upstream_proxy_name, injected_turn_state, upstream_turn_state, user_billing_mode, image_unit_price, billed_image_count, daybreak_program, video_seconds, codex_fingerprint)
-				 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65, $66, $67, $68, $69, $70, $71, $72)`)
+				  client_user_agent, upstream_user_agent, user_agent_overridden, turn_state_overridden, turn_state_rewrite_note, internal_reason, parent_request_id, prompt_policy_incident_id, request_id, upstream_request_id, upstream_proxy_id, upstream_proxy_name, injected_turn_state, upstream_turn_state, user_billing_mode, image_unit_price, billed_image_count, daybreak_program, video_seconds, codex_fingerprint, account_cost, account_stats_cost, standard_cost, account_rate_multiplier, account_cost_source, account_pricing_snapshot, quota_usage_admitted, quota_tokens)
+				 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65, $66, $67, $68, $69, $70, $71, $72, $73, $74, $75, $76, $77, $78, $79, $80)`)
 		if err != nil {
 			return fmt.Errorf("准备语句: %w", err)
 		}
@@ -5026,7 +5051,7 @@ func (db *DB) insertSQLiteUsageLogBatch(ctx context.Context, batch []usageLogEnt
 				e.RequestedServiceTier, e.ActualServiceTier, e.BillingServiceTier,
 				e.APIKeyID, e.APIKeyName, e.APIKeyMasked, e.ImageCount, e.ImageWidth, e.ImageHeight, e.ImageBytes, e.ImageFormat, e.ImageSize, e.AccountBilled, e.UserBilled,
 				e.IsRetryAttempt, e.AttemptIndex, e.UpstreamErrorKind, e.ErrorMessage, e.ViaWebsocket,
-				e.ClientUserAgent, e.UpstreamUserAgent, e.UserAgentOverridden, e.TurnStateOverridden, e.TurnStateRewriteNote, e.InternalReason, e.ParentRequestID, nullablePromptPolicyIncidentID(e.PromptPolicyIncidentID), e.RequestID, e.UpstreamRequestID, e.UpstreamProxyID, e.UpstreamProxyName, e.InjectedTurnState, e.UpstreamTurnState, e.UserBillingMode, e.ImageUnitPrice, e.BilledImageCount, e.DaybreakProgram, e.VideoSeconds, e.CodexFingerprint)
+				e.ClientUserAgent, e.UpstreamUserAgent, e.UserAgentOverridden, e.TurnStateOverridden, e.TurnStateRewriteNote, e.InternalReason, e.ParentRequestID, nullablePromptPolicyIncidentID(e.PromptPolicyIncidentID), e.RequestID, e.UpstreamRequestID, e.UpstreamProxyID, e.UpstreamProxyName, e.InjectedTurnState, e.UpstreamTurnState, e.UserBillingMode, e.ImageUnitPrice, e.BilledImageCount, e.DaybreakProgram, e.VideoSeconds, e.CodexFingerprint, e.AccountCost, e.AccountStatsCost, e.StandardCost, e.AccountRateMultiplier, e.AccountCostSource, e.AccountPricingSnapshot, e.QuotaUsageAdmitted, e.QuotaTokens)
 			if err != nil {
 				return fmt.Errorf("执行插入: %w", err)
 			}
@@ -5131,7 +5156,7 @@ func (db *DB) batchInsertLogsChunk(ctx context.Context, tx *sql.Tx, batch []usag
 			e.RequestedServiceTier, e.ActualServiceTier, e.BillingServiceTier,
 			e.APIKeyID, e.APIKeyName, e.APIKeyMasked, e.ImageCount, e.ImageWidth, e.ImageHeight, e.ImageBytes, e.ImageFormat, e.ImageSize, e.AccountBilled, e.UserBilled,
 			e.IsRetryAttempt, e.AttemptIndex, e.UpstreamErrorKind, e.ErrorMessage, e.ViaWebsocket,
-			e.ClientUserAgent, e.UpstreamUserAgent, e.UserAgentOverridden, e.TurnStateOverridden, e.TurnStateRewriteNote, e.InternalReason, e.ParentRequestID, nullablePromptPolicyIncidentID(e.PromptPolicyIncidentID), e.RequestID, e.UpstreamRequestID, e.UpstreamProxyID, e.UpstreamProxyName, e.InjectedTurnState, e.UpstreamTurnState, e.UserBillingMode, e.ImageUnitPrice, e.BilledImageCount, e.DaybreakProgram, e.VideoSeconds, e.CodexFingerprint)
+			e.ClientUserAgent, e.UpstreamUserAgent, e.UserAgentOverridden, e.TurnStateOverridden, e.TurnStateRewriteNote, e.InternalReason, e.ParentRequestID, nullablePromptPolicyIncidentID(e.PromptPolicyIncidentID), e.RequestID, e.UpstreamRequestID, e.UpstreamProxyID, e.UpstreamProxyName, e.InjectedTurnState, e.UpstreamTurnState, e.UserBillingMode, e.ImageUnitPrice, e.BilledImageCount, e.DaybreakProgram, e.VideoSeconds, e.CodexFingerprint, e.AccountCost, e.AccountStatsCost, e.StandardCost, e.AccountRateMultiplier, e.AccountCostSource, e.AccountPricingSnapshot, e.QuotaUsageAdmitted, e.QuotaTokens)
 		argIdx += usageLogInsertColumnCount
 	}
 
@@ -5140,7 +5165,7 @@ func (db *DB) batchInsertLogsChunk(ctx context.Context, tx *sql.Tx, batch []usag
 		requested_service_tier, actual_service_tier, billing_service_tier,
 		api_key_id, api_key_name, api_key_masked, image_count, image_width, image_height, image_bytes, image_format, image_size, account_billed, user_billed,
 		is_retry_attempt, attempt_index, upstream_error_kind, error_message, via_websocket,
-		client_user_agent, upstream_user_agent, user_agent_overridden, turn_state_overridden, turn_state_rewrite_note, internal_reason, parent_request_id, prompt_policy_incident_id, request_id, upstream_request_id, upstream_proxy_id, upstream_proxy_name, injected_turn_state, upstream_turn_state, user_billing_mode, image_unit_price, billed_image_count, daybreak_program, video_seconds, codex_fingerprint)
+		client_user_agent, upstream_user_agent, user_agent_overridden, turn_state_overridden, turn_state_rewrite_note, internal_reason, parent_request_id, prompt_policy_incident_id, request_id, upstream_request_id, upstream_proxy_id, upstream_proxy_name, injected_turn_state, upstream_turn_state, user_billing_mode, image_unit_price, billed_image_count, daybreak_program, video_seconds, codex_fingerprint, account_cost, account_stats_cost, standard_cost, account_rate_multiplier, account_cost_source, account_pricing_snapshot, quota_usage_admitted, quota_tokens)
 		VALUES %s
 		RETURNING id`, strings.Join(valueStrings, ","))
 
@@ -5804,7 +5829,7 @@ func (db *DB) ListRecentUsageLogs(ctx context.Context, limit int) ([]*UsageLog, 
 	            COALESCE(u.api_key_id, 0), COALESCE(u.api_key_name, ''), COALESCE(u.api_key_masked, ''),
 	            COALESCE(u.image_count, 0), COALESCE(u.image_width, 0), COALESCE(u.image_height, 0), COALESCE(u.image_bytes, 0),
 		            COALESCE(u.image_format, ''), COALESCE(u.image_size, ''),
-	            COALESCE(u.account_billed, 0), COALESCE(u.user_billed, 0), COALESCE(u.user_billing_mode, ''), COALESCE(u.image_unit_price, 0), COALESCE(u.billed_image_count, 0), COALESCE(u.video_seconds, 0),
+	            u.account_cost, u.account_stats_cost, u.standard_cost, u.account_rate_multiplier, COALESCE(u.account_cost_source, ''), COALESCE(u.account_pricing_snapshot, ''), u.quota_usage_admitted, u.quota_tokens, COALESCE(u.account_billed, 0), COALESCE(u.user_billed, 0), COALESCE(u.user_billing_mode, ''), COALESCE(u.image_unit_price, 0), COALESCE(u.billed_image_count, 0), COALESCE(u.video_seconds, 0),
 	            COALESCE(u.is_retry_attempt, false), COALESCE(u.attempt_index, 0), COALESCE(u.upstream_error_kind, ''), COALESCE(u.error_message, ''),
 	            COALESCE(u.client_user_agent, ''), COALESCE(u.upstream_user_agent, ''), COALESCE(u.user_agent_overridden, false), COALESCE(u.turn_state_overridden, false), COALESCE(u.turn_state_rewrite_note, ''), COALESCE(u.channel, ''),
 	            COALESCE(u.internal_reason, ''), COALESCE(u.parent_request_id, ''), COALESCE(u.prompt_policy_incident_id, ''), COALESCE(u.request_id, ''), COALESCE(u.upstream_request_id, ''), COALESCE(u.upstream_proxy_id, 0), COALESCE(u.upstream_proxy_name, ''), COALESCE(u.injected_turn_state, ''), COALESCE(u.upstream_turn_state, ''), COALESCE(u.daybreak_program, ''), COALESCE(u.codex_fingerprint, ''),
@@ -5829,7 +5854,7 @@ func (db *DB) ListRecentUsageLogs(ctx context.Context, limit int) ([]*UsageLog, 
 		if err := rows.Scan(&l.ID, &l.AccountID, &l.ClientIP, &l.Endpoint, &l.Model, &l.EffectiveModel, &nullUpstreamResponseModel, &nullUpstreamModelMismatch, &l.PromptTokens, &l.CompletionTokens, &l.TotalTokens, &l.StatusCode, &l.DurationMs,
 			&l.InputTokens, &l.OutputTokens, &l.ReasoningTokens, &l.FirstTokenMs, &l.WsAcquireMs, &l.ReasoningEffort, &l.InboundEndpoint, &l.UpstreamEndpoint, &l.Stream, &l.Compact, &l.HasCompactionHistory, &l.Ultra, &l.ViaWebsocket, &l.CachedTokens, &l.ImageInputTokens, &l.ImageOutputTokens, &l.CachedImageInputTokens, &l.CacheWrite5mTokens, &l.CacheWrite1hTokens, &l.ServiceTier,
 			&l.RequestedServiceTier, &l.ActualServiceTier, &l.BillingServiceTier,
-			&l.APIKeyID, &l.APIKeyName, &l.APIKeyMasked, &l.ImageCount, &l.ImageWidth, &l.ImageHeight, &l.ImageBytes, &l.ImageFormat, &l.ImageSize, &l.AccountBilled, &l.UserBilled, &l.UserBillingMode, &l.ImageUnitPrice, &l.BilledImageCount, &l.VideoSeconds,
+			&l.APIKeyID, &l.APIKeyName, &l.APIKeyMasked, &l.ImageCount, &l.ImageWidth, &l.ImageHeight, &l.ImageBytes, &l.ImageFormat, &l.ImageSize, &l.AccountCost, &l.AccountStatsCost, &l.StandardCost, &l.AccountRateMultiplier, &l.AccountCostSource, &l.AccountPricingSnapshot, &l.QuotaUsageAdmitted, &l.QuotaTokens, &l.AccountBilled, &l.UserBilled, &l.UserBillingMode, &l.ImageUnitPrice, &l.BilledImageCount, &l.VideoSeconds,
 			&l.IsRetryAttempt, &l.AttemptIndex, &l.UpstreamErrorKind, &l.ErrorMessage, &l.ClientUserAgent, &l.UpstreamUserAgent, &l.UserAgentOverridden, &l.TurnStateOverridden, &l.TurnStateRewriteNote, &l.Channel,
 			&l.InternalReason, &l.ParentRequestID, &l.PromptPolicyIncidentID, &l.RequestID, &l.UpstreamRequestID, &l.UpstreamProxyID, &l.UpstreamProxyName, &l.InjectedTurnState, &l.UpstreamTurnState, &l.DaybreakProgram, &l.CodexFingerprint,
 			&credentialRaw, &l.AccountName, &createdAtRaw); err != nil {
@@ -6284,7 +6309,7 @@ func (db *DB) ListUsageLogsByTimeRange(ctx context.Context, start, end time.Time
 	            COALESCE(u.api_key_id, 0), COALESCE(u.api_key_name, ''), COALESCE(u.api_key_masked, ''),
 	            COALESCE(u.image_count, 0), COALESCE(u.image_width, 0), COALESCE(u.image_height, 0), COALESCE(u.image_bytes, 0),
 		            COALESCE(u.image_format, ''), COALESCE(u.image_size, ''),
-	            COALESCE(u.account_billed, 0), COALESCE(u.user_billed, 0), COALESCE(u.user_billing_mode, ''), COALESCE(u.image_unit_price, 0), COALESCE(u.billed_image_count, 0), COALESCE(u.video_seconds, 0),
+	            u.account_cost, u.account_stats_cost, u.standard_cost, u.account_rate_multiplier, COALESCE(u.account_cost_source, ''), COALESCE(u.account_pricing_snapshot, ''), u.quota_usage_admitted, u.quota_tokens, COALESCE(u.account_billed, 0), COALESCE(u.user_billed, 0), COALESCE(u.user_billing_mode, ''), COALESCE(u.image_unit_price, 0), COALESCE(u.billed_image_count, 0), COALESCE(u.video_seconds, 0),
 	            COALESCE(u.is_retry_attempt, false), COALESCE(u.attempt_index, 0), COALESCE(u.upstream_error_kind, ''), COALESCE(u.error_message, ''),
 	            COALESCE(u.client_user_agent, ''), COALESCE(u.upstream_user_agent, ''), COALESCE(u.user_agent_overridden, false), COALESCE(u.turn_state_overridden, false), COALESCE(u.turn_state_rewrite_note, ''), COALESCE(u.channel, ''),
 	            COALESCE(u.internal_reason, ''), COALESCE(u.parent_request_id, ''), COALESCE(u.prompt_policy_incident_id, ''), COALESCE(u.request_id, ''), COALESCE(u.upstream_request_id, ''), COALESCE(u.upstream_proxy_id, 0), COALESCE(u.upstream_proxy_name, ''), COALESCE(u.injected_turn_state, ''), COALESCE(u.upstream_turn_state, ''), COALESCE(u.daybreak_program, ''), COALESCE(u.codex_fingerprint, ''),
@@ -6310,7 +6335,7 @@ func (db *DB) ListUsageLogsByTimeRange(ctx context.Context, start, end time.Time
 		if err := rows.Scan(&l.ID, &l.AccountID, &l.ClientIP, &l.Endpoint, &l.Model, &l.EffectiveModel, &nullUpstreamResponseModel, &nullUpstreamModelMismatch, &l.PromptTokens, &l.CompletionTokens, &l.TotalTokens, &l.StatusCode, &l.DurationMs,
 			&l.InputTokens, &l.OutputTokens, &l.ReasoningTokens, &l.FirstTokenMs, &l.WsAcquireMs, &l.ReasoningEffort, &l.InboundEndpoint, &l.UpstreamEndpoint, &l.Stream, &l.Compact, &l.HasCompactionHistory, &l.Ultra, &l.ViaWebsocket, &l.CachedTokens, &l.ImageInputTokens, &l.ImageOutputTokens, &l.CachedImageInputTokens, &l.CacheWrite5mTokens, &l.CacheWrite1hTokens, &l.ServiceTier,
 			&l.RequestedServiceTier, &l.ActualServiceTier, &l.BillingServiceTier,
-			&l.APIKeyID, &l.APIKeyName, &l.APIKeyMasked, &l.ImageCount, &l.ImageWidth, &l.ImageHeight, &l.ImageBytes, &l.ImageFormat, &l.ImageSize, &l.AccountBilled, &l.UserBilled, &l.UserBillingMode, &l.ImageUnitPrice, &l.BilledImageCount, &l.VideoSeconds,
+			&l.APIKeyID, &l.APIKeyName, &l.APIKeyMasked, &l.ImageCount, &l.ImageWidth, &l.ImageHeight, &l.ImageBytes, &l.ImageFormat, &l.ImageSize, &l.AccountCost, &l.AccountStatsCost, &l.StandardCost, &l.AccountRateMultiplier, &l.AccountCostSource, &l.AccountPricingSnapshot, &l.QuotaUsageAdmitted, &l.QuotaTokens, &l.AccountBilled, &l.UserBilled, &l.UserBillingMode, &l.ImageUnitPrice, &l.BilledImageCount, &l.VideoSeconds,
 			&l.IsRetryAttempt, &l.AttemptIndex, &l.UpstreamErrorKind, &l.ErrorMessage, &l.ClientUserAgent, &l.UpstreamUserAgent, &l.UserAgentOverridden, &l.TurnStateOverridden, &l.TurnStateRewriteNote, &l.Channel,
 			&l.InternalReason, &l.ParentRequestID, &l.PromptPolicyIncidentID, &l.RequestID, &l.UpstreamRequestID, &l.UpstreamProxyID, &l.UpstreamProxyName, &l.InjectedTurnState, &l.UpstreamTurnState, &l.DaybreakProgram, &l.CodexFingerprint,
 			&credentialRaw, &l.AccountName, &createdAtRaw); err != nil {
@@ -6789,7 +6814,7 @@ func (db *DB) ListUsageLogsByTimeRangePaged(ctx context.Context, f UsageLogFilte
 	            COALESCE(u.api_key_id, 0), COALESCE(u.api_key_name, ''), COALESCE(u.api_key_masked, ''),
 	            COALESCE(u.image_count, 0), COALESCE(u.image_width, 0), COALESCE(u.image_height, 0), COALESCE(u.image_bytes, 0),
 		            COALESCE(u.image_format, ''), COALESCE(u.image_size, ''),
-			            COALESCE(u.account_billed, 0), COALESCE(u.user_billed, 0), COALESCE(u.user_billing_mode, ''), COALESCE(u.image_unit_price, 0), COALESCE(u.billed_image_count, 0), COALESCE(u.video_seconds, 0),
+			            u.account_cost, u.account_stats_cost, u.standard_cost, u.account_rate_multiplier, COALESCE(u.account_cost_source, ''), COALESCE(u.account_pricing_snapshot, ''), u.quota_usage_admitted, u.quota_tokens, COALESCE(u.account_billed, 0), COALESCE(u.user_billed, 0), COALESCE(u.user_billing_mode, ''), COALESCE(u.image_unit_price, 0), COALESCE(u.billed_image_count, 0), COALESCE(u.video_seconds, 0),
 			            COALESCE(u.is_retry_attempt, false), COALESCE(u.attempt_index, 0), COALESCE(u.upstream_error_kind, ''), COALESCE(u.error_message, ''),
 			            COALESCE(u.client_user_agent, ''), COALESCE(u.upstream_user_agent, ''), COALESCE(u.user_agent_overridden, false), COALESCE(u.turn_state_overridden, false), COALESCE(u.turn_state_rewrite_note, ''), COALESCE(u.channel, ''),
 			            COALESCE(u.internal_reason, ''), COALESCE(u.parent_request_id, ''), COALESCE(u.prompt_policy_incident_id, ''), COALESCE(u.request_id, ''), COALESCE(u.upstream_request_id, ''), COALESCE(u.upstream_proxy_id, 0), COALESCE(u.upstream_proxy_name, ''), COALESCE(u.injected_turn_state, ''), COALESCE(u.upstream_turn_state, ''), COALESCE(u.daybreak_program, ''), COALESCE(u.codex_fingerprint, ''),
@@ -6814,7 +6839,7 @@ func (db *DB) ListUsageLogsByTimeRangePaged(ctx context.Context, f UsageLogFilte
 		if err := rows.Scan(&l.ID, &l.AccountID, &l.ClientIP, &l.Endpoint, &l.Model, &l.EffectiveModel, &nullUpstreamResponseModel, &nullUpstreamModelMismatch, &l.PromptTokens, &l.CompletionTokens, &l.TotalTokens, &l.StatusCode, &l.DurationMs,
 			&l.InputTokens, &l.OutputTokens, &l.ReasoningTokens, &l.FirstTokenMs, &l.WsAcquireMs, &l.ReasoningEffort, &l.InboundEndpoint, &l.UpstreamEndpoint, &l.Stream, &l.Compact, &l.HasCompactionHistory, &l.Ultra, &l.ViaWebsocket, &l.CachedTokens, &l.ImageInputTokens, &l.ImageOutputTokens, &l.CachedImageInputTokens, &l.CacheWrite5mTokens, &l.CacheWrite1hTokens,
 			&l.ServiceTier, &l.RequestedServiceTier, &l.ActualServiceTier, &l.BillingServiceTier, &l.APIKeyID, &l.APIKeyName, &l.APIKeyMasked, &l.ImageCount, &l.ImageWidth, &l.ImageHeight, &l.ImageBytes, &l.ImageFormat, &l.ImageSize,
-			&l.AccountBilled, &l.UserBilled, &l.UserBillingMode, &l.ImageUnitPrice, &l.BilledImageCount, &l.VideoSeconds, &l.IsRetryAttempt, &l.AttemptIndex, &l.UpstreamErrorKind, &l.ErrorMessage,
+			&l.AccountCost, &l.AccountStatsCost, &l.StandardCost, &l.AccountRateMultiplier, &l.AccountCostSource, &l.AccountPricingSnapshot, &l.QuotaUsageAdmitted, &l.QuotaTokens, &l.AccountBilled, &l.UserBilled, &l.UserBillingMode, &l.ImageUnitPrice, &l.BilledImageCount, &l.VideoSeconds, &l.IsRetryAttempt, &l.AttemptIndex, &l.UpstreamErrorKind, &l.ErrorMessage,
 			&l.ClientUserAgent, &l.UpstreamUserAgent, &l.UserAgentOverridden, &l.TurnStateOverridden, &l.TurnStateRewriteNote, &l.Channel, &l.InternalReason, &l.ParentRequestID, &l.PromptPolicyIncidentID, &l.RequestID, &l.UpstreamRequestID, &l.UpstreamProxyID, &l.UpstreamProxyName, &l.InjectedTurnState, &l.UpstreamTurnState, &l.DaybreakProgram, &l.CodexFingerprint,
 			&credentialRaw, &l.AccountName, &createdAtRaw); err != nil {
 			return nil, err
@@ -6848,7 +6873,7 @@ func (db *DB) ListUsageLogsByFilter(ctx context.Context, f UsageLogFilter) ([]*U
 			COALESCE(u.api_key_id, 0), COALESCE(u.api_key_name, ''), COALESCE(u.api_key_masked, ''),
 			COALESCE(u.image_count, 0), COALESCE(u.image_width, 0), COALESCE(u.image_height, 0), COALESCE(u.image_bytes, 0),
 			COALESCE(u.image_format, ''), COALESCE(u.image_size, ''),
-			COALESCE(u.account_billed, 0), COALESCE(u.user_billed, 0), COALESCE(u.user_billing_mode, ''), COALESCE(u.image_unit_price, 0), COALESCE(u.billed_image_count, 0), COALESCE(u.video_seconds, 0),
+			u.account_cost, u.account_stats_cost, u.standard_cost, u.account_rate_multiplier, COALESCE(u.account_cost_source, ''), COALESCE(u.account_pricing_snapshot, ''), u.quota_usage_admitted, u.quota_tokens, COALESCE(u.account_billed, 0), COALESCE(u.user_billed, 0), COALESCE(u.user_billing_mode, ''), COALESCE(u.image_unit_price, 0), COALESCE(u.billed_image_count, 0), COALESCE(u.video_seconds, 0),
 			COALESCE(u.is_retry_attempt, false), COALESCE(u.attempt_index, 0), COALESCE(u.upstream_error_kind, ''), COALESCE(u.error_message, ''),
 			COALESCE(u.client_user_agent, ''), COALESCE(u.upstream_user_agent, ''), COALESCE(u.user_agent_overridden, false), COALESCE(u.turn_state_overridden, false), COALESCE(u.turn_state_rewrite_note, ''), COALESCE(u.channel, ''),
 			COALESCE(u.internal_reason, ''), COALESCE(u.parent_request_id, ''), COALESCE(u.prompt_policy_incident_id, ''), COALESCE(u.request_id, ''), COALESCE(u.upstream_request_id, ''), COALESCE(u.upstream_proxy_id, 0), COALESCE(u.upstream_proxy_name, ''), COALESCE(u.injected_turn_state, ''), COALESCE(u.upstream_turn_state, ''), COALESCE(u.daybreak_program, ''), COALESCE(u.codex_fingerprint, ''),
@@ -6873,7 +6898,7 @@ func (db *DB) ListUsageLogsByFilter(ctx context.Context, f UsageLogFilter) ([]*U
 		if err := rows.Scan(&l.ID, &l.AccountID, &l.ClientIP, &l.Endpoint, &l.Model, &l.EffectiveModel, &nullUpstreamResponseModel, &nullUpstreamModelMismatch, &l.PromptTokens, &l.CompletionTokens, &l.TotalTokens, &l.StatusCode, &l.DurationMs,
 			&l.InputTokens, &l.OutputTokens, &l.ReasoningTokens, &l.FirstTokenMs, &l.WsAcquireMs, &l.ReasoningEffort, &l.InboundEndpoint, &l.UpstreamEndpoint, &l.Stream, &l.Compact, &l.HasCompactionHistory, &l.Ultra, &l.ViaWebsocket, &l.CachedTokens, &l.ImageInputTokens, &l.ImageOutputTokens, &l.CachedImageInputTokens, &l.CacheWrite5mTokens, &l.CacheWrite1hTokens,
 			&l.ServiceTier, &l.RequestedServiceTier, &l.ActualServiceTier, &l.BillingServiceTier, &l.APIKeyID, &l.APIKeyName, &l.APIKeyMasked, &l.ImageCount, &l.ImageWidth, &l.ImageHeight, &l.ImageBytes, &l.ImageFormat, &l.ImageSize,
-			&l.AccountBilled, &l.UserBilled, &l.UserBillingMode, &l.ImageUnitPrice, &l.BilledImageCount, &l.VideoSeconds, &l.IsRetryAttempt, &l.AttemptIndex, &l.UpstreamErrorKind, &l.ErrorMessage,
+			&l.AccountCost, &l.AccountStatsCost, &l.StandardCost, &l.AccountRateMultiplier, &l.AccountCostSource, &l.AccountPricingSnapshot, &l.QuotaUsageAdmitted, &l.QuotaTokens, &l.AccountBilled, &l.UserBilled, &l.UserBillingMode, &l.ImageUnitPrice, &l.BilledImageCount, &l.VideoSeconds, &l.IsRetryAttempt, &l.AttemptIndex, &l.UpstreamErrorKind, &l.ErrorMessage,
 			&l.ClientUserAgent, &l.UpstreamUserAgent, &l.UserAgentOverridden, &l.TurnStateOverridden, &l.TurnStateRewriteNote, &l.Channel, &l.InternalReason, &l.ParentRequestID, &l.PromptPolicyIncidentID, &l.RequestID, &l.UpstreamRequestID, &l.UpstreamProxyID, &l.UpstreamProxyName, &l.InjectedTurnState, &l.UpstreamTurnState, &l.DaybreakProgram, &l.CodexFingerprint,
 			&credentialRaw, &l.AccountName, &createdAtRaw); err != nil {
 			return nil, err
@@ -6980,11 +7005,13 @@ type AccountRequestCount struct {
 
 // AccountTimeRangeUsage 每个账号在指定时间窗口内的真实请求/token 统计。
 type AccountTimeRangeUsage struct {
-	AccountID     int64
-	Requests      int64
-	Tokens        int64
-	AccountBilled float64
-	UserBilled    float64
+	StandardCost   float64
+	LegacyRequests int64
+	AccountID      int64
+	Requests       int64
+	Tokens         int64
+	AccountBilled  float64
+	UserBilled     float64
 }
 
 // AccountModelCount 某个模型在指定窗口内的请求数、成功数与平均首字时长。

@@ -1276,6 +1276,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.POST("/accounts/:id/subscription/refresh", h.RefreshAccountSubscription)
 	api.GET("/accounts/:id/auth-json", h.GetAccountAuthJSON)
 	api.PATCH("/accounts/:id/credit", h.UpdateAccountCredit)
+	api.GET("/accounts/:id/stats-pricing", h.GetAccountStatsPricing)
+	api.PUT("/accounts/:id/stats-pricing", h.UpdateAccountStatsPricing)
 	api.POST("/accounts/batch-test", h.BatchTest)
 	api.POST("/accounts/batch-refresh", h.BatchRefreshAccounts)
 	api.POST("/accounts/batch-refresh-usage", h.BatchRefreshCodexUsage)

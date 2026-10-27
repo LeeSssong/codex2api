@@ -158,6 +158,7 @@ func NormalizeTestContent(content string) string {
 
 // Account 运行时账号状态
 type Account struct {
+	accountStatsPricing       database.AccountStatsPricingConfig
 	daybreak                  database.DaybreakSnapshot
 	modelQuality              *modelQualityGate
 	codexRoutes               codexAccountRoutes
@@ -6218,6 +6219,7 @@ func (s *Store) buildAccountFromRow(ctx context.Context, row *database.AccountRo
 	}
 
 	account := &Account{
+		accountStatsPricing:          accountStatsPricingFromRow(row),
 		modelQuality:                 &s.modelQuality,
 		DBID:                         row.ID,
 		CredentialGeneration:         row.CredentialGeneration,

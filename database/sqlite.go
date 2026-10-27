@@ -614,6 +614,14 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 		{"usage_logs", "image_format", "TEXT DEFAULT ''"},
 		{"usage_logs", "image_size", "TEXT DEFAULT ''"},
 		{"usage_logs", "account_billed", "REAL DEFAULT 0"},
+		{"usage_logs", "quota_usage_admitted", "BOOLEAN"},
+		{"usage_logs", "quota_tokens", "BIGINT"},
+		{"usage_logs", "account_cost", "REAL"},
+		{"usage_logs", "account_stats_cost", "REAL"},
+		{"usage_logs", "standard_cost", "REAL"},
+		{"usage_logs", "account_rate_multiplier", "REAL"},
+		{"usage_logs", "account_cost_source", "TEXT DEFAULT ''"},
+		{"usage_logs", "account_pricing_snapshot", "TEXT DEFAULT ''"},
 		{"usage_logs", "user_billed", "REAL DEFAULT 0"},
 		{"usage_logs", "is_retry_attempt", "INTEGER DEFAULT 0"},
 		{"usage_logs", "attempt_index", "INTEGER DEFAULT 0"},
@@ -915,7 +923,9 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 		return fmt.Errorf("install scheduler outbox triggers: %w", err)
 	}
 
-	if err := db.InitFixedEgress(ctx); err != nil { return err }
+	if err := db.InitFixedEgress(ctx); err != nil {
+		return err
+	}
 	return db.runDataMigrationsWithTimeout()
 }
 

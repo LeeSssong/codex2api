@@ -1,0 +1,373 @@
+package database
+
+import (
+	"encoding/json"
+	"fmt"
+	"math"
+	"strconv"
+	"strings"
+)
+
+// AccountCostSnapshot is independent of native customer billing. Nil identifies
+// pre-migration rows; a pointer to zero is a real, immutable cost.
+type AccountCostSnapshot struct {
+	QuotaUsageAdmitted     *bool    `json:"quota_usage_admitted"`
+	QuotaTokens            *int64   `json:"quota_tokens"`
+	AccountCost            *float64 `json:"account_cost"`
+	AccountStatsCost       *float64 `json:"account_stats_cost"`
+	StandardCost           *float64 `json:"standard_cost"`
+	AccountRateMultiplier  *float64 `json:"account_rate_multiplier"`
+	AccountCostSource      string   `json:"account_cost_source"`
+	AccountPricingSnapshot string   `json:"account_pricing_snapshot,omitempty"`
+}
+
+// AccountUsageEvidence contains the observed original upstream categories.
+// InputTokens includes cache reads/writes (native protocol convention); OutputTokens
+// excludes ImageOutputTokens for custom source rules, which price it separately.
+// Diagnostic estimates stay on UsageLogInput and never enter this evidence.
+type AccountUsageEvidence struct {
+	InputTokens            int
+	OutputTokens           int
+	CachedTokens           int
+	CacheWrite5mTokens     int
+	CacheWrite1hTokens     int
+	ImageInputTokens       int
+	ImageOutputTokens      int
+	CachedImageInputTokens int
+}
+
+type AccountStatsPricingConfig struct {
+	RateMultiplier   *float64                  `json:"account_rate_multiplier,omitempty"`
+	ApplySalePricing bool                      `json:"apply_sale_pricing"`
+	Rules            []AccountStatsPricingRule `json:"rules,omitempty"`
+	// UpstreamPrices represents the operator's source model catalog. Absent entries
+	// use the pinned Sub2API fallback table (which has no long-context ladder).
+	UpstreamPrices     []AccountStatsPricingRule `json:"upstream_prices,omitempty"`
+	LongContextEnabled *bool                     `json:"long_context_enabled,omitempty"`
+}
+
+type AccountStatsPrices struct {
+	Input        *float64 `json:"input,omitempty"` // USD / million tokens
+	Output       *float64 `json:"output,omitempty"`
+	CacheRead    *float64 `json:"cache_read,omitempty"`
+	CacheWrite   *float64 `json:"cache_write,omitempty"`
+	CacheWrite1h *float64 `json:"cache_write_1h,omitempty"`
+	ImageOutput  *float64 `json:"image_output,omitempty"`
+}
+type AccountStatsPricingInterval struct {
+	MinTokens int  `json:"min_tokens"`
+	MaxTokens *int `json:"max_tokens,omitempty"`
+	AccountStatsPrices
+}
+type AccountStatsPricingRule struct {
+	Models []string `json:"models"`
+	AccountStatsPrices
+	PerRequest           *float64                      `json:"per_request,omitempty"`
+	ImageTiers           map[string]float64            `json:"image_tiers,omitempty"`
+	Intervals            []AccountStatsPricingInterval `json:"intervals,omitempty"`
+	ReasoningMultipliers map[string]float64            `json:"reasoning_multipliers,omitempty"`
+	LongContextThreshold int                           `json:"long_context_threshold,omitempty"`
+	LongInputMultiplier  float64                       `json:"long_input_multiplier,omitempty"`
+	LongOutputMultiplier float64                       `json:"long_output_multiplier,omitempty"`
+}
+
+func validStatsNumber(v float64) bool { return !math.IsNaN(v) && !math.IsInf(v, 0) && v >= 0 }
+func ValidateAccountStatsPricing(c AccountStatsPricingConfig) error {
+	if c.RateMultiplier != nil && !validStatsNumber(*c.RateMultiplier) {
+		return fmt.Errorf("account_rate_multiplier must be finite and non-negative")
+	}
+	for _, rules := range [][]AccountStatsPricingRule{c.Rules, c.UpstreamPrices} {
+		for _, r := range rules {
+			if len(r.Models) == 0 {
+				return fmt.Errorf("pricing rule requires models")
+			}
+			for _, m := range r.Models {
+				if strings.TrimSpace(m) == "" || strings.Contains(strings.TrimSuffix(m, "*"), "*") {
+					return fmt.Errorf("models allow exact names or a trailing wildcard")
+				}
+			}
+			prices := []AccountStatsPrices{r.AccountStatsPrices}
+			for _, iv := range r.Intervals {
+				if iv.MinTokens < 0 || (iv.MaxTokens != nil && *iv.MaxTokens <= iv.MinTokens) {
+					return fmt.Errorf("invalid pricing interval")
+				}
+				prices = append(prices, iv.AccountStatsPrices)
+			}
+			for _, p := range prices {
+				for _, v := range []*float64{p.Input, p.Output, p.CacheRead, p.CacheWrite, p.CacheWrite1h, p.ImageOutput} {
+					if v != nil && !validStatsNumber(*v) {
+						return fmt.Errorf("prices must be finite and non-negative")
+					}
+				}
+			}
+			if r.PerRequest != nil && !validStatsNumber(*r.PerRequest) {
+				return fmt.Errorf("per_request must be finite and non-negative")
+			}
+			for tier, v := range r.ImageTiers {
+				if _, ok := statsImageTier(tier); !ok || !validStatsNumber(v) {
+					return fmt.Errorf("invalid image tier price")
+				}
+			}
+			for _, v := range r.ReasoningMultipliers {
+				if !validStatsNumber(v) {
+					return fmt.Errorf("invalid reasoning multiplier")
+				}
+			}
+			if r.LongContextThreshold < 0 || !validStatsNumber(r.LongInputMultiplier) || !validStatsNumber(r.LongOutputMultiplier) {
+				return fmt.Errorf("invalid long context policy")
+			}
+		}
+	}
+	return nil
+}
+
+// AccountCostSQL uses only persisted values. account_billed is the explicitly
+// approximate legacy fallback; it never recalculates history at today's prices.
+func AccountCostSQL(alias string) string {
+	p := ""
+	if alias != "" {
+		p = alias + "."
+	}
+	return "COALESCE(" + p + "account_cost, COALESCE(" + p + "account_stats_cost, " + p + "standard_cost, " + p + "account_billed) * COALESCE(" + p + "account_rate_multiplier, 1))"
+}
+func StandardCostSQL(alias string) string {
+	p := ""
+	if alias != "" {
+		p = alias + "."
+	}
+	return "COALESCE(" + p + "standard_cost, " + p + "account_billed)"
+}
+func statsValue(p *float64) float64 {
+	if p == nil {
+		return 0
+	}
+	return *p
+}
+func statsPointer(v float64) *float64    { return &v }
+func roundAccountCost(v float64) float64 { return math.Round(v*1e10) / 1e10 }
+
+// Source token buckets are exclusive; the native InputTokens includes cache.
+func statsTokenCost(input *UsageLogInput, r AccountStatsPricingRule) float64 {
+	p := r.AccountStatsPrices
+	total := input.InputTokens + input.OutputTokens
+	for _, iv := range r.Intervals {
+		if total > iv.MinTokens && (iv.MaxTokens == nil || total <= *iv.MaxTokens) {
+			p = iv.AccountStatsPrices
+			break
+		}
+	}
+	ordinary := max(0, input.InputTokens-input.CachedTokens-input.CacheWrite5mTokens-input.CacheWrite1hTokens)
+	write1h := p.CacheWrite1h
+	if write1h == nil {
+		write1h = p.CacheWrite
+	}
+	return (float64(ordinary)*statsValue(p.Input) + float64(input.OutputTokens)*statsValue(p.Output) + float64(input.CachedTokens)*statsValue(p.CacheRead) + float64(input.CacheWrite5mTokens)*statsValue(p.CacheWrite) + float64(input.CacheWrite1hTokens)*statsValue(write1h) + float64(input.ImageOutputTokens)*statsValue(p.ImageOutput)) / 1e6
+}
+func statsMatchingRule(rules []AccountStatsPricingRule, model string) *AccountStatsPricingRule {
+	model = strings.ToLower(model)
+	for _, wild := range []bool{false, true} {
+		for i := range rules {
+			for _, m := range rules[i].Models {
+				m = strings.ToLower(m)
+				isWild := strings.HasSuffix(m, "*")
+				if isWild != wild {
+					continue
+				}
+				if (!wild && m == model) || (wild && strings.HasPrefix(model, strings.TrimSuffix(m, "*"))) {
+					return &rules[i]
+				}
+			}
+		}
+	}
+	return nil
+}
+func statsImageTier(size string) (string, bool) {
+	s := strings.ToLower(strings.TrimSpace(size))
+	if s == "1k" || s == "2k" || s == "4k" {
+		return strings.ToUpper(s), true
+	}
+	parts := strings.Split(s, "x")
+	if len(parts) != 2 {
+		return "", false
+	}
+	w, e := strconv.Atoi(strings.TrimSpace(parts[0]))
+	h, f := strconv.Atoi(strings.TrimSpace(parts[1]))
+	if e != nil || f != nil || w <= 0 || h <= 0 {
+		return "", false
+	}
+	if max(w, h) <= 1024 {
+		return "1K", true
+	}
+	if max(w, h) <= 2048 {
+		return "2K", true
+	}
+	return "4K", true
+}
+func statsReasoningMultiplier(r *AccountStatsPricingRule, effort string) float64 {
+	if r != nil {
+		if v, ok := r.ReasoningMultipliers[strings.ToLower(strings.TrimSpace(effort))]; ok && v > 0 {
+			return v
+		}
+	}
+	return 1
+}
+
+// SnapshotAccountStatsCost freezes the source pricing chain before buffering.
+// Caller billing and its token categories are left intact.
+func SnapshotAccountStatsCost(input *UsageLogInput, cfg AccountStatsPricingConfig) *UsageLogInput {
+	if input == nil || input.AccountCost != nil {
+		return input
+	}
+	copy := *input
+	standard := UsageLogBilledCost(input)
+	saleBreakdown := UsageLogCostBreakdown(input)
+	// Only account statistics consume observed upstream usage. Native customer
+	// billing continues to use the original log and its own admission policy.
+	if evidence := input.AccountUsage; evidence != nil {
+		original := *input
+		original.InputTokens = evidence.InputTokens
+		original.OutputTokens = evidence.OutputTokens
+		original.CachedTokens = evidence.CachedTokens
+		original.CacheWrite5mTokens = evidence.CacheWrite5mTokens
+		original.CacheWrite1hTokens = evidence.CacheWrite1hTokens
+		original.ImageInputTokens = evidence.ImageInputTokens
+		original.ImageOutputTokens = evidence.ImageOutputTokens
+		original.CachedImageInputTokens = evidence.CachedImageInputTokens
+		input = &original
+	}
+
+	multiplier := 1.0
+	if cfg.RateMultiplier != nil && validStatsNumber(*cfg.RateMultiplier) {
+		multiplier = *cfg.RateMultiplier
+	}
+	model := input.EffectiveModel
+	if model == "" {
+		model = input.Model
+	}
+	tier := usageLogBillingServiceTier(input)
+	source := "fallback"
+	cost := standard
+	applyRate := true
+	var stats *float64
+	var selected *AccountStatsPricingRule
+	if r := statsMatchingRule(cfg.Rules, model); r != nil {
+		selected = r
+		if len(r.ImageTiers) > 0 && SupportsImageBilling(model) && input.ImageCount > 0 {
+			if imageTier, ok := statsImageTier(input.ImageSize); ok {
+				for k, v := range r.ImageTiers {
+					if strings.EqualFold(k, imageTier) {
+						cost = v * float64(input.ImageCount) * statsReasoningMultiplier(r, input.ReasoningEffort)
+						stats = statsPointer(cost)
+						source = "custom_image_tier"
+						applyRate = false
+						break
+					}
+				}
+			}
+		} else if r.PerRequest != nil && *r.PerRequest > 0 {
+			cost = *r.PerRequest * float64(max(1, input.ImageCount)) * statsReasoningMultiplier(r, input.ReasoningEffort)
+			stats = statsPointer(cost)
+			source = "custom_request"
+		} else if len(r.ImageTiers) == 0 {
+			v := statsTokenCost(input, *r) * statsReasoningMultiplier(r, input.ReasoningEffort)
+			if v > 0 {
+				cost = v
+				stats = statsPointer(v)
+				source = "custom_tokens"
+			}
+		}
+	}
+	if stats == nil && cfg.ApplySalePricing {
+		source = "sale"
+		if standard > 0 {
+			stats = statsPointer(standard)
+		}
+	}
+	if stats == nil && !cfg.ApplySalePricing {
+		r := statsMatchingRule(cfg.UpstreamPrices, model)
+		if r == nil {
+			r = sourceFallbackStatsPricing(model)
+		}
+		if r != nil {
+			selected = r
+			adjusted := *r
+			longEnabled := cfg.LongContextEnabled == nil || *cfg.LongContextEnabled
+			// Source explicitly exempts GPT-6.1 Sol from the model long-context ladder.
+			if longEnabled && CanonicalBillingModelKey(model) != "gpt-6.1-sol" && r.LongContextThreshold > 0 && input.InputTokens > r.LongContextThreshold {
+				im, om := r.LongInputMultiplier, r.LongOutputMultiplier
+				if im <= 0 {
+					im = 1
+				}
+				if om <= 0 {
+					om = 1
+				}
+				adjusted.Input = statsPointer(statsValue(r.Input) * im)
+				adjusted.CacheRead = statsPointer(statsValue(r.CacheRead) * im)
+				adjusted.CacheWrite = statsPointer(statsValue(r.CacheWrite) * im)
+				adjusted.CacheWrite1h = statsPointer(statsValue(r.CacheWrite1h) * im)
+				adjusted.Output = statsPointer(statsValue(r.Output) * om)
+			}
+			v := statsTokenCost(input, adjusted) * sourceStatsTierMultiplier(model, tier) * statsReasoningMultiplier(r, input.ReasoningEffort)
+			if v > 0 {
+				cost = v
+				stats = statsPointer(v)
+				source = "upstream_default"
+			}
+		}
+	}
+	if applyRate {
+		cost *= multiplier
+	}
+	cost = roundAccountCost(cost)
+	if stats != nil {
+		stats = statsPointer(roundAccountCost(*stats))
+	}
+	copy.AccountCostSnapshot = AccountCostSnapshot{QuotaUsageAdmitted: input.QuotaUsageAdmitted, QuotaTokens: input.QuotaTokens, AccountCost: &cost, AccountStatsCost: stats, StandardCost: statsPointer(standard), AccountRateMultiplier: statsPointer(multiplier), AccountCostSource: source}
+	frozen := struct {
+		Model       string                    `json:"model"`
+		Input       int                       `json:"input_tokens"`
+		Cached      int                       `json:"cached_tokens"`
+		Output      int                       `json:"output_tokens"`
+		Write5m     int                       `json:"cache_write_5m_tokens"`
+		Write1h     int                       `json:"cache_write_1h_tokens"`
+		ImageOutput int                       `json:"image_output_tokens"`
+		Tier        string                    `json:"service_tier"`
+		Reasoning   string                    `json:"reasoning_effort"`
+		Rule        *AccountStatsPricingRule  `json:"price"`
+		Config      AccountStatsPricingConfig `json:"config"`
+		Sale        CostBreakdown             `json:"sale_breakdown"`
+	}{model, input.InputTokens, input.CachedTokens, input.OutputTokens, input.CacheWrite5mTokens, input.CacheWrite1hTokens, input.ImageOutputTokens, tier, input.ReasoningEffort, selected, cfg, saleBreakdown}
+	raw, _ := json.Marshal(frozen)
+	copy.AccountPricingSnapshot = string(raw)
+	return &copy
+}
+func sourceStatsTierMultiplier(model, tier string) float64 {
+	switch normalizeServiceTier(tier) {
+	case "flex":
+		return .5
+	case "priority", "fast":
+		if CanonicalBillingModelKey(model) == "gpt-5.5" {
+			return 2.5
+		}
+		return 2
+	case "ultrafast":
+		if CanonicalBillingModelKey(model) == "gpt-6-astra" {
+			return 6
+		}
+		return 2
+	}
+	return 1
+}
+
+// Pinned from Sub2API a6d32ede billing_service.go fallbackPrices. Catalog long
+// context rules are configured separately rather than invented from sale prices.
+func sourceFallbackStatsPricing(model string) *AccountStatsPricingRule {
+	rates := map[string][4]float64{
+		"gpt-5.4": {2.5, 15, .25, 2.5}, "gpt-5.5": {5, 30, .5, 5}, "gpt-5.6-sol": {5, 30, .5, 6.25}, "gpt-5.6-terra": {2, 12, .2, 2.5}, "gpt-5.6-luna": {.2, 1.2, .02, .25}, "gpt-6-astra": {10, 50, 1, 12.5}, "gpt-6.1-sol": {2, 10, .1, 2.5}, "gpt-6-sol": {2, 10, .2, 2.5}, "gpt-6-luna": {.1, .5, .01, .125}, "gpt-5.3-codex": {1.5, 12, .15, 1.5}, "gpt-5.3-codex-spark": {1.5, 12, .15, 1.5},
+	}
+	r, ok := rates[CanonicalBillingModelKey(model)]
+	if !ok {
+		return nil
+	}
+	return &AccountStatsPricingRule{Models: []string{model}, AccountStatsPrices: AccountStatsPrices{Input: statsPointer(r[0]), Output: statsPointer(r[1]), CacheRead: statsPointer(r[2]), CacheWrite: statsPointer(r[3])}}
+}
