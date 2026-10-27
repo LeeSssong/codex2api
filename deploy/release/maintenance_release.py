@@ -512,7 +512,11 @@ class MaintenanceRelease:
             raise RuntimeError('executing binary changed before rollback capture')
         context = self.directory / 'rollback-build'; context.mkdir(mode=0o700)
         private_write(context / 'codex2api', payload); (context / 'codex2api').chmod(0o700)
-        private_write(context / 'Dockerfile', 'FROM ' + self.old['Image'] + chr(10) + 'COPY codex2api ' + EXE + chr(10))
+        base_tag = 'codex2api:rollback-base-' + self.args.release_id
+        self.run(['docker', 'tag', self.old['Image'], base_tag])
+        if self.inspect(base_tag)['Id'] != self.old['Image']:
+            raise RuntimeError('rollback base tag differs from expected image')
+        private_write(context / 'Dockerfile', 'FROM ' + base_tag + chr(10) + 'COPY codex2api ' + EXE + chr(10))
         tag = 'codex2api:rollback-' + self.args.release_id
         self.run(['docker', 'build', '--network=none', '-t', tag, str(context)], timeout=300)
         self.rollback_image = self.inspect(tag)['Id']
