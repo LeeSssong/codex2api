@@ -34,7 +34,7 @@ function sameWindow(account: QuotaAccount, slot: Slot, snapshot: AccountQuotaWin
   const asOf = Date.parse(snapshot.as_of)
   const observed = snapshot.observed_at ? Date.parse(snapshot.observed_at) : undefined
   return snapshot.window_id === `${account.id}:${duration}:${Math.floor(reset / 1000)}` && snapshot.label === label && Number.isFinite(reset) && reset > now &&
-    reset === snapshotReset && Number.isFinite(start) && Math.abs((reset - start) / 1000 - duration) < 1 &&
+    Math.floor(reset / 1000) === Math.floor(snapshotReset / 1000) && Number.isFinite(start) && Math.abs((snapshotReset - start) / 1000 - duration) < 1 &&
     Number.isFinite(asOf) && asOf >= start && asOf < reset &&
     (observed === undefined || Number.isFinite(observed) && observed >= start && observed <= asOf)
 }

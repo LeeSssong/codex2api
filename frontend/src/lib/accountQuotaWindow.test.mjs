@@ -132,3 +132,18 @@ test('unknown official observation time suppresses any supplied estimate', () =>
   assert.equal(view.used_usd, 12)
   assert.equal(view.estimated_total_usd, undefined)
 })
+
+// Live/list timestamps use RFC3339 seconds; quota projections retain nanoseconds.
+test('list seconds and projected fractional seconds identify one official window', () => {
+  for (const slot of ['5h', '7d']) {
+    const seconds = slot === '5h' ? 18000 : 604800
+    const reset = account[slot === '5h' ? 'reset_5h_at' : 'reset_7d_at']
+    const fractionalReset = new Date(Date.parse(reset) + 477).toISOString()
+    const snapshot = { ...window, label: slot, window_id: `42:${seconds}:${Date.parse(reset) / 1000}`, reset_at: fractionalReset, start_at: new Date(Date.parse(fractionalReset) - seconds * 1000).toISOString() }
+    const view = quotaWindowView(account, slot, snapshot, 'ready', now)
+    assert.equal(view.state, 'ready')
+    assert.equal(view.used_usd, 12)
+    assert.equal(view.estimated_total_usd, 40)
+    assert.equal(selectAccountQuotaWindow(account, slot, snapshot, now), snapshot)
+  }
+})
