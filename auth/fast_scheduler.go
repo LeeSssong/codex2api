@@ -338,7 +338,9 @@ func (s *FastScheduler) UpdateMany(accounts []*Account) {
 // 条目的顺序时，才给该桶打上待重排标记。这样一次 Release / 用量刷新 / 冷却标记
 // 的代价是 O(1)，而不是"整桶重排 + 全量重建位置索引"。
 func (s *FastScheduler) updateLocked(acc *Account, now time.Time) {
-	if acc == nil || acc.DBID == 0 {
+	// Recheck under the scheduler lock: an old publisher may have passed
+	// Store validation immediately before credential recovery replaced it.
+	if acc == nil || acc.DBID == 0 || acc.credentialRuntimeRetired.Load() {
 		return
 	}
 

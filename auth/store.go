@@ -3283,9 +3283,6 @@ func (a *Account) GetCredentialGeneration() int64 {
 	}
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	if a.CredentialGeneration <= 0 {
-		return 1 // Legacy accounts use the schema default generation.
-	}
 	return a.CredentialGeneration
 }
 
@@ -4409,7 +4406,7 @@ func (s *Store) RecoverCredentialOpsUnauthorizedCooldown(accountID, generation i
 }
 
 func (s *Store) applyCachedAccountCooldown(acc *Account, record runtimeCooldownRecord) {
-	if s == nil || acc == nil || !record.ResetAt.After(time.Now()) || record.Generation > 0 && record.Generation != acc.GetCredentialGeneration() {
+	if s == nil || acc == nil || !record.ResetAt.After(time.Now()) || record.Generation > 0 && record.Generation != max(int64(1), acc.GetCredentialGeneration()) {
 		return
 	}
 	reason := normalizeCooldownReason(record.Reason)
@@ -4477,7 +4474,7 @@ func (s *Store) accountHasCachedCooldown(acc *Account) bool {
 	if !ok {
 		return false
 	}
-	if record.Generation > 0 && record.Generation != acc.GetCredentialGeneration() {
+	if record.Generation > 0 && record.Generation != max(int64(1), acc.GetCredentialGeneration()) {
 		return false
 	}
 	s.applyCachedAccountCooldown(acc, record)

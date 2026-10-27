@@ -35,11 +35,13 @@
 
 - Result: missing shared unauthorized-cooldown invalidation confirmed by offline worker-completion/scheduler regression, repeated three times. Manual-test callback clears it. See `docs/investigations/2026-10-28-credential-relogin-state.md`. Regression intentionally fails; no application fix, push or deployment performed.
 
-## 2026-10-28 Credential relogin implementation (active, local only)
+## 2026-10-28 Credential relogin implementation (complete locally, not deployed)
 
 - User authorized implementation, explicitly no deployment. Continue in `codex/credential-relogin-state-audit` from diagnosis `6aed5588`; initial base `69abb079`; integrated remote main `20594822` after its intelligence-cooldown release.
-- Owned files: credential completion/retry handlers, new focused Store recovery helper and publication guards, regression tests, investigation/handoff documentation. Shared `auth/store.go` changes integrate by commit only.
-- Plan: `docs/investigations/2026-10-28-credential-relogin-fix-plan.md`. No server writes or real reauthentication.
+- Owned files: `admin/credential_operations{,_runtime}.go`, `admin/credential_operations_relogin_state_test.go`, `auth/credential_ops_recovery.go`, `auth/{store,usage_cooldown_persist,transient_rate_limit,fast_scheduler,fast_scheduler_test}.go`, `cache/{cache,memory,redis,runtime_cooldown,runtime_cooldown_test}.go`, `database/{postgres,credential_operations_lifecycle,credential_operations_test}.go`, and task investigation/handoff documentation. Shared files integrate by commit only.
+- Plan/results: `docs/investigations/2026-10-28-credential-relogin-fix-plan.md`. Diagnosis commit `6aed5588`, implementation `55dfa24a`, upstream merge `611c69fd`; final reviewed commit is the branch head after `611c69fd`. No push, deployment, real reauthentication or production account/data modification.
+- Verified: three race repetitions across admin/auth/cache/database, full Go suite (24 passing packages), Go build and frontend build passed locally. Optional real Redis/PostgreSQL integrations remain unverified; no schema migration.
+- Operational caveat: optional Redis verification accidentally used remote Docker context `sub2api-prod-build`; isolated no-volume `codex2api-relogin-test-redis` was immediately removed and its absence confirmed. User notified. No application deployment/service restart; real Redis/PostgreSQL integration is not verified. Do not repeat remote container/SSH operations for this local task.
 
 ## 2026-10-28 Intelligence cooldown task (deployed)
 

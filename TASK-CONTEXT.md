@@ -1,4 +1,36 @@
-# Current task: 2026-10-28 intelligence cooldown fix — deployed
+# Current task: 2026-10-28 credential relogin state — local only
+
+Latest user instruction: implement the diagnosed fix, **do not deploy yet**.
+Owner/worktree: current Codex chat,
+`/Users/gongtengxinwen/.codex/worktrees/credential-relogin-state-audit/codex2api`;
+branch `codex/credential-relogin-state-audit`. Original base `69abb079`;
+diagnosis `6aed5588`, implementation `55dfa24a`, merged upstream `20594822`
+via `611c69fd`. Final reviewed candidate is the branch head after `611c69fd`; nothing pushed,
+merged into main or deployed by this task.
+
+The fix reconciles committed Codex credential generation, shared unauthorized
+cooldown and runtime state on completion/replay/retry. Conditional SQL writes,
+generation-aware atomic cache cleanup and retired-object scheduler guards keep
+late old requests from re-banning the replacement. Quota/manual pause/monitor
+settings and independent Excel grant state remain intact. No frontend source
+changes or schema migration. Local implementation is complete: full Go suite (24 packages), three race
+repetitions, Go/frontend builds and diff validation passed. Evidence is in
+`docs/investigations/2026-10-28-credential-relogin-fix-plan.md`.
+
+Operational caveat: optional Redis integration accidentally used the existing
+remote Docker context `sub2api-prod-build`. Only isolated temporary no-volume
+`codex2api-relogin-test-redis` was started, then immediately removed; exact-name
+listing confirmed absence and user was informed. No application deployment,
+production account/data change, real login or production service restart.
+Real Redis/PostgreSQL integration is not verified. No further remote operations.
+
+The following production handoff is **preserved upstream history**, not a
+release or live-state verification performed by this credential-relogin task.
+Do not redeploy historical candidates or infer deployment authorization.
+
+---
+
+# Preserved upstream handoff: 2026-10-28 intelligence cooldown fix — deployed
 
 Production Codex2API on netcup 159.195.12.230 runs source
 `e61b04c3b9a72cbd75066ec09f7f5be7bf7f75cb`, tree

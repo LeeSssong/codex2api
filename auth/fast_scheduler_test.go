@@ -1435,3 +1435,26 @@ func TestStoreAPIKeyAllowsConfiguredNoAffinityGroups(t *testing.T) {
 		t.Fatal("unconfigured group should remain unauthorized")
 	}
 }
+
+func TestFastSchedulerRetiredAccountCannotOverwriteReplacement(t *testing.T) {
+	old := newFastSchedulerTestAccount(1, HealthTierHealthy, 100, 1)
+	current := newFastSchedulerTestAccount(1, HealthTierHealthy, 100, 1)
+	scheduler := NewFastScheduler(1, "round_robin")
+	scheduler.Rebuild([]*Account{current})
+	old.credentialRuntimeRetired.Store(true)
+	old.Status = StatusCooldown
+	old.HealthTier = HealthTierBanned
+	old.CooldownReason = "unauthorized"
+	old.CooldownUtil = time.Now().Add(time.Hour)
+	// Models a publisher that passed Store's pointer check before replacement
+	// but acquired the scheduler lock only after the fresh account was added.
+	scheduler.Update(old)
+	got := scheduler.Acquire()
+	if got == nil {
+		t.Fatal("late retired update removed the fresh account")
+	}
+	defer scheduler.Release(got)
+	if got != current {
+		t.Fatal("late retired update revived the old account")
+	}
+}

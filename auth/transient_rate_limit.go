@@ -59,7 +59,7 @@ func (s *Store) MarkTransientRateLimited(acc *Account, retryAfter time.Duration)
 	if acc.credentialRuntimeRetired.Load() {
 		return nextTransientRateLimitCooldown(0, retryAfter)
 	}
-	generation := acc.GetCredentialGeneration()
+	generation := max(int64(1), acc.GetCredentialGeneration())
 	now := time.Now()
 	acc.mu.Lock()
 	until := acc.CooldownUtil
