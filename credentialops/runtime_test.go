@@ -63,7 +63,7 @@ func TestCredentialOperationsRuntimeMakesRelativeStatePrivateAndJournalAbsolute(
 	t.Chdir(t.TempDir())
 	root := t.TempDir()
 	marker := filepath.Join(root, "observed-journal")
-	script := []byte("#!/bin/sh\nprintf '%s' \"$OPENAI_TOTP_JOURNAL_DIR\" > \"" + marker + "\"\nwhile true; do sleep 1; done\n")
+	script := []byte("#!/bin/sh\n: > \"" + marker + "\"\nsleep 0.1\nprintf '%s' \"$OPENAI_TOTP_JOURNAL_DIR\" > \"" + marker + "\"\nwhile true; do sleep 1; done\n")
 	if e := os.WriteFile(filepath.Join(root, "python"), script, 0700); e != nil {
 		t.Fatal(e)
 	}
@@ -93,7 +93,7 @@ func TestCredentialOperationsRuntimeMakesRelativeStatePrivateAndJournalAbsolute(
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		observed, e = os.ReadFile(marker)
-		if e == nil {
+		if e == nil && len(observed) > 0 {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)

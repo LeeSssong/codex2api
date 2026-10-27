@@ -323,3 +323,82 @@ func TestIntelligenceRuntimeConfigurationFailureIsInterrupted(t *testing.T) {
 		t.Fatalf("local failure misclassified: %+v", got)
 	}
 }
+
+// Exercise due enrollment, native periodic polling, and persisted history against
+// localhost only. No manual enqueue is allowed to make the first run happen.
+func TestIntelligencePeriodicRunnerPreservesEnabledSettingsAndHistory(t *testing.T) {
+	ctx := context.Background()
+	db := newTestAdminDB(t)
+	var requests atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprintf(w, "data: %s\n\n", intelligenceSuccess)
+	}))
+	t.Cleanup(upstream.Close)
+	id, err := db.InsertAccountWithCredentials(ctx, "periodic-local-fixture", map[string]interface{}{"upstream_type": auth.UpstreamOpenAIResponses, "base_url": upstream.URL, "api_key": "fixture-key", "models": []string{"gpt-5.4"}}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings, err := db.GetIntelligenceCheckSettings(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings.Enabled, settings.GPTModel, settings.IntervalSeconds = true, "gpt-5.4", 1
+	settings, err = db.SaveIntelligenceCheckSettings(ctx, settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = db.SetIntelligenceCheckEnabled(ctx, []int64{id}, true); err != nil {
+		t.Fatal(err)
+	}
+	store := auth.NewStore(db, nil, nil)
+	t.Cleanup(store.Stop)
+	if err = store.LoadAccountByID(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	h := &Handler{db: db, store: store}
+	runCtx, cancel := context.WithCancel(ctx)
+	h.StartIntelligenceChecks(runCtx)
+	t.Cleanup(func() { cancel(); h.WaitIntelligenceChecks() })
+	var runs []database.IntelligenceCheckRun
+	deadline := time.Now().Add(6 * time.Second)
+	for time.Now().Before(deadline) {
+		runs, _, err = db.ListIntelligenceCheckRuns(ctx, database.IntelligenceCheckRunFilter{AccountID: id, Limit: 10})
+		if err != nil {
+			t.Fatal(err)
+		}
+		normal := 0
+		for _, run := range runs {
+			if run.Status == "normal" {
+				normal++
+			}
+		}
+		if normal >= 2 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	h.WaitIntelligenceChecks()
+	normal := 0
+	for _, run := range runs {
+		if run.Status == "normal" {
+			normal++
+		}
+		if run.Source != "automatic" {
+			t.Fatalf("periodic source = %q", run.Source)
+		}
+	}
+	if normal < 2 || requests.Load() < 2 {
+		t.Fatalf("periodic completed=%d requests=%d history=%+v", normal, requests.Load(), runs)
+	}
+	persisted, err := db.GetIntelligenceCheckSettings(ctx)
+	if err != nil || !persisted.Enabled || persisted.IntervalSeconds != 1 || persisted.Revision != settings.Revision {
+		t.Fatalf("settings reset: %+v %v", persisted, err)
+	}
+	accounts, _, err := db.ListIntelligenceCheckAccounts(ctx, database.IntelligenceCheckAccountFilter{AccountID: id})
+	if err != nil || len(accounts) != 1 || !accounts[0].Enabled || accounts[0].NextDueAt == nil {
+		t.Fatalf("periodic enrollment lost: %+v %v", accounts, err)
+	}
+}

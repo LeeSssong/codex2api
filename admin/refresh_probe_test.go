@@ -40,6 +40,7 @@ func TestRefreshAccountByIDTriggersUsageProbe(t *testing.T) {
 			refreshed = true
 			return nil
 		},
+		fetchImportedModels: noNetworkImportedModels,
 		probeUsage: func(_ context.Context, acc *auth.Account) error {
 			if acc != nil {
 				probedID = acc.DBID
@@ -71,6 +72,7 @@ func TestRefreshAccountByIDSkipsProbeOnRefreshFailure(t *testing.T) {
 		refreshAccount: func(context.Context, int64) error {
 			return context.DeadlineExceeded
 		},
+		fetchImportedModels: noNetworkImportedModels,
 		probeUsage: func(context.Context, *auth.Account) error {
 			probed = true
 			return nil
@@ -109,6 +111,7 @@ func TestRefreshImportedAccountMarksUnauthorizedOnInvalidatedRT(t *testing.T) {
 		refreshAccount: func(context.Context, int64) error {
 			return fmt.Errorf(`刷新失败（重试 3 次）: 刷新失败 (status 401): {"error":{"message":"Your session has ended. Please log in again.","code":"refresh_token_invalidated"}}`)
 		},
+		fetchImportedModels: noNetworkImportedModels,
 		probeUsage: func(context.Context, *auth.Account) error {
 			probed = true
 			return nil

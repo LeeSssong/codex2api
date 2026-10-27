@@ -5,6 +5,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/codex2api/auth"
 	"github.com/codex2api/proxy"
 )
 
@@ -16,7 +17,13 @@ func (h *Handler) refreshImportedDaybreak(ctx context.Context, id int64) {
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	snapshot := account.BeginDaybreakObservation()
-	manifest, err := proxy.FetchCodexModelsManifest(ctx, account, h.store.ResolveProxyForAccount(account), "", "", nil)
+	fetch := h.fetchImportedModels
+	if fetch == nil {
+		fetch = func(ctx context.Context, account *auth.Account, proxyURL string) (*proxy.CodexModelsManifest, error) {
+			return proxy.FetchCodexModelsManifest(ctx, account, proxyURL, "", "", nil)
+		}
+	}
+	manifest, err := fetch(ctx, account, h.store.ResolveProxyForAccount(account))
 	if err == nil {
 		if capabilityErr := manifest.SaveCapabilities(ctx, h.db); capabilityErr != nil {
 			log.Printf("[账号 %d] Codex 能力快照保存失败，保留已有结果: %v", id, capabilityErr)

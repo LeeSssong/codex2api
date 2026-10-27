@@ -71,7 +71,9 @@ type Handler struct {
 	systemUpdateOnce         sync.Once
 	refreshAccount           func(context.Context, int64) error
 	probeUsage               func(context.Context, *auth.Account) error
-	modelQuality             *modelQualityRunner
+	// External manifest boundary; nil uses the native account maintenance client.
+	fetchImportedModels func(context.Context, *auth.Account, string) (*proxy.CodexModelsManifest, error)
+	modelQuality        *modelQualityRunner
 
 	codexCapabilityProbe func(context.Context, *auth.Account, proxy.CodexCapabilityProbeOptions) proxy.CodexProbeResult
 	codexProbeMu         sync.Mutex

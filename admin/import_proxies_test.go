@@ -466,7 +466,7 @@ func TestImportedProxyLabelIsBatchScoped(t *testing.T) {
 func newImportEndToEndHandler(t *testing.T) (*Handler, *auth.Store, *database.DB) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
-	db := newTestAdminDB(t)
+	db := newTestImportDB(t)
 	store := auth.NewStore(db, nil, &database.SystemSettings{
 		MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4", ProxyPoolEnabled: true,
 	})
@@ -476,9 +476,10 @@ func newImportEndToEndHandler(t *testing.T) (*Handler, *auth.Store, *database.DB
 		t.Fatalf("ReloadProxyPool: %v", err)
 	}
 	handler := &Handler{
-		db:         db,
-		store:      store,
-		probeUsage: func(context.Context, *auth.Account) error { return nil },
+		db:                  db,
+		store:               store,
+		fetchImportedModels: noNetworkImportedModels,
+		probeUsage:          func(context.Context, *auth.Account) error { return nil },
 	}
 	return handler, store, db
 }

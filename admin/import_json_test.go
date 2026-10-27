@@ -422,8 +422,9 @@ func TestImportAccountsCommonDoesNotCollapseConflictingChatGPTAccountID(t *testi
 	db := newTestImportDB(t)
 	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
 	handler := &Handler{
-		db:    db,
-		store: store,
+		db:                  db,
+		store:               store,
+		fetchImportedModels: noNetworkImportedModels,
 		probeUsage: func(context.Context, *auth.Account) error {
 			return nil
 		},
@@ -459,8 +460,9 @@ func TestImportAccountsCommonUpdatesKnownWorkspaceWhenDuplicatesAllowed(t *testi
 	store := auth.NewStore(db, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
 	probed := make(chan int64, 1)
 	handler := &Handler{
-		db:    db,
-		store: store,
+		db:                  db,
+		store:               store,
+		fetchImportedModels: noNetworkImportedModels,
 		probeUsage: func(_ context.Context, acc *auth.Account) error {
 			probed <- acc.DBID
 			return nil
@@ -530,8 +532,9 @@ func TestImportAccountsCommonSkipsExistingOAuthIdentityWithSameCredentials(t *te
 	db := newTestImportDB(t)
 	store := auth.NewStore(db, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
 	handler := &Handler{
-		db:    db,
-		store: store,
+		db:                  db,
+		store:               store,
+		fetchImportedModels: noNetworkImportedModels,
 		probeUsage: func(context.Context, *auth.Account) error {
 			t.Fatal("usage probe should not run for unchanged duplicate import")
 			return nil
@@ -592,8 +595,9 @@ func TestImportAccountsCommonSkipsAmbiguousOAuthIdentityWithExistingAccount(t *t
 	db := newTestImportDB(t)
 	store := auth.NewStore(db, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
 	handler := &Handler{
-		db:    db,
-		store: store,
+		db:                  db,
+		store:               store,
+		fetchImportedModels: noNetworkImportedModels,
 		probeUsage: func(context.Context, *auth.Account) error {
 			return nil
 		},
@@ -647,8 +651,9 @@ func TestImportAccountsCommonSkipsAmbiguousKnownWorkspaceWhenDuplicatesAllowed(t
 	db := newTestImportDB(t)
 	store := auth.NewStore(db, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
 	handler := &Handler{
-		db:    db,
-		store: store,
+		db:                  db,
+		store:               store,
+		fetchImportedModels: noNetworkImportedModels,
 		probeUsage: func(context.Context, *auth.Account) error {
 			return nil
 		},
@@ -692,8 +697,9 @@ func TestImportAccountsCommonCollapsesIdenticalOAuthIdentityInFile(t *testing.T)
 	db := newTestImportDB(t)
 	store := auth.NewStore(db, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
 	handler := &Handler{
-		db:    db,
-		store: store,
+		db:                  db,
+		store:               store,
+		fetchImportedModels: noNetworkImportedModels,
 		probeUsage: func(context.Context, *auth.Account) error {
 			return nil
 		},
@@ -733,8 +739,9 @@ func TestImportAccountsCommonTriggersUsageProbeForImportedAccountWithAccessToken
 	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
 	probed := make(chan int64, 1)
 	handler := &Handler{
-		db:    db,
-		store: store,
+		db:                  db,
+		store:               store,
+		fetchImportedModels: noNetworkImportedModels,
 		probeUsage: func(_ context.Context, acc *auth.Account) error {
 			probed <- acc.DBID
 			return nil
@@ -766,8 +773,9 @@ func TestImportAccountsCommonMarksImported7dUsageAsRateLimited(t *testing.T) {
 	db := newTestImportDB(t)
 	store := auth.NewStore(db, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
 	handler := &Handler{
-		db:    db,
-		store: store,
+		db:                  db,
+		store:               store,
+		fetchImportedModels: noNetworkImportedModels,
 		probeUsage: func(context.Context, *auth.Account) error {
 			return nil
 		},
@@ -827,6 +835,7 @@ func TestImportAccountsCommonRefreshesAndProbesRTOnlyImport(t *testing.T) {
 			acc.Mu().Unlock()
 			return nil
 		},
+		fetchImportedModels: noNetworkImportedModels,
 		probeUsage: func(_ context.Context, acc *auth.Account) error {
 			probed <- acc.DBID
 			return nil
@@ -870,6 +879,7 @@ func TestImportAccountsCommonRefreshesOAuthIdentityRTOnlyImport(t *testing.T) {
 			acc.Mu().Unlock()
 			return nil
 		},
+		fetchImportedModels: noNetworkImportedModels,
 		probeUsage: func(_ context.Context, acc *auth.Account) error {
 			probed <- acc.DBID
 			return nil
@@ -928,6 +938,7 @@ func TestAddAccountStreamReportsProgressAndProbesAfterRefresh(t *testing.T) {
 			acc.Mu().Unlock()
 			return nil
 		},
+		fetchImportedModels: noNetworkImportedModels,
 		probeUsage: func(_ context.Context, acc *auth.Account) error {
 			probed <- acc.DBID
 			return nil
@@ -979,6 +990,7 @@ func TestAddAccountSkipRefreshDoesNotWarmup(t *testing.T) {
 			refreshed.Add(1)
 			return nil
 		},
+		fetchImportedModels: noNetworkImportedModels,
 		probeUsage: func(context.Context, *auth.Account) error {
 			t.Fatal("usage probe should not run when skip_refresh is set")
 			return nil
@@ -1033,6 +1045,7 @@ func TestAddAccountRTRefreshUsesImportProbeGate(t *testing.T) {
 			finished.Add(1)
 			return nil
 		},
+		fetchImportedModels: noNetworkImportedModels,
 		probeUsage: func(context.Context, *auth.Account) error {
 			return nil
 		},
@@ -1199,8 +1212,9 @@ func TestImportAccountsCommonAllowsDuplicateWithoutWorkspace(t *testing.T) {
 	db := newTestImportDB(t)
 	store := auth.NewStore(db, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
 	handler := &Handler{
-		db:    db,
-		store: store,
+		db:                  db,
+		store:               store,
+		fetchImportedModels: noNetworkImportedModels,
 		probeUsage: func(context.Context, *auth.Account) error {
 			return nil
 		},
@@ -1293,8 +1307,9 @@ func TestAddAccountDedupsRefreshToken(t *testing.T) {
 	db := newTestImportDB(t)
 	store := auth.NewStore(db, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
 	handler := &Handler{
-		db:    db,
-		store: store,
+		db:                  db,
+		store:               store,
+		fetchImportedModels: noNetworkImportedModels,
 		probeUsage: func(context.Context, *auth.Account) error {
 			return nil
 		},
@@ -1421,8 +1436,9 @@ func TestAddATAccountCountsUpdateNotNew(t *testing.T) {
 	db := newTestImportDB(t)
 	store := auth.NewStore(db, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
 	handler := &Handler{
-		db:    db,
-		store: store,
+		db:                  db,
+		store:               store,
+		fetchImportedModels: noNetworkImportedModels,
 		probeUsage: func(context.Context, *auth.Account) error {
 			return nil
 		},
@@ -1486,8 +1502,9 @@ func TestAddOpaqueATPersistsAndDeduplicatesWorkspaceRoutes(t *testing.T) {
 	store := auth.NewStore(db, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
 	t.Cleanup(store.Stop)
 	handler := &Handler{
-		db:    db,
-		store: store,
+		db:                  db,
+		store:               store,
+		fetchImportedModels: noNetworkImportedModels,
 		probeUsage: func(context.Context, *auth.Account) error {
 			return nil
 		},
@@ -1569,8 +1586,9 @@ func TestStreamAddOpaqueATPersistsWorkspaceRoute(t *testing.T) {
 	store := auth.NewStore(db, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
 	t.Cleanup(store.Stop)
 	handler := &Handler{
-		db:    db,
-		store: store,
+		db:                  db,
+		store:               store,
+		fetchImportedModels: noNetworkImportedModels,
 		probeUsage: func(context.Context, *auth.Account) error {
 			return nil
 		},

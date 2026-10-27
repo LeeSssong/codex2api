@@ -27,9 +27,10 @@ func TestMergeRefreshedDuplicateClearsStaleUnauthorizedState(t *testing.T) {
 	defer tokenCache.Close()
 	store := auth.NewStore(db, tokenCache, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
 	handler := &Handler{
-		db:         db,
-		store:      store,
-		probeUsage: func(context.Context, *auth.Account) error { return nil },
+		db:                  db,
+		store:               store,
+		fetchImportedModels: noNetworkImportedModels,
+		probeUsage:          func(context.Context, *auth.Account) error { return nil },
 	}
 	ctx := context.Background()
 
@@ -115,9 +116,10 @@ func TestMergeRefreshedDuplicateKeepsRateLimitCooldown(t *testing.T) {
 	db := newTestAdminDB(t)
 	store := auth.NewStore(db, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
 	handler := &Handler{
-		db:         db,
-		store:      store,
-		probeUsage: func(context.Context, *auth.Account) error { return nil },
+		db:                  db,
+		store:               store,
+		fetchImportedModels: noNetworkImportedModels,
+		probeUsage:          func(context.Context, *auth.Account) error { return nil },
 	}
 	ctx := context.Background()
 
@@ -175,7 +177,8 @@ func newReviveTestHandler(t *testing.T) (*Handler, *database.DB, *auth.Store) {
 			acc.Mu().Unlock()
 			return nil
 		},
-		probeUsage: func(context.Context, *auth.Account) error { return nil },
+		fetchImportedModels: noNetworkImportedModels,
+		probeUsage:          func(context.Context, *auth.Account) error { return nil },
 	}
 	return handler, db, store
 }
