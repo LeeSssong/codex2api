@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Build once from verified, clean and pushed main; retain an immutable image."""
-import argparse, datetime, hashlib, json, os, pathlib, subprocess, tarfile, tempfile
+import argparse, datetime, hashlib, json, os, pathlib, shutil, subprocess, tarfile, tempfile
 
 def binary_checksum(path):
  digest=hashlib.sha256()
@@ -47,12 +47,13 @@ def build(root, upstream, output, docker_host=None, builder=None, remote="origin
   flags='-s -w -X github.com/codex2api/internal/version.Version='+build_version+' -X github.com/codex2api/internal/version.Revision='+revision+' -X github.com/codex2api/internal/version.SourceTree='+tree+' -X github.com/codex2api/internal/version.UpstreamRevision='+upstream
   subprocess.run(['go','build','-trimpath','-ldflags='+flags,'-o',str(binary),'.'],cwd=source,env=env,check=True)
   binary_sha256=binary_checksum(binary)
+  shutil.copy2(binary,output/'codex2api')
   subprocess.run(docker_command(docker_host,'buildx','build')+(['--builder',builder] if builder else [])+['--load','--platform','linux/amd64','-f',str(source/'deploy/release/Dockerfile.runtime'),'--build-arg','SOURCE_REVISION='+revision,'--build-arg','SOURCE_TREE='+tree,'--build-arg','UPSTREAM_REVISION='+upstream,'-t',image,str(runtime)],check=True)
  metadata=json.loads(command(docker_command(docker_host,'image','inspect',image),root))[0]
  labels=metadata['Config'].get('Labels',{})
  if metadata['Architecture']!='amd64' or labels.get('org.opencontainers.image.revision')!=revision or labels.get('io.xingqiao.source-tree')!=tree:raise ValueError('built image provenance mismatch')
  verify_source(root,upstream,remote)
- manifest={'revision':revision,'tree':tree,'upstream_revision':upstream,'image':image,'digest':metadata['Id'],'build_version':build_version,'binary_sha256':binary_sha256,'packaging_host':docker_host or 'local','builder':builder,'source_remote':remote}
+ manifest={'revision':revision,'tree':tree,'upstream_revision':upstream,'image':image,'digest':metadata['Id'],'build_version':build_version,'binary_sha256':binary_sha256,'binary_path':str(output/'codex2api'),'packaging_host':docker_host or 'local','builder':builder,'source_remote':remote}
  (output/'manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
  # Stream output to a local artifact, including when the daemon is remote.
  with (output/'image.tar').open('wb') as archive:subprocess.run(docker_command(docker_host,'save',image),stdout=archive,check=True)
