@@ -2,6 +2,12 @@ import pathlib, subprocess, tempfile, unittest
 from release_build import verify_source
 
 class DockerTargetTests(unittest.TestCase):
+ def test_binary_checksum_streams_exact_artifact(self):
+  from release_build import binary_checksum
+  import hashlib
+  with tempfile.TemporaryDirectory() as tmp:
+   path=pathlib.Path(tmp)/'binary';path.write_bytes(b'\x00release\xff')
+   self.assertEqual(binary_checksum(path),hashlib.sha256(path.read_bytes()).hexdigest())
  def test_local_target(self):
   from release_build import docker_command
   self.assertEqual(docker_command(None,'image','inspect','image'),['docker','image','inspect','image'])
