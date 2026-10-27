@@ -238,7 +238,6 @@ func (h *Handler) buildAccountResponse(
 		CreditEnabled:                row.CreditEnabled,
 		CreditSkipUsageWindow:        row.CreditSkipUsageWindow,
 		SkipWarmTier:                 row.SkipWarmTier,
-		KeepConcurrencyOnDegrade:     row.GetCredentialBool("keep_concurrency_on_degrade"),
 		AccountType:                  row.Type,
 		AccessTokenType:              accountAccessTokenType(row),
 		OpenAIResponsesAPI:           isOpenAIResponsesAccount,

@@ -1447,9 +1447,6 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 //     设置初始密钥，或者在 .env 中显式设置 ADMIN_SECRET 后重启。
 func (h *Handler) adminAuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// 测连等管理探针走同一条出站执行器。挂上审计上下文后，用量记录才能写下
-		// 实际发给上游的 User-Agent，而不是只留下浏览器或 wget 自己的客户端头。
-		proxy.AttachUserAgentAudit(c)
 		adminSecret, source := h.resolveAdminSecret(c.Request.Context())
 		if adminSecret == "" {
 			// fail-closed：拒绝并提示用户配置 ADMIN_SECRET
@@ -1749,7 +1746,6 @@ type accountResponse struct {
 	// 状态仍是 active（可调度），前端据此在状态徽章旁并列一个「使用积分」徽章。
 	UsingCredits                  bool                        `json:"using_credits,omitempty"`
 	SkipWarmTier                  bool                        `json:"skip_warm_tier"`
-	KeepConcurrencyOnDegrade      bool                        `json:"keep_concurrency_on_degrade"`
 	AccountType                   string                      `json:"account_type,omitempty"`
 	AccessTokenType               string                      `json:"access_token_type,omitempty"`
 	OpenAIResponsesAPI            bool                        `json:"openai_responses_api,omitempty"`
@@ -2514,9 +2510,6 @@ func parseAccountSchedulerUpdate(req updateAccountSchedulerReq) (accountSchedule
 		} else {
 			credentialUpdates["scheduler_priority"] = int64(0)
 		}
-	}
-	if keepConcurrencyOnDegrade.Set {
-		credentialUpdates["keep_concurrency_on_degrade"] = keepConcurrencyOnDegrade.Value
 	}
 	if len(credentialUpdates) == 0 {
 		credentialUpdates = nil

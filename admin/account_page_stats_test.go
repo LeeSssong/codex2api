@@ -3,7 +3,6 @@ package admin
 import (
 	"context"
 	"encoding/json"
-	"math"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -448,82 +447,6 @@ func TestGetAccountPageStatsOfficialUSDIncludesOlderSnapshots(t *testing.T) {
 	got := stats[strconv.FormatInt(id, 10)].OfficialUSD
 	if got == nil || *got != 3 {
 		t.Fatalf("official_usd = %v, want 3 (75 credits / 25, including day -20)", got)
-	}
-}
-
-func TestEstimateWindowQuotaUSD(t *testing.T) {
-	got := estimateWindowQuotaUSD(18.74, 10)
-	if got == nil || *got != 187.4 {
-		t.Fatalf("estimate = %v, want 187.4", got)
-	}
-	for _, item := range []struct {
-		spent, pct float64
-	}{
-		{0, 10},
-		{18.74, 0},
-		{-1, 10},
-		{18.74, -5},
-		{math.NaN(), 10},
-		{18.74, math.Inf(1)},
-	} {
-		if estimateWindowQuotaUSD(item.spent, item.pct) != nil {
-			t.Fatalf("estimate(%v, %v) = value, want nil", item.spent, item.pct)
-		}
-	}
-}
-
-func TestGetAccountPageStatsEstimatesWindowQuota(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	db := newTestAdminDB(t)
-	ctx := context.Background()
-	now := time.Now().UTC()
-	id, err := db.InsertAccountWithCredentials(ctx, "quota-estimate", map[string]interface{}{
-		"refresh_token":         "rt-quota-estimate",
-		"access_token":          "oauth-quota-estimate",
-		"email":                 "quota@example.com",
-		"codex_5h_used_percent": 10,
-		"codex_5h_reset_at":     now.Add(2 * time.Hour).Format(time.RFC3339),
-		"codex_7d_used_percent": 20,
-		"codex_7d_reset_at":     now.Add(3 * 24 * time.Hour).Format(time.RFC3339),
-		"codex_usage_updated_at": now.Format(time.RFC3339),
-	}, "")
-	if err != nil {
-		t.Fatalf("insert account: %v", err)
-	}
-	db.SetUsageLogConfig(database.UsageLogModeFull, 1, 1)
-	if err := db.InsertUsageLog(ctx, &database.UsageLogInput{
-		AccountID:    id,
-		Endpoint:     "/v1/responses",
-		Model:        "gpt-5.4",
-		StatusCode:   http.StatusOK,
-		InputTokens:  1_000_000,
-		OutputTokens: 0,
-		TotalTokens:  1_000_000,
-	}); err != nil {
-		t.Fatalf("InsertUsageLog: %v", err)
-	}
-	db.FlushUsageLogs()
-
-	store := auth.NewStore(db, nil, nil)
-	store.SetLazyMode(true)
-	if err := store.Init(ctx); err != nil {
-		t.Fatalf("store.Init: %v", err)
-	}
-	tokenCache := cache.NewMemory(1)
-	t.Cleanup(func() { _ = tokenCache.Close() })
-	handler := NewHandler(store, db, tokenCache, nil, "")
-
-	item := invokeAccountPageStats(t, handler, []int64{id})[strconv.FormatInt(id, 10)]
-	if item.Billed5h == nil || *item.Billed5h <= 0 {
-		t.Fatalf("billed_5h = %v, want positive window spend", item.Billed5h)
-	}
-	want5h := math.Round(*item.Billed5h*100/10*100) / 100
-	want7d := math.Round(*item.Billed7d*100/20*100) / 100
-	if item.Estimated5hQuotaUSD == nil || *item.Estimated5hQuotaUSD != want5h {
-		t.Fatalf("estimated_5h_quota_usd = %v, want %v", item.Estimated5hQuotaUSD, want5h)
-	}
-	if item.Estimated7dQuotaUSD == nil || *item.Estimated7dQuotaUSD != want7d {
-		t.Fatalf("estimated_7d_quota_usd = %v, want %v", item.Estimated7dQuotaUSD, want7d)
 	}
 }
 

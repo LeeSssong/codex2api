@@ -514,7 +514,7 @@ func (h *Handler) probeUsageViaResponses(ctx context.Context, account *auth.Acco
 	if h.executeUsageProbe != nil {
 		executeRequest = h.executeUsageProbe
 	}
-	resp, err := executeRequest(ctx, account, payload, "", h.store.ResolveProxyForAccount(account), "", nil, proxy.AttachCodexMaintenanceThread(account, nil))
+	resp, err := executeRequest(ctx, account, payload, "", h.store.ResolveProxyForAccount(account), "", nil, nil)
 	if err != nil {
 		return err
 	}
