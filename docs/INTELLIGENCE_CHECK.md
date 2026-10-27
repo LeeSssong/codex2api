@@ -33,7 +33,8 @@ behavior; quality-recovery probes remain allowed during detection's own pause.
 | `gpt_model` / `claude_model` | `gpt-6-astra` / `claude-sonnet-4-6` | 各渠道检测模型，发送前验证账号能力 |
 | `reasoning_effort` | `high` | GPT 推理强度；Claude 不发送此字段 |
 | `judge_mode` | `answer` | `answer`、`latency` 或 `both` |
-| `interval_seconds` / `retry_seconds` | 300 / 60 | 正常检测间隔及异常后重试间隔，范围 1–86400 |
+| `interval_seconds` / `retry_seconds` | 300 / 60 | 正常检测间隔及请求异常后重试间隔，范围 1–86400 |
+| `recovery_interval_seconds` | 3600 | 账号被自动处置后复检间隔；单位秒，默认每小时一次，范围 1–86400 |
 | `timeout_seconds` | 180 | 请求超时，范围 1–3600 秒 |
 | `concurrency` | 4 | 手动和自动检测共享上限，范围 1–100 |
 | `retention` | 200 | 每账号终态历史保留数，范围 1–10000 |
@@ -73,7 +74,7 @@ behavior; quality-recovery probes remain allowed during detection's own pause.
 ## 自动处置
 
 仅 `normal` 和 `degraded` 改变连续次数；请求错误及中断既不增加也不打断次数。
-达到阈值可暂停业务调度或切换分组，账号继续参与已启用的检测以观察恢复。
+达到阈值可暂停业务调度或切换分组，账号继续参与已启用的检测以观察恢复。账号处于被处置状态时，检测使用 `recovery_interval_seconds`；只有连续通过次数达到 `recover_threshold` 才解除本功能持有的处置并恢复正常调度。
 
 - 暂停使用独立的检测暂停标记。恢复只解除本功能拥有的暂停，不会启用手动禁用
   的账号或清除鉴权、额度等其他状态。关闭暂停策略后，已有暂停不自动解除。

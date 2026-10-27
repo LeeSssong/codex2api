@@ -19,6 +19,7 @@ export interface IntelligenceSettings {
   judge_mode: "answer" | "latency" | "both";
   interval_seconds: number;
   retry_seconds: number;
+  recovery_interval_seconds: number;
   timeout_seconds: number;
   concurrency: number;
   retention: number;

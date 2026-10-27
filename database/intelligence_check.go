@@ -179,7 +179,7 @@ func (db *DB) intelligenceSettingsTx(ctx context.Context, tx *sql.Tx) (ic.Settin
 		return s, err
 	}
 	err := json.Unmarshal([]byte(raw), &s)
-	return s, err
+	return ic.NormalizeSettings(s), err
 }
 func (db *DB) GetIntelligenceCheckSettings(ctx context.Context) (ic.Settings, error) {
 	var raw string
@@ -188,9 +188,10 @@ func (db *DB) GetIntelligenceCheckSettings(ctx context.Context) (ic.Settings, er
 	if err == nil {
 		err = json.Unmarshal([]byte(raw), &s)
 	}
-	return s, err
+	return ic.NormalizeSettings(s), err
 }
 func (db *DB) SaveIntelligenceCheckSettings(ctx context.Context, s ic.Settings) (ic.Settings, error) {
+	s = ic.NormalizeSettings(s)
 	if err := ic.ValidateSettings(s); err != nil {
 		return s, err
 	}

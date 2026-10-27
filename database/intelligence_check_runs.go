@@ -368,7 +368,11 @@ func (db *DB) FinishIntelligenceCheck(ctx context.Context, id int64, owner strin
 			}
 			raw, _ := json.Marshal(next)
 			delay := s.IntervalSeconds
-			if grade.Status == "error" || grade.Status == "interrupted" {
+			if next.OwnedAction != "" {
+				// Once an account has been acted upon, rechecks are intentionally
+				// slower and use the recovery cadence until the action is released.
+				delay = s.RecoveryIntervalSeconds
+			} else if grade.Status == "error" || grade.Status == "interrupted" {
 				delay = s.RetrySeconds
 			}
 			cursor := a.QuestionCursor
@@ -505,7 +509,16 @@ func (db *DB) ExpireIntelligenceCheckLeases(ctx context.Context, now time.Time) 
 				return err
 			}
 			if r.ConfigRevision == s.Revision {
-				if _, err = tx.ExecContext(ctx, `UPDATE intelligence_check_accounts SET next_due_ms=$1,status='interrupted' WHERE account_id=$2 AND manual_revision=$3`, now.Add(time.Duration(s.RetrySeconds)*time.Second).UnixMilli(), r.AccountID, r.ManualRevision); err != nil {
+				var stateRaw string
+				if err = tx.QueryRowContext(ctx, `SELECT state_json FROM intelligence_check_accounts WHERE account_id=$1 AND manual_revision=$2`, r.AccountID, r.ManualRevision).Scan(&stateRaw); err != nil && !errors.Is(err, sql.ErrNoRows) {
+					return err
+				}
+				delay := s.RetrySeconds
+				var state ic.State
+				if json.Unmarshal([]byte(stateRaw), &state) == nil && state.OwnedAction != "" {
+					delay = s.RecoveryIntervalSeconds
+				}
+				if _, err = tx.ExecContext(ctx, `UPDATE intelligence_check_accounts SET next_due_ms=$1,status='interrupted' WHERE account_id=$2 AND manual_revision=$3`, now.Add(time.Duration(delay)*time.Second).UnixMilli(), r.AccountID, r.ManualRevision); err != nil {
 					return err
 				}
 			}
