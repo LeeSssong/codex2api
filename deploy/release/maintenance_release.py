@@ -38,6 +38,16 @@ def project_rows(rows, fields):
     return fingerprint([{key: row.get(key) for key in fields} for row in rows])
 
 
+def rehearsal_environment(environment, database):
+    values = {key: value for key, value in environment.items() if key.startswith('DATABASE_')}
+    values['DATABASE_NAME'] = database
+    # config.Load runs before migrate-only; use a valid isolated cache config.
+    values['CACHE_DRIVER'] = 'memory'
+    if any(chr(10) in value or chr(13) in value for value in values.values()):
+        raise ValueError('multiline database environment not supported')
+    return values
+
+
 def verify_identity(container, binary_sha256, expected):
     actual = dict(container_id=container['Id'], image_id=container['Image'], binary_sha256=binary_sha256)
     if actual != expected or not container['State']['Running']:
@@ -249,6 +259,7 @@ class MaintenanceRelease:
         self.directory = pathlib.Path(args.backup)
         self.events = []
         self.maintenance = self.stopped = self.migrated = self.opened = False
+        self.writer_started = False
         self.log = None
 
     def run(self, command, data=None, timeout=180, output=None):
@@ -346,6 +357,7 @@ class MaintenanceRelease:
         self.events.append({'phase': name, 'time': time.time()})
         private_write(self.directory / 'release.json', json.dumps({'manifest': self.manifest,
             'expected': self.expected(), 'events': self.events, 'opened': self.opened,
+            'writer_started': self.writer_started,
             'active_compose': str(self.compose), 'host_port': self.host_port,
             'rollback_image': getattr(self, 'rollback_image', None)}, indent=2))
         print(name, flush=True)
@@ -431,6 +443,8 @@ class MaintenanceRelease:
         self.compose = pathlib.Path(active)
         self.internal_port, self.host_port = discover_port(self.old)
         self.env = dict(x.split('=', 1) for x in self.old['Config']['Env'])
+        if self.env.get('DATABASE_SCHEMA', '') not in ['', 'public']:
+            raise ValueError('this release tool requires the public database schema')
         if not self.env.get('ADMIN_SECRET'):
             raise ValueError('environment admin credential required')
         verify_image(self.inspect(self.manifest['image']), self.manifest)
@@ -521,10 +535,7 @@ class MaintenanceRelease:
             before = self.retained(scratch)
             env = self.directory / 'rehearsal.env'
             # migrate-only returns before cache initialization and worker startup.
-            values = {k: v for k, v in self.env.items() if k.startswith('DATABASE_')}
-            values['DATABASE_NAME'] = scratch
-            if any(chr(10) in v or chr(13) in v for v in values.values()):
-                raise ValueError('multiline database environment not supported')
+            values = rehearsal_environment(self.env, scratch)
             private_write(env, chr(10).join(k + '=' + v for k, v in values.items()) + chr(10))
             self.run(['docker', 'run', '--rm', '--name', self.probe_name, '--network', self.network,
                 '--env-file', str(env), '-e', 'CODEX_MIGRATE_ONLY=1', self.manifest['digest']], timeout=600)
@@ -606,8 +617,13 @@ class MaintenanceRelease:
         if self.run(['docker', 'ps', '-aq', '--filter', 'name=^' + self.migration_name + '$']).strip():
             self.run(['docker', 'rm', '-f', self.migration_name])
         self.dc('stop', '-t', '60', APP, timeout=90)
-        # Never overwrite writes accepted after reopening with an old snapshot.
-        if self.migrated and not self.opened:
+        # Full app startup launches credential/intelligence writers behind ingress.
+        # No old dump or old app is safe after this boundary without separately
+        # verified backward compatibility. Keep latest DB and maintenance instead.
+        if self.writer_started or self.opened:
+            self.event('recovery-required-current-database-preserved')
+            raise RuntimeError('candidate writers may have committed changes; current database retained, app stopped and maintenance active; operator recovery required')
+        if self.migrated:
             self.run(['docker', 'exec', PG, 'sh', '-c',
                 'dropdb --force -U "$POSTGRES_USER" "$POSTGRES_DB" && createdb -U "$POSTGRES_USER" -O "$POSTGRES_USER" "$POSTGRES_DB"'])
             self.run(['docker', 'exec', '-i', PG, 'sh', '-c',
@@ -637,6 +653,9 @@ class MaintenanceRelease:
             self.dc('config', '--quiet'); self.migrated = True
             self.dc('run', '--rm', '--name', self.migration_name, '--no-deps', '-e', 'CODEX_MIGRATE_ONLY=1', APP, timeout=600)
             self.verify_retained(self.retained_before)
+            # Set before the command: a timeout/error may still start writers.
+            self.writer_started = True
+            self.event('candidate-writer-start-boundary')
             self.dc('up', '-d', '--no-deps', '--force-recreate', APP); self.ready()
             self.smoke(); self.event('internal-version-quota-intelligence-worker-smoke-passed')
             self.opened = True; self.restore_route(); self.network_gate(False); self.event('traffic-opened')

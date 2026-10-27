@@ -5,6 +5,8 @@ import pathlib
 import tempfile
 import unittest
 import types
+import os
+import subprocess
 
 MODULE = pathlib.Path(__file__).with_name('maintenance_release.py')
 spec = importlib.util.spec_from_file_location('maintenance_release', MODULE)
@@ -104,11 +106,12 @@ class GuardTests(unittest.TestCase):
             tool.preflight()
         self.assertEqual(len(calls), 2)
 
-    def test_post_open_rollback_never_restores_old_database(self):
-        for opened in [True, False]:
+    def test_candidate_writer_boundary_prohibits_snapshot_restore(self):
+        for opened, writer_started in [(False, False), (False, True), (True, True)]:
             with tempfile.TemporaryDirectory() as tmp:
                 tool = release.MaintenanceRelease.__new__(release.MaintenanceRelease)
                 tool.opened = opened; tool.migrated = True
+                tool.writer_started = writer_started
                 tool.directory = pathlib.Path(tmp); (tool.directory / 'stopped.dump').write_bytes(b'dump')
                 tool.compose = tool.directory / 'compose.json'; tool.compose.write_text('{}')
                 tool.config = {'services': {'codex2api': {'image': 'old'}}}; tool.rollback_image = 'rollback'
@@ -127,9 +130,60 @@ class GuardTests(unittest.TestCase):
                 tool.verify_protected = lambda: None
                 tool.restore_route = lambda: None
                 tool.restore_source_record = lambda: None
-                tool.rollback()
+                if writer_started:
+                    with self.assertRaisesRegex(RuntimeError, 'candidate writers'):
+                        tool.rollback()
+                else:
+                    tool.rollback()
                 restored = any('pg_restore --exit-on-error' in ' '.join(call) for call in calls)
-                self.assertEqual(restored, not opened)
+                self.assertEqual(restored, not writer_started and not opened)
+                self.assertFalse(writer_started and any('dropdb' in ' '.join(call) for call in calls))
+
+    def test_rehearsal_environment_uses_memory_cache_and_scratch_database(self):
+        original = {'DATABASE_DRIVER': 'postgres', 'DATABASE_HOST': 'postgres', 'DATABASE_USER': 'codex',
+                    'DATABASE_NAME': 'production', 'DATABASE_PASSWORD': 'test-only',
+                    'CACHE_DRIVER': 'redis', 'REDIS_ADDR': 'production:6379',
+                    'CODEX2API_CREDENTIAL_OPS_RUNTIME_DIR': '/production-runtime'}
+        values = release.rehearsal_environment(original, 'scratch')
+        self.assertEqual(values['CACHE_DRIVER'], 'memory')
+        self.assertEqual(values['DATABASE_NAME'], 'scratch')
+        self.assertNotIn('REDIS_ADDR', values)
+        self.assertNotIn('CODEX2API_CREDENTIAL_OPS_RUNTIME_DIR', values)
+        self.assertEqual(original['DATABASE_NAME'], 'production')
+        with tempfile.TemporaryDirectory() as tmp:
+            source = pathlib.Path(tmp) / 'check.go'
+            source.write_text('package main\nimport ("fmt"; "os"; "github.com/codex2api/config")\nfunc main(){ c,e:=config.Load("/does-not-exist"); if e!=nil {fmt.Println(e); os.Exit(1)}; if c.Cache.Driver!="memory" || c.Database.DBName!="scratch" {os.Exit(2)} }\n')
+            environment = {key: value for key, value in os.environ.items()
+                           if not key.startswith(('DATABASE_', 'CACHE_', 'REDIS_', 'CODEX_'))}
+            environment.update(values)
+            result = subprocess.run(['go', 'run', str(source)], cwd=MODULE.parents[2],
+                                    env=environment, capture_output=True, text=True, timeout=90)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_failed_full_app_start_is_already_a_writer_boundary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tool = release.MaintenanceRelease.__new__(release.MaintenanceRelease)
+            tool.directory = pathlib.Path(tmp); tool.compose = tool.directory / 'compose.json'; tool.compose.write_text('{}')
+            tool.config = {'services': {'codex2api': {'image': 'old'}}}; tool.manifest = {'digest': 'new'}
+            tool.migration_name = 'migration'; tool.stopped = tool.migrated = tool.opened = tool.writer_started = False
+            for method in ['preflight', 'prepare_rollback', 'rehearse', 'check_identity', 'check_source_unchanged', 'verify_protected', 'ready']:
+                setattr(tool, method, lambda: None)
+            tool.network_gate = lambda enabled: None
+            tool.caddy = lambda: {'apps': {'http': {'servers': {'s': {'routes': [
+                {'match': [{'host': ['codex.xingqiaolab.top']}], 'handle': []}]}}}}}
+            tool.load_caddy = lambda config: None; tool.event = lambda name: None
+            tool.drain = lambda: 60; tool.dump = lambda path: None
+            tool.retained = lambda: {}; tool.verify_retained = lambda before: None
+            observed = []
+            def dc(*arguments, **kwargs):
+                if arguments[0] == 'up':
+                    observed.append(tool.writer_started)
+                    raise RuntimeError('app start timed out')
+            tool.dc = dc
+            tool.rollback = lambda: observed.append(tool.writer_started)
+            with self.assertRaisesRegex(RuntimeError, 'app start timed out'):
+                tool.deploy()
+            self.assertEqual(observed, [True, True])
 
     def test_stable_projection_ignores_only_new_columns_and_volatile_columns(self):
         before = [{'id': 1, 'enabled': True, 'updated_at': 'old'}]
