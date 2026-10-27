@@ -16,6 +16,13 @@ if MODULE.exists():
 
 
 class GuardTests(unittest.TestCase):
+    def test_container_config_fingerprint_ignores_mount_enumeration_order(self):
+        c = {'Config': {'Image': 'old'}, 'HostConfig': {}, 'Mounts': [{'Destination': '/a', 'RW': True}, {'Destination': '/b', 'RW': False}]}
+        other = copy.deepcopy(c); other['Mounts'].reverse()
+        self.assertEqual(release.container_config_fingerprint(c), release.container_config_fingerprint(other))
+        other['Mounts'][0]['RW'] = True
+        self.assertNotEqual(release.container_config_fingerprint(c), release.container_config_fingerprint(other))
+
     def test_verified_codex_legacy_alias_is_same_route(self):
         c = {'apps': {'http': {'servers': {'https': {'routes': [
             {'match': [{'host': ['codex.xingqiaolab.top', '64-83-10-67.nip.io']}], 'handle': []}]}}}}}

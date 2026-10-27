@@ -38,6 +38,10 @@ def project_rows(rows, fields):
     return fingerprint([{key: row.get(key) for key in fields} for row in rows])
 
 
+def container_config_fingerprint(container):
+    return fingerprint([container['Config'], container['HostConfig'], sorted(container['Mounts'], key=lambda item: item['Destination'])])
+
+
 def rehearsal_environment(environment, database):
     values = {key: value for key, value in environment.items() if key.startswith('DATABASE_')}
     values['DATABASE_NAME'] = database
@@ -382,7 +386,7 @@ class MaintenanceRelease:
                 continue
             value = self.inspect(name)
             result[name] = {'id': value['Id'], 'started': value['State']['StartedAt'],
-                'config': fingerprint([value['Config'], value['HostConfig'], value['Mounts']])}
+                'config': container_config_fingerprint(value)}
         return result
 
     def verify_protected(self):
