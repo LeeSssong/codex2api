@@ -1,3 +1,26 @@
+# Active release: relogin state + intelligence recovery interval
+
+2026-10-28 user explicitly authorized merging `codex/intelligence-recheck-interval`
+and downtime deployment to netcup159.195.12.230. This supersedes the earlier
+local-only instruction for this release.
+
+Interval worktree's10 dirty files were snapshotted with hashes outside Git,
+committed `5aaf8ad5`, merged via `e0480e24` with credential head `355d46e4`.
+Upstream `20594822` is included. Shared dirty original remains untouched.
+Merged full Go/race tests,458 frontend units, typecheck/build,9 browser tests,
+85 release checks and isolated LOCAL Redis/PostgreSQL integration passed.
+
+Production baseline e61b04c3, live detection revision13/enabled=false/interval600;
+preserve current switches/settings/history. New recovery interval defaults3600
+at read time. Build clean pushed main in an independent clone. Deploy only via
+common lock and maintenance_release.py with exact identity checks, restored DB
+rehearsal, stopped backup and single writer. Result:
+`docs/releases/2026-10-28-relogin-recheck.md`.
+
+Earlier handoffs below are historical and their no-deploy limit is superseded.
+
+---
+
 # Current task: 2026-10-28 credential relogin state — local only
 
 Latest user instruction: implement the diagnosed fix, **do not deploy yet**.

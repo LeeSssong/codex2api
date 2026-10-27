@@ -55,3 +55,10 @@
 - Production version `release-20261028-e61b04c3b9a7`, actual executable/image/source record verified. Settings enabled=true / interval600 / revision12 and history103 preserved; worker online and single Codex writer verified.
 - Initial maintenance 16.491 seconds; external concurrent replacement of three Sub2API containers triggered protective recovery, adding approximately 184.702 seconds. Current data was preserved, no old dump restored, current non-target routing retained; traffic restored 2026-10-28 01:17:24.560 +08:00 and final public/internal verification passed.
 - Release, evidence and safe recovery constraints: `docs/releases/2026-10-28-intelligence-cooldown.md`. Keep old shared worktrees/snapshots as preserved history; do not redeploy stale candidates. All 52 recorded shared-file hashes still match.
+
+
+## 2026-10-28 Relogin + recovery-interval release (authorized)
+
+- User now authorizes merging interval branch and downtime deployment; prior local-only restriction superseded. Interval10 dirty files snapshotted, committed5aaf8ad5, merged e0480e24; credential355d46e4 and upstream20594822 included.
+- Full Go/race,458 frontend units, typecheck/build,9 browser,85 release checks and real LOCAL Redis/PostgreSQL integration pass. Live settings revision13/enabled=false/interval600 must remain intact.
+- Use independent clean main clone, common release lock and maintenance tool; only Codex2API. Preserve shared dirty original. Result: docs/releases/2026-10-28-relogin-recheck.md.
