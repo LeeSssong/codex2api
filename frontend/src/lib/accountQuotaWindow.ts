@@ -2,6 +2,7 @@ import type { AccountQuotaWindow, AccountRow } from '../types'
 
 type Slot = '5h' | '7d'
 type StatsStatus = 'loading' | 'ready' | 'error'
+const QUOTA_OBSERVATION_MAX_AGE_MS = 10 * 60 * 1000
 type QuotaAccount = Pick<AccountRow, 'id' | 'reset_5h_at' | 'reset_7d_at' | 'usage_window_7d_kind' | 'usage_window_7d_seconds' | 'quota_5h' | 'quota_7d'>
 export type QuotaWindowView = Omit<Partial<AccountQuotaWindow>, 'label' | 'state'> & {
   label: AccountQuotaWindow['label']
@@ -51,13 +52,21 @@ export function quotaWindowView(account: QuotaAccount, slot: Slot, snapshot?: Ac
   if (!snapshot) return { label, state: status === 'ready' ? 'unavailable' : status }
   if (snapshot.state === 'error') return { label, state: 'error', reason: snapshot.reason }
   if (snapshot.state === 'unavailable' && !validAmount(snapshot.used_usd)) return { label, state: 'unavailable', reason: snapshot.reason }
-  if (snapshot.state === 'stale' || !sameWindow(account, slot, snapshot, now)) return { label, state: 'stale' }
+  if (!sameWindow(account, slot, snapshot, now)) return { label, state: 'stale' }
   const view: QuotaWindowView = { ...snapshot, label }
   for (const key of ['used_usd', 'estimated_total_usd', 'estimated_remaining_usd', 'user_usd', 'requests', 'tokens'] as const) {
     if (!validAmount(view[key])) delete view[key]
   }
   const percent = snapshot.used_percent
   if (!validAmount(percent)) delete view.used_percent
+  const observed = Date.parse(snapshot.observed_at ?? '')
+  if (!Number.isFinite(observed) && (view.state === 'ready' || view.state === 'low_sample')) {
+    view.state = 'unavailable'
+    view.reason = 'missing_observation'
+  } else if (Number.isFinite(observed) && Math.max(now, Date.parse(snapshot.as_of)) - observed > QUOTA_OBSERVATION_MAX_AGE_MS) {
+    view.state = 'stale'
+    view.reason = 'observation_stale'
+  }
   const canEstimate = validAmount(percent) && percent > 0 && validAmount(view.used_usd) && view.used_usd > 0 && (view.state === 'ready' || view.state === 'low_sample')
   if (!canEstimate) {
     delete view.estimated_total_usd

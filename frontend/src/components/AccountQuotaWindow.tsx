@@ -51,7 +51,7 @@ export default function AccountQuotaWindow({ account, slot }: { account: Account
       </div>}
       {(view.state !== 'ready') && <div className={`account-quota-window__state ${warning ? 'text-amber-700 dark:text-amber-300' : 'text-muted-foreground'}`}>
         {warning && <AlertCircle className="size-3 shrink-0" aria-hidden="true" />}
-        <span>{t(`accounts.quotaState_${view.state}`)}</span>
+        <span>{t(view.reason === 'observation_stale' ? 'accounts.quotaObservationStale' : `accounts.quotaState_${view.state}`)}</span>
       </div>}
       {countdown && <div className="account-quota-window__meta" title={formatBeijingTime(resetAt)}>
         <Clock3 className="size-3 shrink-0" aria-hidden="true" /><span>{countdown}</span>
@@ -59,6 +59,9 @@ export default function AccountQuotaWindow({ account, slot }: { account: Account
       {usable && <div className="account-quota-window__source" title={t('accounts.quotaFreshnessDetail', { asOf: asOf || '—', observedAt: observedAt || '—' })}>
         <span>{t('accounts.quotaSource')}</span>
         {asOf && <time className="tabular-nums" dateTime={view.as_of}>{t('accounts.quotaUpdated', { time: asOf.slice(5, 16) })}</time>}
+      </div>}
+      {observedAt && <div className="account-quota-window__source">
+        <time className="tabular-nums" dateTime={view.observed_at}>{t('accounts.quotaObserved', { time: observedAt.slice(5, 16) })}</time>
       </div>}
     </section>
   )

@@ -1378,6 +1378,8 @@
     "quotaState_error": "窗口费用查询失败",
     "quotaSource": "网关账号费用",
     "quotaUpdated": "{{time}} 更新",
+    "quotaObservationStale": "官方额度快照已超过 10 分钟，暂不预测",
+    "quotaObserved": "官方额度观测于 {{time}}",
     "quotaFreshnessDetail": "费用统计截至 {{asOf}}；官方额度观测于 {{observedAt}}",
     "codexTurnStateTitle": "Turn State 强制注入",
     "codexTurnStateHint": "把这里填的 X-Codex-Turn-State 强制写到该账号的每个出站 Codex 请求上(HTTP 与 WebSocket 都覆盖),优先于客户端回带值与自定义请求头。留空即关闭。上游实测约 1 小时后失效。",

@@ -9,6 +9,8 @@ import (
 	"github.com/codex2api/database"
 )
 
+const quotaObservationMaxAge = 10 * time.Minute
+
 // AccountQuotaWindow is the shared list/detail quota projection. Optional
 // metrics remain absent when their source is unavailable or a query fails.
 type AccountQuotaWindow struct {
@@ -115,6 +117,11 @@ func projectAccountQuotaWindow(s quotaWindowSnapshot, asOf time.Time, usage *dat
 	}
 	if s.ObservedAt.IsZero() {
 		out.Reason = "missing_observation"
+		return out
+	}
+	if asOf.Sub(s.ObservedAt) > quotaObservationMaxAge {
+		out.State = "stale"
+		out.Reason = "observation_stale"
 		return out
 	}
 	if usage == nil {

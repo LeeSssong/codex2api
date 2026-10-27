@@ -1378,6 +1378,8 @@
     "quotaState_error": "Window fees failed to load",
     "quotaSource": "Gateway account fees",
     "quotaUpdated": "Updated {{time}}",
+    "quotaObservationStale": "Official quota snapshot is over 10 minutes old · estimate unavailable",
+    "quotaObserved": "Official quota observed {{time}}",
     "quotaFreshnessDetail": "Fees through {{asOf}}; official quota observed {{observedAt}}",
     "codexTurnStateTitle": "Turn State forced injection",
     "codexTurnStateHint": "Force the X-Codex-Turn-State value entered here onto every outbound Codex request for this account (both HTTP and WebSocket). It takes precedence over the value echoed by the client and over custom headers. Leave empty to disable. Upstream has been observed to reject the value roughly 1 hour after it was issued.",

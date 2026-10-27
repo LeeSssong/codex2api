@@ -771,6 +771,8 @@
     "quotaState_error": "視窗費用查詢失敗",
     "quotaSource": "閘道帳號費用",
     "quotaUpdated": "{{time}} 更新",
+    "quotaObservationStale": "官方額度快照已超過 10 分鐘，暫不預測",
+    "quotaObserved": "官方額度觀測於 {{time}}",
     "quotaFreshnessDetail": "費用統計截至 {{asOf}}；官方額度觀測於 {{observedAt}}",
     "schedulableAccounts": "可排程帳號",
     "filterSchedulable": "可排程",

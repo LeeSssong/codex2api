@@ -176,3 +176,34 @@ func TestAccountQuotaPageStatsAlignsWindowsAndLegacyAliases(t *testing.T) {
 		t.Fatalf("query failure must not become zero: %+v", failed)
 	}
 }
+
+func TestQuotaWindowObservationFreshnessRetainsCurrentUsage(t *testing.T) {
+	now := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
+	usage := &database.AccountTimeRangeUsage{Requests: 20, Tokens: 400, AccountBilled: 120, UserBilled: 180}
+	for _, tc := range []struct {
+		name  string
+		age   time.Duration
+		state string
+	}{
+		{"fresh", 9 * time.Minute, "ready"},
+		{"exact ten minute boundary", 10 * time.Minute, "ready"},
+		{"past boundary", 10*time.Minute + time.Nanosecond, "stale"},
+		{"same window hour old", time.Hour, "stale"},
+		{"same window days old", 3 * 24 * time.Hour, "stale"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := quotaWindowSnapshot{AccountID: 1, Label: "7d", Duration: 7 * 24 * time.Hour, ResetAt: now.Add(24 * time.Hour), ObservedAt: now.Add(-tc.age), Percent: 30, PercentValid: true}
+			got := projectAccountQuotaWindow(s, now, usage, nil)
+			if got.State != tc.state || got.UsedUSD == nil || *got.UsedUSD != 120 || got.Requests == nil || *got.Requests != 20 || got.Tokens == nil || *got.Tokens != 400 || got.UserUSD == nil || *got.UserUSD != 180 {
+				t.Fatalf("current metrics/freshness=%+v", got)
+			}
+			if tc.state == "stale" {
+				if got.Reason != "observation_stale" || got.EstimatedTotalUSD != nil || got.EstimatedRemainingUSD != nil {
+					t.Fatalf("old observation predicted=%+v", got)
+				}
+			} else if got.EstimatedTotalUSD == nil || *got.EstimatedTotalUSD != 400 || got.EstimatedRemainingUSD == nil || *got.EstimatedRemainingUSD != 280 {
+				t.Fatalf("fresh formula=%+v", got)
+			}
+		})
+	}
+}
