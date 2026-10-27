@@ -152,7 +152,7 @@ func (db *DB) EnqueueDueIntelligenceChecks(ctx context.Context, now time.Time, l
 			return nil
 		}
 		filter := ""
-		args := []interface{}{now.UnixMilli(), limit}
+		args := []interface{}{now.UnixMilli(), limit, db.intelligenceCooldownTimeArg(now)}
 		if s.Action == "switch_group" {
 			channel, e := intelligenceTargetGroupChannel(ctx, tx, s)
 			owned := "COALESCE(" + db.intelligenceStateActionExpr("s") + ",'')<>''"
@@ -162,12 +162,12 @@ func (db *DB) EnqueueDueIntelligenceChecks(ctx context.Context, now time.Time, l
 				}
 				filter = " AND (" + owned + ")"
 			} else {
-				filter = " AND (" + db.intelligenceChannelExpr() + "=$3 OR " + owned + ")"
+				filter = " AND (" + db.intelligenceChannelExpr() + "=$4 OR " + owned + ")"
 				args = append(args, channel)
 			}
 		}
 
-		rows, err := tx.QueryContext(ctx, `SELECT a.id FROM accounts a JOIN intelligence_check_accounts s ON s.account_id=a.id WHERE `+db.intelligenceEligibleSQL()+filter+` AND `+intelligenceAutomaticSQL("a", "s")+` AND s.next_due_ms<=$1 AND NOT EXISTS(SELECT 1 FROM intelligence_check_runs r WHERE r.account_id=a.id AND r.status IN ('queued','running')) ORDER BY s.next_due_ms,a.id LIMIT $2`, args...)
+		rows, err := tx.QueryContext(ctx, `SELECT a.id FROM accounts a JOIN intelligence_check_accounts s ON s.account_id=a.id WHERE `+db.intelligenceEligibleSQL()+filter+` AND `+db.intelligenceAutomaticAvailableSQL("a", "s", "$3")+` AND s.next_due_ms<=$1 AND NOT EXISTS(SELECT 1 FROM intelligence_check_runs r WHERE r.account_id=a.id AND r.status IN ('queued','running')) ORDER BY s.next_due_ms,a.id LIMIT $2`, args...)
 
 		if err != nil {
 			return err
@@ -220,7 +220,7 @@ func (db *DB) ClaimIntelligenceCheck(ctx context.Context, owner string, now time
 		if active >= s.Concurrency {
 			return nil
 		}
-		rows, err := tx.QueryContext(ctx, `SELECT `+intelligenceRunColumns+` FROM intelligence_check_runs WHERE status='queued' AND ready_ms<=$1 AND (`+db.intelligenceJSONField("source")+`='manual' OR ($2 AND account_id IN (SELECT s.account_id FROM intelligence_check_accounts s JOIN accounts a ON a.id=s.account_id WHERE `+intelligenceAutomaticSQL("a", "s")+`))) ORDER BY ready_ms,id LIMIT 100`, now.UnixMilli(), s.Enabled)
+		rows, err := tx.QueryContext(ctx, `SELECT `+intelligenceRunColumns+` FROM intelligence_check_runs WHERE status='queued' AND ready_ms<=$1 AND (`+db.intelligenceJSONField("source")+`='manual' OR ($2 AND account_id IN (SELECT s.account_id FROM intelligence_check_accounts s JOIN accounts a ON a.id=s.account_id WHERE `+db.intelligenceAutomaticAvailableSQL("a", "s", "$3")+`))) ORDER BY ready_ms,id LIMIT 100`, now.UnixMilli(), s.Enabled, db.intelligenceCooldownTimeArg(now))
 		if err != nil {
 			return err
 		}

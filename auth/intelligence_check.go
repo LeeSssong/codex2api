@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"sync/atomic"
+	"time"
 )
 
 type intelligencePausesKey struct{}
@@ -71,4 +72,17 @@ func (s *Store) TryAcquireIntelligenceCheck(a *Account) bool {
 			return true
 		}
 	}
+}
+
+// AutomaticIntelligenceCheckAvailable gates only automatic probes. Detection's
+// own quality pause must remain recoverable, and explicit manual probes retain
+// their existing behavior. No saved switch or account state is changed here.
+func (a *Account) AutomaticIntelligenceCheckAvailable(now time.Time) bool {
+	if a == nil || atomic.LoadInt32(&a.Disabled) != 0 {
+		return false
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return !(a.Status == StatusCooldown && a.CooldownUtil.After(now)) &&
+		!a.usageWindowBlocksFreshDispatchLocked(now)
 }

@@ -37,6 +37,19 @@
 
 ## 2026-10-28 Credential relogin implementation (active, local only)
 
-- User authorized implementation, explicitly no deployment. Continue in `codex/credential-relogin-state-audit` from diagnosis `6aed5588`; main remains `69abb079`.
+- User authorized implementation, explicitly no deployment. Continue in `codex/credential-relogin-state-audit` from diagnosis `6aed5588`; initial base `69abb079`; integrated remote main `20594822` after its intelligence-cooldown release.
 - Owned files: credential completion/retry handlers, new focused Store recovery helper and publication guards, regression tests, investigation/handoff documentation. Shared `auth/store.go` changes integrate by commit only.
 - Plan: `docs/investigations/2026-10-28-credential-relogin-fix-plan.md`. No server writes or real reauthentication.
+
+## 2026-10-28 Intelligence cooldown task (deployed)
+
+- Owner: current Codex chat; branch `codex/intelligence-quota-cooldown`; exclusive worktree `/Users/gongtengxinwen/.codex/worktrees/intelligence-quota-cooldown/codex2api`; base `69abb079e1057952f2f93c7ac5920067a94d9f41`.
+- Scope: database/intelligence_check*.go, auth/intelligence_check*.go, admin/intelligence_check_runner.go and executor/integration tests, automatic-only proxy HTTP/WebSocket dispatch guards and tests, handoff and release records. The shared preservation directory is read-only.
+- Latest user instruction overrides the old conflict policy: preserve the currently running production behavior if upstream conflicts. Upstream main is currently `3c6adfda`, already included; fetch again before publishing.
+- Approved behavior: suspend scheduled checks during cooldown, resume when available, never rewrite manual switches or erase history. User subsequently requested direct downtime deployment, without extra zero-downtime preparation. Retain required stopped backup/rollback and never run concurrent old/new singleton writers.
+- Acceptance: enqueue/claim/runtime fences, deadline and early recovery, manual switches/history preserved, SQLite/PostgreSQL, real periodic runner, and release-tool checks.
+
+- Deployed source `e61b04c3b9a72cbd75066ec09f7f75cb`, tree `23d4b944ea0193fb07bc4b451ee5901954cf4e77`. Upstream `3c6adfda` re-fetched and already included. Later documentation commits do not require deployment.
+- Production version `release-20261028-e61b04c3b9a7`, actual executable/image/source record verified. Settings enabled=true / interval600 / revision12 and history103 preserved; worker online and single Codex writer verified.
+- Initial maintenance 16.491 seconds; external concurrent replacement of three Sub2API containers triggered protective recovery, adding approximately 184.702 seconds. Current data was preserved, no old dump restored, current non-target routing retained; traffic restored 2026-10-28 01:17:24.560 +08:00 and final public/internal verification passed.
+- Release, evidence and safe recovery constraints: `docs/releases/2026-10-28-intelligence-cooldown.md`. Keep old shared worktrees/snapshots as preserved history; do not redeploy stale candidates. All 52 recorded shared-file hashes still match.

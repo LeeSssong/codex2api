@@ -289,6 +289,32 @@ func (db *DB) intelligenceEligibleSQL() string {
 func intelligenceAutomaticSQL(account, state string) string {
 	return state + `.enabled=TRUE AND COALESCE(` + account + `.enabled,TRUE)=TRUE`
 }
+
+// Keep the saved opt-in independent from transient availability. Filtering at
+// both enqueue and claim avoids requests during cooldown and prevents a large
+// cooling queue from hiding runnable accounts behind the candidate limit.
+func (db *DB) intelligenceAutomaticAvailableSQL(account, state, nowParameter string) string {
+	until, now := account+".cooldown_until", nowParameter
+	if db.isSQLite() {
+		// modernc's legacy time.Time binding uses Go's String format, including
+		// a numeric offset and zone name. Keep those existing rows readable;
+		// SQLite only understands the numeric offset with a colon, no name.
+		sep := "(instr(substr(" + until + ",12),' ')+11)"
+		legacy := "substr(" + until + ",1," + sep + "-1)||substr(" + until + "," + sep + "+1,3)||':'||substr(" + until + "," + sep + "+4,2)"
+		until, now = "COALESCE(julianday("+until+"),julianday("+legacy+"))", "julianday("+now+")"
+	}
+	return intelligenceAutomaticSQL(account, state) + " AND (" + account + ".cooldown_until IS NULL OR " + until + "<=" + now + ")"
+}
+
+// Unlike the general second-resolution timeArg, a cooldown boundary must keep
+// subsecond precision so an exact reset deadline is immediately eligible.
+func (db *DB) intelligenceCooldownTimeArg(now time.Time) interface{} {
+	if db.isSQLite() {
+		return now.UTC().Format(time.RFC3339Nano)
+	}
+	return now.UTC()
+}
+
 func intelligencePage(offset, limit int) (int, int) {
 	if offset < 0 {
 		offset = 0

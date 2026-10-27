@@ -707,6 +707,9 @@ func executeNativeCodexRequest(ctx context.Context, account *auth.Account, reque
 			traceProxy = account.ProxyURL
 			account.Mu().RUnlock()
 		}
+		if err := CheckAutomaticIntelligenceCheckDispatch(ctx, account); err != nil {
+			return nil, err
+		}
 		recordTrace := beginUpstreamTrace(ctx, account, traceProxy, true)
 		resp, err := WebsocketExecuteFunc(ctx, account, requestBody, sessionID, proxyOverride, apiKey, deviceCfg, headers, poolRouteKey)
 		if a := codexAttemptFromContext(ctx); a != nil {

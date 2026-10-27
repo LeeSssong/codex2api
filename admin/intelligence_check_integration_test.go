@@ -352,6 +352,9 @@ func TestIntelligencePeriodicRunnerPreservesEnabledSettingsAndHistory(t *testing
 	if err = db.SetIntelligenceCheckEnabled(ctx, []int64{id}, true); err != nil {
 		t.Fatal(err)
 	}
+	if err = db.SetCooldown(ctx, id, "rate_limited_5h", time.Now().UTC().Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
 	store := auth.NewStore(db, nil, nil)
 	t.Cleanup(store.Stop)
 	if err = store.LoadAccountByID(ctx, id); err != nil {
@@ -361,6 +364,12 @@ func TestIntelligencePeriodicRunnerPreservesEnabledSettingsAndHistory(t *testing
 	runCtx, cancel := context.WithCancel(ctx)
 	h.StartIntelligenceChecks(runCtx)
 	t.Cleanup(func() { cancel(); h.WaitIntelligenceChecks() })
+	// Let the real ticker run while the account is cooling, without manual
+	// enqueue/tick calls. At expiry it must resume without toggling enrollment.
+	time.Sleep(1100 * time.Millisecond)
+	if requests.Load() != 0 {
+		t.Fatalf("periodic runner sent %d requests during cooldown", requests.Load())
+	}
 	var runs []database.IntelligenceCheckRun
 	deadline := time.Now().Add(6 * time.Second)
 	for time.Now().Before(deadline) {
@@ -400,5 +409,141 @@ func TestIntelligencePeriodicRunnerPreservesEnabledSettingsAndHistory(t *testing
 	accounts, _, err := db.ListIntelligenceCheckAccounts(ctx, database.IntelligenceCheckAccountFilter{AccountID: id})
 	if err != nil || len(accounts) != 1 || !accounts[0].Enabled || accounts[0].NextDueAt == nil {
 		t.Fatalf("periodic enrollment lost: %+v %v", accounts, err)
+	}
+}
+
+// A cooldown may become visible in memory before its database write. Test the
+// final execution fence directly, including a run already claimed by a worker.
+func TestIntelligenceAutomaticRuntimeCooldownRequeuesWithoutRequest(t *testing.T) {
+	ctx := context.Background()
+	db := newTestAdminDB(t)
+	var requests atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprintf(w, "data: %s\n\n", intelligenceSuccess)
+	}))
+	defer upstream.Close()
+	id, err := db.InsertAccountWithCredentials(ctx, "runtime-cooldown", map[string]interface{}{"upstream_type": auth.UpstreamOpenAIResponses, "base_url": upstream.URL, "api_key": "fixture", "models": []string{"gpt-5.4"}}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings, err := db.GetIntelligenceCheckSettings(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings.Enabled, settings.GPTModel = true, "gpt-5.4"
+	if _, err = db.SaveIntelligenceCheckSettings(ctx, settings); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if n, e := db.EnqueueDueIntelligenceChecks(ctx, now, 100); e != nil || n != 1 {
+		t.Fatal(n, e)
+	}
+	run, err := db.ClaimIntelligenceCheck(ctx, "worker", now, time.Minute)
+	if err != nil || run == nil {
+		t.Fatal(run, err)
+	}
+	store := auth.NewStore(db, nil, nil)
+	t.Cleanup(store.Stop)
+	if err = store.LoadAccountByID(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	account := store.FindByID(id)
+	account.Mu().Lock()
+	account.Status = auth.StatusCooldown
+	account.CooldownReason = "rate_limited_7d"
+	account.CooldownUtil = now.Add(time.Hour)
+	account.Mu().Unlock()
+	h := &Handler{db: db, store: store}
+	h.runIntelligenceCheck(ctx, *run, account)
+	stored, err := db.GetIntelligenceCheckRun(ctx, run.ID)
+	if err != nil || stored.Status != "queued" || stored.CompletedAt != nil || requests.Load() != 0 {
+		t.Fatalf("cooling run sent/graded: status=%s requests=%d err=%v", stored.Status, requests.Load(), err)
+	}
+	account.Mu().Lock()
+	account.Status = auth.StatusReady
+	account.CooldownUtil = time.Time{}
+	account.CooldownReason = ""
+	account.Mu().Unlock()
+	run, err = db.ClaimIntelligenceCheck(ctx, "resumed", now.Add(6*time.Second), time.Minute)
+	if err != nil || run == nil {
+		t.Fatal(run, err)
+	}
+	h.runIntelligenceCheck(ctx, *run, account)
+	stored, err = db.GetIntelligenceCheckRun(ctx, run.ID)
+	if err != nil || stored.Status != "normal" || requests.Load() != 1 {
+		t.Fatalf("recovered run did not execute: %+v requests=%d err=%v", stored, requests.Load(), err)
+	}
+}
+
+// The first runner fence has already passed when context.WithTimeout asks for
+// the parent's deadline. Simulate quota exhaustion during execution preparation.
+type intelligencePreparationContext struct {
+	context.Context
+	prepare func()
+}
+
+func (c intelligencePreparationContext) Deadline() (time.Time, bool) {
+	c.prepare()
+	return time.Time{}, false
+}
+
+func TestIntelligenceAutomaticCooldownDuringPreparation(t *testing.T) {
+	ctx := context.Background()
+	db := newTestAdminDB(t)
+	var requests atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprintf(w, "data: %s\n\n", intelligenceSuccess)
+	}))
+	defer upstream.Close()
+	id, err := db.InsertAccountWithCredentials(ctx, "preparation-cooldown", map[string]interface{}{"upstream_type": auth.UpstreamOpenAIResponses, "base_url": upstream.URL, "api_key": "fixture", "models": []string{"gpt-5.4"}}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings, _ := db.GetIntelligenceCheckSettings(ctx)
+	settings.Enabled, settings.GPTModel = true, "gpt-5.4"
+	if _, err = db.SaveIntelligenceCheckSettings(ctx, settings); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	if n, e := db.EnqueueDueIntelligenceChecks(ctx, now, 100); e != nil || n != 1 {
+		t.Fatal(n, e)
+	}
+	run, err := db.ClaimIntelligenceCheck(ctx, "worker", now, time.Minute)
+	if err != nil || run == nil {
+		t.Fatal(run, err)
+	}
+	store := auth.NewStore(db, nil, nil)
+	t.Cleanup(store.Stop)
+	if err = store.LoadAccountByID(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	account := store.FindByID(id)
+	h := &Handler{db: db, store: store}
+	parent := intelligencePreparationContext{Context: ctx, prepare: func() {
+		account.Mu().Lock()
+		account.Status = auth.StatusCooldown
+		account.CooldownReason = "rate_limited_7d"
+		account.CooldownUtil = time.Now().Add(time.Hour)
+		account.Mu().Unlock()
+	}}
+	h.runIntelligenceCheck(parent, *run, account)
+	stored, err := db.GetIntelligenceCheckRun(ctx, run.ID)
+	if err != nil || stored.Status != "queued" || stored.CompletedAt != nil || requests.Load() != 0 {
+		t.Fatalf("preparation cooldown sent/graded: status=%s requests=%d err=%v", stored.Status, requests.Load(), err)
+	}
+	// An explicit manual run still bypasses only this automatic cooldown fence.
+	run, err = db.ClaimIntelligenceCheck(ctx, "manual", now.Add(6*time.Second), time.Minute)
+	if err != nil || run == nil {
+		t.Fatal(run, err)
+	}
+	run.Source = "manual"
+	h.runIntelligenceCheck(ctx, *run, account)
+	stored, err = db.GetIntelligenceCheckRun(ctx, run.ID)
+	if err != nil || stored.Status != "normal" || requests.Load() != 1 {
+		t.Fatalf("manual probe blocked: status=%s requests=%d err=%v", stored.Status, requests.Load(), err)
 	}
 }

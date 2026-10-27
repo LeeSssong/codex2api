@@ -167,6 +167,9 @@ func noteUpstreamTurnState(ctx context.Context, state string) {
 }
 
 func doTracedUpstreamRequest(client *http.Client, req *http.Request, account *auth.Account, proxyURL string) (*http.Response, error) {
+	if err := CheckAutomaticIntelligenceCheckDispatch(req.Context(), account); err != nil {
+		return nil, err
+	}
 	record := beginUpstreamTrace(req.Context(), account, proxyURL, false)
 	resp, err := client.Do(req)
 	record(resp)
