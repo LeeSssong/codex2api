@@ -609,6 +609,14 @@ func executeNativeCodexRequest(ctx context.Context, account *auth.Account, reque
 	requestBody = ApplyCodexFingerprintToBody(requestBody, account, headers)
 	// 账号绑定时区：改写 environment_context 的时区/日期，与指纹收敛一样在分叉前统一处理。
 	requestBody = ApplyCodexTimezoneToBody(requestBody, account, time.Now())
+	var stateErr error
+	requestBody, headers, stateErr = applyVerifiedState(ctx, account, requestBody, headers, proxyOverride)
+	if stateErr != nil {
+		return nil, stateErr
+	}
+	if ipv6StateDirect(ctx, account, requestBody) {
+		proxyOverride = ipv6StateDirectRoute
+	}
 	// Codex multi-agent v2 兼容层：仅在调用方显式安装状态、部署方开启开关、
 	// 且下游确实是 Codex 客户端时改写 collaboration 工具 schema。冲突、无效
 	// JSON 或结构超限的请求保持原生路径，绝不猜测任务正文。

@@ -458,14 +458,8 @@ func (e *Executor) prepareWebsocketHeadersChecked(ctx context.Context, accessTok
 	// （codex-rs/core/src/client.rs build_websocket_headers）与 HTTP /responses 同形，
 	// 都是 session-id / thread-id / x-client-request-id，也都不发 Conversation_id。
 	// legacy 档下该函数恢复旧的 Session_id + 清 Conversation_id 行为。
-	proxy.ApplyCodexSessionHeaders(headers, account, sessionID, ginHeaders, true)
-	for name, value := range account.GetCustomHeaders() {
-		name = strings.TrimSpace(name)
-		if name == "" {
-			continue
-		}
-		headers.Set(name, value)
-	}
+	proxy.ApplyCodexSessionHeaders(headers, account, sessionID, downstreamHeaders, true)
+	proxy.ApplyAccountCustomHeaders(headers, account)
 	if err := proxy.ApplyCodexAttestation(ctx, proxy.CodexAttestationInput{Headers: headers, Account: account}); err != nil {
 		return nil, err
 	}

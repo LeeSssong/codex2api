@@ -609,6 +609,14 @@ func (h *Handler) nextRetryAccountWithGuard(ctx context.Context, affinityKey str
 		if quotaErr := h.store.AntigravityQuotaGateExhaustion(affinityKey, apiKeyID, exclude, filter, preserveBinding); quotaErr != nil {
 			return nil, "", auth.SessionAffinityGuard{}, quotaErr
 		}
+		if d := codexRouteFromContext(ctx); d != nil {
+			d.mu.Lock()
+			initial := !d.schedulerSelected && d.routeConstrained
+			d.mu.Unlock()
+			if initial && !h.codexRouteHasCandidates(ctx, apiKeyID, filter) {
+				return nil, "", auth.SessionAffinityGuard{}, h.codexRouteNoCandidatesError(ctx, apiKeyID, filter)
+			}
+		}
 		h.store.TriggerDispatchStateReconcileAsync()
 		// When this request's own soft/transient exclusions are all that stand
 		// between it and a candidate, no release or wakeup can satisfy a queue

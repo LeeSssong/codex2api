@@ -681,6 +681,7 @@ func (h *Handler) Messages(c *gin.Context) {
 			return fixedTierFilter(account)
 		}
 	}
+	accountFilter = h.withCodexRouteFilter(c, model, effectiveModel, routingBody, accountFilter)
 	accountFilter = h.withRequestModelCooldownFilter(c, c.Request.Context(), effectiveModel, accountFilter)
 	accountFilter = h.applyUpstreamChannelFilter(c, effectiveModel, accountFilter)
 	accountFilter = h.applyScopeBudgetFilter(c, accountFilter)

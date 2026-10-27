@@ -500,6 +500,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 	}
 
 	accountFilter := accountFilterForResponsesWebSocket(effectiveModel)
+	accountFilter = h.withCodexRouteFilter(c, logModel, effectiveModel, codexBody, accountFilter)
 	accountFilter = h.withRequestModelCooldownFilter(c, c.Request.Context(), effectiveModel, accountFilter)
 	accountFilter = applyAffinityGroupRouting(c, sessionIdentity, accountFilter)
 	accountFilter = h.applyScopeBudgetFilter(c, accountFilter)
