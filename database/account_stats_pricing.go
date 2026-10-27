@@ -414,11 +414,15 @@ func SnapshotAccountStatsCost(input *UsageLogInput, cfg AccountStatsPricingConfi
 		cost *= multiplier
 	}
 	if input.AccountUsage != nil && input.AccountUsage.UsageKnown != nil && !*input.AccountUsage.UsageKnown {
-		// Native diagnostic output estimates are not observed billable usage.
-		cost = 0
+		// Match the source unknown-charge branch: clear token/statistical inputs
+		// after final cost resolution. A matching custom per-request/image price
+		// remains a final cost snapshot even without token usage (source quirk).
+		if source != "custom_request" && source != "custom_image_tier" {
+			cost = 0
+		}
 		standard = 0
 		stats = nil
-		source = "usage_unknown"
+		source = "usage_unknown_" + source
 	}
 
 	cost = roundAccountCost(cost)

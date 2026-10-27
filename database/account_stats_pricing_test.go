@@ -305,12 +305,12 @@ func TestAccountStatsUnknownVersusKnownZeroPerRequest(t *testing.T) {
 	for _, known := range []bool{false, true} {
 		in := &UsageLogInput{Model: "gpt-5.4", OutputTokens: 10, AccountUsage: &AccountUsageEvidence{UsageKnown: &known}}
 		got := SnapshotAccountStatsCost(in, cfg)
-		want := 0.0
-		if known {
-			want = .3
-		}
+		want := .3
 		if *got.AccountCost != want {
 			t.Fatalf("known%v got%v want%v", known, *got.AccountCost, want)
+		}
+		if !known && (got.AccountStatsCost != nil || *got.StandardCost != 0) {
+			t.Fatalf("unknown source branch stats should clear: %+v", got)
 		}
 	}
 }
