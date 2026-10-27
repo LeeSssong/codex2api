@@ -1,3 +1,26 @@
+# Current status: relogin + intelligence recovery interval deployed
+
+User authorized downtime deployment on2026-10-28. Both tasks merged/pushed to main;
+production source `884392a122b3abcaab74b1cd20cd05111aab06a3`, tree `6f8aafa7f9fab4a1664de856502d2882f8e60a0d`,
+actual binary `bba286e114ece31d2a4f5d4517018c06572456ca1e31508119f3996cd8a7e4a9`,
+image `sha256:38e6e7997290eeb5642fe712751a54091e685a7e4a1ae800ee04785f764bfcd5`. Later documentation commits do not require redeploy.
+Maintenance 2026-10-28T02:22:31.216+08:00 to 2026-10-28T02:22:44.124+08:00
+(12.907 seconds); independent final verification passed. Exactly one writer,
+worker online, maintenance removed, unrelated containers unchanged.
+Current settings preserved: enabled=false, ordinary interval600, revision13;
+new recovery interval3600 returned without changing saved intent. History [104, 104].
+No live login probe, Sub2API/database/Redis restart or cold-standby action.
+
+Evidence/recovery: docs/releases/2026-10-28-relogin-recheck.md. Current production
+has new writes; never restore older snapshots or redeploy stale candidates.
+Interval source5aaf8ad5 and credential355d46e4 merged via e0480e24; all10 interval
+snapshot hashes match; shared dirty original remains preserved. Release clone
+main is independent of shared original; no forced main update.
+
+Earlier handoffs follow as history; pending/local-only statuses are superseded.
+
+---
+
 # Active release: relogin state + intelligence recovery interval
 
 2026-10-28 user explicitly authorized merging `codex/intelligence-recheck-interval`

@@ -62,3 +62,10 @@
 - User now authorizes merging interval branch and downtime deployment; prior local-only restriction superseded. Interval10 dirty files snapshotted, committed5aaf8ad5, merged e0480e24; credential355d46e4 and upstream20594822 included.
 - Full Go/race,458 frontend units, typecheck/build,9 browser,85 release checks and real LOCAL Redis/PostgreSQL integration pass. Live settings revision13/enabled=false/interval600 must remain intact.
 - Use independent clean main clone, common release lock and maintenance tool; only Codex2API. Preserve shared dirty original. Result: docs/releases/2026-10-28-relogin-recheck.md.
+
+
+## 2026-10-28 Relogin + recovery-interval release completed
+
+- Both task branches merged/pushed; production source `884392a122b3abcaab74b1cd20cd05111aab06a3`, tree `6f8aafa7f9fab4a1664de856502d2882f8e60a0d`. Actual binary `bba286e114ece31d2a4f5d4517018c06572456ca1e31508119f3996cd8a7e4a9`; digest `sha256:38e6e7997290eeb5642fe712751a54091e685a7e4a1ae800ee04785f764bfcd5`. Source ancestry and latest main checked before deployment; subsequent docs need no release.
+- Recorded downtime 12.907s; restored DB rehearsal/stopped backup, internal/public smoke and independent final verification passed. One writer, credential worker online, maintenance removed, protected services unchanged. Settings revision13/enabled=false/interval600, recovery3600, history[104, 104] retained.
+- Release/recovery: `docs/releases/2026-10-28-relogin-recheck.md`. New writes accepted; never restore older dump or rerun stale release. Interval snapshot preserved; unrelated worktrees untouched. Earlier local-only/pending statuses are historical.
