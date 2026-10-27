@@ -399,7 +399,7 @@ func usageLogBillingServiceTier(log *UsageLogInput) string {
 // UsageLogBilledCost returns upstream token cost. User quotas and scope budgets
 // must use UsageLogUserBilledCost, which also supports per-image fees.
 func UsageLogBilledCost(log *UsageLogInput) float64 {
-	if log == nil {
+	if log == nil || log.AccountStatsOnly {
 		return 0
 	}
 	if log.billingSnapshot != nil {

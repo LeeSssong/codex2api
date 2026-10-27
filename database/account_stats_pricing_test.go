@@ -211,7 +211,13 @@ func TestAccountStatsSourceFirstRuleBeforeSpecificModel(t *testing.T) {
 	}
 	cfg.Rules[0].AccountIDs = []int64{2}
 	cfg.Rules[0].GroupIDs = []int64{8}
-	got = SnapshotAccountStatsCost(&UsageLogInput{AccountID: 1, AccountGroupIDs: []int64{8}, Model: "gpt-5.4", InputTokens: 1000}, cfg)
+	got = SnapshotAccountStatsCost(&UsageLogInput{AccountID: 1, Model: "gpt-5.4", InputTokens: 1000}, cfg)
+	if *got.AccountCost != .099 {
+		t.Fatalf("group selector matched without configured source group: %v", *got.AccountCost)
+	}
+	group := int64(8)
+	cfg.SourceGroupID = &group
+	got = SnapshotAccountStatsCost(&UsageLogInput{AccountID: 1, Model: "gpt-5.4", InputTokens: 1000}, cfg)
 	if *got.AccountCost != .002 {
 		t.Fatalf("group OR account selector %v", *got.AccountCost)
 	}
@@ -248,5 +254,73 @@ func TestAccountStatsObservedZeroDoesNotChargeEstimatedFallback(t *testing.T) {
 		if *got.AccountCost != 0 || *got.StandardCost != 0 || UsageLogUserBilledCost(got) != user {
 			t.Fatalf("observed zero leaked estimates: %+v", got)
 		}
+	}
+}
+
+func TestAccountStatsOnlyDoesNotChangeNativeBilling(t *testing.T) {
+	in := &UsageLogInput{AccountStatsOnly: true, Model: "gpt-5.4", InputTokens: 1000, OutputTokens: 100, AccountUsage: &AccountUsageEvidence{InputTokens: 1000, OutputTokens: 100}}
+	if UsageLogBilledCost(in) != 0 || UsageLogUserBilledCost(in) != 0 {
+		t.Fatal("statistics only partial attempt charged native customer")
+	}
+	got := SnapshotAccountStatsCost(in, AccountStatsPricingConfig{})
+	if math.Abs(*got.AccountCost-.004) > 1e-10 || *got.StandardCost != .004 {
+		t.Fatalf("lost source observed partial charge %+v", got)
+	}
+}
+
+func TestAccountStatsApplySaleUsesConfiguredImageUnitPrice(t *testing.T) {
+	SetModelPricingOverrides(map[string]ModelPricingOverride{"gpt-image-2.5-sunburst": {UserBillingMode: UserBillingModePerImage, ImageUnitPrice: .05}})
+	defer SetModelPricingOverrides(nil)
+	in := SnapshotUsageLogBilling(&UsageLogInput{Model: "gpt-image-2.5-sunburst", ImageCount: 2, InputTokens: 1000, OutputTokens: 100, StatusCode: 200})
+	got := SnapshotAccountStatsCost(in, AccountStatsPricingConfig{ApplySalePricing: true, RateMultiplier: statsFloat(3)})
+	if *got.StandardCost != .1 || math.Abs(*got.AccountCost-.3) > 1e-10 {
+		t.Fatalf("sale ignored configured unit price %+v", got)
+	}
+	if UsageLogUserBilledCost(got) != .1 {
+		t.Fatal("changed native image charge")
+	}
+}
+
+func TestAccountStatsInconsistentOriginalTotalsUseExclusiveSourceCategories(t *testing.T) {
+	upper := 150
+	cfg := AccountStatsPricingConfig{Rules: []AccountStatsPricingRule{{Models: []string{"gpt-5.4"}, AccountStatsPrices: AccountStatsPrices{CacheRead: statsFloat(1)}, Intervals: []AccountStatsPricingInterval{{MinTokens: 0, MaxTokens: &upper, AccountStatsPrices: AccountStatsPrices{CacheRead: statsFloat(99)}}}}}}
+	got := SnapshotAccountStatsCost(&UsageLogInput{Model: "gpt-5.4", InputTokens: 100, CachedTokens: 200}, cfg)
+	if *got.AccountCost != .0002 {
+		t.Fatalf("interval used inconsistent total instead of source exclusive categories: %v", *got.AccountCost)
+	}
+}
+
+func TestAccountStatsEvidenceTierOverridesOnlyAccountPricing(t *testing.T) {
+	tier := "priority"
+	in := &UsageLogInput{Model: "gpt-5.4", InputTokens: 1000, CachedTokens: 200, OutputTokens: 100, ActualServiceTier: "flex", AccountUsage: &AccountUsageEvidence{InputTokens: 1000, CachedTokens: 200, OutputTokens: 100, ServiceTier: &tier}}
+	native := UsageLogUserBilledCost(in)
+	got := SnapshotAccountStatsCost(in, AccountStatsPricingConfig{})
+	if math.Abs(*got.AccountCost-.0071) > 1e-10 || UsageLogUserBilledCost(got) != native || got.ActualServiceTier != "flex" {
+		t.Fatalf("tier isolation %+v", got)
+	}
+}
+
+func TestAccountStatsUnknownVersusKnownZeroPerRequest(t *testing.T) {
+	cfg := AccountStatsPricingConfig{Rules: []AccountStatsPricingRule{{Models: []string{"gpt-5.4"}, PerRequest: statsFloat(.3)}}}
+	for _, known := range []bool{false, true} {
+		in := &UsageLogInput{Model: "gpt-5.4", OutputTokens: 10, AccountUsage: &AccountUsageEvidence{UsageKnown: &known}}
+		got := SnapshotAccountStatsCost(in, cfg)
+		want := 0.0
+		if known {
+			want = .3
+		}
+		if *got.AccountCost != want {
+			t.Fatalf("known%v got%v want%v", known, *got.AccountCost, want)
+		}
+	}
+}
+
+func TestAccountStatsCatalogAndCustomImageOutputBuckets(t *testing.T) {
+	price := AccountStatsPricingRule{Models: []string{"image-model"}, AccountStatsPrices: AccountStatsPrices{Input: statsFloat(2), Output: statsFloat(10), ImageOutput: statsFloat(30)}}
+	in := &UsageLogInput{Model: "image-model", InputTokens: 100, OutputTokens: 100, ImageOutputTokens: 20}
+	catalog := SnapshotAccountStatsCost(in, AccountStatsPricingConfig{UpstreamPrices: []AccountStatsPricingRule{price}})
+	custom := SnapshotAccountStatsCost(in, AccountStatsPricingConfig{Rules: []AccountStatsPricingRule{price}})
+	if math.Abs(*catalog.AccountCost-.0016) > 1e-10 || math.Abs(*custom.AccountCost-.0018) > 1e-10 {
+		t.Fatalf("catalog%v custom%v", *catalog.AccountCost, *custom.AccountCost)
 	}
 }

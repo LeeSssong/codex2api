@@ -926,6 +926,9 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 	if err := db.InitFixedEgress(ctx); err != nil {
 		return err
 	}
+	if err := db.migrateAccountUsageCostEvents(ctx); err != nil {
+		return err
+	}
 	return db.runDataMigrationsWithTimeout()
 }
 

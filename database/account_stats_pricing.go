@@ -26,6 +26,7 @@ type AccountCostSnapshot struct {
 // follows the original upstream total; source custom rules also price image output separately.
 // Diagnostic estimates stay on UsageLogInput and never enter this evidence.
 type AccountUsageEvidence struct {
+	UsageKnown             *bool
 	ServiceTier            *string
 	EffectiveModel         string
 	InputTokens            int
@@ -39,22 +40,25 @@ type AccountUsageEvidence struct {
 }
 
 type AccountStatsPricingConfig struct {
+	SourceGroupID    *int64                    `json:"source_group_id,omitempty"`
 	RateMultiplier   *float64                  `json:"account_rate_multiplier,omitempty"`
 	ApplySalePricing bool                      `json:"apply_sale_pricing"`
 	Rules            []AccountStatsPricingRule `json:"rules,omitempty"`
 	// UpstreamPrices represents the operator's source model catalog. Absent entries
-	// use the pinned Sub2API fallback table (which has no long-context ladder).
+	// use the pinned Sub2API fallback table, including model-specific ladders.
 	UpstreamPrices     []AccountStatsPricingRule `json:"upstream_prices,omitempty"`
 	LongContextEnabled *bool                     `json:"long_context_enabled,omitempty"`
 }
 
 type AccountStatsPrices struct {
-	Input        *float64 `json:"input,omitempty"` // USD / million tokens
-	Output       *float64 `json:"output,omitempty"`
-	CacheRead    *float64 `json:"cache_read,omitempty"`
-	CacheWrite   *float64 `json:"cache_write,omitempty"`
-	CacheWrite1h *float64 `json:"cache_write_1h,omitempty"`
-	ImageOutput  *float64 `json:"image_output,omitempty"`
+	Input          *float64 `json:"input,omitempty"` // USD / million tokens
+	Output         *float64 `json:"output,omitempty"`
+	CacheRead      *float64 `json:"cache_read,omitempty"`
+	CacheWrite     *float64 `json:"cache_write,omitempty"`
+	CacheWrite1h   *float64 `json:"cache_write_1h,omitempty"`
+	ImageOutput    *float64 `json:"image_output,omitempty"`
+	ImageInput     *float64 `json:"image_input,omitempty"`
+	ImageCacheRead *float64 `json:"image_cache_read,omitempty"`
 }
 type AccountStatsPricingInterval struct {
 	MinTokens int  `json:"min_tokens"`
@@ -83,6 +87,9 @@ type AccountStatsPricingRule struct {
 
 func validStatsNumber(v float64) bool { return !math.IsNaN(v) && !math.IsInf(v, 0) && v >= 0 }
 func ValidateAccountStatsPricing(c AccountStatsPricingConfig) error {
+	if c.SourceGroupID != nil && *c.SourceGroupID <= 0 {
+		return fmt.Errorf("source_group_id must be positive")
+	}
 	if c.RateMultiplier != nil && !validStatsNumber(*c.RateMultiplier) {
 		return fmt.Errorf("account_rate_multiplier must be finite and non-negative")
 	}
@@ -125,7 +132,7 @@ func ValidateAccountStatsPricing(c AccountStatsPricingConfig) error {
 				prices = append(prices, iv.AccountStatsPrices)
 			}
 			for _, p := range prices {
-				for _, v := range []*float64{p.Input, p.Output, p.CacheRead, p.CacheWrite, p.CacheWrite1h, p.ImageOutput} {
+				for _, v := range []*float64{p.Input, p.Output, p.CacheRead, p.CacheWrite, p.CacheWrite1h, p.ImageOutput, p.ImageInput, p.ImageCacheRead} {
 					if v != nil && !validStatsNumber(*v) {
 						return fmt.Errorf("prices must be finite and non-negative")
 					}
@@ -178,9 +185,22 @@ func statsPointer(v float64) *float64    { return &v }
 func roundAccountCost(v float64) float64 { return math.Round(v*1e10) / 1e10 }
 
 // Source token buckets are exclusive; the native InputTokens includes cache.
+func statsSourceTotalInput(input *UsageLogInput) int {
+	return max(0, input.InputTokens-input.CachedTokens-input.CacheWrite5mTokens-input.CacheWrite1hTokens) + max(0, input.CachedTokens) + max(0, input.CacheWrite5mTokens) + max(0, input.CacheWrite1hTokens)
+}
+
+func observedAccountStandardCost(input *UsageLogInput) float64 {
+	if s := input.billingSnapshot; s != nil && s.UserBillingMode == UserBillingModePerImage {
+		return s.ImageUnitPrice * float64(max(0, input.ImageCount))
+	}
+	normalized := *input
+	normalized.InputTokens = statsSourceTotalInput(input)
+	return UsageLogCostBreakdown(&normalized).TotalCost
+}
+
 func statsTokenCost(input *UsageLogInput, r AccountStatsPricingRule) float64 {
 	p := r.AccountStatsPrices
-	total := input.InputTokens + input.OutputTokens
+	total := statsSourceTotalInput(input) + input.OutputTokens
 	for _, iv := range r.Intervals {
 		if total > iv.MinTokens && (iv.MaxTokens == nil || total <= *iv.MaxTokens) {
 			p = iv.AccountStatsPrices
@@ -212,7 +232,7 @@ func statsMatchingRule(rules []AccountStatsPricingRule, model string) *AccountSt
 	}
 	return nil
 }
-func statsCustomPricing(rules []AccountStatsPricingRule, input *UsageLogInput, model string) *AccountStatsPricingRule {
+func statsCustomPricing(rules []AccountStatsPricingRule, input *UsageLogInput, model string, sourceGroupID *int64) *AccountStatsPricingRule {
 	for i := range rules {
 		r := &rules[i]
 		match := len(r.AccountIDs) == 0 && len(r.GroupIDs) == 0
@@ -220,8 +240,8 @@ func statsCustomPricing(rules []AccountStatsPricingRule, input *UsageLogInput, m
 			match = match || id == input.AccountID
 		}
 		for _, id := range r.GroupIDs {
-			for _, group := range input.AccountGroupIDs {
-				match = match || id == group
+			if sourceGroupID != nil {
+				match = match || id == *sourceGroupID
 			}
 		}
 		if !match {
@@ -276,8 +296,11 @@ func SnapshotAccountStatsCost(input *UsageLogInput, cfg AccountStatsPricingConfi
 		return input
 	}
 	copy := *input
-	standard := UsageLogBilledCost(input)
+	standard := observedAccountStandardCost(input)
 	saleBreakdown := UsageLogCostBreakdown(input)
+	if input.AccountStatsOnly {
+		saleBreakdown = CostBreakdown{}
+	}
 	// Only account statistics consume observed upstream usage. Native customer
 	// billing continues to use the original log and its own admission policy.
 	if evidence := input.AccountUsage; evidence != nil {
@@ -303,7 +326,7 @@ func SnapshotAccountStatsCost(input *UsageLogInput, cfg AccountStatsPricingConfi
 	// Source standard/pre-user-multiplier cost uses observed original buckets.
 	// Native account_billed/user_billed and display breakdown remain separate.
 	if input.AccountUsage != nil {
-		standard = UsageLogCostBreakdown(input).TotalCost
+		standard = observedAccountStandardCost(input)
 	}
 
 	multiplier := 1.0
@@ -320,7 +343,7 @@ func SnapshotAccountStatsCost(input *UsageLogInput, cfg AccountStatsPricingConfi
 	applyRate := true
 	var stats *float64
 	var selected *AccountStatsPricingRule
-	if r := statsCustomPricing(cfg.Rules, input, model); r != nil {
+	if r := statsCustomPricing(cfg.Rules, input, model, cfg.SourceGroupID); r != nil {
 		selected = r
 		if len(r.ImageTiers) > 0 && SupportsImageBilling(model) && input.ImageCount > 0 {
 			if imageTier, ok := statsImageTier(input.ImageSize); ok {
@@ -363,7 +386,7 @@ func SnapshotAccountStatsCost(input *UsageLogInput, cfg AccountStatsPricingConfi
 			adjusted := *r
 			longEnabled := cfg.LongContextEnabled == nil || *cfg.LongContextEnabled
 			// Source explicitly exempts GPT-6.1 Sol from the model long-context ladder.
-			if longEnabled && sourceStatsModelKey(model) != "gpt-6.1-sol" && r.LongContextThreshold > 0 && input.InputTokens > r.LongContextThreshold {
+			if longEnabled && sourceStatsModelKey(model) != "gpt-6.1-sol" && r.LongContextThreshold > 0 && statsSourceTotalInput(input) > r.LongContextThreshold {
 				im, om := r.LongInputMultiplier, r.LongOutputMultiplier
 				if im <= 0 {
 					im = 1
@@ -374,10 +397,12 @@ func SnapshotAccountStatsCost(input *UsageLogInput, cfg AccountStatsPricingConfi
 				adjusted.Input = statsPointer(statsValue(r.Input) * im)
 				adjusted.CacheRead = statsPointer(statsValue(r.CacheRead) * im)
 				adjusted.CacheWrite = statsPointer(statsValue(r.CacheWrite) * im)
-				adjusted.CacheWrite1h = statsPointer(statsValue(r.CacheWrite1h) * im)
+				if r.CacheWrite1h != nil {
+					adjusted.CacheWrite1h = statsPointer(*r.CacheWrite1h * im)
+				}
 				adjusted.Output = statsPointer(statsValue(r.Output) * om)
 			}
-			v := statsTokenCost(input, adjusted) * sourceStatsTierMultiplier(model, tier) * statsReasoningMultiplier(r, input.ReasoningEffort)
+			v := sourceModelTokenCost(input, adjusted, model, tier) * statsReasoningMultiplier(r, input.ReasoningEffort)
 			if v > 0 {
 				cost = v
 				stats = statsPointer(v)
@@ -388,29 +413,65 @@ func SnapshotAccountStatsCost(input *UsageLogInput, cfg AccountStatsPricingConfi
 	if applyRate {
 		cost *= multiplier
 	}
+	if input.AccountUsage != nil && input.AccountUsage.UsageKnown != nil && !*input.AccountUsage.UsageKnown {
+		// Native diagnostic output estimates are not observed billable usage.
+		cost = 0
+		standard = 0
+		stats = nil
+		source = "usage_unknown"
+	}
+
 	cost = roundAccountCost(cost)
 	if stats != nil {
 		stats = statsPointer(roundAccountCost(*stats))
 	}
 	copy.AccountCostSnapshot = AccountCostSnapshot{QuotaUsageAdmitted: input.QuotaUsageAdmitted, QuotaTokens: input.QuotaTokens, AccountCost: &cost, AccountStatsCost: stats, StandardCost: statsPointer(standard), AccountRateMultiplier: statsPointer(multiplier), AccountCostSource: source}
-	frozen := struct {
-		Model       string                    `json:"model"`
-		Input       int                       `json:"input_tokens"`
-		Cached      int                       `json:"cached_tokens"`
-		Output      int                       `json:"output_tokens"`
-		Write5m     int                       `json:"cache_write_5m_tokens"`
-		Write1h     int                       `json:"cache_write_1h_tokens"`
-		ImageOutput int                       `json:"image_output_tokens"`
-		Tier        string                    `json:"service_tier"`
-		Reasoning   string                    `json:"reasoning_effort"`
-		Rule        *AccountStatsPricingRule  `json:"price"`
-		Config      AccountStatsPricingConfig `json:"config"`
-		Sale        CostBreakdown             `json:"sale_breakdown"`
-	}{model, input.InputTokens, input.CachedTokens, input.OutputTokens, input.CacheWrite5mTokens, input.CacheWrite1hTokens, input.ImageOutputTokens, tier, input.ReasoningEffort, selected, cfg, saleBreakdown}
+	frozen := map[string]any{
+		"version": 1, "usage_known": func() any {
+			if input.AccountUsage != nil {
+				return input.AccountUsage.UsageKnown
+			}
+			return nil
+		}(), "model": model, "input_tokens": input.InputTokens, "ordinary_input_tokens": max(0, input.InputTokens-input.CachedTokens-input.CacheWrite5mTokens-input.CacheWrite1hTokens), "cached_tokens": input.CachedTokens, "output_tokens": input.OutputTokens,
+		"cache_write_5m_tokens": input.CacheWrite5mTokens, "cache_write_1h_tokens": input.CacheWrite1hTokens, "image_input_tokens": input.ImageInputTokens, "image_output_tokens": input.ImageOutputTokens, "cached_image_input_tokens": input.CachedImageInputTokens,
+		"image_count": input.ImageCount, "image_size": input.ImageSize, "service_tier": tier, "reasoning_effort": input.ReasoningEffort, "price": selected, "config": AccountStatsPricingConfig{SourceGroupID: cfg.SourceGroupID, RateMultiplier: cfg.RateMultiplier, ApplySalePricing: cfg.ApplySalePricing, LongContextEnabled: cfg.LongContextEnabled}, "sale_breakdown": saleBreakdown,
+	}
+
 	raw, _ := json.Marshal(frozen)
 	copy.AccountPricingSnapshot = string(raw)
 	return &copy
 }
+
+// Model catalog pricing splits image output from total output. Custom account
+// rules intentionally retain the source's separate additive image-output term.
+func sourceModelTokenCost(input *UsageLogInput, r AccountStatsPricingRule, model, tier string) float64 {
+	multiplier := sourceStatsTierMultiplier(model, tier)
+	key := sourceStatsModelKey(model)
+	priority := (tier == "priority" || tier == "fast") && key != "" && key != "gpt-5.4-mini" && key != "gpt-5.4-nano" && key != "gpt-5.5-pro"
+	if priority {
+		for _, field := range []**float64{&r.Input, &r.Output, &r.CacheRead, &r.CacheWrite, &r.CacheWrite1h} {
+			if *field != nil {
+				*field = statsPointer(**field * multiplier)
+			}
+		}
+		multiplier = 1
+	}
+	cost := statsTokenCost(input, r)
+	ordinary := max(0, input.InputTokens-input.CachedTokens-input.CacheWrite5mTokens-input.CacheWrite1hTokens)
+	imageInput := min(max(0, input.ImageInputTokens), ordinary)
+	if r.ImageInput != nil && *r.ImageInput != 0 {
+		cost += float64(imageInput) * (*r.ImageInput - statsValue(r.Input)) / 1e6
+	}
+	imageCached := min(max(0, input.CachedImageInputTokens), max(0, input.CachedTokens))
+	if r.ImageCacheRead != nil && *r.ImageCacheRead > 0 {
+		cost += float64(imageCached) * (*r.ImageCacheRead - statsValue(r.CacheRead)) / 1e6
+	}
+	if r.ImageOutput != nil {
+		cost -= float64(min(max(0, input.ImageOutputTokens), max(0, input.OutputTokens))) * statsValue(r.Output) / 1e6
+	}
+	return cost * multiplier
+}
+
 func sourceStatsTierMultiplier(model, tier string) float64 {
 	switch normalizeServiceTier(tier) {
 	case "flex":

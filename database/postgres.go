@@ -306,6 +306,9 @@ func NormalizeUsageLogFlushIntervalSeconds(n int) int {
 
 // usageLogEntry 日志缓冲条目
 type usageLogEntry struct {
+	AccountUsageEventID   string
+	AccountUsageCreatedAt time.Time
+	AccountUsageModel     string
 	AccountCostSnapshot
 	UserBilling
 	RequestID            string
@@ -1863,6 +1866,9 @@ func (db *DB) migrate(ctx context.Context) error {
 		return err
 	}
 	if err := db.InitFixedEgress(migrateCtx); err != nil {
+		return err
+	}
+	if err := db.migrateAccountUsageCostEvents(ctx); err != nil {
 		return err
 	}
 	return db.runDataMigrationsWithTimeout()
@@ -4533,12 +4539,37 @@ func (db *DB) InsertUsageLog(ctx context.Context, log *UsageLogInput) error {
 
 	// User image fees are independent of upstream token cost.
 	userBilled := UsageLogUserBilledCost(log)
-	if !storeUsageLog && (log.APIKeyID <= 0 || userBilled <= 0 || log.StatusCode == 499) {
+	sourceAdmitted := log.AccountID > 0 && log.QuotaUsageAdmitted != nil && *log.QuotaUsageAdmitted
+	if !storeUsageLog && !sourceAdmitted && (log.APIKeyID <= 0 || userBilled <= 0 || log.StatusCode == 499) {
 		return nil
 	}
 
+	ledgerID := ""
+	ledgerAt := time.Now().UTC()
+	ledgerModel := log.EffectiveModel
+	if ledgerModel == "" {
+		ledgerModel = log.Model
+	}
+	if log.AccountUsage != nil && log.AccountUsage.EffectiveModel != "" {
+		ledgerModel = log.AccountUsage.EffectiveModel
+	}
+	if sourceAdmitted {
+		ledgerID = uuid.NewString()
+		if log.QuotaTokens == nil {
+			copy := *log
+			tokens := int64(max(0, log.InputTokens) + max(0, log.OutputTokens))
+			if log.AccountUsage != nil {
+				tokens = int64(max(0, log.AccountUsage.InputTokens) + max(0, log.AccountUsage.OutputTokens))
+			}
+			copy.QuotaTokens = &tokens
+			log = &copy
+		}
+	}
 	db.logMu.Lock()
 	db.logBuf = append(db.logBuf, usageLogEntry{
+		AccountUsageEventID:    ledgerID,
+		AccountUsageCreatedAt:  ledgerAt,
+		AccountUsageModel:      ledgerModel,
 		RequestID:              clampUsageLogText(log.RequestID, usageLogRequestIDMaxLen),
 		UpstreamRequestID:      clampUsageLogText(log.UpstreamRequestID, usageLogRequestIDMaxLen),
 		UpstreamProxyID:        log.UpstreamProxyID,
@@ -4625,8 +4656,9 @@ func (db *DB) InsertUsageLog(ctx context.Context, log *UsageLogInput) error {
 
 // UsageLogInput 日志写入参数
 type UsageLogInput struct {
-	AccountUsage    *AccountUsageEvidence
-	AccountGroupIDs []int64
+	AccountStatsOnly bool
+	AccountUsage     *AccountUsageEvidence
+	AccountGroupIDs  []int64
 	AccountCostSnapshot
 	billingSnapshot   *usageBillingSnapshot
 	RequestID         string
@@ -5064,6 +5096,9 @@ func (db *DB) insertSQLiteUsageLogBatch(ctx context.Context, batch []usageLogEnt
 		}
 	}
 
+	if err := db.insertAccountUsageCostEvents(ctx, tx, batch); err != nil {
+		return fmt.Errorf("account cost ledger: %w", err)
+	}
 	if err := db.applyAPIKeyScopeCountersWithExec(ctx, tx, batch); err != nil {
 		return fmt.Errorf("更新 scope 累计额度: %w", err)
 	}
@@ -5116,6 +5151,9 @@ func (db *DB) batchInsertLogs(ctx context.Context, batch []usageLogEntry) error 
 			return err
 		}
 		insertedIDs = append(insertedIDs, ids...)
+	}
+	if err := db.insertAccountUsageCostEvents(ctx, tx, batch); err != nil {
+		return fmt.Errorf("account cost ledger: %w", err)
 	}
 	if err := db.applyAPIKeyScopeCountersWithExec(ctx, tx, batch); err != nil {
 		return fmt.Errorf("更新 scope 累计额度: %w", err)

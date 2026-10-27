@@ -123,6 +123,9 @@ func WithDeliveredImageCount(input *UsageLogInput, delivered int) *UsageLogInput
 }
 
 func UsageLogUserBilledCost(input *UsageLogInput) float64 {
+	if input != nil && input.AccountStatsOnly {
+		return 0
+	}
 	input = SnapshotUsageLogBilling(input)
 	if input == nil {
 		return 0

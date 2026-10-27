@@ -14,11 +14,6 @@ func (h *Handler) snapshotAccountStatsPricing(input *database.UsageLogInput) *da
 			// Source equivalence is scoped to OpenAI/Codex upstreams.
 			if !acc.IsGrokAPI() && !acc.IsAntigravityAPI() && !acc.IsClaudeOAuth() {
 				cfg = acc.AccountStatsPricing()
-				if input.AccountGroupIDs == nil {
-					copy := *input
-					copy.AccountGroupIDs = acc.GroupIDSnapshot()
-					input = &copy
-				}
 			}
 		}
 	}
