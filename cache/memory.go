@@ -453,6 +453,24 @@ func (tc *MemoryTokenCache) DeleteRuntime(ctx context.Context, namespace string,
 	return nil
 }
 
+func (tc *MemoryTokenCache) CompareAndDeleteRuntime(ctx context.Context, namespace, key string, expected []byte) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	mapKey := runtimeMapKey(namespace, key)
+	if mapKey == "" {
+		return false, nil
+	}
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+	entry, ok := tc.runtime[mapKey]
+	if !ok || !bytes.Equal(entry.value, expected) {
+		return false, nil
+	}
+	delete(tc.runtime, mapKey)
+	return true, nil
+}
+
 func (tc *MemoryTokenCache) ClaimRuntimeOwner(ctx context.Context, namespace, key string, owner []byte, ttl time.Duration) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err

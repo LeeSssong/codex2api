@@ -54,6 +54,12 @@ func (s *Store) MarkTransientRateLimited(acc *Account, retryAfter time.Duration)
 	if s == nil || acc == nil {
 		return nextTransientRateLimitCooldown(0, retryAfter)
 	}
+	s.credentialRecoveryMu.RLock()
+	defer s.credentialRecoveryMu.RUnlock()
+	if acc.credentialRuntimeRetired.Load() {
+		return nextTransientRateLimitCooldown(0, retryAfter)
+	}
+	generation := acc.GetCredentialGeneration()
 	now := time.Now()
 	acc.mu.Lock()
 	until := acc.CooldownUtil
@@ -97,7 +103,7 @@ func (s *Store) MarkTransientRateLimited(acc *Account, retryAfter time.Duration)
 	acc.armTransientRateLimitRecoveryLocked(s)
 	record := runtimeCooldownRecord{
 		Kind: cache.CooldownKindTransient, Reason: ResponsesRateLimitedCooldownReason,
-		ResetAt: until, UpdatedAt: now, BackoffLevel: acc.transientRateLimitBackoff,
+		ResetAt: until, UpdatedAt: now, BackoffLevel: acc.transientRateLimitBackoff, Generation: generation,
 	}
 	acc.mu.Unlock()
 	s.fastSchedulerUpdate(acc)

@@ -19,6 +19,7 @@ type RuntimeCooldown struct {
 	UpdatedAt    time.Time `json:"updated_at,omitempty"`
 	BackoffLevel int       `json:"backoff_level,omitempty"`
 	ExpiresAtMS  int64     `json:"expires_at_ms,omitempty"`
+	Generation   int64     `json:"generation,omitempty"`
 }
 
 // RuntimeCooldownMerger prevents delayed short freezes from replacing quota or
@@ -51,7 +52,7 @@ func (tc *MemoryTokenCache) MergeRuntimeCooldown(ctx context.Context, namespace,
 	if entry, ok := tc.runtime[mapKey]; ok && entry.expiresAt.After(time.Now()) {
 		var current RuntimeCooldown
 		if json.Unmarshal(entry.value, &current) == nil && current.ResetAt.After(time.Now()) {
-			if current.Strength() > incoming.Strength() || current.Strength() == incoming.Strength() && current.ResetAt.After(incoming.ResetAt) {
+			if current.Generation > incoming.Generation || current.Generation == incoming.Generation && (current.Strength() > incoming.Strength() || current.Strength() == incoming.Strength() && current.ResetAt.After(incoming.ResetAt)) {
 				winner = current
 			}
 			if current.Kind == CooldownKindTransient && incoming.Kind == CooldownKindTransient {
@@ -86,8 +87,9 @@ if payload then
         local expires = tonumber(current.expires_at_ms) or (now + ttl)
         current.expires_at_ms = expires
         if expires > now then
+            local oldGeneration, newGeneration = tonumber(current.generation) or 0, tonumber(incoming.generation) or 0
             local oldStrength, newStrength = strength(current), strength(incoming)
-            if oldStrength > newStrength or (oldStrength == newStrength and expires > incoming.expires_at_ms) then winner = current end
+            if oldGeneration > newGeneration or (oldGeneration == newGeneration and (oldStrength > newStrength or (oldStrength == newStrength and expires > incoming.expires_at_ms))) then winner = current end
             if current.kind == 'transient' and incoming.kind == 'transient' then winner.backoff_level = math.max(tonumber(current.backoff_level) or 0, tonumber(incoming.backoff_level) or 0) end
         end
     end

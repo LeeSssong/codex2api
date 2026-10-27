@@ -8849,6 +8849,47 @@ func (db *DB) ClearCooldown(ctx context.Context, id int64) error {
 	})
 }
 
+// UpdateAccountRuntimeStateForGeneration discards delayed results from a
+// credential generation that has already been replaced.
+func (db *DB) UpdateAccountRuntimeStateForGeneration(ctx context.Context, id, generation int64, state, errorMsg, reason string, until *time.Time) (bool, error) {
+	var query string
+	var args []any
+	switch state {
+	case "cooldown":
+		if until == nil {
+			return false, errors.New("cooldown deadline is required")
+		}
+		query = `UPDATE accounts SET cooldown_reason=$1,cooldown_until=$2,updated_at=CURRENT_TIMESTAMP WHERE id=$3 AND credential_generation=$4`
+		args = []any{reason, *until, id, generation}
+		if errorMsg != "" {
+			query = `UPDATE accounts SET cooldown_reason=$1,cooldown_until=$2,error_message=$3,updated_at=CURRENT_TIMESTAMP WHERE id=$4 AND credential_generation=$5`
+			args = []any{reason, *until, errorMsg, id, generation}
+		}
+	case "error":
+		query = `UPDATE accounts SET status='error',error_message=$1,cooldown_reason='',cooldown_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=$2 AND credential_generation=$3`
+		args = []any{errorMsg, id, generation}
+	case "clear_error":
+		query = `UPDATE accounts SET status='active',error_message='',cooldown_reason='',cooldown_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=$1 AND credential_generation=$2`
+		args = []any{id, generation}
+	case "clear_cooldown":
+		query = `UPDATE accounts SET cooldown_reason='',cooldown_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=$1 AND credential_generation=$2`
+		args = []any{id, generation}
+	default:
+		return false, errors.New("invalid account runtime state")
+	}
+	var applied bool
+	err := db.withSQLiteWriteLock(ctx, func() error {
+		result, err := db.conn.ExecContext(ctx, query, args...)
+		if err != nil {
+			return err
+		}
+		affected, err := result.RowsAffected()
+		applied = affected == 1
+		return err
+	})
+	return applied, err
+}
+
 // InsertAccount 插入新账号
 func (db *DB) InsertAccount(ctx context.Context, name string, refreshToken string, proxyURL string) (int64, error) {
 	credentials := map[string]interface{}{

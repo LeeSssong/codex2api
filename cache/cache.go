@@ -68,6 +68,12 @@ type RuntimeOwnerStore interface {
 	CompareAndDeleteRuntimeOwner(ctx context.Context, namespace, key string, expected []byte) (bool, error)
 }
 
+// RuntimeValueCompareDeleter atomically deletes a runtime value only when it
+// still contains the bytes previously observed by the caller.
+type RuntimeValueCompareDeleter interface {
+	CompareAndDeleteRuntime(context.Context, string, string, []byte) (bool, error)
+}
+
 // TokenCache 统一的 token 缓存、刷新锁与短期运行态缓存接口。
 type TokenCache interface {
 	Driver() string

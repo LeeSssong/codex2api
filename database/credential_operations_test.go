@@ -43,6 +43,11 @@ func TestCredentialOperationsInitialImportPersistsAndEnrolls(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		saved, err := db.GetCredentialOpsTask(ctx, claim.ID)
+		row, rowErr := db.GetAccountByID(ctx, id)
+		if err != nil || rowErr != nil || saved.ExpectedGeneration+1 != row.CredentialGeneration {
+			t.Fatalf("committed generation missing for import/dedup: task=%+v row=%+v errors=%v/%v", saved, row, err, rowErr)
+		}
 		return id
 	}
 	id := queue()
@@ -800,5 +805,46 @@ func TestCredentialOperationsTOTPSnapshotRejectsConcurrentRouteEdit(t *testing.T
 	route, e := dec(input.ProxyURLCiphertext)
 	if e != nil || route != "http://account-b:9001" {
 		t.Fatalf("current route was not preserved: %q %v", route, e)
+	}
+}
+
+func TestCredentialRuntimeStateRejectsReplacedGeneration(t *testing.T) {
+	db, err := New("sqlite", filepath.Join(t.TempDir(), "runtime-generation.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	id, err := db.InsertAccountWithCredentials(ctx, "generation fence", map[string]any{"access_token": "synthetic"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.conn.ExecContext(ctx, "UPDATE accounts SET credential_generation=2,enabled=FALSE WHERE id=$1", id); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Hour).UTC().Truncate(time.Second)
+	for _, state := range []string{"cooldown", "error", "clear_error", "clear_cooldown"} {
+		applied, err := db.UpdateAccountRuntimeStateForGeneration(ctx, id, 1, state, "stale failure", "unauthorized", &deadline)
+		if err != nil || applied {
+			t.Fatalf("stale %s applied=%v err=%v", state, applied, err)
+		}
+	}
+	row, err := db.GetAccountByID(ctx, id)
+	if err != nil || row.Status != "active" || row.ErrorMessage != "" || row.CooldownUntil.Valid || row.Enabled {
+		t.Fatalf("stale mutation changed account: %+v %v", row, err)
+	}
+	if ok, err := db.UpdateAccountRuntimeStateForGeneration(ctx, id, 2, "cooldown", "new failure", "unauthorized", &deadline); err != nil || !ok {
+		t.Fatalf("current cooldown: %v %v", ok, err)
+	}
+	row, err = db.GetAccountByID(ctx, id)
+	if err != nil || row.CooldownReason != "unauthorized" || row.ErrorMessage != "new failure" || row.Enabled {
+		t.Fatalf("current mutation missing: %+v %v", row, err)
+	}
+	if ok, err := db.UpdateAccountRuntimeStateForGeneration(ctx, id, 1, "clear_error", "", "", nil); err != nil || ok {
+		t.Fatalf("stale clear: %v %v", ok, err)
+	}
+	row, err = db.GetAccountByID(ctx, id)
+	if err != nil || row.CooldownReason != "unauthorized" {
+		t.Fatalf("stale clear erased current failure: %+v %v", row, err)
 	}
 }

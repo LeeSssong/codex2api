@@ -102,8 +102,13 @@ func (h *Handler) RetryCredentialOpsLogin(c *gin.Context) {
 		c.Status(404)
 		return
 	}
-	if task.Status == "succeeded" {
-		_ = h.reloadTokenAccount(c.Request.Context(), task.AccountID, "credential_ops_retry")
+	if task.Status == "succeeded" && task.OAuthProfile != "excel" {
+		unlock := h.store.LockCredentialOpsRecovery()
+		defer unlock()
+		if err := h.reconcileCredentialOpsLogin(c.Request.Context(), task.ID, task.AccountID); err != nil {
+			c.JSON(503, gin.H{"error": "credentials committed; runtime recovery pending", "account_id": task.AccountID})
+			return
+		}
 	}
 	c.JSON(202, task)
 }

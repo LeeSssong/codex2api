@@ -316,6 +316,7 @@ type Account struct {
 	CooldownUtil                time.Time
 	CooldownReason              string // rate_limited / rate_limited_5h / responses_rate_limited / unauthorized / 空
 	usageCooldownPersistMu      sync.Mutex
+	credentialRuntimeRetired    atomic.Bool
 	usageCooldownPersistPending bool
 	ErrorMsg                    string
 
@@ -3282,6 +3283,9 @@ func (a *Account) GetCredentialGeneration() int64 {
 	}
 	a.mu.RLock()
 	defer a.mu.RUnlock()
+	if a.CredentialGeneration <= 0 {
+		return 1 // Legacy accounts use the schema default generation.
+	}
 	return a.CredentialGeneration
 }
 
@@ -3957,7 +3961,8 @@ type Store struct {
 	modelQuality                       modelQualityGate
 	proxyAuditLabels                   map[string]ProxyAuditLabel
 	mu                                 sync.RWMutex
-	accountMutationMu                  sync.Mutex // serializes account-set and scheduler mutations without nesting their locks
+	accountMutationMu                  sync.Mutex   // serializes account-set and scheduler mutations without nesting their locks
+	credentialRecoveryMu               sync.RWMutex // orders login commits/reloads against cooldown publication
 	accounts                           []*Account
 	accountsByID                       map[int64]*Account // DBID -> Account 索引，与 accounts 同步维护，供 O(1) 查找
 	accountSnapshot                    atomic.Pointer[accountListSnapshot]
@@ -4272,14 +4277,18 @@ func cooldownTTL(resetAt time.Time) (time.Duration, bool) {
 	return ttl, true
 }
 
-func (s *Store) setCachedAccountCooldown(accountID int64, reason string, resetAt time.Time) {
+func (s *Store) setCachedAccountCooldown(accountID int64, reason string, resetAt time.Time, generations ...int64) {
+	var generation int64
+	if len(generations) > 0 {
+		generation = generations[0]
+	}
 	// 所有冷却设置（429 / premium 5h / usage_limit）都经此漏斗——在这里挂「到点即探」唤醒：
 	// 冷却倒计时归零那一刻精确探针一次，刷新用量进度条。unauthorized 除外（探针必 401，无意义）。
 	if normalizeCooldownReason(reason) != "unauthorized" {
 		s.WakeBoundaryProbe(resetAt)
 	}
 	s.cacheAccountCooldownRecord(accountID, runtimeCooldownRecord{
-		Reason: normalizeCooldownReason(reason), ResetAt: resetAt, UpdatedAt: time.Now(),
+		Reason: normalizeCooldownReason(reason), ResetAt: resetAt, UpdatedAt: time.Now(), Generation: generation,
 	})
 }
 
@@ -4363,8 +4372,44 @@ func (s *Store) ForgetCachedAccountCooldown(accountID int64) {
 	s.deleteCachedAccountCooldown(accountID)
 }
 
+// RecoverCredentialOpsUnauthorizedCooldown removes only a cached auth failure
+// that predates the committed credential generation. Compare-and-delete keeps
+// a concurrent failure from the new credentials intact.
+func (s *Store) RecoverCredentialOpsUnauthorizedCooldown(accountID, generation int64, committedAt time.Time) error {
+	if s == nil || s.tokenCache == nil || accountID <= 0 || generation <= 0 {
+		return nil
+	}
+	ctx, cancel := cooldownRuntimeContext()
+	defer cancel()
+	key := accountCooldownRuntimeKey(accountID)
+	payload, ok, err := s.tokenCache.GetRuntime(ctx, accountCooldownCacheNamespace, key)
+	if err != nil || !ok || len(payload) == 0 {
+		return err
+	}
+	var record runtimeCooldownRecord
+	if err := json.Unmarshal(payload, &record); err != nil {
+		return fmt.Errorf("decode account cooldown: %w", err)
+	}
+	if record.Reason != "unauthorized" || record.Generation > generation {
+		return nil
+	}
+	staleGeneration := record.Generation > 0 && record.Generation < generation
+	// SQL task timestamps have second precision; positive generations never
+	// use this legacy timestamp fallback.
+	staleCompletion := record.Generation == 0 && !record.UpdatedAt.IsZero() && record.UpdatedAt.Before(committedAt.Add(time.Second))
+	if !staleGeneration && !staleCompletion {
+		return nil
+	}
+	deleter, ok := s.tokenCache.(cache.RuntimeValueCompareDeleter)
+	if !ok {
+		return errors.New("runtime cache does not support compare-and-delete")
+	}
+	_, err = deleter.CompareAndDeleteRuntime(ctx, accountCooldownCacheNamespace, key, payload)
+	return err
+}
+
 func (s *Store) applyCachedAccountCooldown(acc *Account, record runtimeCooldownRecord) {
-	if s == nil || acc == nil || !record.ResetAt.After(time.Now()) {
+	if s == nil || acc == nil || !record.ResetAt.After(time.Now()) || record.Generation > 0 && record.Generation != acc.GetCredentialGeneration() {
 		return
 	}
 	reason := normalizeCooldownReason(record.Reason)
@@ -4430,6 +4475,9 @@ func (s *Store) accountHasCachedCooldown(acc *Account) bool {
 	}
 	record, ok := s.getCachedAccountCooldown(acc.DBID)
 	if !ok {
+		return false
+	}
+	if record.Generation > 0 && record.Generation != acc.GetCredentialGeneration() {
 		return false
 	}
 	s.applyCachedAccountCooldown(acc, record)
@@ -5006,7 +5054,10 @@ func (s *Store) recomputeAllAccountSchedulerState() {
 }
 
 func (s *Store) fastSchedulerUpdate(acc *Account) {
-	if s == nil || acc == nil {
+	if s == nil || acc == nil || acc.credentialRuntimeRetired.Load() {
+		return
+	}
+	if current := s.FindByID(acc.DBID); current != nil && current != acc {
 		return
 	}
 	scheduler := s.getFastScheduler()
@@ -9827,6 +9878,7 @@ func (s *Store) AddAccounts(accounts []*Account) {
 		if acc == nil {
 			continue
 		}
+		acc.credentialRuntimeRetired.Store(false)
 		// 记录加入时间（用于过期清理）
 		if acc.AddedAt.Load() == 0 {
 			acc.AddedAt.Store(now)
@@ -9873,6 +9925,7 @@ func (s *Store) RemoveAccount(dbID int64) {
 	s.mu.Lock()
 	for i, acc := range s.accounts {
 		if acc.DBID == dbID {
+			acc.credentialRuntimeRetired.Store(true)
 			s.accounts = append(s.accounts[:i], s.accounts[i+1:]...)
 			s.rebuildAccountIndex()
 			s.publishAccountSnapshot(s.accounts)
@@ -12243,6 +12296,7 @@ func (s *Store) RemoveAccounts(dbIDs []int64) {
 	kept := s.accounts[:0]
 	for _, acc := range s.accounts {
 		if _, remove := removeSet[acc.DBID]; remove {
+			acc.credentialRuntimeRetired.Store(true)
 			removedIDs = append(removedIDs, acc.DBID)
 		} else {
 			kept = append(kept, acc)

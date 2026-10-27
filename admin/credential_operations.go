@@ -335,6 +335,14 @@ func (h *Handler) CompleteCredentialOpsWorker(c *gin.Context) {
 	}
 	task, err := h.db.GetCredentialOpsTask(c.Request.Context(), id)
 	if err == nil && task != nil && task.Status == "succeeded" && task.Attempt == req.Attempt {
+		if task.OAuthProfile != "excel" {
+			unlock := h.store.LockCredentialOpsRecovery()
+			defer unlock()
+			if recoverErr := h.reconcileCredentialOpsLogin(c.Request.Context(), task.ID, task.AccountID); recoverErr != nil {
+				c.JSON(503, gin.H{"error": "credentials committed; runtime recovery pending", "account_id": task.AccountID})
+				return
+			}
+		}
 		c.JSON(200, gin.H{"status": "succeeded", "account_id": task.AccountID})
 		return
 	}
@@ -424,6 +432,8 @@ func (h *Handler) CompleteCredentialOpsWorker(c *gin.Context) {
 	if task.AccountID == 0 {
 		h.mergeDuplicateMu.Lock()
 	}
+	unlock := h.store.LockCredentialOpsRecovery()
+	defer unlock()
 	credentials := tokenCredentialMap(seed)
 	credentials["client_id"] = auth.ClientID
 	if task.OAuthProfile == "excel" {
@@ -443,12 +453,44 @@ func (h *Handler) CompleteCredentialOpsWorker(c *gin.Context) {
 		c.JSON(409, gin.H{"error": err.Error()})
 		return
 	}
-	if err = h.reloadTokenAccount(c.Request.Context(), accountID, "credential_ops"); err != nil {
-		c.JSON(503, gin.H{"error": "credentials committed; runtime reload pending", "account_id": accountID})
-		return
+	if task.OAuthProfile != "excel" {
+		if err = h.reconcileCredentialOpsLogin(c.Request.Context(), id, accountID); err != nil {
+			c.JSON(503, gin.H{"error": "credentials committed; runtime recovery pending", "account_id": accountID})
+			return
+		}
 	}
 	h.db.InsertAccountEventAsync(accountID, "updated", "credential_ops")
 	c.JSON(200, gin.H{"status": "succeeded", "account_id": accountID})
+}
+
+// Caller holds Store.LockCredentialOpsRecovery throughout commit/reconciliation.
+func (h *Handler) reconcileCredentialOpsLogin(ctx context.Context, taskID, accountID int64) error {
+	if h == nil || h.db == nil || h.store == nil || taskID <= 0 || accountID <= 0 {
+		return nil
+	}
+	task, err := h.db.GetCredentialOpsTask(ctx, taskID)
+	if err != nil {
+		return err
+	}
+	if task == nil || task.Status != "succeeded" || task.AccountID != accountID || task.OAuthProfile == "excel" {
+		return nil
+	}
+	row, err := h.db.GetAccountByID(ctx, accountID)
+	if err != nil {
+		return err
+	}
+	committedGeneration := task.ExpectedGeneration + 1
+	if row.CredentialGeneration != committedGeneration {
+		return nil
+	}
+	if err := h.store.RecoverCredentialOpsUnauthorizedCooldown(accountID, committedGeneration, task.UpdatedAt); err != nil {
+		return err
+	}
+	current := h.store.FindByID(accountID)
+	if current == nil || current.GetCredentialGeneration() != committedGeneration {
+		return h.reloadTokenAccount(ctx, accountID, "credential_ops_recovery")
+	}
+	return nil
 }
 func (h *Handler) credentialOpsGate(c *gin.Context) {
 	if !h.credentialOperationsEnabled(c.Request.Context()) {

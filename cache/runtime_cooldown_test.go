@@ -17,6 +17,8 @@ func TestMemoryRuntimeCooldownMerge(t *testing.T) {
 	c := NewMemory(1)
 	t.Cleanup(func() { _ = c.Close() })
 	testRuntimeCooldownMerge(t, c)
+	testRuntimeCompareDelete(t, c)
+	testRuntimeCooldownGeneration(t, c)
 }
 
 func TestRedisRuntimeCooldownMerge(t *testing.T) {
@@ -30,7 +32,52 @@ func TestRedisRuntimeCooldownMerge(t *testing.T) {
 	}
 	client := redis.NewClient(options)
 	t.Cleanup(func() { _ = client.Close() })
-	testRuntimeCooldownMerge(t, &redisTokenCache{client: client})
+	c := &redisTokenCache{client: client}
+	testRuntimeCooldownMerge(t, c)
+	testRuntimeCompareDelete(t, c)
+	testRuntimeCooldownGeneration(t, c)
+}
+
+func testRuntimeCooldownGeneration(t *testing.T, c TokenCache) {
+	t.Helper()
+	merger := c.(RuntimeCooldownMerger)
+	ctx := context.Background()
+	key := fmt.Sprintf("generation-%s-%d", t.Name(), time.Now().UnixNano())
+	t.Cleanup(func() { _ = c.DeleteRuntime(ctx, "generation", key) })
+	old := RuntimeCooldown{Reason: "unauthorized", Generation: 4, ResetAt: time.Now().Add(time.Hour)}
+	new := RuntimeCooldown{Reason: "rate_limited_5h", Generation: 5, ResetAt: time.Now().Add(time.Minute)}
+	if _, err := merger.MergeRuntimeCooldown(ctx, "generation", key, old); err != nil {
+		t.Fatal(err)
+	}
+	for _, incoming := range []RuntimeCooldown{new, old} {
+		if got, err := merger.MergeRuntimeCooldown(ctx, "generation", key, incoming); err != nil || got.Generation != new.Generation || got.Reason != new.Reason {
+			t.Fatalf("stale generation replaced current cooldown: %+v, %v", got, err)
+		}
+	}
+}
+
+func testRuntimeCompareDelete(t *testing.T, c TokenCache) {
+	t.Helper()
+	ctx := context.Background()
+	key := fmt.Sprintf("compare-%s-%d", t.Name(), time.Now().UnixNano())
+	t.Cleanup(func() { _ = c.DeleteRuntime(ctx, "compare", key) })
+	deleter := c.(RuntimeValueCompareDeleter)
+	old, new := json.RawMessage(`{"generation":1}`), json.RawMessage(`{"generation":2}`)
+	if err := c.SetRuntime(ctx, "compare", key, new, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if deleted, err := deleter.CompareAndDeleteRuntime(ctx, "compare", key, old); err != nil || deleted {
+		t.Fatalf("deleted changed value: %v %v", deleted, err)
+	}
+	if raw, present, err := c.GetRuntime(ctx, "compare", key); err != nil || !present || string(raw) != string(new) {
+		t.Fatalf("new value lost: %s %v %v", raw, present, err)
+	}
+	if deleted, err := deleter.CompareAndDeleteRuntime(ctx, "compare", key, new); err != nil || !deleted {
+		t.Fatalf("matching delete: %v %v", deleted, err)
+	}
+	if _, present, err := c.GetRuntime(ctx, "compare", key); err != nil || present {
+		t.Fatalf("matching value remains: %v %v", present, err)
+	}
 }
 
 func testRuntimeCooldownMerge(t *testing.T, c TokenCache) {

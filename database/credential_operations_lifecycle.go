@@ -488,7 +488,7 @@ func (db *DB) CommitCredentialOpsLogin(ctx context.Context, id int64, owner stri
 			return err
 		}
 
-		result, err := tx.ExecContext(ctx, `UPDATE credential_operations_tasks SET account_id=$1,status='succeeded',stage='succeeded',lease_owner='',lease_until=NULL,finished_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=$2 AND status='running' AND lease_owner=$3 AND attempt=$4 AND lease_until>CURRENT_TIMESTAMP`, accountID, id, owner, attempt)
+		result, err := tx.ExecContext(ctx, `UPDATE credential_operations_tasks SET account_id=$1,expected_generation=$5,status='succeeded',stage='succeeded',lease_owner='',lease_until=NULL,finished_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=$2 AND status='running' AND lease_owner=$3 AND attempt=$4 AND lease_until>CURRENT_TIMESTAMP`, accountID, id, owner, attempt, expected)
 		if err != nil {
 			return err
 		}

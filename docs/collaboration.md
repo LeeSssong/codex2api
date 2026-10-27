@@ -34,3 +34,9 @@
 - Production source `9aa624fb088a425668004c45f1d2fa4868a49ee0`; relevant completion/reload/cache code is unchanged at the current main baseline. Other worktrees, including the active intelligence cooldown task, remain untouched.
 
 - Result: missing shared unauthorized-cooldown invalidation confirmed by offline worker-completion/scheduler regression, repeated three times. Manual-test callback clears it. See `docs/investigations/2026-10-28-credential-relogin-state.md`. Regression intentionally fails; no application fix, push or deployment performed.
+
+## 2026-10-28 Credential relogin implementation (active, local only)
+
+- User authorized implementation, explicitly no deployment. Continue in `codex/credential-relogin-state-audit` from diagnosis `6aed5588`; main remains `69abb079`.
+- Owned files: credential completion/retry handlers, new focused Store recovery helper and publication guards, regression tests, investigation/handoff documentation. Shared `auth/store.go` changes integrate by commit only.
+- Plan: `docs/investigations/2026-10-28-credential-relogin-fix-plan.md`. No server writes or real reauthentication.

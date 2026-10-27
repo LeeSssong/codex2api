@@ -429,6 +429,17 @@ func runtimeValueKey(namespace, raw string) string {
 	return runtimeHashKey("codex:runtime:"+runtimeNamespace(namespace)+":", raw)
 }
 
+var compareAndDeleteRuntimeScript = redis.NewScript(`
+local current = redis.call('GET', KEYS[1])
+if current and current == ARGV[1] then return redis.call('DEL', KEYS[1]) end
+return 0
+`)
+
+func (tc *redisTokenCache) CompareAndDeleteRuntime(ctx context.Context, namespace, key string, expected []byte) (bool, error) {
+	deleted, err := compareAndDeleteRuntimeScript.Run(ctx, tc.client, []string{runtimeValueKey(namespace, key)}, expected).Int64()
+	return deleted == 1, err
+}
+
 func (tc *redisTokenCache) SetSessionAffinity(ctx context.Context, key string, binding SessionAffinityBinding, ttl time.Duration) error {
 	key = strings.TrimSpace(key)
 	if key == "" || binding.AccountID == 0 {
