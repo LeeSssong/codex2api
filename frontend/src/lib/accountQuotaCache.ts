@@ -2,6 +2,7 @@ import type { AccountPageStatsItem, AccountPageStatsResponse, AccountRow } from 
 
 export type QuotaCacheEntry = { data: AccountPageStatsItem | null; status: 'loading' | 'ready' | 'error' }
 const CACHE_TTL = 5 * 60 * 1000
+const REQUEST_TIMEOUT_MS = 30_000
 
 /** Source-equivalent native metadata; request counters never invalidate usage. */
 export function accountQuotaRefreshKey(account: Partial<AccountRow>): string {
@@ -21,9 +22,9 @@ export class AccountQuotaCache {
   private inFlight = new Map<number, number>()
   private pending = new Set<number>()
   private timer: ReturnType<typeof setTimeout> | undefined
-  private load: (ids: number[]) => Promise<AccountPageStatsResponse>
+  private load: (ids: number[], signal?: AbortSignal) => Promise<AccountPageStatsResponse>
   private now: () => number
-  constructor(load: (ids: number[]) => Promise<AccountPageStatsResponse>, now = Date.now) {
+  constructor(load: (ids: number[], signal?: AbortSignal) => Promise<AccountPageStatsResponse>, now = Date.now) {
     this.load = load
     this.now = now
   }
@@ -60,8 +61,18 @@ export class AccountQuotaCache {
     this.pending.clear()
     const versions = new Map(ids.map(id => [id, this.versions.get(id)!]))
     for (const id of ids) this.inFlight.set(id, versions.get(id)!)
+    const controller = new AbortController()
+    let timeout: ReturnType<typeof setTimeout> | undefined
+    const deadline = new Promise<never>((_resolve, reject) => {
+      timeout = setTimeout(() => {
+        controller.abort()
+        reject(new Error('Account quota request timed out'))
+      }, REQUEST_TIMEOUT_MS)
+    })
     try {
-      const result = await this.load(ids)
+      // Covers headers AND body; even a loader that ignores abort cannot lock
+      // the per-account in-flight sentinel or overwrite a later successful retry.
+      const result = await Promise.race([this.load(ids, controller.signal), deadline])
       const entries = { ...this.entries }
       for (const id of ids) {
         if (this.versions.get(id) !== versions.get(id)) continue
@@ -79,6 +90,7 @@ export class AccountQuotaCache {
       }
       this.entries = entries
     } finally {
+      if (timeout !== undefined) clearTimeout(timeout)
       for (const id of ids) if (this.inFlight.get(id) === versions.get(id)) this.inFlight.delete(id)
       this.emit()
     }

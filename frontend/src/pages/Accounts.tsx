@@ -3140,7 +3140,7 @@ export default function Accounts() {
   // page-stats 存独立 state 并在渲染时合并:分页基础行不含成本/用量明细,
   // 若把 stats 写回 data.accounts,任何静默列表刷新都会用基础行整体覆盖,
   // 成本列在 ID 不变时永久变 "-" (issue #499)。
-  const [quotaCache] = useState(() => new AccountQuotaCache(ids => api.getAccountPageStats(ids)));
+  const [quotaCache] = useState(() => new AccountQuotaCache((ids, signal) => api.getAccountPageStats(ids, signal)));
   const quotaEntries = useSyncExternalStore(quotaCache.subscribe, quotaCache.getSnapshot);
   const quotaVisibleIds = useRef(new Set<number>());
   const requestQuotaUsage = useCallback((account: AccountRow) => {
@@ -3154,7 +3154,9 @@ export default function Accounts() {
     const refresh = () => {
       const desktop = window.matchMedia('(min-width: 768px)').matches;
       for (const account of quotaAccountsRef.current) {
-        if (!account.grok_api && (desktop || quotaVisibleIds.current.has(account.id))) requestQuotaUsage(account);
+        // Native Responses statistics have no quota-cell visibility observer.
+        // Preserve their page statistics load without eagerly probing mobile Codex rows.
+        if (!account.grok_api && (desktop || account.openai_responses_api || quotaVisibleIds.current.has(account.id))) requestQuotaUsage(account);
       }
     };
     refresh();
