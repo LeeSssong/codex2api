@@ -207,7 +207,7 @@ def codex_route(config):
         for route in server.get('routes', []):
             hosts = [h for match in route.get('match', []) for h in match.get('host', [])]
             if HOST in hosts:
-                if hosts != [HOST]:
+                if not set(hosts).issubset({HOST, '64-83-10-67.nip.io'}):
                     raise ValueError('Codex route shares another hostname')
                 routes.append(route)
     if len(routes) != 1:

@@ -16,6 +16,11 @@ if MODULE.exists():
 
 
 class GuardTests(unittest.TestCase):
+    def test_verified_codex_legacy_alias_is_same_route(self):
+        c = {'apps': {'http': {'servers': {'https': {'routes': [
+            {'match': [{'host': ['codex.xingqiaolab.top', '64-83-10-67.nip.io']}], 'handle': []}]}}}}}
+        self.assertIs(release.codex_route(c), c['apps']['http']['servers']['https']['routes'][0])
+
     def container(self):
         return {'Id': 'container-id', 'Image': 'sha256:old', 'State': {'Running': True},
                 'Config': {'Env': ['CODEX_PORT=18080'], 'Labels': {
