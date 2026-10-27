@@ -32,7 +32,7 @@ func TestQuotaWindowPredictionAndStates(t *testing.T) {
 		total, remaining *float64
 	}{
 		{name: "source formula", usage: &database.AccountTimeRangeUsage{Requests: 3, Tokens: 45, AccountBilled: 12, UserBilled: 18}, state: "ready", total: quotaTestFloat(40), remaining: quotaTestFloat(28)},
-		{name: "low sample", mutate: func(s *quotaWindowSnapshot) { s.Percent = 9 }, usage: &database.AccountTimeRangeUsage{AccountBilled: 9}, state: "low_sample", total: quotaTestFloat(100), remaining: quotaTestFloat(91)},
+		{name: "low sample", mutate: func(s *quotaWindowSnapshot) { s.Percent = 9 }, usage: &database.AccountTimeRangeUsage{AccountBilled: 9}, state: "ready", total: quotaTestFloat(100), remaining: quotaTestFloat(91)},
 		{name: "weekly uses same formula", mutate: func(s *quotaWindowSnapshot) { s.Label = "7d"; s.Duration = 7 * 24 * time.Hour }, usage: &database.AccountTimeRangeUsage{AccountBilled: 12}, state: "ready", total: quotaTestFloat(40), remaining: quotaTestFloat(28)},
 		{name: "monthly uses same formula", mutate: func(s *quotaWindowSnapshot) { s.Label = "30d"; s.Duration = 30 * 24 * time.Hour }, usage: &database.AccountTimeRangeUsage{AccountBilled: 12}, state: "ready", total: quotaTestFloat(40), remaining: quotaTestFloat(28)},
 		{name: "tiny positive cost", usage: &database.AccountTimeRangeUsage{AccountBilled: 0.003}, state: "ready", total: quotaTestFloat(0.01), remaining: quotaTestFloat(0.007)},
@@ -43,14 +43,14 @@ func TestQuotaWindowPredictionAndStates(t *testing.T) {
 		{name: "zero local usage", usage: &database.AccountTimeRangeUsage{}, state: "no_usage"},
 		{name: "no snapshot", mutate: func(s *quotaWindowSnapshot) { s.PercentValid = false }, state: "unavailable"},
 		{name: "no reset", mutate: func(s *quotaWindowSnapshot) { s.ResetAt = time.Time{} }, state: "unavailable"},
-		{name: "expired", mutate: func(s *quotaWindowSnapshot) { s.ResetAt = now }, state: "stale"},
-		{name: "previous window observation", mutate: func(s *quotaWindowSnapshot) { s.ObservedAt = now.Add(-5 * time.Hour) }, state: "stale"},
+		{name: "expired", mutate: func(s *quotaWindowSnapshot) { s.ResetAt = now }, state: "unavailable"},
+		{name: "previous window observation", mutate: func(s *quotaWindowSnapshot) { s.ObservedAt = now.Add(-5 * time.Hour) }, state: "unavailable"},
 		{name: "missing observation", mutate: func(s *quotaWindowSnapshot) { s.ObservedAt = time.Time{} }, state: "unavailable"},
 		{name: "query failed", err: errors.New("query failed"), state: "error"},
 		{name: "invalid percentage", mutate: func(s *quotaWindowSnapshot) { s.Percent = math.NaN() }, state: "unavailable"},
 		{name: "invalid cost", usage: &database.AccountTimeRangeUsage{AccountBilled: math.Inf(1)}, state: "error"},
-		{name: "negative cost", usage: &database.AccountTimeRangeUsage{AccountBilled: -1}, state: "error"},
-		{name: "overflow", mutate: func(s *quotaWindowSnapshot) { s.Percent = 1e-300 }, usage: &database.AccountTimeRangeUsage{AccountBilled: 1e300}, state: "error"},
+		{name: "negative cost", usage: &database.AccountTimeRangeUsage{AccountBilled: -1}, state: "ready"},
+		{name: "overflow", mutate: func(s *quotaWindowSnapshot) { s.Percent = 1e-300 }, usage: &database.AccountTimeRangeUsage{AccountBilled: 1e300}, state: "ready"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -81,12 +81,12 @@ func TestQuotaWindowPredictionAndStates(t *testing.T) {
 }
 func quotaTestFloat(v float64) *float64 { return &v }
 
-func TestQuotaWindowResetChangeDropsPreviousAggregate(t *testing.T) {
+func TestQuotaWindowCompletedSnapshotRemainsCoherentAfterLiveReset(t *testing.T) {
 	now := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
-	s := quotaWindowSnapshot{AccountID: 1, Label: "5h", Duration: 5 * time.Hour, ResetAt: now.Add(time.Hour), ObservedAt: now.Add(-time.Minute), Percent: 30, PercentValid: true, WindowChanged: true}
+	s := quotaWindowSnapshot{AccountID: 1, Label: "5h", Duration: 5 * time.Hour, ResetAt: now.Add(time.Hour), Percent: 30, PercentValid: true, WindowChanged: true}
 	got := projectAccountQuotaWindow(s, now, &database.AccountTimeRangeUsage{Requests: 2, AccountBilled: 12}, nil)
-	if got.State != "stale" || got.Reason != "window_changed" || got.UsedUSD != nil || got.EstimatedTotalUSD != nil || got.Requests != nil {
-		t.Fatalf("old window aggregate leaked: %+v", got)
+	if got.State != "ready" || got.UsedUSD == nil || *got.UsedUSD != 12 || got.EstimatedTotalUSD == nil || *got.EstimatedTotalUSD != 40 {
+		t.Fatalf("coherent response incorrectly invalidated: %+v", got)
 	}
 }
 
@@ -142,7 +142,7 @@ func TestAccountQuotaPageStatsAlignsWindowsAndLegacyAliases(t *testing.T) {
 			t.Fatalf("quota=%+v", q)
 		}
 	}
-	if got.Quota7d.Label != "30d" || got.Quota7d.StartAt == nil || !got.Quota7d.StartAt.Equal(now.Add(-29*24*time.Hour)) {
+	if got.Quota7d.Label != "7d" || got.Quota7d.StartAt == nil || !got.Quota7d.StartAt.Equal(now.Add(-6*24*time.Hour)) {
 		t.Fatalf("monthly quota=%+v", got.Quota7d)
 	}
 	if got.Billed5h == nil || *got.Billed5h != 12 || got.Billed7d == nil || *got.Billed7d != 12 || got.Usage5hDetail == nil || got.Usage5hDetail.Requests != 1 || got.Usage7dDetail == nil || got.Usage7dDetail.Tokens != 60 {
@@ -177,33 +177,34 @@ func TestAccountQuotaPageStatsAlignsWindowsAndLegacyAliases(t *testing.T) {
 	}
 }
 
-func TestQuotaWindowObservationFreshnessRetainsCurrentUsage(t *testing.T) {
+func TestQuotaWindowSub2DoesNotExpirePredictions(t *testing.T) {
 	now := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
-	usage := &database.AccountTimeRangeUsage{Requests: 20, Tokens: 400, AccountBilled: 120, UserBilled: 180}
-	for _, tc := range []struct {
-		name  string
-		age   time.Duration
-		state string
-	}{
-		{"fresh", 9 * time.Minute, "ready"},
-		{"exact ten minute boundary", 10 * time.Minute, "ready"},
-		{"past boundary", 10*time.Minute + time.Nanosecond, "stale"},
-		{"same window hour old", time.Hour, "stale"},
-		{"same window days old", 3 * 24 * time.Hour, "stale"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			s := quotaWindowSnapshot{AccountID: 1, Label: "7d", Duration: 7 * 24 * time.Hour, ResetAt: now.Add(24 * time.Hour), ObservedAt: now.Add(-tc.age), Percent: 30, PercentValid: true}
-			got := projectAccountQuotaWindow(s, now, usage, nil)
-			if got.State != tc.state || got.UsedUSD == nil || *got.UsedUSD != 120 || got.Requests == nil || *got.Requests != 20 || got.Tokens == nil || *got.Tokens != 400 || got.UserUSD == nil || *got.UserUSD != 180 {
-				t.Fatalf("current metrics/freshness=%+v", got)
+	for _, observed := range []time.Time{time.Time{}, now.Add(-time.Hour), now.Add(-10 * 24 * time.Hour)} {
+		s := quotaWindowSnapshot{AccountID: 1, Label: "7d", Duration: 7 * 24 * time.Hour, ResetAt: now.Add(time.Hour), ObservedAt: observed, Percent: 1, PercentValid: true}
+		got := projectAccountQuotaWindow(s, now, &database.AccountTimeRangeUsage{AccountBilled: 12}, nil)
+		if got.State != "ready" || got.EstimatedTotalUSD == nil || *got.EstimatedTotalUSD != 1200 {
+			t.Fatalf("source retains valid estimate regardless of timestamp: %+v", got)
+		}
+	}
+}
+func TestQuotaWindowSub2RollingFallbackKeepsCosts(t *testing.T) {
+	now := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
+	for _, reset := range []time.Time{time.Time{}, now, now.Add(-time.Hour)} {
+		s := quotaWindowSnapshot{AccountID: 1, Label: "5h", Duration: 5 * time.Hour, ResetAt: reset, Percent: 30, PercentValid: true}
+		starts := quotaWindowStarts(map[int64]quotaWindowSnapshot{1: s}, now)
+		if !starts[1].Equal(now.Add(-5 * time.Hour)) {
+			t.Fatalf("fallback start=%v", starts[1])
+		}
+		got := projectAccountQuotaWindow(s, now, &database.AccountTimeRangeUsage{AccountBilled: 12}, nil)
+		if got.UsedUSD == nil || *got.UsedUSD != 12 {
+			t.Fatalf("fallback cost disappeared: %+v", got)
+		}
+		if reset.IsZero() {
+			if got.EstimatedTotalUSD == nil || *got.EstimatedTotalUSD != 40 {
+				t.Fatalf("missing reset with known percentage: %+v", got)
 			}
-			if tc.state == "stale" {
-				if got.Reason != "observation_stale" || got.EstimatedTotalUSD != nil || got.EstimatedRemainingUSD != nil {
-					t.Fatalf("old observation predicted=%+v", got)
-				}
-			} else if got.EstimatedTotalUSD == nil || *got.EstimatedTotalUSD != 400 || got.EstimatedRemainingUSD == nil || *got.EstimatedRemainingUSD != 280 {
-				t.Fatalf("fresh formula=%+v", got)
-			}
-		})
+		} else if got.UsedPercent == nil || *got.UsedPercent != 0 || got.EstimatedTotalUSD != nil {
+			t.Fatalf("expired cycle should zero percentage: %+v", got)
+		}
 	}
 }

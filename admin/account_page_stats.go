@@ -88,11 +88,8 @@ func (h *Handler) GetAccountPageStats(c *gin.Context) {
 
 	stats := make(map[int64]accountPageStatsItem, len(ids))
 	missingOfficial := make([]int64, 0)
-	currentShort, currentLong := h.accountQuotaSnapshots(ids)
 	for _, id := range ids {
 		short, long := shortSnapshots[id], longSnapshots[id]
-		short.WindowChanged = !short.ResetAt.Equal(currentShort[id].ResetAt) || short.Duration != currentShort[id].Duration
-		long.WindowChanged = !long.ResetAt.Equal(currentLong[id].ResetAt) || long.Duration != currentLong[id].Duration
 		quota5h := projectAccountQuotaWindow(short, now, usage5h[id], shortErr)
 		quota7d := projectAccountQuotaWindow(long, now, usage7d[id], longErr)
 		item := accountPageStatsItem{Quota5h: &quota5h, Quota7d: &quota7d}
