@@ -2,6 +2,10 @@ package database
 
 import (
 	"context"
+	"fmt"
+	"math"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -117,10 +121,16 @@ func TestAccountQuotaSourceAdmittedUsageIsStatusAndGenerationIndependent(t *test
 		{200, false, "overflow_compact_summary", true, 4}, {200, false, "connection_test", false, 8},
 		{503, true, "", false, 16}, {200, false, "", true, 0},
 	}
-	for _, r := range rows {
+	for i, r := range rows {
 		_, err := db.conn.ExecContext(ctx, `INSERT INTO usage_logs(account_id,created_at,status_code,is_retry_attempt,internal_reason,credential_generation,model,account_billed,user_billed,total_tokens,account_cost,standard_cost,quota_usage_admitted,quota_tokens) VALUES(1,$1,$2,$3,$4,99,'gpt-5.4',99,7,99,$5,6,$6,10)`, db.timeArg(now.Add(-time.Minute)), r.status, r.retry, r.reason, r.cost, r.admitted)
 		if err != nil {
 			t.Fatal(err)
+		}
+		if r.admitted {
+			_, err = db.conn.ExecContext(ctx, `INSERT INTO account_usage_cost_events(event_id,account_id,created_at,model,quota_tokens,account_cost,standard_cost,user_billed,account_cost_source) VALUES($1,1,$2,'gpt-5.4',10,$3,6,7,'upstream_default')`, fmt.Sprintf("event-%d", i), db.timeArg(now.Add(-time.Minute)), r.cost)
+			if err != nil {
+				t.Fatal(err)
+			}
 		}
 	}
 	got, err := db.GetAccountQuotaWindowUsage(ctx, map[int64]time.Time{1: now.Add(-time.Hour)}, now)
@@ -129,5 +139,62 @@ func TestAccountQuotaSourceAdmittedUsageIsStatusAndGenerationIndependent(t *test
 	}
 	if got[1].Requests != 5 || got[1].AccountBilled != 10 || got[1].Tokens != 50 {
 		t.Fatalf("source admitted rows=%+v", got[1])
+	}
+}
+
+func TestAccountQuotaLedgerAndLegacyAcrossDrivers(t *testing.T) {
+	for _, driver := range []string{"sqlite", "postgres"} {
+		t.Run(driver, func(t *testing.T) {
+			dsn := filepath.Join(t.TempDir(), "parity.db")
+			if driver == "postgres" {
+				dsn = os.Getenv("CODEX2API_TEST_POSTGRES_DSN")
+				if dsn == "" {
+					t.Skip("isolated PostgreSQL DSN required")
+				}
+			}
+			db, err := New(driver, dsn)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			ctx := context.Background()
+			id := time.Now().UnixNano()%1000000000 + 1000000000
+			start := time.Now().Add(-time.Hour)
+			if _, err = db.conn.ExecContext(ctx, `INSERT INTO usage_logs(account_id,status_code,model,total_tokens,account_billed,user_billed,created_at) VALUES($1,200,'gpt-5.4',100,2,3,$2)`, id, db.timeArg(start.Add(time.Minute))); err != nil {
+				t.Fatal(err)
+			}
+			db.SetUsageLogConfig(UsageLogModeOff, 100, 60)
+			admitted := true
+			tokens := int64(1100)
+			input := &UsageLogInput{AccountID: id, Model: "gpt-5.4", InputTokens: 1000, CachedTokens: 200, OutputTokens: 100, StatusCode: 499}
+			input.QuotaUsageAdmitted = &admitted
+			input.QuotaTokens = &tokens
+			if err = db.InsertUsageLog(ctx, input); err != nil {
+				t.Fatal(err)
+			}
+			db.FlushUsageLogs()
+			got, err := db.GetAccountQuotaWindowUsage(ctx, map[int64]time.Time{id: start}, time.Now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			value := got[id]
+			if value == nil || value.Requests != 2 || value.Tokens != 1200 || value.LegacyRequests != 1 || math.Abs(value.AccountBilled-2.00355) > 1e-9 {
+				t.Fatalf("ledger plus legacy=%+v", value)
+			}
+			// Successful logged snapshots are ledger-owned and must not double count.
+			db.SetUsageLogConfig(UsageLogModeFull, 100, 60)
+			input.StatusCode = 200
+			if err = db.InsertUsageLog(ctx, input); err != nil {
+				t.Fatal(err)
+			}
+			db.FlushUsageLogs()
+			got, err = db.GetAccountQuotaWindowUsage(ctx, map[int64]time.Time{id: start}, time.Now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got[id].Requests != 3 || math.Abs(got[id].AccountBilled-2.0071) > 1e-9 {
+				t.Fatalf("snapshot double counted=%+v", got[id])
+			}
+		})
 	}
 }

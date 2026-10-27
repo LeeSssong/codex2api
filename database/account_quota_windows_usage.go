@@ -37,20 +37,27 @@ func (db *DB) GetAccountQuotaWindowUsage(ctx context.Context, windows map[int64]
 			}
 			args = append(args, id, db.timeArg(windows[id]))
 		}
-		// Legacy rows predate upstream-evidence snapshots. Keep their recorded
-		// amounts, label the approximation, and never reprice historical tokens.
-		legacyAdmission := `(TRIM(COALESCE(internal_reason,'')) IN ('','overflow_compact_summary','prompt_intelligence_cy_analysis') AND
-          (status_code BETWEEN 200 AND 299 OR COALESCE(input_tokens,0)+COALESCE(output_tokens,0)>0 OR COALESCE(account_billed,0)>0))`
-		admission := "COALESCE(quota_usage_admitted," + legacyAdmission + ")"
-		query := fmt.Sprintf(`WITH quota_windows(account_id,start_at) AS (VALUES %s)
-   SELECT usage_logs.account_id, COUNT(*), COALESCE(SUM(COALESCE(quota_tokens,total_tokens)),0),
-    COALESCE(SUM(%s),0), COALESCE(SUM(user_billed),0), COALESCE(SUM(%s),0),
-    SUM(CASE WHEN account_cost IS NULL OR quota_usage_admitted IS NULL THEN 1 ELSE 0 END)
-   FROM quota_windows JOIN usage_logs ON usage_logs.account_id=quota_windows.account_id
-    AND usage_logs.created_at >= quota_windows.start_at
-   WHERE %s
-    AND LOWER(TRIM(COALESCE(NULLIF(effective_model,''),model,''))) <> 'gpt-5.3-codex-spark'
-   GROUP BY usage_logs.account_id`, strings.Join(values, ","), AccountCostSQL("usage_logs"), StandardCostSQL("usage_logs"), admission)
+		// The compact account-cost ledger is independent of request-log mode.
+		// Snapshot-bearing log rows are not unioned again: they already have a
+		// durable event. Only pre-parity rows use the explicitly marked fallback.
+		query := fmt.Sprintf(`WITH quota_windows(account_id,start_at) AS (VALUES %s),
+   quota_events AS (
+    SELECT e.account_id,e.created_at,e.model,e.quota_tokens AS tokens,e.account_cost AS cost,
+     e.standard_cost,e.user_billed,0 AS legacy
+    FROM account_usage_cost_events e
+    JOIN quota_windows w ON e.account_id=w.account_id AND e.created_at>=w.start_at
+    UNION ALL
+    SELECT u.account_id,u.created_at,COALESCE(NULLIF(u.effective_model,''),u.model,''),COALESCE(u.total_tokens,0),
+     %s,%s,u.user_billed,1 AS legacy
+    FROM usage_logs u JOIN quota_windows w ON u.account_id=w.account_id AND u.created_at>=w.start_at
+    WHERE u.quota_usage_admitted IS NULL
+     AND TRIM(COALESCE(u.internal_reason,'')) IN ('','overflow_compact_summary','prompt_intelligence_cy_analysis')
+     AND (u.status_code BETWEEN 200 AND 299 OR COALESCE(u.input_tokens,0)+COALESCE(u.output_tokens,0)>0 OR COALESCE(u.account_billed,0)>0)
+   )
+   SELECT account_id,COUNT(*),COALESCE(SUM(tokens),0),COALESCE(SUM(cost),0),
+    COALESCE(SUM(user_billed),0),COALESCE(SUM(standard_cost),0),SUM(legacy)
+   FROM quota_events WHERE LOWER(TRIM(model)) <> 'gpt-5.3-codex-spark'
+   GROUP BY account_id`, strings.Join(values, ","), AccountCostSQL("u"), StandardCostSQL("u"))
 		rows, err := db.conn.QueryContext(ctx, query, args...)
 		if err != nil {
 			return nil, err
