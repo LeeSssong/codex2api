@@ -3,8 +3,10 @@
 import argparse, datetime, hashlib, json, os, pathlib, subprocess, tarfile, tempfile
 
 def binary_checksum(path):
+ digest=hashlib.sha256()
  with pathlib.Path(path).open('rb') as handle:
-  return hashlib.file_digest(handle,'sha256').hexdigest()
+  for chunk in iter(lambda:handle.read(1024*1024),b''):digest.update(chunk)
+ return digest.hexdigest()
 
 def command(args, cwd, **kwargs):
  return subprocess.check_output(args, cwd=cwd, text=True, **kwargs).strip()
