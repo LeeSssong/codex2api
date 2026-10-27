@@ -26,6 +26,7 @@ const detailedRow = {
   base_concurrency_override: 4,
   scheduler_priority: 8,
   skip_warm_tier: true,
+  keep_concurrency_on_degrade: true,
   proxy_url: "http://127.0.0.1:7890",
   custom_headers: { "Chatgpt-Account-Id": "team-workspace" },
   tags: ["shared"],
@@ -120,6 +121,7 @@ test("ready details round-trip custom headers and full fingerprint mode", () => 
   assert.equal(result.payload.base_concurrency_override, 4);
   assert.equal(result.payload.scheduler_priority, 8);
   assert.equal(result.payload.skip_warm_tier, true);
+  assert.equal(result.payload.keep_concurrency_on_degrade, true);
   assert.equal(result.payload.proxy_url, "http://127.0.0.1:7890");
 });
 

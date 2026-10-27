@@ -567,6 +567,9 @@ export interface AccountRow {
   usage_window_7d_seconds?: number
   billed_5h?: number
   billed_7d?: number
+  // 当前官方窗口打满时的预计总额度。page-stats 用窗口费用 / 占用百分比现算。
+  estimated_5h_quota_usd?: number
+  estimated_7d_quota_usd?: number
   // 官方结算口径的累计成本(美元)。来自 account_daily_usage 快照全窗口,
   // 与 billed_7d(本地日志算的网关成本)是两套账,列表里并排展示。
   official_usd?: number
@@ -660,6 +663,8 @@ export interface AccountPageStatsItem {
   usage_today_detail?: AccountUsageWindow
   billed_5h?: number
   billed_7d?: number
+  estimated_5h_quota_usd?: number
+  estimated_7d_quota_usd?: number
   official_usd?: number
   official_usd_7d?: number
   official_usage_synced?: boolean

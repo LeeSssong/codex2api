@@ -11,19 +11,39 @@ import (
 	"github.com/tidwall/sjson"
 )
 
-// singleMachineIdentity deliberately uses one namespace for thread references:
-// a child's parent_thread_id must equal the parent's rewritten thread_id.
+// singleMachineOutboundWindows is how many upstream sessions one account
+// advertises. Threads are not folded: a parent and its subagents share a
+// session and keep distinct thread ids.
+const singleMachineOutboundWindows = 4
+
+// singleMachineIdentity uses one namespace so a child's parent_thread_id equals
+// the parent's rewritten thread_id. Pass the raw thread id. Passing a window
+// slot collapses different threads that happen to hash into the same slot.
 // It is independent of request timing, account token refreshes and concurrency.
 func singleMachineIdentity(accountID int64, original string) string {
 	if original == "" {
 		return ""
 	}
 	seed := fmt.Sprintf("codex2api:single-machine-identity:v1:%d:%s", accountID, original)
-	return deriveStableCodexUUIDv7(seed, seededIdentityUnixMilli(seed))
+	// oneshot 不落盘，避免一次性请求堆成共享线程。
+	return deriveStableCodexUUIDv7(seed, conversationFirstSeenUnixMilli(seed, !strings.HasPrefix(original, "oneshot:")))
+}
+
+// singleMachineWindowSlot folds an inbound conversation seed onto one of the
+// account's fixed outbound windows. The same seed always lands on the same
+// window, and different inbound clients share that small set.
+func singleMachineWindowSlot(accountID int64, original string) string {
+	if accountID <= 0 || original == "" || strings.HasPrefix(original, "oneshot:") {
+		return original
+	}
+	slot := int(codexUAHash(fmt.Sprintf("codex2api:single-machine-window:v1:%d:%s", accountID, original)) % singleMachineOutboundWindows)
+	return fmt.Sprintf("window:%d", slot)
 }
 
 func convergeFingerprintLineageValue(ids *codexFingerprintIDs, key, original string) string {
 	if ids.mode == auth.CodexFingerprintModeSingleMachineMultiWindow && key != "context_window_id" {
+		// parent_thread_id / forked_from_thread_id 指向另一条线程，必须用和
+		// thread_id 相同的派生，不能再折进窗口。折进窗口会让子代理和父线程变成同一个 id。
 		return singleMachineIdentity(ids.accountID, original)
 	}
 	return convergeCodexLineageValue(ids.accountID, key, original)
@@ -197,5 +217,11 @@ func ScopeCodexFingerprintTransportKey(key string, account *auth.Account, header
 	if ids == nil || ids.sessionID == "" || ids.threadID == "" {
 		return key
 	}
-	return key + ":fingerprint:" + deriveStableCodexUUID(ids.sessionID+":"+ids.threadID)
+	if sessionID == "" {
+		sessionID = threadID
+	}
+	if threadID == "" {
+		threadID = sessionID
+	}
+	return key + ":fingerprint:" + deriveStableCodexUUID(sessionID+":"+threadID)
 }

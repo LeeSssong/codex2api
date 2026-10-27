@@ -13873,9 +13873,11 @@ function computePreviewDynamicConcurrency(
     case "healthy":
       return baseConcurrency;
     case "warm":
-      return Math.max(1, Math.floor(baseConcurrency / 2));
+      return keepConcurrencyOnDegrade
+        ? baseConcurrency
+        : Math.max(1, Math.floor(baseConcurrency / 2));
     case "risky":
-      return 1;
+      return keepConcurrencyOnDegrade ? baseConcurrency : 1;
     case "banned":
       return 0;
     default:
@@ -14901,17 +14903,23 @@ function UsageBar({
   pct,
   resetAt,
   detail,
+  estimatedQuotaUsd,
 }: {
   label: string;
   pct: number;
   resetAt?: string;
   detail?: AccountRow["usage_5h_detail"];
+  estimatedQuotaUsd?: number;
 }) {
   const resetTime = formatResetAt(resetAt);
   const { t } = useTranslation();
   const detailText = hasUsageWindowDetail(detail)
     ? `${formatCompactUsageNumber(detail?.requests)} ${t("accounts.usageReqUnit")} / ${formatCompactUsageNumber(detail?.tokens)} ${t("accounts.usageTokUnit")}`
     : "";
+  const showEstimate =
+    typeof estimatedQuotaUsd === "number" &&
+    Number.isFinite(estimatedQuotaUsd) &&
+    estimatedQuotaUsd > 0;
   return (
     <div className="account-usage-window">
       <div className="flex items-center gap-1.5">
@@ -14936,6 +14944,16 @@ function UsageBar({
       </div>
       <div className="account-usage-window__details">
         {detailText && <div className={USAGE_BAR_META_CLASS}>{detailText}</div>}
+        {showEstimate && (
+          <div
+            className={USAGE_BAR_META_CLASS}
+            title={t("accounts.estimatedWindowQuotaHint")}
+          >
+            {t("accounts.estimatedWindowQuota", {
+              cost: estimatedQuotaUsd.toFixed(2),
+            })}
+          </div>
+        )}
         {resetTime && (
           <div className={USAGE_BAR_META_CLASS} title={resetTime.title}>
             ⏱ {resetTime.label}
@@ -15252,6 +15270,7 @@ function UsageCell({
               pct={account.usage_percent_5h!}
               resetAt={account.reset_5h_at}
               detail={account.usage_5h_detail}
+              estimatedQuotaUsd={account.estimated_5h_quota_usd}
             />
           ) : (
             <UsageWindowStat
@@ -15267,6 +15286,7 @@ function UsageCell({
               pct={account.usage_percent_7d!}
               resetAt={account.reset_7d_at}
               detail={account.usage_7d_detail}
+              estimatedQuotaUsd={account.estimated_7d_quota_usd}
             />
           ) : (
             <UsageWindowStat label={longWindowLabel} detail={account.usage_7d_detail} />
@@ -15288,6 +15308,7 @@ function UsageCell({
               pct={account.usage_percent_7d!}
               resetAt={account.reset_7d_at}
               detail={account.usage_7d_detail}
+              estimatedQuotaUsd={account.estimated_7d_quota_usd}
             />
           ) : (
             <UsageWindowStat
@@ -15312,6 +15333,7 @@ function UsageCell({
               pct={account.usage_percent_7d!}
               resetAt={account.reset_7d_at}
               detail={account.usage_7d_detail}
+              estimatedQuotaUsd={account.estimated_7d_quota_usd}
             />
           ) : (
             <UsageWindowStat

@@ -61,6 +61,12 @@ func RecordUpstreamUserAgent(ctx context.Context, userAgent string) {
 	}
 }
 
+// UpstreamUserAgentAudit returns the User-Agent last sent upstream on this
+// request, when the executor recorded one.
+func UpstreamUserAgentAudit(ctx context.Context) (string, bool) {
+	return upstreamUserAgentAudit(ctx)
+}
+
 func upstreamUserAgentAudit(ctx context.Context) (string, bool) {
 	audit := userAgentAuditFromContext(ctx)
 	if audit == nil {
@@ -69,6 +75,12 @@ func upstreamUserAgentAudit(ctx context.Context) (string, bool) {
 	audit.mu.RLock()
 	defer audit.mu.RUnlock()
 	return audit.upstreamUserAgent, audit.upstreamKnown
+}
+
+// AttachUserAgentAudit installs the upstream User-Agent audit on a request.
+// Admin probes call this so connection tests record the generated persona.
+func AttachUserAgentAudit(c *gin.Context) {
+	attachUserAgentAudit(c)
 }
 
 func attachUserAgentAudit(c *gin.Context) {

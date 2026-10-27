@@ -2879,6 +2879,100 @@ func TestUpdateAccountSchedulerKeepsAllowedAPIKeyIDsWhenFieldOmitted(t *testing.
 	}
 }
 
+func TestUpdateAccountSchedulerAcceptsLegacyKeepConcurrencyAndClearsProxy(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db := newTestAdminDB(t)
+	accountID, err := db.InsertAccount(context.Background(), "proxy-account", "rt_proxy", "http://127.0.0.1:8080")
+	if err != nil {
+		t.Fatalf("InsertAccount: %v", err)
+	}
+	runtimeAccount := &auth.Account{
+		DBID:        accountID,
+		AccessToken: "token",
+		Status:      auth.StatusReady,
+		PlanType:    "pro",
+	}
+	store := &auth.Store{}
+	store.AddAccount(runtimeAccount)
+
+	handler := &Handler{db: db, store: store}
+	recorder := httptest.NewRecorder()
+	ginCtx, _ := gin.CreateTestContext(recorder)
+	ginCtx.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", accountID)}}
+	ginCtx.Request = httptest.NewRequest(http.MethodPatch, fmt.Sprintf("/api/admin/accounts/%d/scheduler", accountID), strings.NewReader(`{"proxy_url":null,"skip_warm_tier":false,"keep_concurrency_on_degrade":false}`))
+	ginCtx.Request.Header.Set("Content-Type", "application/json")
+
+	handler.UpdateAccountScheduler(ginCtx)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	rows, err := db.ListActive(context.Background())
+	if err != nil {
+		t.Fatalf("ListActive: %v", err)
+	}
+	if rows[0].ProxyURL != "" {
+		t.Fatalf("proxy_url = %q, want empty", rows[0].ProxyURL)
+	}
+	if rows[0].GetCredentialBool("keep_concurrency_on_degrade") {
+		t.Fatal("keep_concurrency_on_degrade = true, want false")
+	}
+	if runtimeAccount.KeepConcurrencyOnDegrade {
+		t.Fatal("runtime keep_concurrency_on_degrade = true, want false")
+	}
+
+	recorder = httptest.NewRecorder()
+	ginCtx, _ = gin.CreateTestContext(recorder)
+	ginCtx.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", accountID)}}
+	ginCtx.Request = httptest.NewRequest(http.MethodPatch, fmt.Sprintf("/api/admin/accounts/%d/scheduler", accountID), strings.NewReader(`{"keep_concurrency_on_degrade":true}`))
+	ginCtx.Request.Header.Set("Content-Type", "application/json")
+	handler.UpdateAccountScheduler(ginCtx)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("enable status = %d, want %d, body=%s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+
+	recorder = httptest.NewRecorder()
+	ginCtx, _ = gin.CreateTestContext(recorder)
+	ginCtx.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", accountID)}}
+	ginCtx.Request = httptest.NewRequest(http.MethodPatch, fmt.Sprintf("/api/admin/accounts/%d/scheduler", accountID), strings.NewReader(`{"score_bias_override":1}`))
+	ginCtx.Request.Header.Set("Content-Type", "application/json")
+	handler.UpdateAccountScheduler(ginCtx)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("omit status = %d, want %d, body=%s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	rows, err = db.ListActive(context.Background())
+	if err != nil {
+		t.Fatalf("ListActive after omit: %v", err)
+	}
+	if !rows[0].GetCredentialBool("keep_concurrency_on_degrade") {
+		t.Fatal("omitted keep_concurrency_on_degrade cleared stored true")
+	}
+	if !runtimeAccount.KeepConcurrencyOnDegrade {
+		t.Fatal("runtime keep_concurrency_on_degrade cleared when field omitted")
+	}
+}
+
+func TestUpdateAccountSchedulerRejectsUnknownSchedulerField(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db := newTestAdminDB(t)
+	accountID := insertTestAccount(t, db)
+	handler := &Handler{db: db}
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", accountID)}}
+	ctx.Request = httptest.NewRequest(http.MethodPatch, fmt.Sprintf("/api/admin/accounts/%d/scheduler", accountID), strings.NewReader(`{"proxy_url":null,"not_a_scheduler_field":true}`))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+
+	handler.UpdateAccountScheduler(ctx)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusBadRequest)
+	}
+	assertErrorMessage(t, recorder, "请求格式错误")
+}
+
 func TestUpdateAccountSchedulerClearsProxyURLOnNull(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

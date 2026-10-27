@@ -1448,6 +1448,11 @@ func (a *Account) recomputeSchedulerLocked(baseLimit int64) {
 		tier = HealthTierHealthy
 	}
 
+	concurrencyTier := tier
+	if a.KeepConcurrencyOnDegrade && (tier == HealthTierWarm || tier == HealthTierRisky) {
+		concurrencyTier = HealthTierHealthy
+	}
+
 	baseConcurrencyEffective := a.effectiveBaseConcurrencyLocked(baseLimit)
 	scoreBiasEffective := a.effectiveScoreBiasLocked(now, tier)
 	if a.dispatchBonusEligibleLocked(now, tier) {
@@ -6364,6 +6369,7 @@ func (s *Store) buildAccountFromRow(ctx context.Context, row *database.AccountRo
 	account.ModelCooldownBackoffOverride = row.GetCredentialOptionalBool("model_cooldown_backoff_override")
 	account.recomputeEffectiveIgnoreUsageLimitStatus(s.IgnoreUsageLimitStatus())
 	account.SkipWarmTier = row.SkipWarmTier
+	account.KeepConcurrencyOnDegrade = row.GetCredentialBool("keep_concurrency_on_degrade")
 	if row.Status == "error" {
 		account.Status = StatusError
 		account.ErrorMsg = row.ErrorMessage
@@ -9961,6 +9967,21 @@ func (s *Store) ApplyAccountSchedulerOverridePatch(dbID int64, scoreBiasSet bool
 		acc.SkipWarmTier = *skipWarmTier
 	}
 	acc.recomputeSchedulerLocked(s.maxConcurrency.Load())
+	acc.mu.Unlock()
+	s.invalidateRoutingSchedulers()
+	s.fastSchedulerUpdate(acc)
+	return true
+}
+
+func (s *Store) ApplyAccountKeepConcurrencyOnDegrade(dbID int64, keep bool) bool {
+	acc := s.FindByID(dbID)
+	if acc == nil {
+		return false
+	}
+
+	acc.mu.Lock()
+	acc.KeepConcurrencyOnDegrade = keep
+	acc.recomputeSchedulerLocked(atomic.LoadInt64(&s.maxConcurrency))
 	acc.mu.Unlock()
 	s.invalidateRoutingSchedulers()
 	s.fastSchedulerUpdate(acc)

@@ -1598,6 +1598,8 @@
     "billedOfficialPending": "Fetching official billed cost",
     "billedOfficialNoData": "No official settlement data yet — official stats can lag; the gateway re-syncs periodically",
     "billedGatewayHint": "Cost derived from this gateway's own request logs",
+    "estimatedWindowQuota": "Est. ${{cost}}",
+    "estimatedWindowQuotaHint": "Estimated cost at 100% utilization, from this window's gateway spend and the official used percent. Spend outside this gateway is not in the numerator",
     "usageOfficialTitle": "Official billed usage",
     "usageOfficialSource": "Source:",
     "usageOfficialRetentionHint": "Upstream can be queried back about {{days}} days; older history comes from local snapshots",
