@@ -7761,7 +7761,7 @@ func (s *Store) nextForSessionWithFilter(key string, apiKeyID int64, exclude map
 	policy := opts.Policy
 	key = strings.TrimSpace(key)
 	if key == "" {
-		return s.NextExcludingWithDispatch(apiKeyID, exclude, filter, policy, modelScope...), "", SessionAffinityGuard{}
+		return s.NextExcludingWithDispatch(apiKeyID, exclude, filter, policy), "", SessionAffinityGuard{}
 	}
 
 	now := time.Now()
@@ -7904,7 +7904,7 @@ func (s *Store) nextAccountForFreshAffinityWithDispatch(key string, apiKeyID int
 		return acc
 	}
 	if !s.GetSessionAffinitySpread() || strings.TrimSpace(key) == "" {
-		return s.NextExcludingWithDispatch(apiKeyID, exclude, filter, policy, modelScope...)
+		return s.NextExcludingWithDispatch(apiKeyID, exclude, filter, policy)
 	}
 	filter = s.withUsableEgressFilter(filter)
 	if s.SchedulerEngine() == "indexed" {

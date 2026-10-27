@@ -9,6 +9,7 @@ import (
 	"sync"
 	"unicode/utf8"
 
+	"github.com/codex2api/proxy/attestation"
 	"github.com/tidwall/gjson"
 )
 
@@ -143,7 +144,7 @@ func buildCodexFingerprintObservation(kind string, headers http.Header, body []b
 	bodyParent := strings.TrimSpace(gjson.GetBytes(body, "client_metadata.parent_thread_id").String())
 	bodyInstallation := strings.TrimSpace(gjson.GetBytes(body, "client_metadata.installation_id").String())
 	bodyInstallationHeader := strings.TrimSpace(gjson.GetBytes(body, "client_metadata.x-codex-installation-id").String())
-	attestation := strings.TrimSpace(headers.Get(windowsDesktopAttestationHeader))
+	attestation := strings.TrimSpace(headers.Get(attestation.HeaderName))
 
 	var mismatches []string
 	if fingerprintValuesDisagree(sessionHeader, legacySession, turnSession, bodySession) {

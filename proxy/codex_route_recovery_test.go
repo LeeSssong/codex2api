@@ -160,7 +160,7 @@ func TestCodexRejectedPathIsSkippedWithoutChangingAccountCapability(t *testing.T
 	c.Request = httptest.NewRequest("POST", "/v1/responses", nil)
 	c.Set(contextAPIKeyRow, &database.APIKeyRow{ID: 3, Limits: database.APIKeyLimits{CodexRoutePolicy: "basispoints_prefer"}})
 	filter := h.withCodexRouteFilter(c, "gpt-6-astra", "gpt-6-astra", []byte(`{"input":[{"type":"reasoning","encrypted_content":"opaque"}]}`), nil)
-	_, _, _, err := h.nextRetryAccountWithGuard(c.Request.Context(), "", 3, newRetryAccountExclusions(), filter, false, auth.DispatchPolicyStandard)
+	_, _, _, err := h.nextRetryAccountWithGuard(c.Request.Context(), "", 3, newRetryAccountExclusions(), filter, false, auth.SelectionOptions{Policy: auth.DispatchPolicyStandard})
 	if !writeSchedulerQueueError(c, err, continuousRetryProtocolResponses) || r.Code != 503 || r.Header().Get("Retry-After") == "" || !strings.Contains(r.Body.String(), "codex_route_cooldown") || !strings.Contains(r.Body.String(), "basispoints:path_cooldown") {
 		t.Fatalf("temporary path failure lacks recovery guidance: %v %d %s", err, r.Code, r.Body.String())
 	}

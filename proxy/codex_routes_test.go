@@ -338,7 +338,7 @@ func TestCodexEmptyAuthorizedIntersectionReturnsImmediately(t *testing.T) {
 	if h.codexRouteHasCandidates(c.Request.Context(), 9, f) {
 		t.Fatal("unauthorized candidate admitted")
 	}
-	_, _, _, err := h.nextRetryAccountWithGuard(c.Request.Context(), "", 9, newRetryAccountExclusions(), f, false, auth.DispatchPolicyStandard)
+	_, _, _, err := h.nextRetryAccountWithGuard(c.Request.Context(), "", 9, newRetryAccountExclusions(), f, false, auth.SelectionOptions{Policy: auth.DispatchPolicyStandard})
 	if err == nil || !strings.Contains(err.Error(), "codex_route_no_candidates") {
 		t.Fatalf("missing explicit selection reason: %v", err)
 	}
