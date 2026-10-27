@@ -1187,6 +1187,7 @@ func (h *Handler) streamResponsesWSUpstream(
 	options *responsesWSForwardOptions,
 	continuousRetryPolicy database.ContinuousRetryPolicy,
 ) error {
+	c.Set(accountUsageDownstreamWebsocketKey, true)
 	upstreamEndpoint := "/v1/responses"
 	account.Mu().RLock()
 	c.Set("x-account-email", account.Email)
@@ -1531,13 +1532,13 @@ func (h *Handler) streamResponsesWSUpstream(
 	if transparentRetrySelected {
 		_ = wsReplay.Close()
 		clearNewAPIUpstreamCyberPolicyDecision(c)
-		h.logPromptPolicyRetryUsage(c, database.UsageLogInput{
+		h.logAccountUsageRetry(c, database.UsageLogInput{
 			AccountID: account.ID(), Endpoint: "/v1/responses", Model: model, EffectiveModel: logEffectiveModel,
 			StatusCode: outcome.logStatusCode, DurationMs: totalDuration, FirstTokenMs: firstTokenMs, ReasoningEffort: effectiveReasoningEffortForAccount(account, reasoningEffort, c.Request.Context()),
 			InboundEndpoint: "/v1/responses", UpstreamEndpoint: upstreamEndpoint, Stream: true, ViaWebsocket: viaWebsocket,
 			AttemptIndex: fallbackAttempt, UpstreamErrorKind: outcome.failureKind,
 			ErrorMessage: usageLogFailureMessage(outcome.logStatusCode, outcome.failureMessage),
-		}, promptPolicyIncidentID)
+		}, usage, terminalFailurePayload, actualServiceTier, serviceTier, promptPolicyIncidentID)
 		resp.Body.Close()
 		if !isFirstTokenTimeoutOutcome(outcome) {
 			h.reportStreamOutcomeFailure(account, outcome, time.Duration(totalDuration)*time.Millisecond)
@@ -1601,6 +1602,7 @@ func (h *Handler) streamResponsesWSUpstream(
 	if continuousRetryBufferedAttemptCommitted(continuousRetryPolicy, outcome) {
 		h.store.BindSessionAffinityWithGuard(affinityKey, account, proxyURL, affinityGuard)
 	}
+	accountUsage := observeAccountUsageFromAttempt(usage, terminalFailurePayload, outcome.logStatusCode == http.StatusOK || contentTokenSeen)
 	if outcome.logStatusCode != http.StatusOK {
 		log.Printf("Responses WebSocket stream ended abnormally (account %d, status %d): %s, relayed about %d chars", account.ID(), outcome.logStatusCode, outcome.failureMessage, deltaCharCount)
 		if deltaCharCount > 0 && usage == nil {
@@ -1655,6 +1657,7 @@ func (h *Handler) streamResponsesWSUpstream(
 	applyImageUsageLogInfo(logInput, imageLogInfo)
 	// WS 轮终态记账：attempt 实发模型优先（effectiveModel），兜底客户端请求模型。
 	applyUpstreamResponseModelObservation(logInput, responseModelObserver, upstreamSentModelForAudit(effectiveModel, model), account.ID())
+	accountUsage.apply(logInput)
 	h.logUsageForRequest(c, logInput)
 
 	resp.Body.Close()

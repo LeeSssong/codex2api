@@ -1716,13 +1716,13 @@ func (h *Handler) Messages(c *gin.Context) {
 			rememberContinuousRetryStreamFailure(c.Request.Context(), outcome, terminalFailurePayload)
 			_ = streamAttempt.Close()
 			clearNewAPIUpstreamCyberPolicyDecision(c)
-			h.logPromptPolicyRetryUsage(c, database.UsageLogInput{
+			h.logAccountUsageRetry(c, database.UsageLogInput{
 				AccountID: account.ID(), Endpoint: "/v1/messages", Model: model, EffectiveModel: attemptEffectiveModel,
 				StatusCode: outcome.logStatusCode, DurationMs: totalDuration, FirstTokenMs: firstTokenMs, ReasoningEffort: reasoningEffort,
 				InboundEndpoint: "/v1/messages", UpstreamEndpoint: upstreamEndpoint, Stream: isStream, ViaWebsocket: useWebsocket,
 				AttemptIndex: attempt + 1, UpstreamErrorKind: outcome.failureKind,
 				ErrorMessage: usageLogFailureMessage(outcome.logStatusCode, outcome.failureMessage),
-			}, promptPolicyIncidentID)
+			}, usage, terminalFailurePayload, actualServiceTier, serviceTier, promptPolicyIncidentID)
 			log.Printf("上游流在首包前断开，重试 (attempt %s, account %d, /v1/messages): %s",
 				retryAttemptProgress(attempt, maxRetries), account.ID(), outcome.failureMessage)
 			recyclePooledClient(account, proxyURL)
@@ -1793,6 +1793,7 @@ func (h *Handler) Messages(c *gin.Context) {
 		}
 
 		logStatusCode := outcome.logStatusCode
+		accountUsage := observeAccountUsageFromAttempt(usage, terminalFailurePayload, outcome.logStatusCode == http.StatusOK || contentStarted)
 		if outcome.logStatusCode != http.StatusOK {
 			log.Printf("流异常结束 (account %d, /v1/messages, status %d): %s，已转发约 %d 字符",
 				account.ID(), outcome.logStatusCode, outcome.failureMessage, deltaCharCount)
@@ -1847,6 +1848,7 @@ func (h *Handler) Messages(c *gin.Context) {
 			logInput.ImageInputTokens, logInput.ImageOutputTokens, logInput.CachedImageInputTokens = usage.ImageInputTokens, usage.ImageOutputTokens, usage.CachedImageInputTokens
 			applyUsageCacheWritesToLog(logInput, usage)
 		}
+		accountUsage.apply(logInput)
 		h.logUsageForRequest(c, logInput)
 
 		resp.Body.Close()

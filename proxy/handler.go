@@ -1627,7 +1627,9 @@ func (h *Handler) logUsage(input *database.UsageLogInput) {
 	input = database.SnapshotUsageLogBilling(input)
 	h.populateUsageCredentialGeneration(input)
 	// scope 维度预算（issue #439）在日志落库前先吃到这笔消耗，抵掉窗口聚合缓存的滞后。
-	h.recordAPIKeyScopeUsage(input)
+	if !input.AccountStatsOnly {
+		h.recordAPIKeyScopeUsage(input)
+	}
 	// 渠道在写入时按调度账号固化（内存索引查询），供仪表盘分渠道聚合；
 	// 账号已不在池中（如刚被删除）时按 codex 兜底。
 	if input.Channel == "" && h.store != nil {
@@ -1645,6 +1647,8 @@ func (h *Handler) logUsage(input *database.UsageLogInput) {
 			}
 		}
 	}
+	finalizeAccountUsageEvidence(input)
+	input = h.snapshotAccountStatsPricing(input)
 	// 过载熔断统计（仅 Codex 渠道，需在渠道固化之后）。
 	h.noteOverloadOutcome(input)
 	_ = h.db.InsertUsageLog(context.Background(), input)
@@ -1701,9 +1705,14 @@ func populateInternalUsageMetaFromContext(c *gin.Context, input *database.UsageL
 }
 
 func (h *Handler) logUsageForRequest(c *gin.Context, input *database.UsageLogInput) {
+	accountModel := upstreamSentModelForAudit(input.EffectiveModel, input.Model)
+	accountModelMissing := input.AccountUsage == nil || input.AccountUsage.EffectiveModel == ""
 	applyDaybreakUsageModel(c, input)
 	populateAPIKeyMetaFromContext(c, input)
 	populateInternalUsageMetaFromContext(c, input)
+	if c != nil && c.GetBool("prompt_intelligence_internal") && input.APIKeyID <= 0 && input.InternalReason == "" {
+		input.InternalReason = "prompt_intelligence_analysis"
+	}
 	populateClientIPFromRequest(c, input)
 	populateUserAgentMetaFromRequest(c, input)
 	populateWsAcquireFromRequest(c, input)
@@ -1711,6 +1720,12 @@ func (h *Handler) logUsageForRequest(c *gin.Context, input *database.UsageLogInp
 	populateCompactUsageMetaFromRequest(c, input)
 	populateUltraUsageMetaFromRequest(c, input)
 	markCyberPolicyUsageKind(input)
+	finalizeAccountUsageEvidence(input)
+	applyAccountUsageIngressPolicy(input, c != nil && c.GetBool(accountUsageDownstreamWebsocketKey))
+	if input.AccountUsage != nil && accountModelMissing && accountModel != "" {
+		input.AccountUsage.EffectiveModel = accountModel
+	}
+	deduplicateAccountUsageEvidence(c, input)
 	input = database.SnapshotUsageLogBilling(input)
 	if deferImageUsage(c, h, input) {
 		return
@@ -5058,13 +5073,13 @@ func (h *Handler) Responses(c *gin.Context) {
 				rememberContinuousRetryStreamFailure(c.Request.Context(), outcome, terminalFailurePayload)
 				_ = streamAttempt.Close()
 				clearNewAPIUpstreamCyberPolicyDecision(c)
-				h.logPromptPolicyRetryUsage(c, database.UsageLogInput{
+				h.logAccountUsageRetry(c, database.UsageLogInput{
 					AccountID: account.ID(), Endpoint: "/v1/responses", Model: logModel, EffectiveModel: attemptLogEffectiveModel,
 					StatusCode: outcome.logStatusCode, DurationMs: totalDuration, FirstTokenMs: firstTokenMs, ReasoningEffort: effectiveReasoningEffortForAccount(account, reasoningEffort, c.Request.Context()),
 					InboundEndpoint: "/v1/responses", UpstreamEndpoint: upstreamEndpoint, Stream: isStream, ViaWebsocket: useWebsocket,
 					AttemptIndex: attempt + 1, UpstreamErrorKind: outcome.failureKind,
 					ErrorMessage: usageLogFailureMessage(outcome.logStatusCode, outcome.failureMessage),
-				}, promptPolicyIncidentID)
+				}, usage, terminalFailurePayload, actualServiceTier, serviceTier, promptPolicyIncidentID)
 				log.Printf("OpenAI Responses 上游流在首包前断开，重置连接并重试 (attempt %s, account %d): %s", retryAttemptProgress(attempt, maxRetries), account.ID(), outcome.failureMessage)
 				recyclePooledClient(account, proxyURL)
 				if isFirstTokenTimeoutOutcome(outcome) {
@@ -5155,6 +5170,7 @@ func (h *Handler) Responses(c *gin.Context) {
 				c.Data(http.StatusOK, nonStreamContentType, nonStreamResponseBody)
 				h.recordCompactionProvenanceFromPayload(context.Background(), account, nonStreamResponseBody)
 			}
+			accountUsage := observeAccountUsageFromAttempt(usage, terminalFailurePayload, outcome.logStatusCode == http.StatusOK || contentTokenSeen)
 			if outcome.logStatusCode != http.StatusOK {
 				log.Printf("OpenAI Responses 流异常结束 (account %d, status %d): %s，已转发约 %d 字符", account.ID(), outcome.logStatusCode, outcome.failureMessage, deltaCharCount)
 				if deltaCharCount > 0 {
@@ -5208,6 +5224,7 @@ func (h *Handler) Responses(c *gin.Context) {
 			}
 			applyImageUsageLogInfo(logInput, imageLogInfo)
 			applyUpstreamResponseModelObservation(logInput, responseModelObserver, upstreamSentModelForAudit(attemptEffectiveModel, logModel), account.ID())
+			accountUsage.apply(logInput)
 			h.logUsageForRequest(c, logInput)
 
 			resp.Body.Close()
@@ -5962,13 +5979,13 @@ func (h *Handler) Responses(c *gin.Context) {
 			rememberContinuousRetryStreamFailure(c.Request.Context(), outcome, terminalFailurePayload)
 			_ = streamAttempt.Close()
 			clearNewAPIUpstreamCyberPolicyDecision(c)
-			h.logPromptPolicyRetryUsage(c, database.UsageLogInput{
+			h.logAccountUsageRetry(c, database.UsageLogInput{
 				AccountID: account.ID(), Endpoint: "/v1/responses", Model: logModel, EffectiveModel: logEffectiveModel,
 				StatusCode: outcome.logStatusCode, DurationMs: totalDuration, FirstTokenMs: firstTokenMs, ReasoningEffort: effectiveReasoningEffortForAccount(account, reasoningEffort, c.Request.Context()),
 				InboundEndpoint: "/v1/responses", UpstreamEndpoint: "/v1/responses", Stream: isStream, ViaWebsocket: useWebsocket,
 				AttemptIndex: attempt + 1, UpstreamErrorKind: outcome.failureKind,
 				ErrorMessage: usageLogFailureMessage(outcome.logStatusCode, outcome.failureMessage),
-			}, promptPolicyIncidentID)
+			}, usage, terminalFailurePayload, actualServiceTier, serviceTier, promptPolicyIncidentID)
 			log.Printf("上游流在首包前断开，重置连接并重试 (attempt %s, account %d, /v1/responses): %s", retryAttemptProgress(attempt, maxRetries), account.ID(), outcome.failureMessage)
 			recyclePooledClient(account, proxyURL)
 			if isFirstTokenTimeoutOutcome(outcome) {
@@ -6022,6 +6039,7 @@ func (h *Handler) Responses(c *gin.Context) {
 		if logStatusCode != http.StatusOK {
 			c.Set(AccessLogStatusContextKey, logStatusCode)
 		}
+		accountUsage := observeAccountUsageFromAttempt(usage, terminalFailurePayload, outcome.logStatusCode == http.StatusOK || contentTokenSeen)
 		if outcome.logStatusCode != http.StatusOK {
 			log.Printf("流异常结束 (account %d, /v1/responses, status %d): %s，已转发约 %d 字符", account.ID(), outcome.logStatusCode, outcome.failureMessage, deltaCharCount)
 			if deltaCharCount > 0 {
@@ -6144,6 +6162,7 @@ func (h *Handler) Responses(c *gin.Context) {
 		// sentModel 优先取 attempt 实发模型（账号级映射可能改写 attemptEffectiveModel），
 		// 兜底客户端请求模型；上游未自报时 applyUpstreamResponseModelObservation 不做任何事。
 		applyUpstreamResponseModelObservation(logInput, responseModelObserver, upstreamSentModelForAudit(attemptEffectiveModel, logModel), account.ID())
+		accountUsage.apply(logInput)
 		h.logUsageForRequest(c, logInput)
 
 		if !accountReleasedForOverflow {
@@ -8005,13 +8024,13 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			rememberContinuousRetryStreamFailure(c.Request.Context(), outcome, terminalFailurePayload)
 			_ = streamAttempt.Close()
 			clearNewAPIUpstreamCyberPolicyDecision(c)
-			h.logPromptPolicyRetryUsage(c, database.UsageLogInput{
+			h.logAccountUsageRetry(c, database.UsageLogInput{
 				AccountID: account.ID(), Endpoint: "/v1/chat/completions", Model: logModel, EffectiveModel: attemptLogEffectiveModel,
 				StatusCode: outcome.logStatusCode, DurationMs: totalDuration, FirstTokenMs: firstTokenMs, ReasoningEffort: effectiveReasoningEffortForAccount(account, reasoningEffort, c.Request.Context()),
 				InboundEndpoint: "/v1/chat/completions", UpstreamEndpoint: upstreamEndpoint, Stream: isStream, ViaWebsocket: useWebsocket,
 				AttemptIndex: attempt + 1, UpstreamErrorKind: outcome.failureKind,
 				ErrorMessage: usageLogFailureMessage(outcome.logStatusCode, outcome.failureMessage),
-			}, promptPolicyIncidentID)
+			}, usage, terminalFailurePayload, actualServiceTier, serviceTier, promptPolicyIncidentID)
 			log.Printf("上游流在首包前断开，重置连接并重试 (attempt %s, account %d, /v1/chat/completions): %s", retryAttemptProgress(attempt, maxRetries), account.ID(), outcome.failureMessage)
 			recyclePooledClient(account, proxyURL)
 			if isFirstTokenTimeoutOutcome(outcome) {
@@ -8055,6 +8074,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			h.store.BindSessionAffinityWithGuard(affinityKey, account, proxyURL, affinityGuard)
 		}
 		logStatusCode := outcome.logStatusCode
+		accountUsage := observeAccountUsageFromAttempt(usage, terminalFailurePayload, outcome.logStatusCode == http.StatusOK || contentTokenSeen)
 		if outcome.logStatusCode != http.StatusOK {
 			log.Printf("流异常结束 (account %d, /v1/chat/completions, status %d): %s，已转发约 %d 字符", account.ID(), outcome.logStatusCode, outcome.failureMessage, deltaCharCount)
 			if deltaCharCount > 0 {
@@ -8146,6 +8166,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			logInput.ImageInputTokens, logInput.ImageOutputTokens, logInput.CachedImageInputTokens = usage.ImageInputTokens, usage.ImageOutputTokens, usage.CachedImageInputTokens
 		}
 		applyUpstreamResponseModelObservation(logInput, responseModelObserver, upstreamSentModelForAudit(attemptEffectiveModel, logModel), account.ID())
+		accountUsage.apply(logInput)
 		h.logUsageForRequest(c, logInput)
 
 		resp.Body.Close()
