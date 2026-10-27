@@ -487,6 +487,11 @@ func New(driver string, dsn string, schema ...string) (*DB, error) {
 		if err := db.migrate(ctx); err != nil {
 			return nil, fmt.Errorf("数据库迁移失败: %w", err)
 		}
+		// Data migrations have their own longer budget. A successful migration
+		// must not hand an expired connection-test deadline to the small schemas.
+		postMigrationCtx, postMigrationCancel := postMigrationStartupContext(ctx)
+		defer postMigrationCancel()
+		ctx = postMigrationCtx
 		if err := db.ensureQualityTestSchema(ctx); err != nil {
 			return nil, fmt.Errorf("初始化检测记录表失败: %w", err)
 		}
@@ -741,6 +746,11 @@ type usageStatsRollup struct {
 	FirstTokenSamples  int64
 	TotalAccountBilled float64
 	TotalUserBilled    float64
+}
+
+// postMigrationStartupContext starts the small-schema budget after migrations.
+func postMigrationStartupContext(parent context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(parent), 10*time.Second)
 }
 
 // usageStatsRollupStartupContext preserves startup values but deliberately
@@ -1841,6 +1851,9 @@ func (db *DB) migrate(ctx context.Context) error {
 	migrateCtx, migrateCancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer migrateCancel()
 	if _, err = db.conn.ExecContext(migrateCtx, migrateQuery); err != nil {
+		return err
+	}
+	if err := db.InitFixedEgress(migrateCtx); err != nil {
 		return err
 	}
 	return db.runDataMigrationsWithTimeout()

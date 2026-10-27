@@ -1,4 +1,5 @@
 import IPv6EgressPanel from '../components/IPv6EgressPanel';
+import FixedEgressPanel from '../components/FixedEgressPanel';
 import { useState, useEffect, useCallback, useMemo, useRef, memo } from "react";
 import { useTranslation } from "react-i18next";
 import {
@@ -1360,6 +1361,7 @@ export default function Proxies() {
       ) : null}
 
       <IPv6EgressPanel />
+      <FixedEgressPanel />
 
       {codexEgress?.resin_enabled ? (
         <div className="flex items-start gap-2.5 rounded-xl border border-amber-500/30 bg-amber-500/5 p-3.5 text-xs leading-relaxed text-amber-800 dark:text-amber-200">

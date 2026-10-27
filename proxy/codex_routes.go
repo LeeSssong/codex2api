@@ -178,10 +178,19 @@ func (d *CodexRouteDecision) pathIneligibleReason(account *auth.Account, path, m
 	if account == nil || account.IsRelayStyle() {
 		return "account_identity"
 	}
+	if path == database.CodexPathNative && accountHasExcelOnlyGrant(account) {
+		return "excel_grant_requires_basispoints"
+	}
 	if err := account.RefreshCodexRoutes(d.client, time.Now()); err != nil {
 		return "route_configuration"
 	}
 	if path == database.CodexPathBasispoints {
+		account.Mu().RLock()
+		free := strings.EqualFold(strings.TrimSpace(account.PlanType), "free")
+		account.Mu().RUnlock()
+		if free {
+			return "basispoints_paid_account_required"
+		}
 		if !basispointsActiveForModel(model) || account.IsCodexAgentIdentity() || account.GetAccessToken() == "" || account.EffectiveAccountID() == "" {
 			return "basispoints_unavailable"
 		}

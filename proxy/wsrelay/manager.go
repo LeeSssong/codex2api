@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/codex2api/auth"
+	"github.com/codex2api/fixedegress"
 	"github.com/codex2api/security"
 	"github.com/gorilla/websocket"
 )
@@ -30,6 +31,9 @@ const (
 
 // WsConnection WebSocket 连接包装
 type WsConnection struct {
+	fixedRelease func()
+	fixedRoute   fixedegress.Route
+	fixedManager *fixedegress.Manager
 	// WebSocket 连接
 	conn *websocket.Conn
 
@@ -206,6 +210,9 @@ func (wc *WsConnection) Close() error {
 		return nil
 	}
 	wc.closeOnce.Do(func() {
+		if wc.fixedRelease != nil {
+			defer wc.fixedRelease()
+		}
 		wc.recordDirectClose()
 		wc.state.Store(int32(StateClosing))
 		if wc.conn != nil {

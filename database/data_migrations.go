@@ -68,7 +68,10 @@ func (db *DB) runDataMigrations(ctx context.Context) error {
 	if err := db.runDataMigrationOnce(ctx, dataMigrationDaybreakUsageV1, db.backfillDaybreakUsageProgram); err != nil {
 		return err
 	}
-	return db.runDataMigrationOnce(ctx, dataMigrationRetireSmartOpsV1, db.retireSmartOps)
+	if err := db.runDataMigrationOnce(ctx, dataMigrationRetireSmartOpsV1, db.retireSmartOps); err != nil {
+		return err
+	}
+	return db.EnsureCredentialOperationsSchema(ctx)
 }
 
 // classifyAccountGroupChannels 把成员清一色是 Grok 账号的存量分组归到 grok 渠道。

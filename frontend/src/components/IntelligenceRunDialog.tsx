@@ -29,7 +29,7 @@ export default function IntelligenceRunDialog({
     setError("");
     if (!id) return;
     const controller = new AbortController();
-    let timer: ReturnType<typeof window.setTimeout> | undefined;
+    let timer: number | undefined;
     const load = async () => {
       try {
         const { run } = await api.getIntelligenceRun(id, controller.signal);

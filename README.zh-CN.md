@@ -465,6 +465,10 @@ curl -X POST http://localhost:8080/api/admin/accounts/import \
 
 > 所有导入接口自动去重，已存在的 Token 不会重复写入。更多管理接口（导出、迁移、OAuth 授权等）参见 [API 文档](docs/API.md)。
 
+#### 密码与 2FA 登录导入
+
+管理端「账号管理 → 添加账号 → 2FA 登录导入」支持邮箱、密码和长期 TOTP 密钥首次登录，成功后自动加入独立凭证运营。侧栏「凭证运营」提供巡检、手动/自动重登、任务恢复和 2FA 管理。启用凭据加密并配置应用自有登录 Worker 后使用，完整说明见 [凭证运营与首次 2FA 登录](docs/credential-operations.md)。
+
 #### OAuth PKCE 授权
 
 Codex2API 支持通过 OAuth PKCE 流程获取 Refresh Token，适用于无法手动提取 Token 的场景：

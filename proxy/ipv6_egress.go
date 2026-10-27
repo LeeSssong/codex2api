@@ -34,6 +34,17 @@ func wrapIPv6Client(account *auth.Account, base *http.Client, replay, forceUTLS 
 }
 
 func wrapScopedIPv6Client(account *auth.Account, base *http.Client, replay bool, mode, scope string) *http.Client {
+	if route, enrolled, err := resolveFixedRoute(context.Background(), account); enrolled {
+		if err != nil {
+			return &http.Client{Transport: errorTransport{err}}
+		}
+		// Build the transport with the requested TLS/profile mode, then bind its
+		// pool identity to the durable resource generation.
+		if mode == "" {
+			mode = codexTransportModeFromEnv()
+		}
+		return fixedClientForRouteMode(account, route, base, mode, scope, replay)
+	}
 	m := egressipv6.Current()
 	if m == nil || !NativeIPv6Account(account) {
 		return base

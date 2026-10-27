@@ -24,6 +24,7 @@ const (
 	TokenURL      = "https://auth.openai.com/oauth/token"
 	SessionURL    = "https://chatgpt.com/api/auth/session"
 	ClientID      = "app_EMoamEEZ73f0CkXaXp7hrann"
+	ExcelClientID = "app_fnr0pYvVwwFDocDumLG3H2Bp"
 	RefreshScopes = "openid profile email"
 	MaxRetries    = 3
 )
@@ -57,9 +58,18 @@ type AccountInfo struct {
 // RefreshAccessToken 用 RT 换取 AT
 // resinAccountID 可选，Resin 启用时传入账号标识用于粘性代理
 func RefreshAccessToken(ctx context.Context, refreshToken string, proxyURL string, resinAccountID ...string) (*TokenData, *AccountInfo, error) {
+	return RefreshAccessTokenForClient(ctx, refreshToken, proxyURL, ClientID, resinAccountID...)
+}
+
+// RefreshAccessTokenForClient preserves the OAuth grant's registered client.
+// A token issued to the Excel client cannot be refreshed with the Codex client.
+func RefreshAccessTokenForClient(ctx context.Context, refreshToken, proxyURL, clientID string, resinAccountID ...string) (*TokenData, *AccountInfo, error) {
+	if clientID != ClientID && clientID != ExcelClientID {
+		return nil, nil, errors.New("unsupported OpenAI OAuth client")
+	}
 	data := url.Values{
 		"grant_type":    {"refresh_token"},
-		"client_id":     {ClientID},
+		"client_id":     {clientID},
 		"refresh_token": {refreshToken},
 		"scope":         {RefreshScopes},
 	}
