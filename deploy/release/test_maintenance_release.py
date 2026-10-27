@@ -126,6 +126,7 @@ class GuardTests(unittest.TestCase):
                 tool.binary_hash = lambda: 'oldhash'
                 tool.verify_protected = lambda: None
                 tool.restore_route = lambda: None
+                tool.restore_source_record = lambda: None
                 tool.rollback()
                 restored = any('pg_restore --exit-on-error' in ' '.join(call) for call in calls)
                 self.assertEqual(restored, not opened)
@@ -185,6 +186,78 @@ class GuardTests(unittest.TestCase):
         service = {'environment': {'CODEX_PORT': '18080'}, 'ports': [{'target': 18080, 'published': '18087'}]}
         with self.assertRaises(ValueError):
             release.verify_service(c, service)
+
+    def source_fixture(self):
+        current = {'revision': 'a' * 40, 'tree': 'b' * 40, 'digest': 'sha256:' + 'c' * 64,
+                   'binary_sha256': 'd' * 64, 'upstream_revision': 'e' * 40}
+        candidate = {'revision': 'f' * 40, 'tree': '1' * 40, 'digest': 'sha256:' + '2' * 64,
+                     'binary_sha256': '3' * 64, 'upstream_revision': '4' * 40,
+                     'baseline_revision': current['revision'], 'baseline_binary_sha256': current['binary_sha256'],
+                     'ancestry_verified': True}
+        return current, candidate
+
+    def test_stale_source_baseline_rejected_even_with_current_live_identity(self):
+        current, candidate = self.source_fixture()
+        release.verify_source_baseline(current, candidate, current['binary_sha256'])
+        for field, value in [('baseline_revision', '9' * 40), ('ancestry_verified', False),
+                             ('baseline_binary_sha256', '8' * 64)]:
+            stale = copy.deepcopy(candidate); stale[field] = value
+            with self.assertRaises(ValueError):
+                release.verify_source_baseline(current, stale, current['binary_sha256'])
+        malformed = copy.deepcopy(current); malformed['tree'] = 'unknown'
+        with self.assertRaises(ValueError):
+            release.verify_source_baseline(malformed, candidate, current['binary_sha256'])
+        with self.assertRaises(ValueError):
+            release.verify_source_baseline(current, candidate, '0' * 64)
+
+    def test_first_legacy_baseline_requires_explicit_binary_and_preservation_note(self):
+        _, candidate = self.source_fixture()
+        candidate.update(baseline_revision='legacy-unversioned', ancestry_verified=False,
+                         legacy_preservation_note='Preserve shared patch snapshot and exact live rollback binary.')
+        release.verify_source_baseline(None, candidate, 'd' * 64)
+        for field, value in [('baseline_revision', 'a' * 40), ('ancestry_verified', True),
+                             ('legacy_preservation_note', ''), ('baseline_binary_sha256', '0' * 64)]:
+            bad = copy.deepcopy(candidate); bad[field] = value
+            with self.assertRaises(ValueError):
+                release.verify_source_baseline(None, bad, 'd' * 64)
+        current, _ = self.source_fixture()
+        with self.assertRaises(ValueError):
+            release.verify_source_baseline(current, candidate, 'd' * 64)
+
+    def test_source_record_is_written_atomically_and_rollback_restores_prior_bytes(self):
+        current, candidate = self.source_fixture()
+        with tempfile.TemporaryDirectory() as tmp:
+            tool = release.MaintenanceRelease.__new__(release.MaintenanceRelease)
+            tool.source_path = pathlib.Path(tmp) / 'source-release.json'
+            tool.source_before = json.dumps(current, indent=4).encode()
+            tool.source_path.write_bytes(tool.source_before)
+            tool.manifest = candidate; tool.args = types.SimpleNamespace(release_id='test')
+            tool.publish_source_record()
+            recorded = json.loads(tool.source_path.read_bytes())
+            for field in ['revision', 'tree', 'digest', 'binary_sha256', 'upstream_revision']:
+                self.assertEqual(recorded[field], candidate[field])
+            self.assertEqual(recorded['source_manifest_path'], '/opt/codex2api/source-release.json')
+            self.assertEqual(tool.source_path.stat().st_mode & 0o777, 0o600)
+            tool.restore_source_record()
+            self.assertEqual(tool.source_path.read_bytes(), tool.source_before)
+            tool.source_before = None; tool.source_path.unlink()
+            tool.publish_source_record(); tool.restore_source_record()
+            self.assertFalse(tool.source_path.exists())
+
+    def test_changed_source_record_before_publish_is_never_overwritten(self):
+        current, candidate = self.source_fixture()
+        with tempfile.TemporaryDirectory() as tmp:
+            tool = release.MaintenanceRelease.__new__(release.MaintenanceRelease)
+            tool.source_path = pathlib.Path(tmp) / 'source-release.json'
+            tool.source_before = json.dumps(current).encode()
+            tool.source_path.write_text('newer release')
+            tool.manifest = candidate; tool.args = types.SimpleNamespace(release_id='test')
+            with self.assertRaises(RuntimeError):
+                tool.publish_source_record()
+            self.assertEqual(tool.source_path.read_text(), 'newer release')
+            with self.assertRaises(RuntimeError):
+                tool.restore_source_record()
+            self.assertEqual(tool.source_path.read_text(), 'newer release')
 
 
 if __name__ == '__main__':

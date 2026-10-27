@@ -26,6 +26,7 @@ PG = 'codex2api-postgres'
 CADDY = 'sub2api-caddy-1'
 HOST = 'codex.xingqiaolab.top'
 EXE = '/usr/local/bin/codex2api'
+SOURCE_RELEASE = '/opt/codex2api/source-release.json'
 
 
 def fingerprint(rows):
@@ -133,6 +134,53 @@ def verify_binary_file(manifest):
         raise ValueError('manifest binary path digest mismatch')
 
 
+def verify_source_baseline(current, candidate, live_binary_sha256):
+    """Trust locally verified ancestry only against the unchanged server head.
+
+    This host deliberately does not fetch Git or invent legacy ancestry.
+    The caller supplies merge-base evidence in its reviewed build manifest.
+    """
+    if candidate.get('baseline_binary_sha256') != live_binary_sha256:
+        raise ValueError('source baseline executable differs from expected live executable')
+    if current is None:
+        note = candidate.get('legacy_preservation_note')
+        if candidate.get('baseline_revision') != 'legacy-unversioned' or candidate.get('ancestry_verified') is not False:
+            raise ValueError('first release requires explicit legacy baseline without claimed ancestry')
+        if not isinstance(note, str) or len(note.strip()) < 20:
+            raise ValueError('legacy source preservation evidence required')
+        return
+    for field in ['revision', 'tree', 'upstream_revision']:
+        if not re.fullmatch('[0-9a-f]{40}', current.get(field, '')):
+            raise ValueError('invalid authoritative source release')
+    if not re.fullmatch('[0-9a-f]{64}', current.get('binary_sha256', '')) or not re.fullmatch('sha256:[0-9a-f]{64}', current.get('digest', '')):
+        raise ValueError('invalid authoritative artifact digest')
+    if current['binary_sha256'] != live_binary_sha256:
+        raise ValueError('authoritative source release no longer matches running executable')
+    if candidate.get('baseline_revision') != current['revision'] or candidate.get('ancestry_verified') is not True:
+        raise ValueError('stale source baseline or locally verified ancestry missing')
+
+
+def atomic_source_write(path, data):
+    """Durably replace a private source record, including the first release."""
+    path = pathlib.Path(path)
+    if path.is_symlink():
+        raise ValueError('source-release symlink refused')
+    fd, temporary = tempfile.mkstemp(prefix='.source-release-', dir=path.parent)
+    try:
+        with os.fdopen(fd, 'wb') as output:
+            output.write(data); output.flush(); os.fsync(output.fileno())
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
 @contextlib.contextmanager
 def release_lock(path='/var/lock/codex2api-release.lock'):
     with open(path, 'a') as handle:
@@ -229,6 +277,45 @@ class MaintenanceRelease:
         current = self.inspect(APP)
         verify_identity(current, self.binary_hash(), self.expected())
         return current
+
+    def source_bytes(self):
+        if self.source_path.is_symlink():
+            raise ValueError('source-release symlink refused')
+        if self.source_path.exists():
+            return self.source_path.read_bytes()
+        return None
+
+    def check_source_unchanged(self):
+        if self.source_bytes() != self.source_before:
+            raise RuntimeError('authoritative source release changed; refusing stale candidate')
+
+    def publish_source_record(self):
+        self.check_source_unchanged()
+        fields = ['revision', 'tree', 'digest', 'binary_sha256', 'upstream_revision',
+                  'baseline_revision', 'baseline_binary_sha256', 'ancestry_verified']
+        record = {field: self.manifest[field] for field in fields}
+        record['release_id'] = self.args.release_id
+        record['source_manifest_path'] = SOURCE_RELEASE
+        if 'legacy_preservation_note' in self.manifest:
+            record['legacy_preservation_note'] = self.manifest['legacy_preservation_note']
+        self.published_source_bytes = (json.dumps(record, indent=2, sort_keys=True) + chr(10)).encode()
+        atomic_source_write(self.source_path, self.published_source_bytes)
+
+    def restore_source_record(self):
+        current = self.source_bytes()
+        if current == self.source_before:
+            return
+        if current != getattr(self, 'published_source_bytes', None):
+            raise RuntimeError('source release changed outside this attempt; rollback will not overwrite it')
+        if self.source_before is None:
+            self.source_path.unlink()
+            directory = os.open(self.source_path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+        else:
+            atomic_source_write(self.source_path, self.source_before)
 
     def dc(self, *arguments, timeout=180):
         return self.run(['docker', 'compose', '-p', self.project, '--project-directory', self.root,
@@ -337,6 +424,10 @@ class MaintenanceRelease:
         # These live-identity reads precede every artifact/config/image mutation.
         self.old = self.check_identity()
         self.project, self.root, active = discover_compose(self.old)
+        self.source_path = pathlib.Path(SOURCE_RELEASE)
+        self.source_before = self.source_bytes()
+        current_source = json.loads(self.source_before) if self.source_before is not None else None
+        verify_source_baseline(current_source, self.manifest, self.args.expected_binary_sha256)
         self.compose = pathlib.Path(active)
         self.internal_port, self.host_port = discover_port(self.old)
         self.env = dict(x.split('=', 1) for x in self.old['Config']['Env'])
@@ -380,6 +471,10 @@ class MaintenanceRelease:
                             ('container.original.json', json.dumps(self.old)), ('caddy.original.json', json.dumps(self.original_caddy)),
                             ('protected.original.json', json.dumps(self.protected))]:
             private_write(self.directory / name, value)
+        if self.source_before is not None:
+            private_write(self.directory / 'source-release.original.json', self.source_before)
+        private_write(self.directory / 'source-release.baseline.json', json.dumps(current_source))
+        private_write(self.directory / 'build-manifest.json', json.dumps(self.manifest, indent=2))
         self.event('identity-and-configuration-verified')
 
     def verify_worker_enabled_configuration(self):
@@ -522,17 +617,17 @@ class MaintenanceRelease:
         self.dc('up', '-d', '--no-deps', '--force-recreate', APP); self.ready()
         if self.binary_hash() != self.args.expected_binary_sha256:
             raise RuntimeError('rollback exact binary verification failed; retain maintenance')
-        self.verify_protected(); self.restore_route(); self.network_gate(False)
+        self.verify_protected(); self.restore_source_record(); self.restore_route(); self.network_gate(False)
         self.event('rollback-completed-with-current-writes' if self.opened else 'rollback-completed-before-open')
 
     def deploy(self):
         self.preflight(); self.prepare_rollback(); self.rehearse()
-        self.check_identity(); self.verify_protected()
+        self.check_identity(); self.check_source_unchanged(); self.verify_protected()
         try:
             self.network_gate(True)
             self.load_caddy(maintenance_config(self.caddy())); self.maintenance = True
             self.event('maintenance-on')
-            grace = self.drain(); self.check_identity()
+            grace = self.drain(); self.check_identity(); self.check_source_unchanged()
             self.dc('stop', '-t', str(grace), APP, timeout=grace + 30); self.stopped = True
             self.event('single-app-and-embedded-worker-stopped')
             self.dump(self.directory / 'stopped.dump')
@@ -545,7 +640,9 @@ class MaintenanceRelease:
             self.dc('up', '-d', '--no-deps', '--force-recreate', APP); self.ready()
             self.smoke(); self.event('internal-version-quota-intelligence-worker-smoke-passed')
             self.opened = True; self.restore_route(); self.network_gate(False); self.event('traffic-opened')
-            self.smoke(public=True); self.event('release-success')
+            self.smoke(public=True)
+            self.publish_source_record(); self.event('source-release-record-persisted')
+            self.event('release-success')
         except BaseException:
             self.event('release-failed')
             if self.stopped:
