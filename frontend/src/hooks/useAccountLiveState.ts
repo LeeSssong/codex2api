@@ -2,6 +2,7 @@ import { useEffect, useMemo } from 'react'
 import { api } from '../api'
 import type { AccountLiveStateResponse } from '../types'
 import { mergeAccountLiveState } from '../lib/accountLiveState'
+import { subscribeStateChange } from '../lib/stateSync'
 
 export { mergeAccountLiveState }
 

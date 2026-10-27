@@ -20,6 +20,8 @@ import AccountHrefQuickEditor, {
   openAccountHref,
 } from "../components/AccountHrefQuickEditor";
 import SubscriptionBadge from "../components/SubscriptionBadge";
+import AccountQuotaWindow from "../components/AccountQuotaWindow";
+import { selectAccountQuotaWindow } from "../lib/accountQuotaWindow";
 import {
   buildProxyBindingContext,
   type ProxyBindingContext,
@@ -3139,6 +3141,7 @@ export default function Accounts() {
   // 若把 stats 写回 data.accounts,任何静默列表刷新都会用基础行整体覆盖,
   // 成本列在 ID 不变时永久变 "-" (issue #499)。
   const [accountPageStats, setAccountPageStats] = useState<Record<string, AccountPageStatsItem>>({});
+  const [quotaStatsStatus, setQuotaStatsStatus] = useState<"loading" | "ready" | "error">("loading");
   // 用量弹窗里手动刷新官方统计后 bump 一次,强制重拉本页 stats——
   // 否则官方成本胶囊要等翻页/改筛选才出现,看起来像刷新没生效。
   const [pageStatsReloadToken, setPageStatsReloadToken] = useState(0);
@@ -3172,7 +3175,11 @@ export default function Accounts() {
       (a ?? undefined) === (b ?? undefined);
     return data.accounts.map((account) => {
       const stats = accountPageStats[String(account.id)];
-      if (!stats) return account;
+      // Preserve unmatched snapshots only as a stale-state signal; the shared
+      // quota view discards all amounts when reset/duration no longer match.
+      const quota5h = selectAccountQuotaWindow(account, "5h", stats?.quota_5h) ?? stats?.quota_5h ?? account.quota_5h;
+      const quota7d = selectAccountQuotaWindow(account, "7d", stats?.quota_7d) ?? stats?.quota_7d ?? account.quota_7d;
+      if (!stats) return { ...account, quota_5h: quota5h, quota_7d: quota7d, quota_stats_status: quotaStatsStatus };
       // 行自身已带的字段优先(如 refreshAccountRow 拉回的完整详情比
       // 本页 stats 快照更新),page-stats 只补基础行缺失的部分。
       // 官方结算例外：点进官方统计刷新后必须以最新快照为准，
@@ -3214,6 +3221,9 @@ export default function Accounts() {
       // page-stats 对本页每个账号都有条目；合并结果没变时保留行对象，
       // 否则 1 秒 live 更新会让整页行级 memo 每秒全部失效。
       if (
+        sameOptional(quota5h, account.quota_5h) &&
+        sameOptional(quota7d, account.quota_7d) &&
+        quotaStatsStatus === account.quota_stats_status &&
         sameOptional(billed5h, account.billed_5h) &&
         sameOptional(billed7d, account.billed_7d) &&
         sameOptional(nextOfficialUsd, account.official_usd) &&
@@ -3226,6 +3236,9 @@ export default function Accounts() {
         return account;
       }
       const merged = { ...account };
+      merged.quota_5h = quota5h;
+      merged.quota_7d = quota7d;
+      merged.quota_stats_status = quotaStatsStatus;
       merged.billed_5h = billed5h;
       merged.billed_7d = billed7d;
       merged.official_usd = nextOfficialUsd;
@@ -3236,7 +3249,7 @@ export default function Accounts() {
       merged.usage_today_detail = usageTodayDetail;
       return merged;
     });
-  }, [data.accounts, accountPageStats]);
+  }, [data.accounts, accountPageStats, quotaStatsStatus]);
   const accounts = useMemo(
     () => allAccounts.filter((account) => !account.grok_api),
     [allAccounts],
@@ -3290,14 +3303,17 @@ export default function Accounts() {
     const controller = new AbortController();
     const ids = accountPageIDsKey.split(",").map(Number);
     pageStatsLoadedAtRef.current = Date.now();
+    setQuotaStatsStatus("loading");
     void api.getAccountPageStats(ids, controller.signal)
       .then((response) => {
         if (controller.signal.aborted) return;
         setAccountPageStats(response.stats ?? {});
+        setQuotaStatsStatus("ready");
       })
       .catch((err: unknown) => {
         if (controller.signal.aborted) return;
         // 该请求失败时成本/用量列会静默空白,必须留痕(issue #493)。
+        setQuotaStatsStatus("error");
         console.warn("account page stats load failed:", err);
       });
     return () => controller.abort();
@@ -3603,10 +3619,27 @@ export default function Accounts() {
         : (accounts.find((account) => account.id === detailAccountId) ?? null),
     [accounts, detailAccountId],
   );
-  const detailAccount =
-    detailAccountData?.id === detailAccountId
-      ? detailAccountData
-      : detailListAccount;
+  const detailAccount = useMemo(() => {
+    const detail = detailAccountData?.id === detailAccountId ? detailAccountData : detailListAccount;
+    if (!detail) return null;
+    // Live list state owns quota identity while detail fields load independently.
+    const current = detailListAccount ? {
+      ...detail,
+      reset_5h_at: detailListAccount.reset_5h_at,
+      reset_7d_at: detailListAccount.reset_7d_at,
+      usage_percent_5h: detailListAccount.usage_percent_5h,
+      usage_percent_7d: detailListAccount.usage_percent_7d,
+      usage_window_7d_kind: detailListAccount.usage_window_7d_kind,
+      usage_window_7d_seconds: detailListAccount.usage_window_7d_seconds,
+    } : detail;
+    const stats = accountPageStats[String(detail.id)];
+    return {
+      ...current,
+      quota_5h: selectAccountQuotaWindow(current, "5h", stats?.quota_5h) ?? stats?.quota_5h ?? current.quota_5h,
+      quota_7d: selectAccountQuotaWindow(current, "7d", stats?.quota_7d) ?? stats?.quota_7d ?? current.quota_7d,
+      quota_stats_status: quotaStatsStatus,
+    };
+  }, [accountPageStats, detailAccountData, detailAccountId, detailListAccount, quotaStatsStatus]);
   const detailNavIndex = useMemo(() => {
     if (detailAccountId == null) return -1;
     return sortedAccounts.findIndex((account) => account.id === detailAccountId);
@@ -6431,7 +6464,7 @@ export default function Accounts() {
     resetCredits: (account) => void handleResetCredits(account),
     openModelsEditor,
     remove: (account) => void handleDelete(account),
-    usageRefreshed: () => void reloadSilently(),
+    usageRefreshed: () => { void reloadSilently(); setPageStatsReloadToken((token) => token + 1); },
   };
   const rowActions = useMemo<AccountRowActions>(
     () => ({
@@ -9525,7 +9558,7 @@ export default function Accounts() {
                 <UsageCell
                   account={detailAccount}
                   wide
-                  onRefreshed={() => void reloadSilently()}
+                  onRefreshed={() => { void reloadSilently(); setPageStatsReloadToken((token) => token + 1); }}
                 />
               ) : null
             }
@@ -15257,6 +15290,19 @@ function UsageCell({
       />
     )
   ) : null;
+
+  if (isCodexOfficialAccount(account)) {
+    return (
+      <div className={`account-usage-cell ${wide ? "w-full" : "w-64"} flex min-w-0 items-start gap-2`}>
+        <div className="account-usage-windows min-w-0 flex-1 space-y-3">
+          {(showFiveHour || account.quota_5h) && <AccountQuotaWindow account={account} slot="5h" />}
+          {sparkBar}
+          <AccountQuotaWindow account={account} slot="7d" />
+        </div>
+        {refreshButton}
+      </div>
+    );
+  }
 
   if (showFiveHour) {
     if (!has5h && !has7d && !has7dDetail && !has5hReset && !has7dReset && !showSpark)

@@ -398,7 +398,29 @@ export interface CodexPathSnapshot {
   cooldown_until?: string
   health_reason?: string
 }
+export interface AccountQuotaWindow {
+  label: '5h' | '7d' | '30d'
+  state: 'ready' | 'low_sample' | 'no_usage' | 'unavailable' | 'stale' | 'error'
+  reason?: string
+  window_id: string
+  start_at?: ISODateString
+  reset_at?: ISODateString
+  as_of: ISODateString
+  observed_at?: ISODateString
+  used_percent?: number
+  used_usd?: number
+  estimated_total_usd?: number
+  estimated_remaining_usd?: number
+  requests?: number
+  tokens?: number
+  user_usd?: number
+}
+
 export interface AccountRow {
+  quota_5h?: AccountQuotaWindow
+  quota_7d?: AccountQuotaWindow
+  /** Frontend loading state for the independent page-stats request. */
+  quota_stats_status?: 'loading' | 'ready' | 'error'
   account_href?: string
   codex_paths?: CodexPathSnapshot[]
   state_models?: AccountStateModel[]
@@ -658,6 +680,8 @@ export interface AccountsPageResponse extends AccountsResponse {
 }
 
 export interface AccountPageStatsItem {
+  quota_5h?: AccountQuotaWindow
+  quota_7d?: AccountQuotaWindow
   usage_5h_detail?: AccountUsageWindow
   usage_7d_detail?: AccountUsageWindow
   usage_today_detail?: AccountUsageWindow
