@@ -40,7 +40,7 @@ func TestAccountQuotaWindowsBoundariesAndFilters(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 3 || got[1] == nil || got[1].Requests != 2 || got[1].Tokens != 40 || got[1].AccountBilled != 12 || got[1].UserBilled != 18 {
+	if len(got) != 3 || got[1] == nil || got[1].Requests != 6 || got[1].Tokens != 120 || got[1].AccountBilled != 36 || got[1].UserBilled != 54 {
 		t.Fatalf("bounded account 1=%+v, len=%d", got[1], len(got))
 	}
 	if got[2] == nil || got[2].Requests != 1 || got[2].AccountBilled != 6 {
@@ -63,7 +63,7 @@ func TestAccountQuotaWindowJustOpenedIsExplicitZero(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || got[1] == nil || got[1].Requests != 0 || got[1].AccountBilled != 0 {
+	if len(got) != 2 || got[1] == nil || got[1].Requests != 0 || got[1].AccountBilled != 0 {
 		t.Fatalf("just-opened empty window=%+v", got)
 	}
 }
@@ -96,7 +96,38 @@ func TestAccountQuotaWindowRespectsEffectiveModelAndCredentialGeneration(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got[id] == nil || got[id].Requests != 2 || got[id].AccountBilled != 12 || got[id].Tokens != 40 {
+	if got[id] == nil || got[id].Requests != 3 || got[id].AccountBilled != 18 || got[id].Tokens != 60 {
 		t.Fatalf("effective model/generation aggregation=%+v", got[id])
+	}
+}
+
+func TestAccountQuotaSourceAdmittedUsageIsStatusAndGenerationIndependent(t *testing.T) {
+	db := newGrokStateTestDB(t)
+	ctx := context.Background()
+	now := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
+	// Source ledger includes partial/cancelled upstream results, not diagnostic rows.
+	rows := []struct {
+		status   int
+		retry    bool
+		reason   string
+		admitted bool
+		cost     float64
+	}{
+		{200, false, "", true, 1}, {499, false, "", true, 2}, {502, true, "", true, 3},
+		{200, false, "overflow_compact_summary", true, 4}, {200, false, "connection_test", false, 8},
+		{503, true, "", false, 16}, {200, false, "", true, 0},
+	}
+	for _, r := range rows {
+		_, err := db.conn.ExecContext(ctx, `INSERT INTO usage_logs(account_id,created_at,status_code,is_retry_attempt,internal_reason,credential_generation,model,account_billed,user_billed,total_tokens,account_cost,standard_cost,quota_usage_admitted,quota_tokens) VALUES(1,$1,$2,$3,$4,99,'gpt-5.4',99,7,99,$5,6,$6,10)`, db.timeArg(now.Add(-time.Minute)), r.status, r.retry, r.reason, r.cost, r.admitted)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := db.GetAccountQuotaWindowUsage(ctx, map[int64]time.Time{1: now.Add(-time.Hour)}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got[1].Requests != 5 || got[1].AccountBilled != 10 || got[1].Tokens != 50 {
+		t.Fatalf("source admitted rows=%+v", got[1])
 	}
 }

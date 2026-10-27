@@ -27,6 +27,9 @@ type AccountQuotaWindow struct {
 	Requests              *int64     `json:"requests,omitempty"`
 	Tokens                *int64     `json:"tokens,omitempty"`
 	UserUSD               *float64   `json:"user_usd,omitempty"`
+	StandardUSD           *float64   `json:"standard_usd,omitempty"`
+	CostBasis             string     `json:"cost_basis,omitempty"`
+	LegacyRequests        int64      `json:"legacy_requests,omitempty"`
 }
 
 type quotaWindowSnapshot struct {
@@ -89,6 +92,18 @@ func projectAccountQuotaWindow(s quotaWindowSnapshot, asOf time.Time, usage *dat
 	out.UserUSD = &user
 	out.Requests = &requests
 	out.Tokens = &tokens
+	standard := usage.StandardCost
+	if finite(standard) {
+		out.StandardUSD = &standard
+	}
+	out.CostBasis = "snapshot"
+	out.LegacyRequests = usage.LegacyRequests
+	if usage.LegacyRequests > 0 {
+		out.CostBasis = "mixed"
+		if usage.LegacyRequests == usage.Requests {
+			out.CostBasis = "legacy"
+		}
+	}
 	// Sub2 creates a zero-utilization progress object when only local stats exist.
 	pct := 0.0
 	if s.PercentValid && finite(s.Percent) {
