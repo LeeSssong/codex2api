@@ -411,6 +411,9 @@ export interface AccountQuotaWindow {
   used_usd?: number
   estimated_total_usd?: number
   estimated_remaining_usd?: number
+  standard_usd?: number
+  cost_basis?: 'snapshot' | 'legacy' | 'mixed'
+  legacy_requests?: number
   requests?: number
   tokens?: number
   user_usd?: number

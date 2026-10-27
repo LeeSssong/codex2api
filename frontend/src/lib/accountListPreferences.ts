@@ -25,7 +25,7 @@ export type AccountListSort = {
 };
 
 // 0 表示关闭自动刷新。
-export const ACCOUNT_AUTO_REFRESH_INTERVALS = [0, 5, 10, 30] as const;
+export const ACCOUNT_AUTO_REFRESH_INTERVALS = [0, 5, 10, 15, 30] as const;
 export type AccountAutoRefreshSeconds =
   (typeof ACCOUNT_AUTO_REFRESH_INTERVALS)[number];
 

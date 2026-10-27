@@ -94,7 +94,7 @@ test("sort preference tolerates unavailable storage", () => {
 });
 
 test("auto refresh is off by default and accepts only offered intervals", () => {
-  assert.deepEqual([...ACCOUNT_AUTO_REFRESH_INTERVALS], [0, 5, 10, 30]);
+  assert.deepEqual([...ACCOUNT_AUTO_REFRESH_INTERVALS], [0, 5, 10, 15, 30]);
   assert.equal(readAccountAutoRefreshSeconds(createStorage()), 0);
   for (const raw of ["7", "abc", "-5", "300"]) {
     const storage = createStorage({ [ACCOUNT_AUTO_REFRESH_STORAGE_KEY]: raw });
@@ -102,7 +102,7 @@ test("auto refresh is off by default and accepts only offered intervals", () => 
   }
   assert.equal(normalizeAccountAutoRefreshSeconds(10), 10);
   assert.equal(normalizeAccountAutoRefreshSeconds("30"), 30);
-  assert.equal(normalizeAccountAutoRefreshSeconds(15), 0);
+  assert.equal(normalizeAccountAutoRefreshSeconds(15), 15);
 });
 
 test("auto refresh interval round-trips and turning it off clears storage", () => {

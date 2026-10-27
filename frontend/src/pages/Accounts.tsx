@@ -3,7 +3,7 @@ import { useIntelligenceBars } from "../hooks/useIntelligenceBars";
 import AccountIntelligenceBar, { AccountIntelligenceActions } from "../components/AccountIntelligenceBar";
 import type { IntelligenceBar } from "../lib/intelligenceCheck";
 import type { ChangeEvent, DragEvent, ReactNode } from "react";
-import { memo, useCallback, useEffect, useRef, useState, useMemo } from "react";
+import { memo, useCallback, useEffect, useRef, useState, useMemo, useSyncExternalStore } from "react";
 import "./accounts-cards.css";
 import { useLocation, useNavigate } from "react-router-dom";
 import { api, getAdminKey, resetAdminAuthState } from "../api";
@@ -21,7 +21,8 @@ import AccountHrefQuickEditor, {
 } from "../components/AccountHrefQuickEditor";
 import SubscriptionBadge from "../components/SubscriptionBadge";
 import AccountQuotaWindow from "../components/AccountQuotaWindow";
-import { selectAccountQuotaWindow } from "../lib/accountQuotaWindow";
+import { AccountQuotaCache, accountQuotaRefreshKey } from "../lib/accountQuotaCache";
+import { AccountQuotaRefreshContext } from "../components/AccountQuotaRefreshContext";
 import {
   buildProxyBindingContext,
   type ProxyBindingContext,
@@ -89,7 +90,6 @@ import type {
   AccountListSummary,
   AccountEmailDomainFacet,
   AccountOperationSelector,
-  AccountPageStatsItem,
   AccountLiveStateResponse,
   UpstreamChannel,
   OpenAIResponsesBalanceResponse,
@@ -3140,33 +3140,48 @@ export default function Accounts() {
   // page-stats 存独立 state 并在渲染时合并:分页基础行不含成本/用量明细,
   // 若把 stats 写回 data.accounts,任何静默列表刷新都会用基础行整体覆盖,
   // 成本列在 ID 不变时永久变 "-" (issue #499)。
-  const [accountPageStats, setAccountPageStats] = useState<Record<string, AccountPageStatsItem>>({});
-  const [quotaStatsStatus, setQuotaStatsStatus] = useState<"loading" | "ready" | "error">("loading");
+  const [quotaCache] = useState(() => new AccountQuotaCache(ids => api.getAccountPageStats(ids)));
+  const quotaEntries = useSyncExternalStore(quotaCache.subscribe, quotaCache.getSnapshot);
+  const quotaVisibleIds = useRef(new Set<number>());
+  const requestQuotaUsage = useCallback((account: AccountRow) => {
+    quotaVisibleIds.current.add(account.id);
+    quotaCache.request(account.id, accountQuotaRefreshKey(account));
+  }, [quotaCache]);
+  const quotaRefreshKey = data.accounts.filter(account => !account.grok_api).map(accountQuotaRefreshKey).join("\n");
+  const quotaAccountsRef = useRef(data.accounts);
+  quotaAccountsRef.current = data.accounts;
+  useEffect(() => {
+    const refresh = () => {
+      const desktop = window.matchMedia('(min-width: 768px)').matches;
+      for (const account of quotaAccountsRef.current) {
+        if (!account.grok_api && (desktop || quotaVisibleIds.current.has(account.id))) requestQuotaUsage(account);
+      }
+    };
+    refresh();
+    const viewport = window.matchMedia('(min-width: 768px)');
+    viewport.addEventListener('change', refresh);
+    return () => viewport.removeEventListener('change', refresh);
+  }, [quotaRefreshKey, requestQuotaUsage]);
+  const forceQuotaRefresh = useCallback(() => {
+    for (const account of quotaAccountsRef.current) {
+      if (!account.grok_api) quotaCache.request(account.id, accountQuotaRefreshKey(account), true);
+    }
+  }, [quotaCache]);
   // 用量弹窗里手动刷新官方统计后 bump 一次,强制重拉本页 stats——
   // 否则官方成本胶囊要等翻页/改筛选才出现,看起来像刷新没生效。
   const [pageStatsReloadToken, setPageStatsReloadToken] = useState(0);
   // 顶部刷新同时要重拉 page-stats。列表和 page-stats 是两条独立请求链,
   // 账号 ID 不变时仅 reload 列表不会触发 page-stats effect,今日统计就会留在旧快照。
   const refreshAccountPage = useCallback(async () => {
-    await reload();
     setPageStatsReloadToken((token) => token + 1);
+    await reload();
   }, [reload]);
   const handleOfficialUsageRefreshed = useCallback(
     (patch?: { accountId: number; officialUsd: number | null }) => {
-      if (patch) {
-        setAccountPageStats((current) => ({
-          ...current,
-          [String(patch.accountId)]: {
-            ...current[String(patch.accountId)],
-            official_usd: patch.officialUsd ?? undefined,
-            official_usd_7d: patch.officialUsd ?? undefined,
-            official_usage_synced: true,
-          },
-        }));
-      }
+      if (patch) quotaCache.patchOfficialCost(patch.accountId, patch.officialUsd);
       setPageStatsReloadToken((token) => token + 1);
     },
-    [],
+    [quotaCache],
   );
   // Codex 视图的统计卡/额度分布/列表/批量操作一律排除 Grok 账号
   // （Grok 账号由顶部切换后的 Grok 页单独统计与管理）。
@@ -3174,11 +3189,11 @@ export default function Accounts() {
     const sameOptional = (a: unknown, b: unknown) =>
       (a ?? undefined) === (b ?? undefined);
     return data.accounts.map((account) => {
-      const stats = accountPageStats[String(account.id)];
-      // Preserve unmatched snapshots only as a stale-state signal; the shared
-      // quota view discards all amounts when reset/duration no longer match.
-      const quota5h = selectAccountQuotaWindow(account, "5h", stats?.quota_5h) ?? stats?.quota_5h ?? account.quota_5h;
-      const quota7d = selectAccountQuotaWindow(account, "7d", stats?.quota_7d) ?? stats?.quota_7d ?? account.quota_7d;
+      const quotaEntry = quotaEntries[String(account.id)];
+      const stats = quotaEntry?.data;
+      const quota5h = quotaEntry?.data?.quota_5h;
+      const quota7d = quotaEntry?.data?.quota_7d;
+      const quotaStatsStatus = quotaEntry?.status ?? "loading";
       if (!stats) return { ...account, quota_5h: quota5h, quota_7d: quota7d, quota_stats_status: quotaStatsStatus };
       // 行自身已带的字段优先(如 refreshAccountRow 拉回的完整详情比
       // 本页 stats 快照更新),page-stats 只补基础行缺失的部分。
@@ -3249,7 +3264,7 @@ export default function Accounts() {
       merged.usage_today_detail = usageTodayDetail;
       return merged;
     });
-  }, [data.accounts, accountPageStats, quotaStatsStatus]);
+  }, [data.accounts, quotaEntries]);
   const accounts = useMemo(
     () => allAccounts.filter((account) => !account.grok_api),
     [allAccounts],
@@ -3295,29 +3310,16 @@ export default function Accounts() {
 
   // 最近一次拉取 page-stats 的时间,供自动刷新节流(任何来源触发都会更新)。
   const pageStatsLoadedAtRef = useRef(0);
+  const previousPageStatsReloadToken = useRef(pageStatsReloadToken);
   useEffect(() => {
-    if (!accountPageIDsKey) {
-      setAccountPageStats({});
-      return undefined;
-    }
-    const controller = new AbortController();
-    const ids = accountPageIDsKey.split(",").map(Number);
+    if (previousPageStatsReloadToken.current === pageStatsReloadToken) return;
+    previousPageStatsReloadToken.current = pageStatsReloadToken;
     pageStatsLoadedAtRef.current = Date.now();
-    setQuotaStatsStatus("loading");
-    void api.getAccountPageStats(ids, controller.signal)
-      .then((response) => {
-        if (controller.signal.aborted) return;
-        setAccountPageStats(response.stats ?? {});
-        setQuotaStatsStatus("ready");
-      })
-      .catch((err: unknown) => {
-        if (controller.signal.aborted) return;
-        // 该请求失败时成本/用量列会静默空白,必须留痕(issue #493)。
-        setQuotaStatsStatus("error");
-        console.warn("account page stats load failed:", err);
-      });
-    return () => controller.abort();
-  }, [accountPageIDsKey, pageStatsReloadToken]);
+    forceQuotaRefresh();
+  }, [pageStatsReloadToken, forceQuotaRefresh]);
+  useEffect(() => {
+    if (Object.values(quotaEntries).some(entry => entry.status === "ready")) pageStatsLoadedAtRef.current = Date.now();
+  }, [quotaEntries]);
   // 自动刷新:列表静默重拉(不闪加载态、失败不弹错);page-stats 与健康条
   // 是 usage_logs 聚合查询,按 ACCOUNT_PAGE_STATS_MIN_REFRESH_MS 节流。
   const autoRefreshAccountPage = useCallback(async () => {
@@ -3632,14 +3634,14 @@ export default function Accounts() {
       usage_window_7d_kind: detailListAccount.usage_window_7d_kind,
       usage_window_7d_seconds: detailListAccount.usage_window_7d_seconds,
     } : detail;
-    const stats = accountPageStats[String(detail.id)];
+    const quotaEntry = quotaEntries[String(detail.id)];
     return {
       ...current,
-      quota_5h: selectAccountQuotaWindow(current, "5h", stats?.quota_5h) ?? stats?.quota_5h ?? current.quota_5h,
-      quota_7d: selectAccountQuotaWindow(current, "7d", stats?.quota_7d) ?? stats?.quota_7d ?? current.quota_7d,
-      quota_stats_status: quotaStatsStatus,
+      quota_5h: quotaEntry?.data?.quota_5h,
+      quota_7d: quotaEntry?.data?.quota_7d,
+      quota_stats_status: quotaEntry?.status ?? "loading",
     };
-  }, [accountPageStats, detailAccountData, detailAccountId, detailListAccount, quotaStatsStatus]);
+  }, [quotaEntries, detailAccountData, detailAccountId, detailListAccount]);
   const detailNavIndex = useMemo(() => {
     if (detailAccountId == null) return -1;
     return sortedAccounts.findIndex((account) => account.id === detailAccountId);
@@ -6596,6 +6598,7 @@ export default function Accounts() {
   }
 
   return (
+    <AccountQuotaRefreshContext.Provider value={requestQuotaUsage}>
     <div
       key="provider-codex"
       className="relative @container/accounts animate-channel-switch-in"
@@ -11919,6 +11922,7 @@ export default function Accounts() {
         </>
       </StateShell>
     </div>
+    </AccountQuotaRefreshContext.Provider>
   );
 }
 
