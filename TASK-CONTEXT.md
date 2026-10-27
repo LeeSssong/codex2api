@@ -15,3 +15,7 @@
 ## 当前本地任务：Sub2口径完整对齐（不部署）
 
 用户明确授权本地实施且禁止部署。候选codex/sub2-quota-parity-20261027，基线9a24ddf4；实现和验证见docs/parity/sub2-source/IMPLEMENTATION.md。新增费用快照及精简费用表；生产仍为此前版本，本轮未推送远端main。旧共享工作区保持保留现场。
+
+## 用户追加授权：历史值直接纠正
+
+2026-10-27按用户明确要求已在线直接重算并回写8,255条现有account_billed及相关汇总；无新字段/备份/应用部署，用户扣费和APIKey字段哈希不变。见docs/parity/sub2-source/HISTORICAL-CORRECTION.md。应用候选仍未部署；本次数据操作不能当成新版本发布。
