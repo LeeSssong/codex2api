@@ -208,3 +208,16 @@ func TestQuotaWindowSub2RollingFallbackKeepsCosts(t *testing.T) {
 		}
 	}
 }
+
+func TestQuotaSourceFeePredictionAndHistoryProvenance(t *testing.T) {
+	now := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
+	for _, legacy := range []int64{0, 1, 2} {
+		usage := &database.AccountTimeRangeUsage{Requests: 2, Tokens: 2200, AccountBilled: .0071, StandardCost: .00355, UserBilled: .009, LegacyRequests: legacy}
+		s := quotaWindowSnapshot{AccountID: 1, Label: "7d", Duration: 7 * 24 * time.Hour, ResetAt: now.Add(time.Hour), Percent: 20, PercentValid: true}
+		q := projectAccountQuotaWindow(s, now, usage, nil)
+		wantBasis := map[int64]string{0: "snapshot", 1: "mixed", 2: "legacy"}[legacy]
+		if q.CostBasis != wantBasis || q.LegacyRequests != legacy || q.EstimatedTotalUSD == nil || math.Abs(*q.EstimatedTotalUSD-.0355) > 1e-12 || q.StandardUSD == nil || *q.StandardUSD != .00355 || q.UserUSD == nil || *q.UserUSD != .009 {
+			t.Fatalf("fee projection/provenance=%+v", q)
+		}
+	}
+}

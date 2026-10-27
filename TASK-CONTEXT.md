@@ -11,3 +11,7 @@
 ## 后续修复2026-10-27
 
 已部署017294a8额度时间精度修复，见docs/releases/2026-10-27-quota-refresh.md；当前服务器source-release基线替代上述defac31e。后置保护误报已保留最新DB恢复新版，发布工具已排除用量计数。
+
+## 当前本地任务：Sub2口径完整对齐（不部署）
+
+用户明确授权本地实施且禁止部署。候选codex/sub2-quota-parity-20261027，基线9a24ddf4；实现和验证见docs/parity/sub2-source/IMPLEMENTATION.md。新增费用快照及精简费用表；生产仍为此前版本，本轮未推送远端main。旧共享工作区保持保留现场。
