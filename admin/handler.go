@@ -120,6 +120,7 @@ type Handler struct {
 	cacheDriver                string
 	cacheLabel                 string
 	adminSecretEnv             string
+	adminAuthThrottle          *adminAuthThrottle
 	imageProxy                 *proxy.Handler
 	antigravitySyncAccount     func(context.Context, int64) antigravityRefreshItem
 	antigravityCapabilityProbe antigravityCapabilityExecutor
@@ -435,6 +436,9 @@ const (
 	importTierRecoveryDelay   = 5 * time.Second
 	importDBWaitBackoff       = 10 * time.Second
 )
+
+// maxAdminPage 限制分页页码，避免 (page-1)*page_size 溢出为负 OFFSET。
+const maxAdminPage = 100000
 
 type importRuntimeLoadSnapshot struct {
 	RPM         int64
@@ -1050,6 +1054,7 @@ func NewHandler(store *auth.Store, db *database.DB, tc cache.TokenCache, rl *pro
 		cacheDriver:          tc.Driver(),
 		cacheLabel:           tc.Label(),
 		adminSecretEnv:       adminSecretEnv,
+		adminAuthThrottle:    newAdminAuthThrottle(),
 		imageProxy:           proxy.NewHandler(store, db, nil, nil),
 		chartCacheData:       make(map[string]*chartCacheEntry),
 		accountListCache:     make(map[string]*accountListSnapshot),
@@ -1183,6 +1188,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.GET("/accounts/antigravity/export", h.ExportAntigravityAccounts)
 	api.POST("/accounts/antigravity/import", h.BatchImportAntigravityAccounts)
 	api.POST("/accounts/antigravity/refresh", h.BatchRefreshAntigravityAccounts)
+	// 运维止血：清除配额事实并递增 quota_epoch（Spec §8.2），与批量刷新同为账号级入口。
+	api.POST("/accounts/antigravity/quota/clear", h.ClearAntigravityQuotaHandler)
 	api.POST("/accounts/antigravity/oauth/start", h.StartAntigravityOAuth)
 	api.GET("/accounts/antigravity/oauth/status", h.GetAntigravityOAuthStatus)
 	api.POST("/accounts/antigravity/oauth/complete", h.CompleteAntigravityOAuth)
@@ -1455,19 +1462,43 @@ func (h *Handler) adminAuthMiddleware() gin.HandlerFunc {
 			}
 		}
 
+		clientIP := c.ClientIP()
+		// Check the block before comparing any candidate. Accepting a correct
+		// candidate during a block would leave an unlimited password oracle.
+		if retry := h.adminAuthThrottle.retryAfter(clientIP, time.Now()); retry > 0 {
+			c.Header("Retry-After", strconv.Itoa(int((retry+time.Second-1)/time.Second)))
+			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
+				"error": "认证失败次数过多，请稍后再试",
+			})
+			return
+		}
+
 		// 清理输入
 		adminKey = security.SanitizeInput(adminKey)
 
 		// 使用安全比较防止时序攻击
 		if !security.SecureCompare(adminKey, adminSecret) {
 			// 记录安全审计日志
-			security.SecurityAuditLog("ADMIN_AUTH_FAILED", fmt.Sprintf("path=%s ip=%s source=%s", c.Request.URL.Path, c.ClientIP(), source))
+			security.SecurityAuditLog("ADMIN_AUTH_FAILED", fmt.Sprintf("path=%s ip=%s source=%s", c.Request.URL.Path, security.SanitizeLog(clientIP), source))
+			if blocked := h.adminAuthThrottle.recordFailure(clientIP, time.Now()); blocked > 0 {
+				c.Header("Retry-After", strconv.Itoa(int((blocked+time.Second-1)/time.Second)))
+				c.JSON(http.StatusTooManyRequests, gin.H{
+					"error": "认证失败次数过多，请稍后再试",
+				})
+				c.Abort()
+				return
+			}
 			c.JSON(http.StatusUnauthorized, gin.H{
 				"error": "管理密钥无效或缺失",
 			})
 			c.Abort()
 			return
 		}
+		h.adminAuthThrottle.reset(clientIP)
+
+		// 管理端响应包含 raw_key、auth.json、settings 等秘密，禁止中间缓存保存。
+		c.Header("Cache-Control", "no-store")
+		c.Header("Pragma", "no-cache")
 
 		// 成功认证，记录审计日志
 		if security.IsSensitiveEndpoint(c.Request.URL.Path) {
@@ -1729,6 +1760,7 @@ type accountResponse struct {
 	AvatarURL                     string                      `json:"avatar_url,omitempty"`
 	VerifiedEmail                 bool                        `json:"verified_email,omitempty"`
 	ProjectID                     string                      `json:"project_id,omitempty"`
+	AntigravityUserProjectID      string                      `json:"antigravity_user_project_id,omitempty"`
 	AntigravityQuota              json.RawMessage             `json:"antigravity_quota,omitempty"`
 	AntigravityPermissions        json.RawMessage             `json:"antigravity_permissions,omitempty"`
 	AntigravitySyncWarning        string                      `json:"antigravity_sync_warning,omitempty"`
@@ -4880,6 +4912,10 @@ func (h *Handler) SyncAccountUpstreamModels(c *gin.Context) {
 		return
 	}
 	proxy.RecordResponsesLiteSupportFromManifest(manifest.Body)
+	if err := manifest.SaveCapabilities(ctx, h.db); err != nil {
+		writeError(c, http.StatusBadGateway, "保存 Codex 能力快照失败: "+err.Error())
+		return
+	}
 	if err := (proxy.DaybreakObservation{Account: account, Snapshot: daybreakSnapshot, Body: manifest.Body}).Save(ctx, h.db); err != nil {
 		writeError(c, http.StatusBadGateway, "保存 Daybreak 能力失败: "+err.Error())
 		return
@@ -8733,21 +8769,23 @@ func (h *Handler) ListAPIKeys(c *gin.Context) {
 }
 
 type createKeyReq struct {
-	Name            string                 `json:"name"`
-	Key             string                 `json:"key"`
-	QuotaLimit      *float64               `json:"quota_limit"`
-	Quota           *float64               `json:"quota"`
-	ExpiresAt       string                 `json:"expires_at"`
-	ExpiresInDays   *int                   `json:"expires_in_days"`
-	AllowedGroupIDs json.RawMessage        `json:"allowed_group_ids"`
-	Limits          *database.APIKeyLimits `json:"limits"`
+	Name            string              `json:"name"`
+	Key             string              `json:"key"`
+	QuotaLimit      *float64            `json:"quota_limit"`
+	Quota           *float64            `json:"quota"`
+	ExpiresAt       string              `json:"expires_at"`
+	ExpiresInDays   *int                `json:"expires_in_days"`
+	AllowedGroupIDs json.RawMessage     `json:"allowed_group_ids"`
+	Limits          *createAPIKeyLimits `json:"limits"`
 }
 
 // generateKey 生成随机 API Key
-func generateKey() string {
+func generateKey() (string, error) {
 	b := make([]byte, 24)
-	rand.Read(b)
-	return "sk-" + hex.EncodeToString(b)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("generate api key: %w", err)
+	}
+	return "sk-" + hex.EncodeToString(b), nil
 }
 
 // CreateAPIKey 创建新 API 密钥（增强版，带输入验证）
@@ -8804,7 +8842,12 @@ func (h *Handler) CreateAPIKey(c *gin.Context) {
 
 	key := req.Key
 	if key == "" {
-		key = generateKey()
+		var err error
+		key, err = generateKey()
+		if err != nil {
+			writeInternalError(c, err)
+			return
+		}
 	} else {
 		// 验证用户提供的key格式
 		key = security.SanitizeInput(key)
@@ -8832,13 +8875,8 @@ func (h *Handler) CreateAPIKey(c *gin.Context) {
 		}
 	}
 
-	var limits database.APIKeyLimits
+	limits := sanitizeAPIKeyLimits(req.Limits.withDefaults())
 	if req.Limits != nil {
-		if err := req.Limits.ValidateCodexRouting(); err != nil {
-			writeError(c, http.StatusBadRequest, err.Error())
-			return
-		}
-		limits = sanitizeAPIKeyLimits(*req.Limits)
 		limits.ModelRequestLimits, err = normalizeAdminAPIKeyModelRequestLimits(req.Limits.ModelRequestLimits, nil)
 		if err != nil {
 			writeError(c, http.StatusBadRequest, err.Error())
@@ -9200,6 +9238,9 @@ var knownAPIKeyPlanFilters = map[string]struct{}{
 	// labels so a Claude-bound key's plan gate survives normalization.
 	"claude": {}, "max": {}, "max-5x": {}, "max-20x": {},
 	"enterprise": {}, "business": {},
+	// Antigravity keys derived from Google tier ids (g1-ultra-tier → ultra,
+	// standard-tier → standard); free/pro/api are shared with the lists above.
+	"ultra": {}, "standard": {},
 }
 
 // cleanPlanAllow 归一账号套餐白名单:小写去空白、丢弃未知值并去重。
@@ -11097,7 +11138,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 
 	if req.ProxyURL != nil {
 		h.store.SetProxyURL(*req.ProxyURL)
-		log.Printf("设置已更新: proxy_url = %s", *req.ProxyURL)
+		log.Printf("设置已更新: proxy_url = %s", security.MaskURLCredentials(*req.ProxyURL))
 	}
 
 	if req.PgMaxConns != nil {
@@ -11287,7 +11328,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		v := strings.TrimSpace(*req.GithubProxyURL)
 		h.store.SetGithubProxyURL(v)
 		runtimeCfg.GithubProxyURL = v
-		log.Printf("设置已更新: github_proxy_url = %s", v)
+		log.Printf("设置已更新: github_proxy_url = %s", security.MaskURLCredentials(v))
 	}
 
 	// Codex 过载熔断（配置只存 RuntimeSettings，热更新生效）
@@ -12991,16 +13032,10 @@ func (h *Handler) grokChannelModels() []string {
 }
 
 func (h *Handler) antigravityChannelModels() []string {
-	if h == nil || h.store == nil {
-		return proxy.AntigravityPublishedModelIDs(auth.AntigravityDefaultModelIDs())
-	}
 	seen := make(map[string]struct{})
 	models := make([]string, 0)
-	for _, account := range h.store.Accounts() {
-		if account == nil || !account.IsAntigravityAPI() {
-			continue
-		}
-		for _, model := range proxy.AntigravityPublishedModelIDs(account.AntigravityModels()) {
+	collect := func(list []string) {
+		for _, model := range list {
 			key := strings.ToLower(strings.TrimSpace(model))
 			if key == "" {
 				continue
@@ -13012,9 +13047,20 @@ func (h *Handler) antigravityChannelModels() []string {
 			models = append(models, model)
 		}
 	}
-	if len(models) == 0 {
-		models = proxy.AntigravityPublishedModelIDs(auth.AntigravityDefaultModelIDs())
+
+	if h != nil && h.store != nil {
+		for _, account := range h.store.Accounts() {
+			if account == nil || !account.IsAntigravityAPI() {
+				continue
+			}
+			collect(proxy.AntigravityPublishedModelIDs(account.AntigravityModels()))
+		}
 	}
+	if len(models) == 0 {
+		collect(proxy.AntigravityPublishedModelIDs(auth.AntigravityDefaultModelIDs()))
+	}
+	// 无论是否有账号，逻辑模型（裸名如 gemini-3.8-flash）均需暴露给定价管理
+	collect(proxy.AntigravityLogicalModelIDs())
 	sort.Strings(models)
 	return models
 }

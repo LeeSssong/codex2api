@@ -19,6 +19,14 @@ Thumbs.db
 # Env
 .env
 .env.local
+.env.*
+!.env.example
+
+# Logs and local worktrees must not enter the build context.
+logs/
+*.log
+.worktrees/
+.local/
 
 # Runtime data never belongs in an image build context.
 data/

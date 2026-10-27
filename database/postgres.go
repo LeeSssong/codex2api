@@ -1527,8 +1527,8 @@ func (db *DB) migrate(ctx context.Context) error {
 	SET test_model = 'gpt-5.5'
 	WHERE LOWER(COALESCE(test_model, '')) IN ('gpt-5.4', 'gpt-5.4-mini');
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS client_compat_mode VARCHAR(20) DEFAULT 'preserve';
-	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_min_cli_version VARCHAR(32) DEFAULT '0.153.3';
-	ALTER TABLE system_settings ALTER COLUMN codex_min_cli_version SET DEFAULT '0.153.3';
+	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_min_cli_version VARCHAR(32) DEFAULT '0.160.0';
+	ALTER TABLE system_settings ALTER COLUMN codex_min_cli_version SET DEFAULT '0.160.0';
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_user_agent_config TEXT DEFAULT '{}';
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_telemetry_enabled BOOLEAN DEFAULT FALSE;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_turn_state_template_cache_enabled BOOLEAN DEFAULT FALSE;
@@ -1914,7 +1914,7 @@ type APIKeyLimits struct {
 	// 而不是直接把 400 透传给下游。默认关闭。
 	AutoCompactOnOverflow bool `json:"auto_compact_overflow,omitempty"`
 	// AllowLive 为 true 时，该 Key 可以使用 ChatGPT Live（/v1/live 与
-	// /backend-api/codex/realtime/calls）。默认关闭。
+	// /backend-api/codex/realtime/calls）。管理端新建 auto/codex Key 时默认开启。
 	AllowLive bool `json:"allow_live,omitempty"`
 	// UpstreamChannel 限定该 Key 的请求只调度到指定上游渠道的账号：
 	//   - ""/auto: 不限（默认，按模型路由）
@@ -2733,7 +2733,7 @@ func (db *DB) GetSystemSettings(ctx context.Context) (*SystemSettings, error) {
 		       COALESCE(prompt_filter_review_timeout_seconds, 10),
 		       COALESCE(prompt_filter_review_fail_closed, true),
 		       COALESCE(client_compat_mode, 'preserve'),
-		       COALESCE(codex_min_cli_version, '0.153.3'),
+		       COALESCE(codex_min_cli_version, '0.160.0'),
 		       COALESCE(codex_user_agent_config, '{}'),
 		       COALESCE(usage_log_mode, 'full'),
 		       COALESCE(usage_log_batch_size, 200),
@@ -8848,6 +8848,24 @@ func (db *DB) InsertAccountWithCredentials(ctx context.Context, name string, cre
 		`INSERT INTO accounts (name, credentials, proxy_url) VALUES ($1, $2, $3)`,
 		credentials,
 		name, credJSON, proxyURL,
+	)
+}
+
+// InsertPendingAccountWithCredentials atomically saves a disabled account and
+// its review metadata together with the credential family.
+func (db *DB) InsertPendingAccountWithCredentials(ctx context.Context, name string, credentials map[string]interface{}, proxyURL, note string, tags []string) (int64, error) {
+	if credentials == nil {
+		credentials = map[string]interface{}{}
+	}
+	credJSON, err := json.Marshal(encryptSensitiveCredentials(credentials))
+	if err != nil {
+		return 0, err
+	}
+	return db.insertAccountRowWithFamily(ctx,
+		`INSERT INTO accounts (name, credentials, proxy_url, enabled, note, tags) VALUES ($1, $2, $3, FALSE, $4, $5::jsonb) RETURNING id`,
+		`INSERT INTO accounts (name, credentials, proxy_url, enabled, note, tags) VALUES ($1, $2, $3, FALSE, $4, $5)`,
+		credentials,
+		name, credJSON, proxyURL, note, encodeTagsJSON(tags),
 	)
 }
 

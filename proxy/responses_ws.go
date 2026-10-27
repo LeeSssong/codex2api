@@ -252,6 +252,11 @@ func (h *Handler) ResponsesWebSocket(c *gin.Context) {
 		), http.StatusUpgradeRequired)
 		return
 	}
+	releaseWS, ok := h.acquireDownstreamWebSocket(c)
+	if !ok {
+		return
+	}
+	defer releaseWS()
 	if h != nil && h.store != nil {
 		cfg := h.promptFilterConfigForRequest(c)
 		if h.rejectRequiredNewAPIIdentity(c, cfg.Advanced.NewAPI, nil) {
@@ -299,6 +304,10 @@ func stripNewAPIPolicyWebSocketEventID(payload []byte) ([]byte, string) {
 	return cleaned, eventID
 }
 
+// forwardResponsesWebSocketTurn 处理 WebSocket 传输上的一个 Responses 会话轮次：每个
+// response.create 都是独立的逻辑请求，先做内存准入、Key 绑定与配额复核并重置上一帧的
+// 安全上下文，再归一化请求体、在重试循环内带排除项重新选号转发；可恢复的失败按协议写回错误
+// 帧并保留连接，需要关闭连接的致命失败才返回 close error。
 func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.Conn, rawPayload []byte, policyEventID string, options *responsesWSForwardOptions) (returnErr error) {
 	defer releasePromptRequestFrameBody(c)
 	reservation, admitted := security.TryAcquireRequestMemory(int64(len(rawPayload)))
@@ -323,6 +332,10 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 		return writeResponsesWSErrorForContext(c, conn, apiKeyModelRequestError(err).apiErr)
 	}
 	defer func() { c.Request = quotaParentRequest }()
+	multiAgentV2State := &codexMultiAgentV2State{}
+	if codexMultiAgentV2CompatEnabled() {
+		c.Request = c.Request.WithContext(withCodexMultiAgentV2State(c.Request.Context(), multiAgentV2State))
+	}
 	c.Set(promptGuardPolicyEventIDContextKey, policyEventID)
 	rawBody, model, apiErr := normalizeResponsesWebSocketClientPayload(rawPayload)
 	if apiErr != nil {
@@ -487,8 +500,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 	}
 
 	accountFilter := accountFilterForResponsesWebSocket(effectiveModel)
-	accountFilter = h.withCodexRouteFilter(c, logModel, effectiveModel, codexBody, accountFilter)
-	accountFilter = h.withModelCooldownFilter(c.Request.Context(), effectiveModel, accountFilter)
+	accountFilter = h.withRequestModelCooldownFilter(c, c.Request.Context(), effectiveModel, accountFilter)
 	accountFilter = applyAffinityGroupRouting(c, sessionIdentity, accountFilter)
 	accountFilter = h.applyScopeBudgetFilter(c, accountFilter)
 	// resolveCompactionAffinity 只在已知来源相互冲突时报错；缓存故障按未知
@@ -593,6 +605,12 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 	}()
 
 	dispatchPolicy := dispatchPolicyForModel(effectiveModel)
+	// Responses WS 入口的候选池（accountFilterForResponsesWebSocket）恒不含 Antigravity：
+	// OpenAIResponsesUsesUpstreamWebsocket 对 AG 账号恒为 false，accountFilterForModel
+	// 也直接拒绝 AG。Antigravity 渠道 Key 打到该入口时不得沿用请求渠道作为 Provider，
+	// 否则 Store 侧会对 Codex relay 候选套用 Antigravity 加权打分并绕过 spread / HRW，
+	// 与 compact 入口（selectionOptionsForCandidatePool(..., true)）保持一致。
+	selectionOpts := selectionOptionsForCandidatePool(c, effectiveModel, dispatchPolicy, true)
 	var affinityGuard auth.SessionAffinityGuard
 	var selectionErr error
 	for attempt := 0; ; attempt++ {
@@ -621,9 +639,10 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 			if account != nil {
 				stickyProxyURL = account.GetProxyURL()
 			} else if continuationPinned {
-				account, stickyProxyURL, selectionErr = h.nextRetryAccountForContinuationWithDispatch(c.Request.Context(), affinityKey, apiKeyID, retryExclusions, accountFilter, dispatchPolicy)
+				// 续链重试同样传 SelectionOptions，避免重试把渠道上下文丢掉。
+				account, stickyProxyURL, selectionErr = h.nextRetryAccountForContinuationWithSelection(c.Request.Context(), affinityKey, apiKeyID, retryExclusions, accountFilter, selectionOpts)
 			} else {
-				account, stickyProxyURL, affinityGuard, selectionErr = h.nextRetryAccountForSessionWithDispatchGuard(c.Request.Context(), affinityKey, apiKeyID, retryExclusions, accountFilter, dispatchPolicy)
+				account, stickyProxyURL, affinityGuard, selectionErr = h.nextRetryAccountForSessionWithDispatchGuard(c.Request.Context(), affinityKey, apiKeyID, retryExclusions, accountFilter, selectionOpts)
 			}
 		}
 		if account == nil {
@@ -913,7 +932,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 			if wsHTTPFallback.ForceHTTP() && !useWebsocket {
 				wsHTTPFallback.LogHTTPAttemptCompletion("/v1/responses", account.ID(), attempt+1, durationMs, 0, resp.StatusCode)
 			}
-			errBody, _ := io.ReadAll(resp.Body)
+			errBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxUpstreamErrorBodyBytes))
 			rememberContinuousRetryHTTPFailure(c.Request.Context(), resp, errBody)
 			resp.Body.Close()
 			if c.Request.Context().Err() != nil {
@@ -1203,6 +1222,7 @@ func (h *Handler) streamResponsesWSUpstream(
 	emptyIncomplete := &emptyIncompleteTracker{}
 	terminalFailureEventType := ""
 	wroteAnyBody := false
+	multiAgentV2State := codexMultiAgentV2StateFromContext(c.Request.Context())
 	var wsReplay *continuousRetryWSReplay
 	if continuousRetryBuffersAttempts(continuousRetryPolicy) {
 		wsReplay = h.newContinuousRetryWSReplay()
@@ -1217,7 +1237,7 @@ func (h *Handler) streamResponsesWSUpstream(
 				finishLineageCommit = options.lineage.beginCommit(gjson.GetBytes(payload, "response.id").String(), lineageScope)
 			}
 		}
-		return writeResponsesWSMessage(conn, payload)
+		return writeResponsesWSObservedMessage(c.Request.Context(), conn, payload)
 	}
 	// 首 token 前收到不可重试的 response.failed 时置位:不把原始失败帧透传给客户端,
 	// 循环外改写 error 帧并按错误类别用非正常 close code 关闭,
@@ -1253,12 +1273,20 @@ func (h *Handler) streamResponsesWSUpstream(
 	}
 
 	readErr = readSSEStreamWithContinuousRetryKeepalive(c.Request.Context(), resp.Body, func(sseEvent string, data []byte) bool {
+		observeResponsesWSInterruptAck(c.Request.Context(), data)
+		if gotTerminal && !isResponsesWSInterruptAck(gjson.GetBytes(data, "type").String()) {
+			return true
+		}
+		if multiAgentV2State != nil && multiAgentV2State.isOptimizedFor(account.ID()) {
+			data = restoreCodexMultiAgentV2Response(data, multiAgentV2State)
+		}
 		if wsReplay == nil {
 			h.recordCompactionProvenanceFromPayload(context.Background(), account, data)
 		}
 		outputCollector.Add(data)
 		parsed := gjson.ParseBytes(data)
 		eventType := normalizedUpstreamSSEEventType(sseEvent, data)
+		ApplyCodexUsageEventFrame(h.store, account, eventType, parsed, time.Now())
 		eventType, data, parsed = rewriteEmptyIncompleteTerminal(emptyIncomplete, eventType, data, parsed)
 		clientData := data
 		if options != nil && options.transformClientEvent != nil {
@@ -1409,8 +1437,13 @@ func (h *Handler) streamResponsesWSUpstream(
 				}
 			}
 		}
-		return !standaloneErrorAfterOutput && !isResponsesTerminalEvent(eventType)
+		return !standaloneErrorAfterOutput &&
+			(!isResponsesTerminalEvent(eventType) || awaitingResponsesWSInterruptAck(c.Request.Context())) &&
+			!(gotTerminal && isResponsesWSInterruptAck(eventType))
 	})
+	if err := failPendingResponsesWSInterrupt(c.Request.Context(), conn); err != nil {
+		writeErr = err
+	}
 	if writeErr == nil && outputBuffer != nil && wsReplay == nil {
 		remaining, err := outputBuffer.Flush()
 		if err != nil {
@@ -1736,11 +1769,10 @@ func normalizeResponsesWebSocketClientPayload(raw []byte) ([]byte, string, *api.
 	if len(trimmed) > security.MaxRequestBodySize {
 		return nil, "", api.NewAPIError(api.ErrCodeInvalidRequest, "请求体过大", api.ErrorTypeInvalidRequest)
 	}
-	if !gjson.ValidBytes(trimmed) {
-		return nil, "", api.NewAPIError(api.ErrCodeInvalidRequest, "invalid websocket request payload", api.ErrorTypeInvalidRequest)
+	eventType, envelopeErr := responsesWSClientEventType(trimmed)
+	if envelopeErr != nil {
+		return nil, "", envelopeErr
 	}
-
-	eventType := strings.TrimSpace(gjson.GetBytes(trimmed, "type").String())
 	normalized := trimmed
 	switch eventType {
 	case "":

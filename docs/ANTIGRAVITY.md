@@ -72,6 +72,12 @@ Open **Accounts → Antigravity → Google OAuth**, start authorization, and com
 
 OAuth accounts synchronize a Google subject, project, permissions, quota snapshots, and model metadata when the upstream supplies them. A 401 may trigger one OAuth token refresh/retry. This recovery is never used for API Key accounts.
 
+### Workspace / enterprise accounts
+
+Google provisions a managed Cloud Code project only for consumer tiers (free tier, Google One AI Pro/Ultra). Workspace accounts on Gemini Code Assist Standard or Enterprise (`standard-tier`, `userDefinedCloudaicompanionProject: true`) are never given one: `onboardUser` completes without a project, the account cannot be dispatched, and quota-summary calls fail with "You do not have a valid license of this product".
+
+For these accounts, open **Edit** on the account and set **GCP project ID** to a Google Cloud project that has Gemini for Google Cloud enabled and that the account can use. Saving stores it as `antigravity_user_project_id` and immediately resyncs. The project is sent to `loadCodeAssist` and (for non-free tiers) `onboardUser`, matching Gemini CLI's `GOOGLE_CLOUD_PROJECT` behavior; Google-returned projects still take precedence. The free tier never receives the user project because naming one there fails with `FAILED_PRECONDITION`. Clear the field to return to Google-managed projects.
+
 ### Imported OAuth credentials
 
 The Antigravity account dialog accepts a single credential JSON / refresh token or multiple JSON files. Imported credentials are synchronized before normal use when possible. Account-list responses never return access tokens, refresh tokens, client secrets, or API keys.
@@ -92,6 +98,18 @@ API Key accounts use `plan_type=api`, do not require an OAuth project ID, and do
 When creating or editing a Codex2API downstream API key, choose **Antigravity** as its upstream channel to restrict dispatch to compatible Antigravity accounts. `auto` keys may route by model across Codex, Grok, and OAuth Antigravity accounts according to the available scoped model catalog. Experimental API-key accounts join either catalog only after the explicit environment opt-in above.
 
 Account groups are channel-isolated: an Antigravity account can only join an Antigravity group.
+
+## Balanced affinity switch
+
+First binding and fresh session selection bias Antigravity candidates by concurrency occupancy, used quota, and the account's recent rate-limit penalty, so a credential Google just throttled sinks to the back of the queue while healthy ones keep serving new sessions.
+
+```
+ANTIGRAVITY_BALANCED_AFFINITY=false
+```
+
+The switch is on by default. `0`, `false`, `off`, `none`, and `no` (case-insensitive) turn the weighting off and restore plain round-robin; any other value keeps it on. It is read once when the process starts, so changing it requires a restart.
+
+Cooldown correctness is independent of this switch and always applies: the public and shared wire keys are cooled together (the Gemini-family key is added when the quota bucket is exhausted), a shared wire/family deadline is never shortened by a briefer event on the same account, and cooldowns written by another instance are honoured during selection. Entries whose candidate pool excludes Antigravity accounts (`/v1/responses/compact`, native remote compaction, the `/v1/responses` WebSocket upgrade path) never apply the weighting, even behind an Antigravity key.
 
 ## Supported gateway endpoints
 
@@ -118,7 +136,7 @@ Requirements and behavior:
 - **Multi-turn tools:** `functionResponse` turns are regrouped for the adapter; leading `inlineData` parts in the same user turn are attached under the matching `functionResponse.parts`.
 - **Thinking:** client-supplied `generationConfig.thinkingConfig` is preserved; when absent, the gateway applies the tier default for the requested public model.
 - **Usage accounting:** both generate methods record upstream token usage, including cached input and thinking. Logged output includes thinking tokens, with reasoning also shown as a subset; native response fields remain unchanged. Streaming usage is read through the final usage frame, even when it follows `finishReason`, and repeated cumulative snapshots are not added together. First-token latency measures the time from upstream dispatch to the first content part (text, thinking, tools, or media), excluding keepalives and usage-only frames. Missing upstream usage is not estimated; historical zero-token logs cannot be reconstructed from those logs alone.
-- **Thought signatures:** missing stubs are injected on outbound `functionCall` parts; stale signatures on inbound `functionResponse` parts are stripped to avoid replay failures.
+- **Thought signatures:** missing stubs are injected on outbound `functionCall` parts for every `gemini-*` backing, including models reached through raw catalog pass-through; stale signatures on inbound `functionResponse` parts are stripped to avoid replay failures.
 - **countTokens:** OAuth accounts call upstream `/v1internal:countTokens` with the same request normalization as generateContent (minus `project`, `model`, `sessionId`, `toolConfig`, and safety settings). When no account is available or upstream returns 404, the gateway falls back to a local token estimate.
 - **Tool schema cleanup:** MCP-style bare property maps, boolean `required` flags, local `$ref` / `$defs` JSON Pointer inline (including nested pointers, `anyOf` `$ref` branches, sibling overrides, and cycle fallback), orphan `required` entries, union flattening, missing array `items`, and unsupported enums are normalized before upstream dispatch.
 

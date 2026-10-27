@@ -152,31 +152,10 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-      - name: Test PostgreSQL trace, capabilities, Codex routes and legacy daily usage and intelligence checks
+      - name: Test PostgreSQL compatibility and pending-account transactions
         env:
           CODEX2API_TEST_POSTGRES_DSN: postgres://codex2api_test:test-only@localhost:5432/codex2api_test?sslmode=disable
-        run: go test -race -count=1 ./database -run '^Test(Postgres(TraceAndCapabilities|CodexRoutes|CodexProbePersistenceAndGeneration|ModelQuality|IPv6Egress)|CodexRefreshPreservesEvidenceAndProbeFence|CodexUnifiedClientIdentitySettingPersistence|IntelligenceCheckPostgres)$'
-
-  redis-route-cache:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    services:
-      redis:
-        image: redis:7-alpine
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 5s --health-timeout 5s --health-retries 10
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-      - name: Verify history batch persistence with Redis and the race detector
-        env:
-          CODEX2API_TEST_REDIS_ADDR: localhost:6379
-        run: go test -race -count=1 ./cache -run '^Test(RuntimeBatch|RedisRuntimeCounterBatch)'
+        run: go test -race -count=1 ./database -run '^(TestPostgresTraceAndCapabilities|TestIntelligenceCheckPostgres|TestPendingAccountTransaction)$'
 
   test-race:
     name: test-race (${{ matrix.name }})

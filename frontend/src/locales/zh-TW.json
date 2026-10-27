@@ -2608,161 +2608,22 @@
       "7": "週日"
     }
   },
-  "codexRoutes": {
-    "modelsOnlyHint": "BPS 名單內模型只用已確認支援該精確模型的 BPS 帳號；403、限流、額度不足、能力未知和功能不相容均不轉原生或中轉。名單外模型按此 Key 權限走原 Codex 或其他帳號。能力篩選繼續疊加；選擇「任意能力」即可啟用內建的 BPS 嚴格驗證。",
-    "title": "Codex 雙上游路徑",
-    "keyHint": "與現有帳號群組、方案、模型及額度權限取交集。全域 BPS 開關與模型清單仍為硬限制；原 Codex 回退須符合當前模型的 State 條件。",
-    "policy": "路由策略",
-    "capability": "能力篩選",
-    "model": "能力對應的精確模型",
-    "path": "上游路徑",
-    "action": "管理操作",
-    "policies": {
-      "inherit": "繼承全域預設",
-      "codex_only": "僅原 Codex",
-      "basispoints_only": "僅 BPS",
-      "basispoints_models_only": "BPS 模型強制專用",
-      "basispoints_prefer": "優先 BPS",
-      "codex_prefer": "優先原 Codex"
-    },
-    "keyFilters": {
-      "any": "任意能力（含未知）",
-      "supported": "所選路徑已確認支援",
-      "dual_supported": "兩條路徑皆確認支援",
-      "codex_supported": "原 Codex 已確認支援",
-      "basispoints_supported": "BPS 已確認支援"
-    },
-    "filters": {
-      "all": "全部能力",
-      "bps_supported": "BPS 已支援",
-      "bps_unsupported": "BPS 已確認不支援",
-      "bps_unknown": "BPS 未知",
-      "dual_supported": "雙上游皆支援",
-      "codex_only_supported": "僅原 Codex 確認可用",
-      "bps_only_supported": "僅 BPS 確認可用",
-      "cooldown": "上游路徑冷卻中",
-      "admin_disabled": "管理員停用路徑"
-    },
-    "capabilities": {
-      "unknown": "未知",
-      "supported": "支援",
-      "unsupported": "不支援"
-    },
-    "health": {
-      "ready": "就緒",
-      "cooldown": "冷卻中",
-      "recovering": "恢復檢測中",
-      "probe_ready": "可嘗試恢復",
-      "unavailable": "設定無法使用"
-    },
-    "disabled": "管理員停用",
-    "never": "尚無觀察",
-    "observed": "觀察時間",
-    "until": "截至",
-    "accountWide": "帳號層級觀察",
-    "more": "詳細資料另有 {{count}} 筆觀察",
-    "manage": "管理上游路徑（{{count}} 個）",
-    "explanation": "未知表示尚未確認，不等於不支援。能力依模型記錄；暫時冷卻與管理員權限獨立。兩條路徑共用同一份憑證、額度及並行數。",
-    "actions": {
-      "reset": "清除能力觀察",
-      "allow": "允許此路徑",
-      "disable": "停用此路徑"
-    },
-    "apply": "套用",
-    "resetHint": "清除僅重設觀察與冷卻，不解除管理員停用，也不主動發送付費探測。後續合格請求重新累積證據；嚴格「已支援」篩選的 Key 需先透過其他獲准的測試請求確認。",
-    "batchLimit": "每批最多選擇 100 個帳號。",
-    "saved": "已更新 {{count}} 個帳號。",
-    "loadFailed": "無法載入路徑觀察，請重新展開重試。",
-    "saveFailed": "更新未全部完成，請重新整理帳號後重試。",
-    "probe": {
-      "title": "BPS 強測試",
-      "explanation": "鎖定所選帳號、精確模型及 BPS 路徑。禁止換帳號、換模型或退回 Codex；完整回應通過後才記錄支援，不更改 State、分組或管理員停用設定。",
-      "model": "強測試的精確模型",
-      "modelPlaceholder": "例如 gpt-6-astra",
-      "modelRequired": "填寫精確模型後即可開始測試。",
-      "level": "測試級別",
-      "levels": {
-        "basic": "基礎測試",
-        "tools": "工具往返測試"
-      },
-      "levelHints": {
-        "basic": "基礎測試驗證最小文字請求完整成功，連線建立或 HTTP 200 均不算通過。",
-        "tools": "先驗收基礎請求，再使用無副作用的工具完成呼叫和結果回傳。用戶端子代理仍需在新工作階段中單獨驗收。"
-      },
-      "limits": "最多 100 個帳號，同時測試 3 個，同帳號依序執行；測試會產生實際用量。限流和網路錯誤保留已有能力證據。",
-      "run": "強測 BPS（{{count}} 個）",
-      "cancel": "取消測試",
-      "progress": "已完成 {{completed}} / {{total}} 個，正在測試…",
-      "done": "本批測試結束：{{completed}} / {{total}} 個。請查看各帳號結果。",
-      "canceled": "已取消測試。保留已收到的 {{completed}} 個結果；未完成帳號不判為不支援。",
-      "failed": "測試未完整結束，已保留收到的結果。請查看記錄後重試。",
-      "results": "BPS 強測試結果",
-      "account": "帳號 #{{id}}",
-      "capability": "已記錄的能力",
-      "reportedStatus": "上游回報狀態",
-      "duration": "{{duration}} 毫秒 · {{count}} 次請求",
-      "incomplete": "缺少完整成功的 BPS 結束證據，本次不計為通過。",
-      "history": "最近的基礎 / 工具測試",
-      "historyHint": "依帳號、精確模型和測試級別展示最近記錄。能力證據與目前路徑冷卻、帳號狀態分別判斷。",
-      "loading": "正在讀取測試記錄…",
-      "empty": "暫無該模型的測試記錄；未知不等於不支援。",
-      "historyFailed": "部分測試記錄未能載入。",
-      "retry": "重新載入",
-      "outcomes": {
-        "supported": "完整通過",
-        "blocked": "存取受阻",
-        "unsupported": "明確不支援",
-        "rate_limited": "目前限流",
-        "unauthorized": "認證失效",
-        "workspace_deactivated": "工作區停用",
-        "not_run": "尚未測試",
-        "network_error": "網路中斷",
-        "protocol_error": "回應或工具協定錯誤",
-        "canceled": "已取消",
-        "skipped": "已跳過",
-        "error": "測試失敗"
-      }
-    },
-    "paths": {
-      "codex": "Codex",
-      "basispoints": "Basispoints"
-    }
-  },
-  "ipv6Egress": {
-    "title": "主機 IPv6 獨立出口",
-    "description": "每個 Codex 帳號固定使用一個主機 IPv6。連線失敗或限流時冷卻舊位址，換用閒置位址重試；原代理設定保留，關閉後恢復。",
-    "enable": "啟用主機 IPv6 出口",
-    "loading": "正在讀取出口狀態…",
-    "on": "已啟用",
-    "off": "未啟用",
-    "counts": "位址池 {{total}} · 可分配 {{available}} · 冷卻中 {{cooling}}",
-    "resin": "Resin 正在接管出口，請先關閉 Resin 再啟用本功能。",
-    "noLocal": "容器內沒有公網 IPv6。請檢查主機位址與容器網路模式。",
-    "sources": "IPv6 位址池",
-    "sourcesPlaceholder": "留空使用容器內全部公網 IPv6",
-    "sourcesHint": "每行一個已設定於主機的位址。不會自動建立位址；位址耗盡時停止出站，等待冷卻或補充位址。",
-    "cooldown": "位址冷卻（秒）",
-    "attempts": "單次最多嘗試次數",
-    "retry5xx": "上游 500 / 502 / 503 / 504 時也換 IP",
-    "retryHint": "預設包含連線失敗與暫時 429。帳號失效、額度耗盡、參數錯誤不換 IP；開始輸出後不重放。5xx 並不證明 IP 異常，也不判為降智。",
-    "save": "儲存出口設定",
-    "saved": "設定已生效",
-    "bindings": "帳號綁定（{{count}}）",
-    "search": "搜尋帳號或 IPv6",
-    "empty": "首次請求時自動分配獨立 IPv6，綁定會顯示在這裡。",
-    "noMatch": "沒有符合的帳號或位址。",
-    "waiting": "位址冷卻中，等待可用出口",
-    "assigned": "已綁定",
-    "rotations": "已切換 {{count}} 次",
-    "reason": {
-      "assigned": "首次分配",
-      "http_429": "暫時限流",
-      "http_500": "上游 500",
-      "http_502": "上游 502",
-      "http_503": "上游 503",
-      "http_504": "上游 504",
-      "stream_disconnected": "上游串流連線中斷",
-      "connect_failed": "連線失敗"
-    }
+  "antigravityQuota": {
+    "cardTitle": "配額自動重新整理與門禁",
+    "cardDescription": "週期性拉取 Antigravity 帳號的上游配額事實，用於排程選擇與硬門禁判定。",
+    "refreshEnabled": "自動重新整理配額",
+    "refreshEnabledHint": "依固定間隔向上游查詢各帳號配額事實。",
+    "gateEnabled": "配額硬門禁",
+    "gateEnabledHint": "開啟後配額耗盡的帳號將直接被攔截並回傳 429，不再進入排隊。",
+    "refreshInterval": "重新整理間隔（分鐘）",
+    "refreshIntervalHint": "允許範圍 3–60 分鐘；儲存後本機立即重排，跨複本經 outbox ≤5 秒生效。",
+    "hint": "關閉僅停止自動配額查詢，模型目錄維護仍獨立",
+    "saved": "配額設定已儲存",
+    "clearAction": "清除配額事實",
+    "clearTitle": "清除配額事實",
+    "clearConfirm": "確認要清除選取帳號的配額事實嗎？該操作將刪除已儲存的配額事實並遞增配額紀元，用於誤封止血；不影響憑證與模型目錄。",
+    "clearDone": "已清除 {{cleared}} 個帳號的配額事實",
+    "clearPartial": "已清除 {{cleared}} 個帳號的配額事實，{{failed}} 個失敗",
+    "clearFailed": "清除配額事實失敗：{{error}}"
   }
 }
