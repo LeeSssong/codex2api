@@ -3,7 +3,6 @@ package admin
 import (
 	"context"
 	"log"
-	"math"
 	"net/http"
 	"time"
 
@@ -13,6 +12,8 @@ import (
 )
 
 type accountPageStatsItem struct {
+	Quota5h       *AccountQuotaWindow `json:"quota_5h"`
+	Quota7d       *AccountQuotaWindow `json:"quota_7d"`
 	Usage5hDetail *accountUsageWindow `json:"usage_5h_detail,omitempty"`
 	Usage7dDetail *accountUsageWindow `json:"usage_7d_detail,omitempty"`
 	// UsageTodayDetail 是"今日"(服务器时区当天 0 点起)的网关侧聚合。
@@ -21,11 +22,6 @@ type accountPageStatsItem struct {
 	UsageTodayDetail *accountUsageWindow `json:"usage_today_detail,omitempty"`
 	Billed5h         *float64            `json:"billed_5h,omitempty"`
 	Billed7d         *float64            `json:"billed_7d,omitempty"`
-	// Estimated5hQuotaUSD / Estimated7dQuotaUSD 是「窗口打满时的预计总额度」。
-	// 公式与 sub2api 相同：当前窗口网关费用 × 100 / 官方占用百分比。
-	// 分子只含经本网关转发的请求，所以这是估算，不是官方配额。
-	Estimated5hQuotaUSD *float64 `json:"estimated_5h_quota_usd,omitempty"`
-	Estimated7dQuotaUSD *float64 `json:"estimated_7d_quota_usd,omitempty"`
 	// OfficialUSD 是官方结算口径的累计成本（本地快照全窗口，默认一年）。
 	// 与上面按本地日志算的 Billed7d 是两套账：网关只看得到自己转发的请求，
 	// 官方账单还含用户直接用官方客户端的消耗。读的是快照表，不打上游。
@@ -60,10 +56,14 @@ func (h *Handler) GetAccountPageStats(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
 	defer cancel()
 	now := time.Now()
-	usage5h, usage7d, err := h.db.GetAccountUsageWindowsByIDs(ctx, ids, now.Add(-5*time.Hour), now.AddDate(0, 0, -7))
-	if err != nil {
-		writeInternalError(c, err)
-		return
+	shortSnapshots, longSnapshots := h.accountQuotaSnapshots(ids)
+	usage5h, shortErr := h.db.GetAccountQuotaWindowUsage(ctx, quotaWindowStarts(shortSnapshots, now), now)
+	usage7d, longErr := h.db.GetAccountQuotaWindowUsage(ctx, quotaWindowStarts(longSnapshots, now), now)
+	if shortErr != nil {
+		log.Printf("获取当前页账号 5h 用量失败: %v", shortErr)
+	}
+	if longErr != nil {
+		log.Printf("获取当前页账号长窗口用量失败: %v", longErr)
 	}
 
 	// 今日口径与全局统计一致:服务器时区(TZ 配置,默认宿主时区)当天 0 点起。
@@ -79,18 +79,6 @@ func (h *Handler) GetAccountPageStats(c *gin.Context) {
 		todayModels = map[int64]map[string]database.AccountModelCount{}
 	}
 
-	billing5hWindows, billing7dWindows := h.accountBillingWindows(ids)
-	billed5h, err := h.db.GetAccountsBilledSince(ctx, billing5hWindows)
-	if err != nil {
-		log.Printf("获取当前页账号 5h 成本失败: %v", err)
-		billed5h = map[int64]float64{}
-	}
-	billed7d, err := h.db.GetAccountsBilledSince(ctx, billing7dWindows)
-	if err != nil {
-		log.Printf("获取当前页账号长窗口成本失败: %v", err)
-		billed7d = map[int64]float64{}
-	}
-
 	// 官方结算快照缺失只是少一行展示，不能拖垮整页统计。
 	officialTotals, err := h.db.SumAccountDailyUsage(ctx, ids, whamDailyUsageKeepDays)
 	if err != nil {
@@ -100,15 +88,21 @@ func (h *Handler) GetAccountPageStats(c *gin.Context) {
 
 	stats := make(map[int64]accountPageStatsItem, len(ids))
 	missingOfficial := make([]int64, 0)
+	currentShort, currentLong := h.accountQuotaSnapshots(ids)
 	for _, id := range ids {
-		item := accountPageStatsItem{}
-		if value := usage5h[id]; value != nil {
+		short, long := shortSnapshots[id], longSnapshots[id]
+		short.WindowChanged = !short.ResetAt.Equal(currentShort[id].ResetAt) || short.Duration != currentShort[id].Duration
+		long.WindowChanged = !long.ResetAt.Equal(currentLong[id].ResetAt) || long.Duration != currentLong[id].Duration
+		quota5h := projectAccountQuotaWindow(short, now, usage5h[id], shortErr)
+		quota7d := projectAccountQuotaWindow(long, now, usage7d[id], longErr)
+		item := accountPageStatsItem{Quota5h: &quota5h, Quota7d: &quota7d}
+		if value := usage5h[id]; value != nil && !short.WindowChanged && finite(value.AccountBilled) && finite(value.UserBilled) && value.AccountBilled >= 0 && value.UserBilled >= 0 {
 			item.Usage5hDetail = &accountUsageWindow{
 				Requests: value.Requests, Tokens: value.Tokens,
 				AccountBilled: value.AccountBilled, UserBilled: value.UserBilled,
 			}
 		}
-		if value := usage7d[id]; value != nil {
+		if value := usage7d[id]; value != nil && !long.WindowChanged && finite(value.AccountBilled) && finite(value.UserBilled) && value.AccountBilled >= 0 && value.UserBilled >= 0 {
 			item.Usage7dDetail = &accountUsageWindow{
 				Requests: value.Requests, Tokens: value.Tokens,
 				AccountBilled: value.AccountBilled, UserBilled: value.UserBilled,
@@ -137,23 +131,15 @@ func (h *Handler) GetAccountPageStats(c *gin.Context) {
 					todayWindow.ModelAvgFirstTokenMs = nil
 				}
 			}
-			item.UsageTodayDetail = todayWindow
-		}
-		if value, ok := billed5h[id]; ok {
-			item.Billed5h = &value
-		}
-		if value, ok := billed7d[id]; ok {
-			item.Billed7d = &value
-		}
-		if h.store != nil {
-			if account := h.store.FindByID(id); account != nil {
-				if pct, ok := account.GetUsagePercent5h(); ok {
-					item.Estimated5hQuotaUSD = estimateWindowQuotaUSD(billed5h[id], pct)
-				}
-				if pct, ok := account.GetUsagePercent7d(); ok {
-					item.Estimated7dQuotaUSD = estimateWindowQuotaUSD(billed7d[id], pct)
-				}
+			if finite(todayWindow.AccountBilled) && finite(todayWindow.UserBilled) {
+				item.UsageTodayDetail = todayWindow
 			}
+		}
+		if item.Usage5hDetail != nil {
+			item.Billed5h = &item.Usage5hDetail.AccountBilled
+		}
+		if item.Usage7dDetail != nil {
+			item.Billed7d = &item.Usage7dDetail.AccountBilled
 		}
 		// 没有快照的账号不下发这个字段，前端显示占位而不是 $0；
 		// 当前页缺快照时异步回补，不挡本次响应。已经成功同步过但
@@ -171,43 +157,4 @@ func (h *Handler) GetAccountPageStats(c *gin.Context) {
 	}
 	h.enqueueWhamDailyUsageBackfill(missingOfficial)
 	c.JSON(http.StatusOK, gin.H{"stats": stats})
-}
-
-func (h *Handler) accountBillingWindows(ids []int64) (map[int64]time.Time, map[int64]time.Time) {
-	shortWindows := make(map[int64]time.Time, len(ids))
-	longWindows := make(map[int64]time.Time, len(ids))
-	if h.store == nil {
-		return shortWindows, longWindows
-	}
-	for _, id := range ids {
-		account := h.store.FindByID(id)
-		if account == nil {
-			continue
-		}
-		if resetAt := account.GetReset5hAt(); !resetAt.IsZero() {
-			shortWindows[id] = resetAt.Add(-5 * time.Hour)
-		}
-		if resetAt := account.GetReset7dAt(); !resetAt.IsZero() {
-			window := 7 * 24 * time.Hour
-			if seconds := account.GetWindow7dSeconds(); seconds > 0 {
-				window = time.Duration(seconds) * time.Second
-			}
-			longWindows[id] = resetAt.Add(-window)
-		}
-	}
-	return shortWindows, longWindows
-}
-
-// estimateWindowQuotaUSD 用当前窗口已花费和官方占用百分比反推打满时的总额度。
-// 占用 ≤ 0、费用 ≤ 0 或结果非有限时不返回，避免窗口刚重置时放大成无穷大。
-func estimateWindowQuotaUSD(spent, usedPercent float64) *float64 {
-	if spent <= 0 || usedPercent <= 0 || math.IsNaN(spent) || math.IsNaN(usedPercent) || math.IsInf(spent, 0) || math.IsInf(usedPercent, 0) {
-		return nil
-	}
-	estimate := spent * 100 / usedPercent
-	if estimate <= 0 || math.IsNaN(estimate) || math.IsInf(estimate, 0) {
-		return nil
-	}
-	rounded := math.Round(estimate*100) / 100
-	return &rounded
 }
