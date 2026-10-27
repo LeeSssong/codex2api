@@ -12,7 +12,7 @@ const root = fileURLToPath(new URL('../', import.meta.url))
 let artifactDir
 let browser, script, css
 const question = { id: 'candy', name: '糖果配对', prompt: '本地演示题目，最终只恢复数字结果。', expected_answer: '21', match_mode: 'exact', max_duration_ms: 20000, enabled: true }
-const settings = { revision: 1, enabled: false, gpt_model: 'gpt-6-astra', claude_model: 'claude-sonnet-4-6', reasoning_effort: 'high', judge_mode: 'answer', interval_seconds: 300, retry_seconds: 60, timeout_seconds: 180, concurrency: 4, retention: 200, new_accounts_enabled: true, action: 'none', degrade_threshold: 2, recover_threshold: 1, target_group_id: 0, questions: [question] }
+const settings = { revision: 1, enabled: false, gpt_model: 'gpt-6-astra', claude_model: 'claude-sonnet-4-6', reasoning_effort: 'high', judge_mode: 'answer', interval_seconds: 300, retry_seconds: 60, recovery_interval_seconds: 3600, timeout_seconds: 180, concurrency: 4, retention: 200, new_accounts_enabled: true, action: 'none', degrade_threshold: 2, recover_threshold: 1, target_group_id: 0, questions: [question] }
 const accounts = [{ account_id: 1, account_name: '本地 Codex 测试账号', channel: 'codex', enabled: true, latest_status: 'degraded', failed_streak: 2, passed_streak: 0, action: 'pause', next_due_at: '2026-10-15T13:00:00Z' }]
 const run = { id: 11, account_id: 1, account_name: accounts[0].account_name, channel: 'codex', source: 'manual', status: 'degraded', config_revision: 1, model: 'gpt-6-astra', response_model: 'gpt-6-astra', reasoning_effort: 'high', judge_mode: 'answer', question, output: '29', error: '', duration_ms: 4120, input_tokens: 120, output_tokens: 10, reasoning_tokens: 8, created_at: '2026-10-15T12:00:00Z', started_at: '2026-10-15T12:00:00Z', completed_at: '2026-10-15T12:00:04Z', action: 'pause' }
 before(async () => {
@@ -100,6 +100,7 @@ test('configuration and questions share one page and preserve their save flow', 
  assert.equal(await page.getByLabel('题目正文').inputValue(),question.prompt)
  const left=await config.boundingBox(),right=await questions.boundingBox()
  assert.ok(right.x>left.x && Math.abs(right.y-left.y)<1)
+ assert.equal(await page.getByLabel('处置后复检间隔（秒）',{exact:true}).inputValue(),'3600')
  await page.getByLabel('GPT / Codex 模型',{exact:true}).fill('gpt-6.1-sol')
  await page.getByLabel('题目正文').fill('第一行\n第二行')
  await page.getByRole('button',{name:'保存配置',exact:true}).click()

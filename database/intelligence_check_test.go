@@ -187,6 +187,49 @@ func TestIntelligenceCheckClaimDedupLeaseAndRetention(t *testing.T) {
 		t.Fatal(runs, total, e)
 	}
 }
+func TestIntelligenceCheckUsesRecoveryIntervalAfterAction(t *testing.T) {
+	db := intelligenceDB(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	id := intelligenceAccount(t, db)
+	s, err := db.GetIntelligenceCheckSettings(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Action = "pause"
+	s.DegradeThreshold = 1
+	s.RecoverThreshold = 2
+	s.IntervalSeconds = 11
+	s.RecoveryIntervalSeconds = 7200
+	if _, err = db.SaveIntelligenceCheckSettings(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	intelligenceRun(t, db, id, now, "29")
+	accounts, _, err := db.ListIntelligenceCheckAccounts(ctx, IntelligenceCheckAccountFilter{AccountID: id})
+	if err != nil || len(accounts) != 1 {
+		t.Fatalf("accounts = %+v, err=%v", accounts, err)
+	}
+	a := accounts[0]
+	if a.OwnedAction != "pause" || a.NextDueAt == nil {
+		t.Fatalf("account action/due = %q/%v", a.OwnedAction, a.NextDueAt)
+	}
+	wantDue := now.Add(time.Second + 7200*time.Second)
+	if !a.NextDueAt.Equal(wantDue) {
+		t.Fatalf("next due = %s, want recovery cadence %s", a.NextDueAt, wantDue)
+	}
+	intelligenceRun(t, db, id, wantDue, "21")
+	accounts, _, err = db.ListIntelligenceCheckAccounts(ctx, IntelligenceCheckAccountFilter{AccountID: id})
+	if err != nil || len(accounts) != 1 || accounts[0].OwnedAction != "pause" || !accounts[0].NextDueAt.Equal(wantDue.Add(time.Second+7200*time.Second)) {
+		t.Fatalf("first recovery pass should retain action and cadence: %+v, err=%v", accounts, err)
+	}
+	finalRecoveryDue := accounts[0].NextDueAt.Add(time.Duration(s.RecoveryIntervalSeconds) * time.Second)
+	intelligenceRun(t, db, id, finalRecoveryDue, "21")
+	accounts, _, err = db.ListIntelligenceCheckAccounts(ctx, IntelligenceCheckAccountFilter{AccountID: id})
+	if err != nil || len(accounts) != 1 || accounts[0].OwnedAction != "" || !accounts[0].NextDueAt.Equal(finalRecoveryDue.Add(time.Second+time.Duration(s.IntervalSeconds)*time.Second)) {
+		t.Fatalf("threshold pass should restore action and ordinary cadence: %+v, err=%v", accounts, err)
+	}
+}
+
 func TestIntelligenceCheckOwnershipManualAndConfig(t *testing.T) {
 	db := intelligenceDB(t)
 	ctx := context.Background()

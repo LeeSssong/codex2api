@@ -273,6 +273,7 @@ func TestIntelligenceCheckPendingRecoveryIgnoresNewTargetRemoval(t *testing.T) {
 	s.Action = "switch_group"
 	s.TargetGroupID = target
 	s.DegradeThreshold = 1
+	s.RecoveryIntervalSeconds = 60
 	s, e := db.SaveIntelligenceCheckSettings(ctx, s)
 	if e != nil {
 		t.Fatal(e)

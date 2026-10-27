@@ -157,6 +157,7 @@ export default function IntelligenceCheck() {
     key:
       | "interval_seconds"
       | "retry_seconds"
+      | "recovery_interval_seconds"
       | "timeout_seconds"
       | "concurrency"
       | "retention"
@@ -290,6 +291,7 @@ export default function IntelligenceCheck() {
             <CardContent className="grid gap-5 sm:grid-cols-2">
               {numeric("interval_seconds", "正常间隔（秒）", 1, 86400)}
               {numeric("retry_seconds", "异常重试间隔（秒）", 1, 86400)}
+              {numeric("recovery_interval_seconds", "处置后复检间隔（秒）", 1, 86400)}
               {numeric("timeout_seconds", "请求超时（秒）", 1, 3600)}
               {numeric("concurrency", "全局检测并发", 1, 100)}
               {numeric("retention", "每账号保留记录", 1, 10000)}

@@ -19,23 +19,24 @@ type Question struct {
 	Enabled        bool   `json:"enabled"`
 }
 type Settings struct {
-	Revision           int64      `json:"revision"`
-	Enabled            bool       `json:"enabled"`
-	GPTModel           string     `json:"gpt_model"`
-	ClaudeModel        string     `json:"claude_model"`
-	ReasoningEffort    string     `json:"reasoning_effort"`
-	JudgeMode          string     `json:"judge_mode"`
-	IntervalSeconds    int        `json:"interval_seconds"`
-	RetrySeconds       int        `json:"retry_seconds"`
-	TimeoutSeconds     int        `json:"timeout_seconds"`
-	Concurrency        int        `json:"concurrency"`
-	Retention          int        `json:"retention"`
-	NewAccountsEnabled bool       `json:"new_accounts_enabled"`
-	Action             string     `json:"action"`
-	DegradeThreshold   int        `json:"degrade_threshold"`
-	RecoverThreshold   int        `json:"recover_threshold"`
-	TargetGroupID      int64      `json:"target_group_id"`
-	Questions          []Question `json:"questions"`
+	Revision                int64      `json:"revision"`
+	Enabled                 bool       `json:"enabled"`
+	GPTModel                string     `json:"gpt_model"`
+	ClaudeModel             string     `json:"claude_model"`
+	ReasoningEffort         string     `json:"reasoning_effort"`
+	JudgeMode               string     `json:"judge_mode"`
+	IntervalSeconds         int        `json:"interval_seconds"`
+	RetrySeconds            int        `json:"retry_seconds"`
+	RecoveryIntervalSeconds int        `json:"recovery_interval_seconds"`
+	TimeoutSeconds          int        `json:"timeout_seconds"`
+	Concurrency             int        `json:"concurrency"`
+	Retention               int        `json:"retention"`
+	NewAccountsEnabled      bool       `json:"new_accounts_enabled"`
+	Action                  string     `json:"action"`
+	DegradeThreshold        int        `json:"degrade_threshold"`
+	RecoverThreshold        int        `json:"recover_threshold"`
+	TargetGroupID           int64      `json:"target_group_id"`
+	Questions               []Question `json:"questions"`
 }
 
 // CandyPrompt is the built-in reasoning check. Keep the no-tools/no-network
@@ -44,9 +45,17 @@ type Settings struct {
 const CandyPrompt = "不允许调用工具和联网。在一个黑色的袋子里放有三种口味的糖果，每种糖果有两种不同的形状，分别为圆形和五角星形，不同的形状靠手感可以分辨，现已知苹果味圆形有7颗、苹果味五角星形有7颗、桃子味圆形有9颗、桃子味五角星形有6颗、西瓜味圆形有8颗、西瓜味五角星形有4颗，参赛者需要在活动前决定摸出的糖果数目，那么最少取出多少个糖果才能保证手中同时拥有不同形状的苹果味和桃子味的糖，同时手中有圆形苹果味匹配五角星桃子味糖果，或者有圆形桃子味匹配五角星苹果味糖果都满足要求，最终只回复数字结果。"
 
 func DefaultSettings() Settings {
-	return Settings{Revision: 1, GPTModel: "gpt-6-astra", ClaudeModel: "claude-sonnet-4-6", ReasoningEffort: "high", JudgeMode: "answer", IntervalSeconds: 300, RetrySeconds: 60, TimeoutSeconds: 180, Concurrency: 4, Retention: 200, NewAccountsEnabled: true, Action: "none", DegradeThreshold: 2, RecoverThreshold: 1, Questions: []Question{{ID: "candy", Name: "糖果配对", Prompt: CandyPrompt, ExpectedAnswer: "21", MatchMode: "exact", MaxDurationMS: 20000, Enabled: true}}}
+	return Settings{Revision: 1, GPTModel: "gpt-6-astra", ClaudeModel: "claude-sonnet-4-6", ReasoningEffort: "high", JudgeMode: "answer", IntervalSeconds: 300, RetrySeconds: 60, RecoveryIntervalSeconds: 3600, TimeoutSeconds: 180, Concurrency: 4, Retention: 200, NewAccountsEnabled: true, Action: "none", DegradeThreshold: 2, RecoverThreshold: 1, Questions: []Question{{ID: "candy", Name: "糖果配对", Prompt: CandyPrompt, ExpectedAnswer: "21", MatchMode: "exact", MaxDurationMS: 20000, Enabled: true}}}
 }
+func NormalizeSettings(s Settings) Settings {
+	if s.RecoveryIntervalSeconds == 0 {
+		s.RecoveryIntervalSeconds = 3600
+	}
+	return s
+}
+
 func ValidateSettings(s Settings) error {
+	s = NormalizeSettings(s)
 	if strings.TrimSpace(s.GPTModel) == "" || strings.TrimSpace(s.ClaudeModel) == "" {
 		return fmt.Errorf("both channel models are required")
 	}
@@ -72,7 +81,7 @@ func ValidateSettings(s Settings) error {
 	default:
 		return fmt.Errorf("invalid action")
 	}
-	if s.IntervalSeconds < 1 || s.IntervalSeconds > 86400 || s.RetrySeconds < 1 || s.RetrySeconds > 86400 || s.TimeoutSeconds < 1 || s.TimeoutSeconds > 3600 || s.Concurrency < 1 || s.Concurrency > 100 || s.Retention < 1 || s.Retention > 10000 || s.DegradeThreshold < 1 || s.DegradeThreshold > 1000 || s.RecoverThreshold < 1 || s.RecoverThreshold > 1000 {
+	if s.IntervalSeconds < 1 || s.IntervalSeconds > 86400 || s.RetrySeconds < 1 || s.RetrySeconds > 86400 || s.RecoveryIntervalSeconds < 1 || s.RecoveryIntervalSeconds > 86400 || s.TimeoutSeconds < 1 || s.TimeoutSeconds > 3600 || s.Concurrency < 1 || s.Concurrency > 100 || s.Retention < 1 || s.Retention > 10000 || s.DegradeThreshold < 1 || s.DegradeThreshold > 1000 || s.RecoverThreshold < 1 || s.RecoverThreshold > 1000 {
 		return fmt.Errorf("numeric setting outside permitted range")
 	}
 	if len(s.Questions) > 100 {

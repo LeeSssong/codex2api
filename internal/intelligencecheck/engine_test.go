@@ -39,6 +39,23 @@ func TestGrade(t *testing.T) {
 		t.Fatal("regex")
 	}
 }
+func TestDefaultRecoveryIntervalAndLegacyNormalization(t *testing.T) {
+	s := DefaultSettings()
+	if s.RecoveryIntervalSeconds != 3600 {
+		t.Fatalf("default recovery interval = %d, want 3600", s.RecoveryIntervalSeconds)
+	}
+	legacy := s
+	legacy.RecoveryIntervalSeconds = 0
+	if got := NormalizeSettings(legacy).RecoveryIntervalSeconds; got != 3600 {
+		t.Fatalf("legacy recovery interval = %d, want 3600", got)
+	}
+	legacy = s
+	legacy.RecoveryIntervalSeconds = 0
+	if err := ValidateSettings(legacy); err != nil {
+		t.Fatalf("legacy settings should remain valid: %v", err)
+	}
+}
+
 func TestDefaultCandyPromptRequiresOfflineReasoning(t *testing.T) {
 	p := DefaultSettings().Questions[0].Prompt
 	if !strings.HasPrefix(p, "不允许调用工具和联网。") {
@@ -62,6 +79,21 @@ func TestValidation(t *testing.T) {
 		}
 	}
 }
+func TestRecoveryCadenceIsIndependentFromActionThresholds(t *testing.T) {
+	c := DefaultSettings()
+	c.Action = "pause"
+	c.DegradeThreshold = 1
+	c.RecoverThreshold = 2
+	s, action := Transition(c, State{}, "degraded")
+	if action != "pause" || s.OwnedAction != "pause" {
+		t.Fatalf("degraded result did not own action: state=%+v action=%q", s, action)
+	}
+	c.RecoveryIntervalSeconds = 7200
+	if c.IntervalSeconds == c.RecoveryIntervalSeconds {
+		t.Fatal("recovery cadence must be independently configurable")
+	}
+}
+
 func TestTransitionOwnership(t *testing.T) {
 	c := DefaultSettings()
 	c.Action = "pause"
