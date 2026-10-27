@@ -24,7 +24,7 @@ before(async () => {
   name: 'intelligence-harness', enforce: 'pre',
   resolveId(id) { if (id === 'virtual:intelligence-harness') return '\0intelligence-harness'; if (/^(?:\.\.\/|\.\/)+api$/.test(id)) return '\0mock-api' },
   load(id) {
-   if (id === '\0mock-api') return 'export const api = new Proxy({}, { get: (_, name) => (...args) => window.__api(name, args) }); export const getAdminKey = () => "fixture"; export const resetAdminAuthState = () => {}; export class AdminAPIError extends Error {}'
+   if (id === '\0mock-api') return 'export const api = new Proxy({}, { get: (_, name) => (...args) => window.__api(name, args) }); export const request = (...args) => window.__credentialRequest?.(...args) ?? Promise.resolve({}); export const getAdminKey = () => "fixture"; export const resetAdminAuthState = () => {}; export class AdminAPIError extends Error {}'
    if (id !== '\0intelligence-harness') return
    return `import React from 'react'; import {createRoot} from 'react-dom/client'; import {MemoryRouter} from 'react-router-dom';
    import IntelligenceCheck from ${JSON.stringify(path.join(root, 'src/pages/IntelligenceCheck.tsx'))};
