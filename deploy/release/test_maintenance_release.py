@@ -16,6 +16,8 @@ if MODULE.exists():
 
 
 class GuardTests(unittest.TestCase):
+    def test_api_key_configuration_excludes_live_usage_counters(self):
+        self.assertEqual(release.api_key_config_fields(['id', 'key', 'enabled', 'limits', 'quota_limit', 'quota_used', 'total_used', 'last_reset_at', 'reset_count']), ['id', 'key', 'enabled', 'limits', 'quota_limit'])
     def test_container_config_fingerprint_ignores_mount_enumeration_order(self):
         c = {'Config': {'Image': 'old'}, 'HostConfig': {}, 'Mounts': [{'Destination': '/a', 'RW': True}, {'Destination': '/b', 'RW': False}]}
         other = copy.deepcopy(c); other['Mounts'].reverse()

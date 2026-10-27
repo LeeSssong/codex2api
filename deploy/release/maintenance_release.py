@@ -38,6 +38,10 @@ def project_rows(rows, fields):
     return fingerprint([{key: row.get(key) for key in fields} for row in rows])
 
 
+def api_key_config_fields(fields):
+    return [field for field in fields if field not in {'quota_used', 'total_used', 'last_used_at', 'updated_at', 'last_reset_at', 'reset_count'}]
+
+
 def container_config_fingerprint(container):
     return fingerprint([container['Config'], container['HostConfig'], sorted(container['Mounts'], key=lambda item: item['Destination'])])
 
@@ -404,7 +408,7 @@ class MaintenanceRelease:
         # Exact stable business intent; volatile worker/account runtime fields excluded.
         optional = {
             'system_settings': "SELECT to_jsonb(t)-'updated_at' FROM system_settings t",
-            'api_keys': "SELECT to_jsonb(t)-'last_used_at'-'updated_at' FROM api_keys t",
+            'api_keys': "SELECT to_jsonb(t)-'last_used_at'-'updated_at'-'quota_used'-'total_used'-'last_reset_at'-'reset_count' FROM api_keys t",
             'account_groups': "SELECT to_jsonb(t)-'updated_at' FROM account_groups t",
             'account_group_members': 'SELECT to_jsonb(t) FROM account_group_members t',
             'proxies': "SELECT to_jsonb(t)-'updated_at'-'last_check_at'-'last_latency_ms' FROM proxies t",
@@ -423,6 +427,8 @@ class MaintenanceRelease:
                     fields = sorted({key for row in decoded for key in row})
                 else:
                     fields = schemas.get(table, [])
+                if table == 'api_keys':
+                    fields = api_key_config_fields(fields)
                 result[table] = project_rows(decoded, fields)
                 result.setdefault('_schemas', {})[table] = fields
         result['history_floor'] = [int(x) for x in self.sql('SELECT count(*),COALESCE(max(id),0) FROM intelligence_check_runs', database).split('|')]
