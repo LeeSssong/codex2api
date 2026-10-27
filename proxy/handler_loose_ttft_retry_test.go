@@ -24,7 +24,11 @@ import (
 func newAttemptSequenceSSEServer(t *testing.T, attempts [][]string) (*httptest.Server, *atomic.Int32) {
 	t.Helper()
 	var calls atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/responses") {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		attempt := int(calls.Add(1)) - 1
 		if attempt >= len(attempts) {
 			attempt = len(attempts) - 1
@@ -41,7 +45,11 @@ func newAttemptSequenceSSEServer(t *testing.T, attempts [][]string) (*httptest.S
 func newAttemptSequenceRawSSEServer(t *testing.T, attempts [][]string) (*httptest.Server, *atomic.Int32) {
 	t.Helper()
 	var calls atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/responses") {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		attempt := int(calls.Add(1)) - 1
 		if attempt >= len(attempts) {
 			attempt = len(attempts) - 1
