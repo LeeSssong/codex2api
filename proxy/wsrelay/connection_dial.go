@@ -2,11 +2,13 @@ package wsrelay
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strings"
 
 	"github.com/codex2api/auth"
 	"github.com/codex2api/egressipv6"
+	"github.com/codex2api/fixedegress"
 	"github.com/codex2api/proxy"
 	"github.com/gorilla/websocket"
 )
@@ -18,6 +20,7 @@ type connectionDialRequest struct {
 	headers       http.Header
 	proxyOverride string
 	capacity      *connectionCapacitySlot
+	fixedSnapshot *fixedegress.Route
 }
 
 func (m *Manager) createConnection(ctx context.Context, input connectionDialRequest) (wc *WsConnection, err error) {
@@ -26,6 +29,27 @@ func (m *Manager) createConnection(ctx context.Context, input connectionDialRequ
 			input.capacity.release()
 		}
 	}()
+	var releaseFixed func()
+	var fixedRoute fixedegress.Route
+	if _, bound := proxy.AccountBoundEgress(ctx); !bound && !proxy.IsStateDirectRoute(input.proxyOverride) {
+		r, enrolled, routeErr := proxy.FixedRoute(ctx, input.account)
+		if routeErr != nil {
+			return nil, routeErr
+		}
+		if enrolled {
+			fixedRoute = r
+			input.fixedSnapshot = &fixedRoute
+			releaseFixed, err = fixedegress.Current().TrackRoute(ctx, r)
+			if err != nil {
+				return nil, err
+			}
+			defer func() {
+				if err != nil {
+					releaseFixed()
+				}
+			}()
+		}
+	}
 	dialer, err := m.connectionDialer(ctx, input)
 	if err != nil {
 		return nil, err
@@ -33,12 +57,29 @@ func (m *Manager) createConnection(ctx context.Context, input connectionDialRequ
 	session, poolKey := m.newDialSession(ctx, input)
 	conn, resp, err := dialer.DialContext(ctx, input.url, input.headers)
 	if err != nil {
+		if releaseFixed != nil && ctx.Err() == nil {
+			reason := "connect_failed"
+			if resp != nil {
+				reason = ""
+				if resp.StatusCode == 407 {
+					reason = "proxy_auth"
+				}
+			}
+			if reason != "" {
+				_ = fixedegress.Current().Failure(ctx, input.account.ID(), fixedRoute.Binding.Generation, fixedRoute.Binding.ResourceID, reason)
+			}
+		}
 		m.sessions.CompareAndDelete(poolKey, session)
 		session.Close()
 		return nil, formatDialHandshakeError(err, resp)
 	}
 	logCompressionNegotiation(resp, input.account.ID())
 	wc = m.wrapDialedConnection(dialedConnection{conn: conn, response: resp, session: session, poolKey: poolKey, request: input})
+	wc.fixedRelease = releaseFixed
+	if releaseFixed != nil {
+		wc.fixedRoute = fixedRoute
+		wc.fixedManager = fixedegress.Current()
+	}
 	input.capacity.attach(wc)
 	select {
 	case <-m.stopCleanup:
@@ -55,6 +96,20 @@ func (m *Manager) connectionDialer(ctx context.Context, input connectionDialRequ
 	dialer := *m.dialer
 	proxyURL := effectiveProxyURL(input.account, input.proxyOverride)
 	dialProxy := proxy.CodexDialProxyURL(input.account, proxyURL)
+	if _, bound := proxy.AccountBoundEgress(ctx); !bound && !proxy.IsStateDirectRoute(input.proxyOverride) {
+		if input.fixedSnapshot != nil {
+			dialProxy = input.fixedSnapshot.Binding.ProxyURL
+		} else {
+			r, enrolled, e := proxy.FixedRoute(ctx, input.account)
+			if e != nil {
+				return nil, e
+			}
+			if enrolled {
+				dialProxy = r.Binding.ProxyURL
+			}
+		}
+	}
+
 	if boundProxy, ok := proxy.AccountBoundEgress(ctx); ok {
 		dialProxy = strings.TrimSpace(boundProxy)
 		dialer.Proxy = nil
@@ -76,7 +131,11 @@ func (m *Manager) connectionDialer(ctx context.Context, input connectionDialRequ
 }
 
 func (m *Manager) newDialSession(ctx context.Context, input connectionDialRequest) (*Session, string) {
-	poolKey := m.poolKey(input.account.ID(), input.url, input.sessionKey, requestProxyKey(ctx, input.account, input.proxyOverride))
+	routeKey := requestProxyKey(ctx, input.account, input.proxyOverride)
+	if input.fixedSnapshot != nil {
+		routeKey = fmt.Sprintf("\x00fixed|%s|%d", input.fixedSnapshot.Binding.ResourceID, input.fixedSnapshot.Binding.Generation)
+	}
+	poolKey := m.poolKey(input.account.ID(), input.url, input.sessionKey, routeKey)
 	if value, ok := m.sessions.Load(poolKey); ok {
 		value.(*Session).Close()
 	}

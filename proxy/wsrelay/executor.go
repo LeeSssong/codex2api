@@ -139,9 +139,9 @@ func (e *Executor) executeRequestViaWebsocket(
 
 	// 出口链路统一由 ResolveCodexWebsocketEgress 决定(Resin > 代理 > 直连):
 	// Resin 模式下 WS 地址改写为反代路径,拨号侧(createConnection)同样按它跳过代理。
-	egress := proxy.ResolveCodexWebsocketEgress(account, wsURL, effectiveProxyURL(account, proxyOverride))
-	if _, bound := proxy.AccountBoundEgress(ctx); bound {
-		egress = proxy.ResolveCodexRequestEgress(ctx, account, wsURL, effectiveProxyURL(account, proxyOverride), true)
+	egress := proxy.ResolveCodexRequestEgress(ctx, account, wsURL, effectiveProxyURL(account, proxyOverride), true)
+	if egress.Err != nil {
+		return nil, egress.Err
 	}
 	wsURL = egress.URL
 

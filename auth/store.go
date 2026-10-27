@@ -23,6 +23,7 @@ import (
 	"github.com/codex2api/cache"
 	"github.com/codex2api/database"
 	"github.com/codex2api/egressipv6"
+	"github.com/codex2api/fixedegress"
 	"github.com/codex2api/internal/openaiidentity"
 	"github.com/codex2api/security/promptfilter"
 )
@@ -177,6 +178,7 @@ type Account struct {
 	usageObservedAt      time.Time
 	DBID                 int64 // 数据库 ID
 	RefreshToken         string
+	OAuthClientID        string
 	SessionToken         string
 	AccessToken          string
 	ExpiresAt            time.Time
@@ -4913,7 +4915,13 @@ func (s *Store) NextProxy() string {
 // A pin to a managed proxy that is disabled, test-failed, or deleted does not
 // fall through and does not go direct while the proxy pool is enabled (issue #517).
 func (s *Store) ResolveProxyForAccount(acc *Account) string {
-	proxyURL, _ := s.resolveProxyForAccountSnapshot(acc)
+	proxyURL, usable := s.resolveProxyForAccountSnapshot(acc)
+	if !usable && acc != nil && !acc.IsRelayStyle() && fixedegress.HasEnrolled(acc.ID()) {
+		// Legacy callers accept only a URL; an explicit unreachable proxy is
+		// safer than empty string (which means direct). Native transports also
+		// reject this enrollment through Manager.Acquire before dialing.
+		return "http://127.0.0.1:0"
+	}
 	return proxyURL
 }
 
@@ -4926,6 +4934,16 @@ func (s *Store) resolveProxyForAccountSnapshot(acc *Account) (string, bool) {
 		return "", false
 	}
 
+	if acc != nil && !acc.IsRelayStyle() {
+		if m := fixedegress.Current(); m != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			r, e := m.Acquire(ctx, acc.ID())
+			if r.Enrolled {
+				return r.Binding.ProxyURL, e == nil && !ResinEgressEnabled() && !egressipv6.Enabled()
+			}
+		}
+	}
 	var accountID int64
 	var accountProxy string
 	var groupIDs []int64
@@ -5616,6 +5634,7 @@ func (s *Store) buildAccountFromRow(ctx context.Context, row *database.AccountRo
 		CredentialGeneration:         row.CredentialGeneration,
 		CredentialFamilyID:           row.CredentialFamilyID,
 		RefreshToken:                 rt,
+		OAuthClientID:                row.GetCredential("client_id"),
 		SessionToken:                 st,
 		ProxyURL:                     strings.TrimSpace(row.ProxyURL),
 		CustomHeaders:                row.GetCredentialStringMap("custom_headers"),

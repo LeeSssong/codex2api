@@ -172,6 +172,10 @@ func executeBasispointsRequest(ctx context.Context, account *auth.Account, reque
 	if proxyOverride != "" {
 		proxyURL = proxyOverride
 	}
+	token, grantGeneration, err := resolveBasispointsGrant(ctx, account, proxyURL)
+	if err != nil {
+		return nil, err
+	}
 	resetUpstreamUserAgentAudit(ctx)
 	resetWsAcquireAudit(ctx)
 	if codexAttemptFromContext(ctx) == nil {
@@ -245,6 +249,9 @@ func executeBasispointsRequest(ctx context.Context, account *auth.Account, reque
 	}
 	if resp.Header == nil {
 		resp.Header = make(http.Header)
+	}
+	if err := rejectBasispointsExcelGrant(ctx, account, grantGeneration, resp); err != nil {
+		return nil, err
 	}
 	inspectCodexRouteResponse(ctx, resp)
 	resp.Header.Set("X-Codex2API-Upstream", "basispoints")

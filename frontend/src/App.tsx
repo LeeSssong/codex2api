@@ -11,6 +11,7 @@ import { ThemeProvider } from './hooks/useTheme'
 import Dashboard from './pages/Dashboard'
 
 const Accounts = lazy(() => import('./pages/Accounts'))
+const CredentialOps = lazy(() => import('./pages/CredentialOps'))
 const Operations = lazy(() => import('./pages/Operations'))
 const OperationsErrors = lazy(() => import('./pages/OperationsErrors'))
 const RuntimeStatus = lazy(() => import('./pages/RuntimeStatus'))
@@ -65,6 +66,7 @@ function AdminApp() {
         <Routes>
           <Route path="/" element={<Dashboard />} />
           <Route path="/accounts" element={<Accounts />} />
+          <Route path="/credential-ops" element={<CredentialOps />} />
           <Route path="/accounts/grok" element={<Accounts />} />
           <Route path="/accounts/antigravity" element={<Accounts />} />
           <Route path="/accounts/claude" element={<Accounts />} />

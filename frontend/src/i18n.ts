@@ -3,6 +3,9 @@ import { initReactI18next } from 'react-i18next'
 import zh from './locales/zh.json'
 import zhTW from './locales/zh-TW.json'
 import en from './locales/en.json'
+import credentialZh from './locales/credential-ops.zh.json'
+import credentialZhTW from './locales/credential-ops.zh-TW.json'
+import credentialEn from './locales/credential-ops.en.json'
 
 const LANG_KEY = 'lang'
 
@@ -16,9 +19,9 @@ function getInitialLang(): string {
 
 i18n.use(initReactI18next).init({
   resources: {
-    zh: { translation: zh },
-    'zh-TW': { translation: zhTW },
-    en: { translation: en },
+    zh: { translation: { ...zh, credentialOps: credentialZh } },
+    'zh-TW': { translation: { ...zhTW, credentialOps: credentialZhTW } },
+    en: { translation: { ...en, credentialOps: credentialEn } },
   },
   lng: getInitialLang(),
   fallbackLng: {

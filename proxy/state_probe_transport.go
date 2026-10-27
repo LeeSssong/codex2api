@@ -35,6 +35,9 @@ func (b *stateProbeBody) Close() error {
 }
 
 func stateProbeClient(ctx context.Context, egress CodexEgress) (*http.Client, func(*http.Response), error) {
+	if egress.Err != nil {
+		return nil, nil, egress.Err
+	}
 	config, fresh := ctx.Value(freshStateProbeKey{}).(freshStateProbeConfig)
 	if !fresh {
 		return egress.Client(), func(*http.Response) {}, nil

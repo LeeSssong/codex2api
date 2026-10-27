@@ -25,6 +25,8 @@ import {
   type ProxyBindingContext,
 } from "../lib/accountProxyBinding";
 import Modal from "../components/Modal";
+import TwoFAImport from "../components/TwoFAImport";
+import { credentialAPI } from "../lib/credentialOps";
 import ChannelLogo from "../components/ChannelLogo";
 import { useVisibleChannels } from "../visibleChannels";
 import ModelLogo from "../components/ModelLogo";
@@ -2167,7 +2169,7 @@ export default function Accounts() {
     ids: [],
   });
   const [addMethod, setAddMethod] = useState<
-    "rt" | "st" | "at" | "session" | "openai" | "oauth" | "agentIdentity"
+    "rt" | "st" | "at" | "session" | "openai" | "oauth" | "agentIdentity" | "twofa"
   >("oauth");
   const [agentIdentityJson, setAgentIdentityJson] = useState("");
   const [agentIdentityProxyUrl, setAgentIdentityProxyUrl] = useState("");
@@ -8198,7 +8200,7 @@ export default function Accounts() {
                       ? t("accounts.adding")
                       : t("accounts.agentIdentityImportBtn")}
                   </Button>
-                ) : oauthStep === "generate" ? (
+                ) : addMethod === "twofa" ? null : oauthStep === "generate" ? (
                   <Button
                     onClick={() => void handleOAuthGenerate()}
                     disabled={oauthGenerating}
@@ -8222,6 +8224,15 @@ export default function Accounts() {
           >
             {/* Tab switcher */}
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-1 p-1 mb-5 rounded-xl bg-muted/50 border border-border">
+              <Button
+                type="button"
+                variant={addMethod === "twofa" ? "secondary" : "ghost"}
+                aria-pressed={addMethod === "twofa"}
+                onClick={() => setAddMethod("twofa")}
+              >
+                <KeyRound className="size-3.5" />
+                {t("credentialOps.firstLogin")}
+              </Button>
               <button
                 onClick={() => {
                   setAddMethod("oauth");
@@ -8306,7 +8317,9 @@ export default function Accounts() {
               </button>
             </div>
 
-            {addMethod === "rt" ? (
+            {addMethod === "twofa" ? (
+              <TwoFAImport onSaved={() => void refreshAccountPage()} />
+            ) : addMethod === "rt" ? (
               <div className="space-y-4">
                 <div>
                   <label className="block mb-2 text-sm font-semibold text-muted-foreground">
@@ -13875,6 +13888,8 @@ function AccountRowActionsMenu({
   onEditModels?: () => void;
   onDelete: () => void;
 }) {
+  const navigate = useNavigate();
+  const { showToast } = useToast();
   const refreshDisabled =
     refreshing || account.at_only || account.openai_responses_api;
   const authJsonDisabled =
@@ -13886,6 +13901,30 @@ function AccountRowActionsMenu({
   const resetCredits = account.rate_limit_reset_credits ?? 0;
 
   const items: HeaderActionMenuItem[] = [
+    ...(!account.openai_responses_api && !account.grok_api && !account.antigravity_api && !account.claude_api && !account.agent_identity && !account.at_only
+      ? [
+          {
+            key: "credential-relogin",
+            label: t("credentialOps.relogin"),
+            icon: <KeyRound className="size-3.5" />,
+            onSelect: () => {
+              void credentialAPI.login(account.id).then(() => showToast(t("credentialOps.loginQueued"), "success")).catch(() => navigate(`/credential-ops?account=${account.id}`));
+            },
+          },
+          {
+            key: "credential-config",
+            label: t("credentialOps.loginConfig"),
+            icon: <Settings2 className="size-3.5" />,
+            onSelect: () => navigate(`/credential-ops?account=${account.id}`),
+          },
+          {
+            key: "credential-totp",
+            label: t("credentialOps.totpManage"),
+            icon: <ShieldCheck className="size-3.5" />,
+            onSelect: () => navigate(`/credential-ops?account=${account.id}&action=totp`),
+          },
+        ]
+      : []),
     ...(includeTest
       ? [
           {

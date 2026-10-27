@@ -915,6 +915,7 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 		return fmt.Errorf("install scheduler outbox triggers: %w", err)
 	}
 
+	if err := db.InitFixedEgress(ctx); err != nil { return err }
 	return db.runDataMigrationsWithTimeout()
 }
 

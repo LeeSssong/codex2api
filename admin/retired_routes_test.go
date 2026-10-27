@@ -20,8 +20,6 @@ func TestRetiredOperationsAreNotRegistered(t *testing.T) {
 		"PUT /api/admin/plugins/:id",
 		"GET /api/admin/smart-ops",
 		"GET /api/admin/smart-ops/concurrency-progress",
-		"GET /api/admin/credential-ops",
-		"POST /api/admin/credential-ops/import",
 		"GET /api/admin/account-ops/module",
 		"GET /api/admin/account-ops/token-guard/config",
 	} {
@@ -31,6 +29,8 @@ func TestRetiredOperationsAreNotRegistered(t *testing.T) {
 	}
 	for _, retained := range []string{
 		"GET /api/admin/accounts",
+		"GET /api/admin/credential-ops",
+		"POST /api/admin/credential-ops/import",
 		"GET /api/admin/model-quality",
 		"GET /api/admin/ipv6-egress",
 		"GET /api/admin/quality-tests",

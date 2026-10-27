@@ -34,6 +34,7 @@ import (
 	"github.com/codex2api/auth"
 	"github.com/codex2api/cache"
 	"github.com/codex2api/database"
+	"github.com/codex2api/fixedegress"
 	"github.com/codex2api/internal/imagestore"
 	"github.com/codex2api/internal/openaiidentity"
 	"github.com/codex2api/internal/version"
@@ -63,6 +64,7 @@ type Handler struct {
 	cache                    cache.TokenCache
 	authCacheProxy           *proxy.Handler
 	db                       *database.DB
+	fixedEgress              *fixedegress.Manager
 	cacheCfgStore            responseCacheSettingsStore
 	rateLimiter              *proxy.RateLimiter
 	systemUpdate             *systemUpdater
@@ -1041,6 +1043,7 @@ func NewHandler(store *auth.Store, db *database.DB, tc cache.TokenCache, rl *pro
 		proxyRiskJobs:        make(map[string]*proxyRiskScoringJob),
 		cache:                tc,
 		db:                   db,
+		fixedEgress:          fixedegress.NewManager(db, nil),
 		cacheCfgStore:        db,
 		rateLimiter:          rl,
 		cpuSampler:           newCPUSampler(),
@@ -1137,6 +1140,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 			h.invalidateAccountSnapshotCaches()
 		}
 	})
+	h.RegisterCredentialOpsRoutes(api)
+	h.RegisterCredentialOpsWorkerRoutes(r)
 	api.GET("/stats", h.GetStats)
 	api.GET("/accounts", h.ListAccounts)
 	api.GET("/accounts/analysis", h.GetAccountAnalysis)
@@ -1243,6 +1248,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.POST("/accounts/:id/quality-test", h.CreateQualityTestJob)
 	h.registerIntelligenceCheckRoutes(api)
 	api.GET("/quality-tests", h.ListQualityTests)
+	h.registerFixedEgressRoutes(api)
 	api.GET("/ipv6-egress", h.GetIPv6Egress)
 	api.PUT("/ipv6-egress", h.UpdateIPv6Egress)
 	api.GET("/model-quality", h.GetModelQuality)
@@ -11905,6 +11911,19 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		log.Printf("设置已更新: resin_platform_name")
 	}
 	if req.ResinURL != nil || req.ResinPlatformName != nil {
+		inUse := false
+		var inUseErr error
+		if h.fixedEgress != nil {
+			inUse, inUseErr = fixedegress.NewManager(h.db, nil).InUse(c.Request.Context())
+		}
+		if inUseErr != nil {
+			writeError(c, http.StatusServiceUnavailable, "cannot validate fixed egress conflict")
+			return
+		}
+		if strings.TrimSpace(resinURL) != "" && strings.TrimSpace(resinPlatformName) != "" && inUse {
+			writeError(c, http.StatusConflict, "fixed egress is enabled; disable it before enabling Resin")
+			return
+		}
 		proxy.SetResinConfig(&proxy.ResinConfig{
 			BaseURL:      resinURL,
 			PlatformName: resinPlatformName,

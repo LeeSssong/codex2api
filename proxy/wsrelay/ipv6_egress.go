@@ -86,7 +86,21 @@ func (a *ipv6WSAttempt) rotate(reason string) bool {
 func (r *WsResponse) ReadStream(callback func([]byte) bool) error {
 	a := r.ipv6Attempt
 	if a == nil {
-		return r.readStream(callback)
+		reason := ""
+		err := r.readStream(func(payload []byte) bool {
+			if r.conn != nil && r.conn.fixedManager != nil {
+				reason = egressipv6.FrameFailure(payload, r.conn.fixedRoute.Pool.Retry5xx)
+				if reason == "http_429" && !r.conn.fixedRoute.Pool.Rotate429 {
+					reason = ""
+				}
+			}
+			return callback(payload)
+		})
+		if r.conn != nil && r.conn.fixedManager != nil && reason != "" {
+			route := r.conn.fixedRoute
+			_ = r.conn.fixedManager.Failure(context.Background(), route.Binding.AccountID, route.Binding.Generation, route.Binding.ResourceID, reason)
+		}
+		return err
 	}
 	buffered := [][]byte{}
 	size := 0

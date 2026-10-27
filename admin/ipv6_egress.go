@@ -44,7 +44,16 @@ func (h *Handler) UpdateIPv6Egress(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "无效的 IPv6 出口配置"})
 		return
 	}
-	if cfg.Enabled && proxy.IsResinEnabled() {
+	inUse := false
+	var inUseErr error
+	if h.fixedEgress != nil {
+		inUse, inUseErr = h.fixedEgress.InUse(c.Request.Context())
+	}
+	if inUseErr != nil {
+		c.JSON(503, gin.H{"error": "无法验证固定出口冲突状态"})
+		return
+	}
+	if cfg.Enabled && (proxy.IsResinEnabled() || inUse) {
 		c.JSON(400, gin.H{"error": "请先关闭 Resin，避免出口设置互相覆盖"})
 		return
 	}

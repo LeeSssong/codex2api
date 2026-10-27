@@ -73,7 +73,10 @@ func (s *Store) refreshCodexAccount(ctx context.Context, acc *Account, force boo
 			}
 		}
 	}
-	proxyURL := s.ResolveProxyForAccount(acc)
+	proxyURL, usableEgress := s.ResolveUsableProxyForAccount(acc)
+	if !usableEgress {
+		return fmt.Errorf("账号 %d 无可用出口，已拒绝刷新", dbID)
+	}
 	if strings.TrimSpace(proxyURL) == "" && s.GetProxyPoolEnabled() && !egressipv6.Enabled() && !ResinEgressEnabled() {
 		return fmt.Errorf("账号 %d 代理池已启用但无可用代理，已拒绝直连刷新", dbID)
 	}
@@ -99,7 +102,14 @@ func (s *Store) refreshCodexAccount(ctx context.Context, acc *Account, force boo
 	var info *AccountInfo
 	var err error
 	if rt != "" {
-		td, info, err = RefreshWithRetry(ctx, rt, proxyURL, resinID)
+		acc.mu.RLock()
+		clientID := acc.OAuthClientID
+		acc.mu.RUnlock()
+		if clientID == ExcelClientID {
+			td, info, err = RefreshAccessTokenForClient(ctx, rt, proxyURL, ExcelClientID, resinID)
+		} else {
+			td, info, err = RefreshWithRetry(ctx, rt, proxyURL, resinID)
+		}
 	} else {
 		err = fmt.Errorf("refresh_token 为空")
 	}

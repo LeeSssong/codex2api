@@ -6,6 +6,7 @@ import { intelligenceQuery, type IntelligenceSettings, type IntelligenceAccount,
 import { qualityTestFilterQuery, type QualityTestJob, type QualityTestJobsFilter, type QualityTestJobsResponse, type QualityTestPrompt } from './lib/qualityTest.ts'
 import type { StateImportPreview, StatePackage, StatePoolData } from './lib/statePool.ts'
 import type { IPv6StateConfig, IPv6StateStatus, IPv6StatePackage } from './lib/ipv6State.ts'
+import type { FixedSnapshot, FixedPool, FixedProvider } from './lib/fixedEgress'
 import { notifyStateChange } from './lib/stateSync.ts'
 import type {
   AccountEventTrendPoint,
@@ -224,7 +225,7 @@ function extractAdminErrorMessage(body: string, status: number): string {
   return body
 }
 
-async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
+export async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const headers = new Headers(options.headers)
   const isFormData = typeof FormData !== 'undefined' && options.body instanceof FormData
   if (options.body !== undefined && options.body !== null && !isFormData && !headers.has('Content-Type')) {
@@ -573,6 +574,16 @@ export interface ModelTraceBankUpdateResult extends ModelTraceBankStatus {
 }
 
 export const api = {
+  getFixedEgress: () => request<FixedSnapshot>('/fixed-egress/'),
+  setFixedEgressConfig: (body: { enabled: boolean; revision: number }) => request<FixedSnapshot>('/fixed-egress/config', { method: 'PUT', body: JSON.stringify(body) }),
+  updateFixedPool: (id: string, body: FixedPool) => request<FixedSnapshot>(`/fixed-egress/pools/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(body) }),
+  updateFixedProvider: (id: string, body: Omit<FixedProvider, 'has_key'> & { api_key?: string }) => request<FixedSnapshot>(`/fixed-egress/providers/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(body) }),
+  importFixedResources: (body: { pool_id: string; protocol: string; format: 1 | 2 | 3; lines: string }) => request<FixedSnapshot>('/fixed-egress/import', { method: 'POST', body: JSON.stringify(body) }),
+  fixedResourceAction: (id: string, action: 'test' | 'retire' | 'stop') => request<FixedSnapshot>(`/fixed-egress/resources/${encodeURIComponent(id)}/${action}`, { method: 'POST', body: '{}' }),
+  syncFixedProvider: (id: string, pool_id: string) => request<FixedSnapshot>(`/fixed-egress/providers/${encodeURIComponent(id)}/sync`, { method: 'POST', body: JSON.stringify({ pool_id }) }),
+  startFixedProvider: (id: string, pool_id: string) => request<FixedSnapshot>(`/fixed-egress/providers/${encodeURIComponent(id)}/start`, { method: 'POST', body: JSON.stringify({ pool_id }) }),
+  fixedAccountAction: (id: number, action: 'enroll' | 'unenroll', body: Record<string, unknown> = {}) => request<FixedSnapshot>(`/fixed-egress/accounts/${id}/${action}`, { method: 'POST', body: JSON.stringify(body) }),
+  rotateFixedAccount: (id: number, body: { generation: number; resource_id: string }) => request<FixedSnapshot>(`/fixed-egress/accounts/${id}/rotate`, { method: 'POST', body: JSON.stringify(body) }),
   getIPv6State: (signal?: AbortSignal) => request<IPv6StateStatus>('/state-pool/ipv6', { signal }),
   configureIPv6State: (body: IPv6StateConfig) => request<IPv6StateStatus>('/state-pool/ipv6', { method: 'PUT', body: JSON.stringify(body) }).then(notifyStateChange),
   configureStatePolicy: (require_valid_state: boolean) => request<IPv6StateStatus>('/state-pool/ipv6/policy', { method: 'PATCH', body: JSON.stringify({ require_valid_state }) }).then(notifyStateChange),

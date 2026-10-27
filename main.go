@@ -22,8 +22,10 @@ import (
 	"github.com/codex2api/auth"
 	"github.com/codex2api/cache"
 	"github.com/codex2api/config"
+	"github.com/codex2api/credentialops"
 	"github.com/codex2api/database"
 	"github.com/codex2api/egressipv6"
+	"github.com/codex2api/fixedegress"
 	"github.com/codex2api/internal/imagestore"
 	"github.com/codex2api/internal/version"
 	"github.com/codex2api/proxy"
@@ -354,9 +356,15 @@ func main() {
 	}
 	ipv6Egress.ObserveSource = proxy.RecordIPv6Source
 	egressipv6.Install(ipv6Egress)
-	auth.CodexHTTPClientDecorator = proxy.WrapOAuthIPv6Client
+	fixedEgressManager := fixedegress.NewManager(db, nil)
+	fixedegress.Install(fixedEgressManager)
+	auth.CodexHTTPClientDecorator = func(id int64, client *http.Client, forceUTLS bool) *http.Client {
+		client = proxy.WrapOAuthIPv6Client(id, client, forceUTLS)
+		return proxy.WrapOAuthFixedClient(id, client, forceUTLS)
+	}
 
 	store := auth.NewStore(db, tc, settings)
+	proxy.ConfigureCredentialOperations(db, store)
 	store.SetSchedulerWaitLimits(cfg.SchedulerMaxWaiters, cfg.SchedulerMaxWaitersPerKey)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
@@ -499,6 +507,20 @@ func main() {
 	adminHandler.StartPromptIntelligence(backgroundCtx)
 	adminHandler.StartIntelligenceChecks(backgroundCtx, deviceCfg)
 	adminHandler.RegisterRoutes(r)
+	adminHandler.StartCredentialOpsScheduler(backgroundCtx)
+	defer credentialops.CloseMihomo()
+	if runtimeRoot := strings.TrimSpace(os.Getenv("CODEX2API_CREDENTIAL_OPS_RUNTIME_DIR")); runtimeRoot != "" {
+		stateDir := strings.TrimSpace(os.Getenv("DATA_DIR"))
+		if stateDir == "" {
+			stateDir = "data"
+		}
+		supervisor := credentialops.NewRuntimeSupervisor(runtimeRoot, fmt.Sprintf("http://127.0.0.1:%d/api/internal/credential-ops", cfg.Port), stateDir)
+		if e := supervisor.Start(backgroundCtx); e != nil {
+			log.Printf("Credential operations runtime unavailable: %v", e)
+		} else {
+			defer func() { cancelBackground(); supervisor.Wait() }()
+		}
+	}
 
 	// 管理后台前端静态文件
 	subFS, err := fs.Sub(frontendFS, "frontend/dist")
