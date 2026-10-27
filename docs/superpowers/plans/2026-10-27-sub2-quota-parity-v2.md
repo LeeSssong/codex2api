@@ -17,3 +17,7 @@
 Cost-affecting behavior tests are written before code. No source response is faked for a claimed production check. No broad retry of already-green unrelated suites.
 
 验收记录：docs/parity/sub2-source/IMPLEMENTATION.md；仅本地候选，未部署/未推送。
+
+## 追加部署授权与完成
+
+2026-10-27用户明确要求开始部署，替代此前仅本地约束。已发布9aa624fb，维护18.027秒；见docs/releases/2026-10-27-sub2-quota-parity.md。
