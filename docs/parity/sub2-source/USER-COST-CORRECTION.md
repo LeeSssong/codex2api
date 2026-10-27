@@ -1,0 +1,11 @@
+# 2026-10-27 用户计费用量直接纠正
+
+用户明确授权：用户计费用量也按新口径重算；无分组售价倍率的普通Token用量与账号成本一致。已确认生产10,687条均为token或历史空模式、image_count=0，scope累计计数器为空，分组结构无收费倍率。
+
+本次直接更新8,255条user_billed=account_billed。被纠正行用户金额1997.24020479→363.47924714美元；全部保留记录账号费用和用户费用合计均为443.72360032美元（原始日志全状态合计）。APIKey id1 quota_used/total_used以原有非499扣费条件按差额从2069.86067432改为435.49331552，quota_limit仍0。未重置Key，不修改已有额度上限或凭据。last_reset_at为空；工具仍按重置边界计算当前用量差额。
+
+事务同步usage_stats_rollup.user_billed、usage_log_hourly.user_billed；按全部日志除user_billed外的字段hash及APIKey除quota_used/total_used外的字段hash校验，均一致。事务后different_rows=0，累计汇总与明细一致，线上账号79的5h/7d used_usd=user_usd=24.676798。
+
+同构本地隔离PostgreSQL验证差额累加可保留原有历史余量、额度上限和汇总；生产操作持共享发布锁，没有创建备份、增加业务字段、迁移数据库或部署应用。应用仍release-20261027-017294a8a41f。
+
+本地新候选也统一普通Codex Token的最终成本/用户费用；媒体单独单位价及非Codex供应商不改变。候选未推送/未部署。

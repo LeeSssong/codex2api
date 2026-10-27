@@ -23,7 +23,8 @@ func (h *Handler) GetAccountStatsPricing(c *gin.Context) {
 	c.JSON(http.StatusOK, account.AccountStatsPricing())
 }
 
-// PUT replaces this account's statistical pricing only; customer fees are independent.
+// PUT replaces this account's pricing. Codex text usage shares the final
+// account amount with user billing; media unit prices remain separate.
 func (h *Handler) UpdateAccountStatsPricing(c *gin.Context) {
 	id, e := strconv.ParseInt(c.Param("id"), 10, 64)
 	if e != nil {

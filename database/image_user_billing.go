@@ -126,6 +126,9 @@ func UsageLogUserBilledCost(input *UsageLogInput) float64 {
 	if input != nil && input.AccountStatsOnly {
 		return 0
 	}
+	if usesUnifiedCodexTokenCost(input) {
+		return *input.AccountCost
+	}
 	input = SnapshotUsageLogBilling(input)
 	if input == nil {
 		return 0

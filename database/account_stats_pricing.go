@@ -86,6 +86,20 @@ type AccountStatsPricingRule struct {
 }
 
 func validStatsNumber(v float64) bool { return !math.IsNaN(v) && !math.IsInf(v, 0) && v >= 0 }
+
+// Codex has no separate group sale multiplier. Ordinary token requests share
+// the finalized account-cost snapshot for both cost and user usage. Explicit
+// image/media unit charging keeps its separate product pricing policy.
+func usesUnifiedCodexTokenCost(input *UsageLogInput) bool {
+	if input == nil || input.Channel != UpstreamChannelCodex || input.AccountCost == nil || !validStatsNumber(*input.AccountCost) {
+		return false
+	}
+	model := input.EffectiveModel
+	if model == "" {
+		model = input.Model
+	}
+	return !SupportsImageBilling(model) && MediaBillingUnit(model) == ""
+}
 func ValidateAccountStatsPricing(c AccountStatsPricingConfig) error {
 	if c.SourceGroupID != nil && *c.SourceGroupID <= 0 {
 		return fmt.Errorf("source_group_id must be positive")

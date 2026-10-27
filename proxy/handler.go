@@ -1626,10 +1626,6 @@ func (h *Handler) logUsage(input *database.UsageLogInput) {
 	// Non-Grok and unresolved accounts deliberately remain legacy/unscoped (0).
 	input = database.SnapshotUsageLogBilling(input)
 	h.populateUsageCredentialGeneration(input)
-	// scope 维度预算（issue #439）在日志落库前先吃到这笔消耗，抵掉窗口聚合缓存的滞后。
-	if !input.AccountStatsOnly {
-		h.recordAPIKeyScopeUsage(input)
-	}
 	// 渠道在写入时按调度账号固化（内存索引查询），供仪表盘分渠道聚合；
 	// 账号已不在池中（如刚被删除）时按 codex 兜底。
 	if input.Channel == "" && h.store != nil {
@@ -1649,6 +1645,11 @@ func (h *Handler) logUsage(input *database.UsageLogInput) {
 	}
 	finalizeAccountUsageEvidence(input)
 	input = h.snapshotAccountStatsPricing(input)
+	// Account/user token charges share the finalized price. Apply scope budgets
+	// after that snapshot so in-memory and durable counters use the same amount.
+	if !input.AccountStatsOnly {
+		h.recordAPIKeyScopeUsage(input)
+	}
 	// 过载熔断统计（仅 Codex 渠道，需在渠道固化之后）。
 	h.noteOverloadOutcome(input)
 	_ = h.db.InsertUsageLog(context.Background(), input)

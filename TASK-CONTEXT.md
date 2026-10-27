@@ -19,3 +19,7 @@
 ## 用户追加授权：历史值直接纠正
 
 2026-10-27按用户明确要求已在线直接重算并回写8,255条现有account_billed及相关汇总；无新字段/备份/应用部署，用户扣费和APIKey字段哈希不变。见docs/parity/sub2-source/HISTORICAL-CORRECTION.md。应用候选仍未部署；本次数据操作不能当成新版本发布。
+
+## 用户追加：用户计费用量同口径纠正
+
+已在线直接纠正8,255条user_billed与account_billed一致，相关汇总及APIKey已用金额按差额同步；未改额度上限/凭据，无新字段/备份/部署。见docs/parity/sub2-source/USER-COST-CORRECTION.md。本地候选普通Codex Token共用最终成本价，数据库/代理完整回归通过；媒体单位价仍独立。

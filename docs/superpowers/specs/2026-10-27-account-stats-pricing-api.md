@@ -4,7 +4,7 @@ This implementation follows Sub2API commit `a6d32edec667271d38c03ef55ac4a2edf77d
 
 ## Configuration API
 
-Authenticated admin routes `GET /accounts/:id/stats-pricing` and `PUT /accounts/:id/stats-pricing` read/replace one account's statistical configuration. The configuration is persisted in the existing encrypted credentials store, loaded at startup, and applied by the common proxy usage sink. Empty `account_rate_multiplier` means 1; explicit 0 is valid. Rules do not alter native customer charges, API key quotas, or scope budgets.
+Authenticated admin routes `GET /accounts/:id/stats-pricing` and `PUT /accounts/:id/stats-pricing` read/replace one account's statistical configuration. The configuration is persisted in the existing encrypted credentials store, loaded at startup, and applied by the common proxy usage sink. Empty `account_rate_multiplier` means 1; explicit 0 is valid. After the user's subsequent one-price requirement, Codex text account cost and user usage share the finalized fee; API key quotas and scope budgets use that same fee. Explicit media unit pricing remains independent.
 
 Example (token prices are USD per million tokens; image/request prices are USD per unit):
 
@@ -57,3 +57,7 @@ Priority: custom statistical rule, configured sale price when `apply_sale_pricin
 Admitted events also enter `account_usage_cost_events`, independently of diagnostic log mode. Each event stores only account/model/time, original numeric pricing snapshot, token count, fee snapshots, and native user charge. It excludes client/request/prompt/response identities. UUIDs are generated once per log submission and survive internal buffer retries; caller submissions are not globally deduplicated. This ledger and existing counters commit atomically. New quota queries use the ledger plus historical logs with `quota_usage_admitted IS NULL`, so retained full logs are not double counted. No destructive backfill or historical repricing is performed.
 
 `standard_cost` records configured native sale cost on observed original inputs; `user_billed` remains actual native customer charge. Those are distinct from source account fee. This change does not reproduce every source customer/channel/group tariff or its eight-decimal customer debit policy. Account fee equivalence requires matching original quantities, statistical configuration, and model catalog. Native non-Codex channels keep native fees. Exotic provider policies, automatic source catalog import, request-specific source group routing, timezone/peak tariffs for other providers, and arbitrary source channel configuration are outside this OpenAI scope and are not claimed equivalent.
+
+## Subsequent user requirement: one Codex token price
+
+The user explicitly requested historical user usage be recalculated too and confirmed there is no group sale multiplier. Ordinary Codex token account/user charges now read the same finalized account-cost snapshot. The common sink applies scope usage after pricing so in-memory scope amounts, stored user_billed, API key quotas and compact ledger amounts agree. Image/media unit tariffs retain their explicit independent policy. Native non-Codex channels are unchanged. This supersedes earlier statements here that all native customer token pricing remains independent. Local candidate only, not deployed.
