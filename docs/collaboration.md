@@ -25,3 +25,12 @@
 ## 2026-10-27最终部署基线
 
 已部署9aa624fb088a，source-release.json为准。当前sub2-quota-parity分支已整合发布；原子任务提交为历史候选，禁止重复发布旧分支。定时检测当前关闭600秒，19历史保留。详见docs/releases/2026-10-27-sub2-quota-parity.md。
+
+## 2026-10-28 Credential relogin state investigation (diagnosis complete)
+
+- Owner: current Codex chat; branch `codex/credential-relogin-state-audit`; exclusive worktree `/Users/gongtengxinwen/.codex/worktrees/credential-relogin-state-audit/codex2api`; base `69abb079e1057952f2f93c7ac5920067a94d9f41`.
+- User request: investigate successful Credential Operations reauthentication leaving the account unauthorized until a successful manual connection test.
+- Scope: offline reproduction test in `admin/credential_operations_relogin_state_test.go` and investigation notes only; no production writes, real reauthentication, application behavior changes or deployment.
+- Production source `9aa624fb088a425668004c45f1d2fa4868a49ee0`; relevant completion/reload/cache code is unchanged at the current main baseline. Other worktrees, including the active intelligence cooldown task, remain untouched.
+
+- Result: missing shared unauthorized-cooldown invalidation confirmed by offline worker-completion/scheduler regression, repeated three times. Manual-test callback clears it. See `docs/investigations/2026-10-28-credential-relogin-state.md`. Regression intentionally fails; no application fix, push or deployment performed.
