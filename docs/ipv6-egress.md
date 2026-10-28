@@ -2,9 +2,10 @@
 
 The **Proxies → Dedicated host IPv6 egress** panel assigns an existing public
 IPv6 source address to each native Codex account. It is disabled by default.
-Enabling it overrides the account/group/global forward proxy for Codex traffic;
-disabling restores those saved proxy settings. Resin remains the higher-priority
-egress and must be disabled before enabling this feature.
+Only accounts explicitly selecting Local IPv6 participate; other accounts retain
+their selected proxy/direct route. Enrolled accounts fail closed when the pool
+is disabled or exhausted. Resin remains a conflicting global egress and must be
+disabled before enabling this feature.
 
 The container must already be able to bind these addresses. On Linux, host
 networking shares the host network namespace. The application does not create
@@ -50,8 +51,9 @@ the explicit save button. Automatic status refresh never clears a failed write.
 
 For rollout, keep the feature disabled during migration and overlap, validate the
 new instance, switch ingress, drain and stop the old instance, then enable a
-verified address pool. Disable the feature to restore the previous proxy routing
-without reverting the image. A version rollback must also disable it before
+verified address pool. Switch individual accounts to a real proxy or explicit direct IPv4 to leave the
+pool. Disabling the global feature blocks enrolled accounts rather than silently
+changing their source address. A version rollback must also disable it before
 traffic is handed back to a version that does not implement dedicated IPv6.
 
 ## Account membership and persistent container attachment
