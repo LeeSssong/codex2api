@@ -108,8 +108,7 @@ func finishIPv6Retirement(ctx context.Context, tx *sql.Tx, ip string, now int64)
 	if _, err = tx.ExecContext(ctx, `DELETE FROM ipv6_egress_bindings WHERE ip=$1 AND reason='retired'`, ip); err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO ipv6_egress_cooldowns(ip,until_time) VALUES($1,$2) ON CONFLICT(ip) DO UPDATE SET until_time=$2`, ip, now+int64(c.CooldownSeconds))
-	return err
+	return extendIPv6Cooldown(ctx, tx, ip, now+int64(c.CooldownSeconds))
 }
 func (db *DB) CurrentIPv6EgressIP(ctx context.Context, id int64) (string, error) {
 	var ip string
