@@ -90,3 +90,38 @@ broadly. Preserve existing account credentials and current writes. To remove the
 network helper, first disable IPv6 egress, stop/disable only its systemd unit,
 then remove `c2a-v6` from the verified app namespace; do not remove the host uplink
 or unrelated Docker networks.
+
+## Manual account address selection
+
+Both account editors can choose an available pool address after Local IPv6 has
+been saved for that account. An unassigned account may also claim an address
+manually. This action does not enable a disabled account. Editing route intent
+must be saved first. The picker refreshes pool status; occupied or cooling
+addresses cannot be selected. The server repeats these checks atomically, so a
+stale picker cannot steal another account's address.
+
+`POST /api/admin/accounts/:id/ipv6-egress` accepts
+`{"ip":"<selected pool IPv6>","expected_ip":"<current IP or empty>"}` and
+returns `{"ip":"<actual IPv6>"}`. The target must be locally visible, permitted
+by the pool allowlist, free of another binding/lease and out of cooldown. An
+expected binding mismatch, occupied target or cooling target returns 409. The
+old address remains unavailable while old request leases exist; after the last
+connection lease closes it receives the configured cooldown. Existing rotation
+continues to handle eligible upstream failures.
+
+## Abnormal shutdown lease recovery
+
+HTTP response close and WebSocket close release durable connection leases.
+Normal application shutdown closes WebSocket connections. A forced kill,
+incomplete shutdown or database failure during release can leave a lease
+behind. Leases do not automatically expire: doing so could assign an address to
+a second account while the first still has an active stream. Orphans therefore
+reduce available pool capacity until recovered; exhaustion fails closed.
+
+Recovery requires the common release lock, a verified stopped state for every
+application instance sharing this database, and a current backup. Keep active
+account bindings, finish retired bindings and add cooldowns for orphan addresses
+without active bindings before removing stale leases. Never clear leases while
+an application instance is running, and never delete leases without completing
+the retirement/cooldown work. The initial release creates an empty lease table
+and requires no recovery.
