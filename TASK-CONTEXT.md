@@ -129,3 +129,10 @@ User authorized implementation and tests but explicitly said **do not deploy yet
 
 - User now explicitly authorizes production deployment, superseding earlier implement-only/no-deploy restriction. Owner: this chat; isolated branch codex/websearch-ws-mode-isolation; candidate e0ecb08c; base d967cda1.
 - Target netcup 159.195.12.230, Codex2API only. Preserve settings, credentials/runtime, database and Redis; use verified pushed main and common locked maintenance controller, exact live baseline and rollback artifacts. Release verification and deployment are in progress; earlier NOT DEPLOYED entries are historical implementation status, not a new deployment result.
+
+## 2026-10-28 web_search WS isolation — deployed
+
+- Latest user authorized deployment; source 2425875612935cc5244a7d844f27d09406e7bee8, tree fb12a3c54786eb9cb4547d56b8b0502c27464bc2, binary 2d7de25e4e296fa873b0849de92dd982acd4ab80bd6824cfe991f16938e815cc, image sha256:a94de947602e1d401bee620bf0ef146b597b113b6a79a6ec98fb7069aa0ac7e9. Fix e0ecb08c merged/pushed and deployed from clean current main. Earlier local-only status is historical.
+- Maintenance 14.907s. Full Go suite, targeted race x3,85 release tests; internal/public smoke and independent final checks passed. One writer, credential worker online; exact settings/accounts/runtime retained; non-target services unchanged.
+- Actual intelligence revision15/enabled=true/interval900/recovery3600, history[242,242]. All7 active accounts remain disabled by prior configuration: no real-account search smoke and no auto-enabling.
+- Release/recovery: docs/releases/2026-10-28-websearch-ws-mode-isolation.md; protected evidence /Users/gongtengxinwen/.config/codex2api/websearch-release-20261028/; artifacts /opt/codex2api/releases/websearch-ws-20261028-24258756/, backups /opt/codex2api/backups/websearch-ws-20261028-24258756/. New writes possible: never restore old dump or rerun stale release. Original shared dirty checkout preserved.

@@ -51,4 +51,4 @@
 - [x] Run focused mode tests repeatedly with race detector, then full wsrelay/proxy tests. `go test ./...` reached all relevant packages but had one unrelated first-run `credentialops` timing failure; isolated rerun passed.
 - [x] Run `npm ci && npm run build`, `go build ./...`, `git diff --check`; origin/main remained `d967cda1ae07bc948cb1dd0fcd791eb3e69d71c1` and shared checkout was not edited.
 - [x] Update checklist and handoff with exact commands/results, limitations and explicit NOT DEPLOYED status.
-- [ ] Commit only owned paths on the isolated branch if verification succeeds; do not push, merge or deploy.
+- [x] Original local-only phase committed as e0ecb08c. Later explicit user authorization superseded no-push/no-deploy; clean-main release completed, see release record.
