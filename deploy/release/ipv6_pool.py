@@ -39,6 +39,9 @@ def validate_config(raw):
 def container_pid(container):
     labels = container['Config'].get('Labels') or {}
     state = container['State']
+    mode = container.get('HostConfig', {}).get('NetworkMode', '')
+    if mode == 'host' or mode.startswith('container:'):
+        raise ValueError('shared or host network namespace is forbidden')
     if (container.get('Name') != '/codex2api' or not state.get('Running') or
         type(state.get('Pid')) is not int or state['Pid'] <= 1 or
         not re.fullmatch('[a-f0-9]{64}', container.get('Id', '')) or
@@ -110,6 +113,10 @@ def ensure(cfg):
     # when Docker replaces the application between commands.
     fd = os.open('/proc/%d/ns/net' % pid, os.O_RDONLY)
     try:
+        host_namespace = os.stat('/proc/1/ns/net')
+        target_namespace = os.fstat(fd)
+        if (host_namespace.st_dev, host_namespace.st_ino) == (target_namespace.st_dev, target_namespace.st_ino):
+            raise ValueError('refusing host network namespace')
         namespace = '/proc/self/fd/%d' % fd
         def ns(*args, optional=False):
             return command(['nsenter', '--net=' + namespace, '--'] + list(args),
@@ -118,7 +125,8 @@ def ensure(cfg):
         if fresh is None or fresh['Id'] != container['Id'] or container_pid(fresh) != pid:
             raise RuntimeError('application changed during namespace acquisition')
         current = ns('ip', '-j', '-d', 'link', 'show', 'dev', cfg['interface'], optional=True)
-        created = moved = False
+        created = moved = changed_up = False
+        applied = []
         parent = json.loads(command(['ip', '-j', 'link', 'show', 'dev', cfg['parent']]))[0]
         if 'UP' not in parent['flags']:
             raise RuntimeError('uplink is not up')
@@ -131,12 +139,16 @@ def ensure(cfg):
                 moved = True
             else:
                 validate_link(json.loads(current)[0], parent['ifindex'])
-            ns('ip', 'link', 'set', cfg['interface'], 'up')
             assigned = assigned_addresses(json.loads(ns('ip', '-j', '-6', 'addr', 'show', 'dev', cfg['interface']))[0])
             routes = json.loads(ns('ip', '-j', '-6', 'route', 'show', 'default'))
             commands = address_commands(cfg, assigned, routes)
+            # Inspect every existing address/route before changing link state.
+            if current is None or 'UP' not in json.loads(current)[0].get('flags', []):
+                ns('ip', 'link', 'set', cfg['interface'], 'up')
+                changed_up = True
             for args in commands:
                 ns(*args)
+                applied.append(args)
             if commands:
                 # Readiness follows DAD completion, not a fixed deployment sleep.
                 deadline = time.monotonic() + 8
@@ -158,6 +170,13 @@ def ensure(cfg):
                     ns('ip', 'link', 'del', cfg['interface'], optional=True)
                 else:
                     command(['ip', 'link', 'del', cfg['interface']], optional=True)
+            else:
+                for args in reversed(applied):
+                    undo = list(args)
+                    undo[undo.index('add')] = 'del'
+                    ns(*undo, optional=True)
+                if changed_up:
+                    ns('ip', 'link', 'set', cfg['interface'], 'down', optional=True)
             raise
     finally:
         os.close(fd)

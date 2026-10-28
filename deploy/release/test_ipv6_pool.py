@@ -30,6 +30,10 @@ class PoolTests(unittest.TestCase):
         for key, value in [('Name', '/sub2api'), ('State', {'Pid': 1, 'Running': True})]:
             with self.assertRaises(ValueError):
                 pool.container_pid(dict(c, **{key: value}))
+        with self.assertRaises(ValueError):
+            pool.container_pid(dict(c, HostConfig={'NetworkMode':'host'}))
+        with self.assertRaises(ValueError):
+            pool.container_pid(dict(c, HostConfig={'NetworkMode':'container:other'}))
         c['Config']['Labels']['com.docker.compose.project'] = 'sub2api'
         with self.assertRaises(ValueError): pool.container_pid(c)
 
@@ -62,3 +66,23 @@ class PoolTests(unittest.TestCase):
         with self.assertRaises(ValueError):pool.address_commands(cfg,set(cfg['addresses'])|{'2001:4860::1'},routes)
 
 if __name__ == '__main__': unittest.main()
+
+class NamespaceMutationTests(unittest.TestCase):
+    def test_unexpected_existing_pool_is_rejected_before_link_is_raised(self):
+        from unittest import mock
+        from types import SimpleNamespace
+        import json
+        cfg={'prefix':'2a0a:4cc0:101:799:c2a:28::/112','count':128,'parent':'eth0','interface':'c2a-v6','gateway':'fe80::1'}
+        c={'Id':'a'*64,'Name':'/codex2api','State':{'Running':True,'Pid':432},'Config':{'Labels':{'com.docker.compose.project':'codex2api','com.docker.compose.service':'codex2api'}}}
+        calls=[]
+        def command(args,**kwargs):
+            calls.append(args)
+            if args[0]=='ip': return json.dumps([{'flags':['UP'],'ifindex':2}]).encode()
+            if 'link' in args and 'show' in args:
+                return json.dumps([{'link_index':2,'flags':[], 'linkinfo':{'info_kind':'ipvlan','info_data':{'mode':'l2'}}}]).encode()
+            if 'addr' in args:
+                return json.dumps([{'addr_info':[{'family':'inet6','local':'2001:4860::1','prefixlen':64,'scope':'global'}]}]).encode()
+            return b'[]'
+        with mock.patch.object(pool,'inspect_app',return_value=c),mock.patch.object(pool,'command',side_effect=command),mock.patch.object(pool.os,'open',return_value=99),mock.patch.object(pool.os,'close'),mock.patch.object(pool.os,'stat',return_value=SimpleNamespace(st_dev=1,st_ino=1)),mock.patch.object(pool.os,'fstat',return_value=SimpleNamespace(st_dev=1,st_ino=2)):
+            with self.assertRaises(ValueError):pool.ensure(cfg)
+        self.assertFalse(any('up' in cmd for cmd in calls))
