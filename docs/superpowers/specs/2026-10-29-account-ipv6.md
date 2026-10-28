@@ -1,0 +1,11 @@
+# Account-scoped local IPv6 egress
+
+Approved in chat on 2026-10-29. Only codex2api may be stopped/deployed; preserve all Sub2API services, databases, Redis and credential runtime mounts.
+
+Native Codex account edit proxy selector gains Local IPv6. Persist selection separately from proxy_url (`ipv6_egress_enabled` boolean in account API and credentials). When selected show actual `ipv6_egress_ip` or pending; requests lazily claim unique pool IP using existing cooldown/retry manager. Other proxy selection or explicit blank disables membership, retires binding and cools old IP after in-flight drain. Blank uses host IPv4 and bypasses IPv6. No bulk enrollment or timezone rewriting of existing accounts.
+
+New native Codex add/import defaults to membership enabled when proxy preference absent, respects explicit proxy/blank and disabled preference. New import default timezone America/New_York, controlled by `default_timezone` request: omitted defaults New York, empty disables default; preserve explicit source timezone and duplicate account prior preferences. UI checked default timezone control.
+
+HTTP, WS, OAuth, maintenance and telemetry follow account selection; proxy URL must never carry a fake HTTP proxy representing local IPv6. Pool disabled/unavailable is fail-closed for enrolled accounts. Use existing retry/cooldown behavior; pending binding allowed. Config stays disabled until verified persistent networking ready and tested. Do not enable existing disabled accounts.
+
+Persist the existing 128 IPv6 pool across container recreation and host reboot, scoped only to codex2api using ipvlan L2 under eth0; do not alter host IPv4, restart Docker or touch Sub2API routes. Deploy clean root main matching fetched remote commit/tree with immutable image, holding existing release lock and identity checks. Rehearsal/rollback via maintenance_release.py. Perform real credentialed supported-model inference; prior model_not_found is not success. Record one short release and task context.
