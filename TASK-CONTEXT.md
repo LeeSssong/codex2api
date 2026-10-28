@@ -124,3 +124,8 @@ User authorized implementation and tests but explicitly said **do not deploy yet
 - Local files: `proxy/wsrelay/responses_lite_mode.go`, `proxy/wsrelay/responses_lite_mode_test.go`, `proxy/wsrelay/executor.go`, `proxy/wsrelay/connection_dial.go`, `proxy/executor.go`; plan `docs/superpowers/plans/2026-10-28-websearch-ws-mode-isolation.md`.
 - Verification: baseline wsrelay/proxy passed; mode regression passed; focused race run (`go test -race -p 2 ./proxy/wsrelay -run '^TestResponsesLiteMode|^TestContinuation|^TestWebsocketContinuation|^TestIPv6Websocket' -count=3`) passed; `go build ./...`, frontend `npm ci && npm run build`, `git diff --check` passed; isolated `go test ./credentialops -count=1` passed. First full `go test ./...` had one unrelated timing failure in `credentialops/TestCredentialOperationsRuntimeMakesRelativeStatePrivateAndJournalAbsolute`; all other packages including `proxy/wsrelay` and `proxy` passed.
 - Status: candidate remains local and unpushed/unmerged/**NOT DEPLOYED**. Production container/settings/database were not touched.
+
+## 2026-10-28 web_search WS isolation — deployment authorized
+
+- User now explicitly authorizes production deployment, superseding earlier implement-only/no-deploy restriction. Owner: this chat; isolated branch codex/websearch-ws-mode-isolation; candidate e0ecb08c; base d967cda1.
+- Target netcup 159.195.12.230, Codex2API only. Preserve settings, credentials/runtime, database and Redis; use verified pushed main and common locked maintenance controller, exact live baseline and rollback artifacts. Release verification and deployment are in progress; earlier NOT DEPLOYED entries are historical implementation status, not a new deployment result.

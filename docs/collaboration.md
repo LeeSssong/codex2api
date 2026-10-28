@@ -78,3 +78,8 @@
 - Scope: wsrelay local transport identity/pool acquisition/dial identity and regression tests; correction to proxy/executor.go's mixed-mode comment. No handler/store/frontend/account/settings/schema/monitor change.
 - Plan: `docs/superpowers/plans/2026-10-28-websearch-ws-mode-isolation.md`.
 - No production access or deployment is part of implementation; source remains a local candidate until separately authorized.
+
+## 2026-10-28 web_search WS isolation — deployment authorized
+
+- User now explicitly authorizes production deployment, superseding earlier implement-only/no-deploy restriction. Owner: this chat; isolated branch codex/websearch-ws-mode-isolation; candidate e0ecb08c; base d967cda1.
+- Target netcup 159.195.12.230, Codex2API only. Preserve settings, credentials/runtime, database and Redis; use verified pushed main and common locked maintenance controller, exact live baseline and rollback artifacts. Release verification and deployment are in progress; earlier NOT DEPLOYED entries are historical implementation status, not a new deployment result.
