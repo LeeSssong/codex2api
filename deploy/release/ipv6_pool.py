@@ -61,9 +61,9 @@ def assigned_addresses(link):
     for addr in link.get('addr_info', []):
         if addr.get('family') != 'inet6' or addr.get('scope') != 'global':
             continue
-        if 'dadfailed' in addr.get('flags', []):
+        if addr.get('dadfailed') or 'dadfailed' in addr.get('flags', []):
             raise RuntimeError('IPv6 duplicate address detection failed')
-        if 'tentative' in addr.get('flags', []):
+        if addr.get('tentative') or 'tentative' in addr.get('flags', []):
             raise RuntimeError('IPv6 duplicate address detection pending')
         if addr.get('prefixlen') != 64:
             raise ValueError('dedicated addresses must retain uplink /64')

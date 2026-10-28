@@ -43,6 +43,12 @@ class PoolTests(unittest.TestCase):
         self.assertEqual(pool.assigned_addresses(addr), {cfg['addresses'][0]})
         addr['addr_info'][0]['flags']=['dadfailed']
         with self.assertRaises(RuntimeError):pool.assigned_addresses(addr)
+        addr['addr_info'][0]['flags']=[]
+        addr['addr_info'][0]['tentative']=True
+        with self.assertRaises(RuntimeError):pool.assigned_addresses(addr)
+        addr['addr_info'][0]['tentative']=False
+        addr['addr_info'][0]['dadfailed']=True
+        with self.assertRaises(RuntimeError):pool.assigned_addresses(addr)
 
     def test_route_scope_does_not_change_ipv4_or_unrelated_ipv6_routes(self):
         cfg=pool.validate_config(self.config())
