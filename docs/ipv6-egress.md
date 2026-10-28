@@ -53,3 +53,38 @@ new instance, switch ingress, drain and stop the old instance, then enable a
 verified address pool. Disable the feature to restore the previous proxy routing
 without reverting the image. A version rollback must also disable it before
 traffic is handed back to a version that does not implement dedicated IPv6.
+
+## Account membership and persistent container attachment
+
+Account selection is independent of `proxy_url`: `ipv6_egress_enabled` opts a
+native Codex account into this manager. The read-only `ipv6_egress_ip` shows the
+current binding; empty means not yet assigned. A real proxy or explicit blank
+opts out. New native imports default to membership and `America/New_York` when
+not explicitly specified; the import `default_timezone` control can disable that
+fallback with an empty value. Existing accounts are not bulk-enrolled.
+
+`deploy/release/ipv6_pool.py` and `codex2api-ipv6-pool.service` restore a dedicated
+ipvlan L2 interface inside only the running Compose `codex2api` namespace. Install
+the root-owned helper at `/opt/codex2api/ipv6_pool.py` and unit under systemd, with
+root-owned `/opt/codex2api/ipv6-pool.json`:
+
+```json
+{"prefix":"2a0a:4cc0:101:799:c2a:28::/112","count":128,"parent":"eth0","interface":"c2a-v6","gateway":"fe80::1"}
+```
+
+The config reserves offsets 1..128 from the dedicated /112 (addresses retain the
+uplink's /64); it excludes the host primary. The watcher restores attachment on
+app recreation/restart or host reboot and serializes against explicit `ensure`
+with its own namespace lock. It does not restart Docker, modify IPv4 routes,
+change host routes, or attach interfaces to other containers. The existing
+maintenance controller calls `ensure` and checks application discovery before
+accepting a recreated app as ready, including on rollback. Unexpected interface,
+parent, addresses or route state fails closed rather than overwriting it.
+
+Before activating the global pool switch, verify real account inference and
+membership routing. On rollback to a version without account membership,
+**disable the pool first**, since older versions apply its global switch more
+broadly. Preserve existing account credentials and current writes. To remove the
+network helper, first disable IPv6 egress, stop/disable only its systemd unit,
+then remove `c2a-v6` from the verified app namespace; do not remove the host uplink
+or unrelated Docker networks.

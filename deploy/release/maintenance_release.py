@@ -570,11 +570,23 @@ class MaintenanceRelease:
             time.sleep(min(2, max(0, deadline - time.monotonic())))
         raise RuntimeError('active requests did not drain; no app was stopped')
 
+    def ensure_ipv6_pool(self):
+        config = pathlib.Path('/opt/codex2api/ipv6-pool.json')
+        if not config.exists():
+            return
+        helper = pathlib.Path(__file__).with_name('ipv6_pool.py')
+        self.run(['/usr/bin/python3', str(helper), 'ensure', '--config', str(config)], timeout=45)
+        expected = json.loads(config.read_text()).get('count', 128)
+        pool = self.json_request('/api/admin/ipv6-egress')
+        if pool.get('discovery_error') or len(pool.get('local_ips', [])) != expected:
+            raise RuntimeError('application IPv6 pool discovery does not match persistent configuration')
+
     def ready(self):
         deadline = time.monotonic() + 120
         while time.monotonic() < deadline:
             try:
                 if self.json_request('/health').get('status') == 'ok':
+                    self.ensure_ipv6_pool()
                     return
             except Exception:
                 pass

@@ -1,0 +1,15 @@
+[Unit]
+Description=Codex2API dedicated IPv6 pool namespace reconciliation
+After=docker.service network-online.target
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/codex2api/ipv6_pool.py watch --config /opt/codex2api/ipv6-pool.json
+Restart=on-failure
+RestartSec=2
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
