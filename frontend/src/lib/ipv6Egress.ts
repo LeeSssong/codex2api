@@ -8,6 +8,7 @@ export interface IPv6EgressConfig {
 }
 export interface IPv6EgressData {
   config: IPv6EgressConfig
+  discovery_error?: boolean
   local_ips: string[]
   bindings: { account_id: number; ip: string; changed_at: number; reason: string; rotations: number }[]
   cooldowns: { ip: string; until: number }[]

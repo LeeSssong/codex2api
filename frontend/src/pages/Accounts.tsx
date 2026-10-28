@@ -10,6 +10,7 @@ import { api, getAdminKey, resetAdminAuthState } from "../api";
 import type { ProxyRow } from "../api";
 import { ProxyField, type LocalIPv6Field } from "../components/ProxyField";
 import { accountEgressPatch, importEgressFields, importTimezoneFields, selectAccountEgress } from "../lib/accountIPv6";
+import { canManuallySelectIPv6 } from "../lib/accountIPv6Manual";
 import ImportTimezoneControl from "../components/ImportTimezoneControl";
 import AccountProxyBadge from "../components/AccountProxyBadge";
 import AccountStateModels from "../components/AccountStateModels";
@@ -3023,6 +3024,19 @@ export default function Accounts() {
     // →静默重载循环)必须整体停摆,否则在 Grok 页后台空转并连带整树重渲染。
     enabled: providerView === "codex",
   });
+  // Patch binding snapshots only; keep scheduler, timezone and other unsaved drafts intact.
+  const updateIPv6Binding = (id: number, ip: string) => {
+    const patch = (account: AccountRow | null) => account?.id === id ? { ...account, ipv6_egress_ip: ip } : account;
+    setEditingAccount(patch);
+    setQuickProxyAccount(patch);
+    setDetailAccountData(patch);
+    setData(current => ({ ...current, accounts: current.accounts.map(account => account.id === id ? { ...account, ipv6_egress_ip: ip } : account) }));
+  };
+  const assignIPv6Binding = async (id: number, ip: string, expectedIP: string) => {
+    const result = await api.setAccountIPv6Egress(id, { ip, expected_ip: expectedIP });
+    updateIPv6Binding(id, result.ip);
+    return result.ip;
+  };
   const disabledSorts = useMemo(
     () => resolveDisabledAccountSorts(data.disabledSorts, data.summary?.total),
     [data.disabledSorts, data.summary?.total],
@@ -10604,6 +10618,11 @@ export default function Accounts() {
                             onChange: setEditProxyUrl,
                             localIPv6: isCodexOfficialAccount(editingAccount) ? {
                               enabled: editIPv6Enabled, onChange: setEditIPv6Enabled,
+                              manual: canManuallySelectIPv6(editingAccount, editIPv6Enabled, editProxyUrl) ? {
+                                accountID: editingAccount.id,
+                                onAssign: (ip, expectedIP) => assignIPv6Binding(editingAccount.id, ip, expectedIP),
+                                onRefresh: ip => updateIPv6Binding(editingAccount.id, ip),
+                              } : undefined,
                               ip: editingAccount.ipv6_egress_enabled ? editingAccount.ipv6_egress_ip : undefined,
                               onTest: editingAccount.ipv6_egress_enabled && editIPv6Enabled &&
                                 Object.keys(accountEgressPatch(editingAccount, editIPv6Enabled, editProxyUrl)).length === 0
@@ -10844,6 +10863,8 @@ export default function Accounts() {
             }
             allowLocalIPv6={Boolean(quickProxyAccount && isCodexOfficialAccount(quickProxyAccount))}
             onTestLocalIPv6={() => { if (quickProxyAccount) openTestingAccount(quickProxyAccount); }}
+            onAssignIPv6={quickProxyAccount ? (ip, expectedIP) => assignIPv6Binding(quickProxyAccount.id, ip, expectedIP) : undefined}
+            onRefreshIPv6={quickProxyAccount ? ip => updateIPv6Binding(quickProxyAccount.id, ip) : undefined}
             proxies={proxyPool}
             ctx={proxyBindingCtx}
             onClose={() => setQuickProxyAccount(null)}

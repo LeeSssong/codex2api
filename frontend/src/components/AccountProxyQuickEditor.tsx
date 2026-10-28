@@ -14,6 +14,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ProxyField } from "./ProxyField";
 import { selectAccountEgress } from "../lib/accountIPv6";
+import { canManuallySelectIPv6 } from "../lib/accountIPv6Manual";
 
 const PROXY_SCHEMES = ["http:", "https:", "socks5:", "socks5h:"];
 
@@ -44,6 +45,8 @@ interface AccountProxyQuickEditorProps {
   accountLabel: string;
   allowLocalIPv6?: boolean;
   onTestLocalIPv6?: () => void;
+  onAssignIPv6?: (ip: string, expectedIP: string) => Promise<string>;
+  onRefreshIPv6?: (ip: string) => void;
   proxies: ProxyRow[];
   ctx: ProxyBindingContext;
   onClose: () => void;
@@ -57,6 +60,8 @@ export default function AccountProxyQuickEditor({
   accountLabel,
   allowLocalIPv6 = false,
   onTestLocalIPv6,
+  onAssignIPv6,
+  onRefreshIPv6,
   proxies,
   ctx,
   onClose,
@@ -226,6 +231,9 @@ export default function AccountProxyQuickEditor({
               onChange: setIPv6Enabled,
               ip: account?.ipv6_egress_enabled
                 ? account.ipv6_egress_ip
+                : undefined,
+              manual: account && onAssignIPv6 && onRefreshIPv6 && canManuallySelectIPv6(account, ipv6Enabled, value)
+                ? { accountID: account.id, onAssign: onAssignIPv6, onRefresh: onRefreshIPv6 }
                 : undefined,
               onTest:
                 !dirty && account?.ipv6_egress_enabled

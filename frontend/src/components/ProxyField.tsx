@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/input";
 import { useToast } from "../hooks/useToast";
 import { getErrorMessage } from "../utils/error";
 import { cn } from "@/lib/utils";
+import AccountIPv6Picker, { type IPv6ManualActions } from "./AccountIPv6Picker";
 
 // ProxyUrlInput 带内嵌清空按钮的代理 URL 输入框。各渠道账号弹窗的代理字段共用,
 // 手填与从代理池选择写的是同一个 value,X 一键清空两者。
@@ -62,6 +63,7 @@ export interface LocalIPv6Field {
   ip?: string;
   onChange: (enabled: boolean) => void;
   onTest?: () => void;
+  manual?: IPv6ManualActions;
 }
 
 export function ProxyField({
@@ -246,6 +248,7 @@ export function ProxyField({
           <span className="opacity-60">▾</span>
         </div>
       )}
+      {localIPv6?.enabled && localIPv6.manual ? <AccountIPv6Picker key={localIPv6.manual.accountID} {...localIPv6.manual} disabled={disabled} /> : null}
       {localIPv6?.enabled ? (
         <p className="text-[11px] leading-relaxed text-muted-foreground">
           {t(

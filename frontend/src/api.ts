@@ -1620,6 +1620,7 @@ export const api = {
   getQualityTests: (page = 1, filter: QualityTestJobsFilter = {}, signal?: AbortSignal) =>
     request<QualityTestJobsResponse>(`/quality-tests?${qualityTestFilterQuery(page, filter)}`, { signal }),
   getIPv6Egress: (signal?: AbortSignal) => request<IPv6EgressData>('/ipv6-egress', { signal }),
+  setAccountIPv6Egress: (id: number, data: { ip: string; expected_ip: string }) => request<{ ip: string }>(`/accounts/${id}/ipv6-egress`, { method: 'POST', body: JSON.stringify(data) }),
   setIPv6Egress: (config: IPv6EgressConfig) => request<IPv6EgressData>('/ipv6-egress', { method: 'PUT', body: JSON.stringify(config) }),
   getModelQuality: (page: number, search: string, signal?: AbortSignal) =>
     request<ModelQualityData>(`/model-quality?page=${page}&search=${encodeURIComponent(search)}`, { signal }),
