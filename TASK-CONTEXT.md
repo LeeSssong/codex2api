@@ -109,3 +109,18 @@ Owned worktree `/Users/gongtengxinwen/.codex/worktrees/intelligence-quota-cooldo
 branch `codex/intelligence-quota-cooldown`. Shared original directory remains
 preserved; all 52 recorded file hashes match. Existing snapshots/worktrees are not
 deleted. Do not redeploy historical candidates or restore pre-release databases.
+
+
+---
+
+# Current task: 2026-10-28 web_search / Responses Lite WebSocket isolation — local only
+
+User authorized implementation and tests but explicitly said **do not deploy yet**.
+
+- Owner/worktree: current chat; `/Users/gongtengxinwen/.codex/worktrees/websearch-ws-mode-isolation/codex2api`
+- Branch/base: `codex/websearch-ws-mode-isolation` from `d967cda1ae07bc948cb1dd0fcd791eb3e69d71c1`; current origin/main stayed at that SHA.
+- Diagnosis: account 85 is OAuth Plus/active; ordinary HTTP and fresh ordinary WS web_search succeeded, while Lite→ordinary reuse on one upstream WS reproduced the exact `rustponsesapi` 400.
+- Implementation: effective final WS Lite marker is carried only in local context; transport pool keys and immutable dial/continuation identities distinguish Lite from standard. Stateless reusable pools, explicit sessions, fallback lanes, busy overflow, send-redial and previous_response_id matching are covered. No upstream headers, prompt_cache_key, thread/session IDs or chat history are changed.
+- Local files: `proxy/wsrelay/responses_lite_mode.go`, `proxy/wsrelay/responses_lite_mode_test.go`, `proxy/wsrelay/executor.go`, `proxy/wsrelay/connection_dial.go`, `proxy/executor.go`; plan `docs/superpowers/plans/2026-10-28-websearch-ws-mode-isolation.md`.
+- Verification: baseline wsrelay/proxy passed; mode regression passed; focused race run (`go test -race -p 2 ./proxy/wsrelay -run '^TestResponsesLiteMode|^TestContinuation|^TestWebsocketContinuation|^TestIPv6Websocket' -count=3`) passed; `go build ./...`, frontend `npm ci && npm run build`, `git diff --check` passed; isolated `go test ./credentialops -count=1` passed. First full `go test ./...` had one unrelated timing failure in `credentialops/TestCredentialOperationsRuntimeMakesRelativeStatePrivateAndJournalAbsolute`; all other packages including `proxy/wsrelay` and `proxy` passed.
+- Status: candidate remains local and unpushed/unmerged/**NOT DEPLOYED**. Production container/settings/database were not touched.

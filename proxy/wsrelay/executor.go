@@ -128,6 +128,8 @@ func (e *Executor) executeRequestViaWebsocket(
 
 	// 准备请求体
 	wsBody := e.prepareWebsocketBody(requestBody, sessionID)
+	ctx = withWebsocketResponsesLiteMode(ctx, wsBody)
+	responsesLite := websocketResponsesLiteFromContext(ctx)
 
 	headerSessionID := resolveHandshakeSessionID(sessionID, poolRouteKey, wsBody)
 
@@ -203,7 +205,7 @@ func (e *Executor) executeRequestViaWebsocket(
 	acquireStart := time.Now()
 	if prevRespID := strings.TrimSpace(gjson.GetBytes(wsBody, "previous_response_id").String()); prevRespID != "" {
 		wc, pr, poolSessionID, err2 = e.acquireContinuation(ctx, websocketContinuation{
-			responseID: prevRespID, accountID: account.ID(), apiKey: apiKey, identity: websocketClientIdentity(headers),
+			responseID: prevRespID, accountID: account.ID(), apiKey: apiKey, identity: websocketTransportIdentity(headers, responsesLite),
 			route: proxyOverride, model: gjson.GetBytes(wsBody, "model").String(), url: wsURL, proxyURL: requestProxyKey(ctx, account, proxyOverride),
 		})
 		if err2 != nil {
@@ -218,16 +220,19 @@ func (e *Executor) executeRequestViaWebsocket(
 	// dial time. Isolate reusable slots by the same model string used for template
 	// lookup so a later model cannot reuse a connection whose turn-state was frozen
 	// for a different template identity. prompt_cache_key / session header isolation
-	// comments above are unchanged.
+	// comments above are unchanged. Lite and standard frames must additionally use
+	// separate transport identities: the upstream Lite route sticks to its socket.
 	baseKey = reusablePoolBaseKeyWithModel(baseKey, gjson.GetBytes(wsBody, "model").String())
-	baseKey = websocketClientPoolKey(baseKey, headers)
+	baseKey = websocketTransportPoolKey(baseKey, headers, responsesLite)
 	if wc == nil {
-		poolSessionID = websocketClientPoolKey(poolSessionID, headers)
+		poolSessionID = websocketTransportPoolKey(poolSessionID, headers, responsesLite)
 		// A pooled handshake must belong to the same mapped conversation/thread.
 		poolSessionID = proxy.ScopeCodexFingerprintTransportKey(poolSessionID, account, ginHeaders)
 		baseKey = proxy.ScopeCodexFingerprintTransportKey(baseKey, account, ginHeaders)
 		if proxy.IsStatelessWebsocketSessionID(sessionID) && baseKey != "" && !statelessOneShotEnabled() {
-			wc, pr, poolSessionID, err2 = e.manager.AcquireReusableConnection(ctx, account, wsURL, baseKey, sessionID, statelessConnectionSlots(), headers, proxyOverride)
+			// Full pools fall back to a one-shot lane; it must carry the same
+			// client/protocol scope instead of the raw ingress session ID.
+			wc, pr, poolSessionID, err2 = e.manager.AcquireReusableConnection(ctx, account, wsURL, baseKey, poolSessionID, statelessConnectionSlots(), headers, proxyOverride)
 		} else {
 			wc, pr, err2 = e.manager.AcquireConnection(ctx, account, wsURL, poolSessionID, headers, proxyOverride)
 		}

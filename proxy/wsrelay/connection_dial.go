@@ -19,11 +19,13 @@ type connectionDialRequest struct {
 	sessionKey    string
 	headers       http.Header
 	proxyOverride string
+	responsesLite bool
 	capacity      *connectionCapacitySlot
 	fixedSnapshot *fixedegress.Route
 }
 
 func (m *Manager) createConnection(ctx context.Context, input connectionDialRequest) (wc *WsConnection, err error) {
+	input.responsesLite = websocketResponsesLiteFromContext(ctx)
 	defer func() {
 		if err != nil {
 			input.capacity.release()
@@ -164,7 +166,7 @@ func (m *Manager) wrapDialedConnection(input dialedConnection) *WsConnection {
 	}
 	wc.upstreamUserAgent = strings.TrimSpace(input.request.headers.Get("User-Agent"))
 	wc.upstreamUserAgentKnown = true
-	wc.upstreamClientIdentity = websocketClientIdentity(input.request.headers)
+	wc.upstreamClientIdentity = websocketTransportIdentity(input.request.headers, input.request.responsesLite)
 	wc.upstreamVersion = strings.TrimSpace(input.request.headers.Get("Version"))
 	wc.httpResp = input.response
 	wc.onDisconnected = m.getOnDisconnected()

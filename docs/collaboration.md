@@ -69,3 +69,12 @@
 - Both task branches merged/pushed; production source `884392a122b3abcaab74b1cd20cd05111aab06a3`, tree `6f8aafa7f9fab4a1664de856502d2882f8e60a0d`. Actual binary `bba286e114ece31d2a4f5d4517018c06572456ca1e31508119f3996cd8a7e4a9`; digest `sha256:38e6e7997290eeb5642fe712751a54091e685a7e4a1ae800ee04785f764bfcd5`. Source ancestry and latest main checked before deployment; subsequent docs need no release.
 - Recorded downtime 12.907s; restored DB rehearsal/stopped backup, internal/public smoke and independent final verification passed. One writer, credential worker online, maintenance removed, protected services unchanged. Settings revision13/enabled=false/interval600, recovery3600, history[104, 104] retained.
 - Release/recovery: `docs/releases/2026-10-28-relogin-recheck.md`. New writes accepted; never restore older dump or rerun stale release. Interval snapshot preserved; unrelated worktrees untouched. Earlier local-only/pending statuses are historical.
+
+## 2026-10-28 web_search / Responses Lite WS isolation — local only
+
+- Owner: current chat; approved implementation only, **no deployment**.
+- Base: `d967cda1ae07bc948cb1dd0fcd791eb3e69d71c1`; branch `codex/websearch-ws-mode-isolation`.
+- Worktree: `/Users/gongtengxinwen/.codex/worktrees/websearch-ws-mode-isolation/codex2api`.
+- Scope: wsrelay local transport identity/pool acquisition/dial identity and regression tests; correction to proxy/executor.go's mixed-mode comment. No handler/store/frontend/account/settings/schema/monitor change.
+- Plan: `docs/superpowers/plans/2026-10-28-websearch-ws-mode-isolation.md`.
+- No production access or deployment is part of implementation; source remains a local candidate until separately authorized.

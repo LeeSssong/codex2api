@@ -439,8 +439,9 @@ func codexResponsesLiteRequested(requestBody []byte, headers http.Header) bool {
 
 // prepareCodexResponsesLiteTransport keeps the request-scoped Responses Lite
 // signal intact when codex2api changes the upstream transport. HTTP carries the
-// signal in a header; WebSocket carries it on each response.create frame so a
-// pooled connection can safely serve both Lite and non-Lite requests.
+// signal in a header; WebSocket carries it on each response.create frame.
+// wsrelay must isolate Lite/non-Lite connections: removing a frame marker does
+// not reliably switch an existing upstream socket away from the Lite backend.
 func prepareCodexResponsesLiteTransport(requestBody []byte, headers http.Header, useWebsocket, enabled bool) ([]byte, http.Header) {
 	forwardHeaders := headers
 	headersCloned := false
