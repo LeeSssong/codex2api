@@ -301,6 +301,9 @@ func TestImportSettingsProxyForToken(t *testing.T) {
 	}{
 		{"file wins over form", importSettings{defaultProxyURL: "http://from-form:8080", importProxies: true}, fileToken, "http://from-file:8080"},
 		{"form fills the gap", importSettings{defaultProxyURL: "http://from-form:8080", importProxies: true}, bareToken, "http://from-form:8080"},
+		{"source explicit blank blocks form", importSettings{defaultProxyURL: "http://from-form:8080", importProxies: true}, importToken{proxySpecified: true}, ""},
+		{"source explicit whitespace blocks form", importSettings{defaultProxyURL: "http://from-form:8080", importProxies: true}, importToken{proxySpecified: true, proxyURL: "  "}, ""},
+		{"switch off ignores source blank", importSettings{defaultProxyURL: "http://from-form:8080"}, importToken{proxySpecified: true}, "http://from-form:8080"},
 		{"switch off ignores file", importSettings{defaultProxyURL: "http://from-form:8080"}, fileToken, "http://from-form:8080"},
 		{"nothing configured", importSettings{}, fileToken, ""},
 		{"form value is trimmed", importSettings{defaultProxyURL: "  http://from-form:8080  "}, bareToken, "http://from-form:8080"},

@@ -164,9 +164,6 @@ func (h *Handler) applyDuplicateImportPreferences(ctx context.Context, id int64,
 		updates[auth.IPv6EgressCredentialKey] = *seed.ipv6Enabled
 		proxy = database.OptionalString{Set: true, Value: settings.proxyForToken(t)}
 	}
-	if t.timezone != nil {
-		updates[auth.AccountTimezoneCredentialKey] = *t.timezone
-	}
 	if len(updates) == 0 {
 		return nil
 	}
@@ -179,9 +176,6 @@ func (h *Handler) applyDuplicateImportPreferences(ctx context.Context, id int64,
 		}
 		if seed.routeOverride {
 			h.store.ApplyAccountIPv6Selection(id, *seed.ipv6Enabled)
-		}
-		if t.timezone != nil {
-			h.store.ApplyAccountTimezone(id, *t.timezone)
 		}
 	}
 	return h.retireIPv6Selection(ctx, id, updates)

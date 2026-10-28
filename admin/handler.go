@@ -5033,7 +5033,7 @@ type importSettings struct {
 // proxyForToken 返回该条目最终生效的代理：文件内代理优先，缺失时回落表单值。
 func (s importSettings) proxyForToken(t importToken) string {
 	if s.importProxies {
-		if fromFile := strings.TrimSpace(t.proxyURL); fromFile != "" {
+		if fromFile := strings.TrimSpace(t.proxyURL); t.proxySpecified || fromFile != "" {
 			return fromFile
 		}
 	}

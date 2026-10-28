@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"github.com/codex2api/auth"
 	"github.com/codex2api/database"
 	"github.com/codex2api/egressipv6"
@@ -411,5 +412,71 @@ func TestAccountIPv6OAuthReauthOmittedPreservesLegacyPreferences(t *testing.T) {
 	row, err := db.GetAccountByID(ctx, id)
 	if err != nil || row.Enabled || row.GetCredentialOptionalBool(auth.IPv6EgressCredentialKey) != nil || row.ProxyURL != "" || row.GetCredential("timezone") != "Asia/Tokyo" {
 		t.Fatalf("omitted preferences changed: %+v %v", row, err)
+	}
+}
+
+func TestAccountIPv6DuplicateImportSourceTimezoneOnlyAppliesOnCreation(t *testing.T) {
+	for _, changedCredentials := range []bool{false, true} {
+		for _, sourceTimezone := range []string{"America/New_York", ""} {
+			t.Run(fmt.Sprintf("changed_credentials=%v/source_timezone=%q", changedCredentials, sourceTimezone), func(t *testing.T) {
+				h, store, db := newImportEndToEndHandler(t)
+				store.SetLazyMode(true)
+				token := importToken{
+					refreshToken: "timezone-original-rt",
+					accessToken:  "timezone-original-at",
+					idToken:      makeOAuthTestIDToken("timezone@example.test", "timezone-workspace", "team"),
+					timezone:     stringPtrIPv6("Asia/Tokyo"),
+				}
+				runImportAccountsCommon(t, h, []importToken{token}, importSettings{})
+				row := accountRowByRefreshToken(t, db, token.refreshToken)
+				if got := row.GetCredential("timezone"); got != "Asia/Tokyo" {
+					t.Fatalf("new account lost source timezone: %q", got)
+				}
+				// A user's explicit scheduler choice remains authoritative on reimport.
+				response := patchAccountScheduler(t, h, row.ID, `{"timezone":"Europe/Paris"}`)
+				if response.Code != http.StatusOK {
+					t.Fatalf("explicit timezone update: %d %s", response.Code, response.Body.String())
+				}
+				if _, err := db.BatchUpdateAccountMetadata(context.Background(), []int64{row.ID}, database.BatchAccountMetadataUpdate{Enabled: database.OptionalBool{Set: true, Value: false}}); err != nil {
+					t.Fatal(err)
+				}
+				if changedCredentials {
+					token.refreshToken = "timezone-rotated-rt"
+					token.accessToken = "timezone-rotated-at"
+				}
+				token.timezone = &sourceTimezone
+				runImportAccountsCommon(t, h, []importToken{token}, importSettings{defaultTimezone: stringPtrIPv6("America/New_York")})
+				row = accountRowByRefreshToken(t, db, token.refreshToken)
+				if row.GetCredential("timezone") != "Europe/Paris" || row.Enabled {
+					t.Fatalf("duplicate import changed existing timezone or disabled state: timezone=%q enabled=%v", row.GetCredential("timezone"), row.Enabled)
+				}
+				account := store.FindByID(row.ID)
+				if account == nil {
+					t.Fatal("missing runtime account")
+				}
+				account.Mu().RLock()
+				runtimeTimezone := account.Timezone
+				account.Mu().RUnlock()
+				if runtimeTimezone != "Europe/Paris" {
+					t.Fatalf("runtime timezone changed: %q", runtimeTimezone)
+				}
+			})
+		}
+	}
+}
+
+func TestAccountIPv6ImportExplicitSourceBlankProxyBeatsFormDefault(t *testing.T) {
+	h, store, db := newImportEndToEndHandler(t)
+	store.SetLazyMode(true)
+	token := importToken{refreshToken: "source-blank-proxy-rt", accessToken: "source-blank-proxy-at", proxySpecified: true, ipv6Enabled: boolPtrIPv6(false)}
+	settings := importSettings{importProxies: true, proxySpecified: true, defaultProxyURL: "http://form-proxy.invalid:8080"}
+	runImportAccountsCommon(t, h, []importToken{token}, settings)
+	row := accountRowByRefreshToken(t, db, token.refreshToken)
+	if row.ProxyURL != "" || row.GetCredentialBool(auth.IPv6EgressCredentialKey) {
+		t.Fatalf("source opt-out inherited form proxy: proxy=%q ipv6=%v", row.ProxyURL, row.GetCredentialBool(auth.IPv6EgressCredentialKey))
+	}
+	account := store.FindByID(row.ID)
+	if account == nil || !account.HostIPv4Egress() || store.ResolveProxyForAccount(account) != "" {
+		t.Fatal("source blank opt-out did not use host IPv4")
 	}
 }

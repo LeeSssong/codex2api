@@ -296,9 +296,6 @@ func tokenCredentialMap(seed tokenCredentialSeed) map[string]interface{} {
 	if seed.ipv6Enabled != nil {
 		credentials[auth.IPv6EgressCredentialKey] = *seed.ipv6Enabled
 	}
-	if seed.timezone != nil {
-		credentials[auth.AccountTimezoneCredentialKey] = *seed.timezone
-	}
 	return credentials
 }
 
@@ -319,7 +316,11 @@ func (h *Handler) newCodexAccountCredentials(seed tokenCredentialSeed) map[strin
 	if seed.newIPv6Enabled != nil {
 		credentials[auth.IPv6EgressCredentialKey] = *seed.newIPv6Enabled
 	}
-	if seed.timezone == nil && seed.newTimezone != nil {
+	// Source timezone and import defaults apply only to a new account. Updating
+	// credentials on a duplicate must preserve its existing timezone.
+	if seed.timezone != nil {
+		credentials[auth.AccountTimezoneCredentialKey] = *seed.timezone
+	} else if seed.newTimezone != nil {
 		credentials[auth.AccountTimezoneCredentialKey] = *seed.newTimezone
 	}
 	if mode := h.defaultCodexFingerprintModeForNewAccount(); mode != auth.CodexFingerprintModeOff {
