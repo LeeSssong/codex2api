@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/codex2api/auth"
 	"github.com/codex2api/database"
@@ -26,7 +27,7 @@ func TestIPv6WebsocketRetriesOnlyBeforeOutput(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer db.Close()
-			id, err := db.InsertAccountWithCredentials(ctx, "ipv6-ws-fixture", map[string]interface{}{"access_token": "fixture"}, "")
+			id, err := db.InsertAccountWithCredentials(ctx, "ipv6-ws-fixture", map[string]interface{}{"access_token": "fixture", "ipv6_egress_enabled": true}, "")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -74,7 +75,7 @@ func TestIPv6WebsocketRetriesOnlyBeforeOutput(t *testing.T) {
 			defer server.Close()
 			manager := NewManager()
 			defer manager.Stop()
-			account := &auth.Account{DBID: id}
+			account := &auth.Account{DBID: id, IPv6EgressEnabled: true, IPv6EgressConfigured: true}
 			wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
 			attempt := &ipv6WSAttempt{ctx: ctx, manager: routes, accountID: id, route: route}
 			seenIPs := []string{}
@@ -147,5 +148,73 @@ func TestStateDirectRouteBypassesOptionalIPv6Egress(t *testing.T) {
 	route := proxy.ResolveCodexRequestEgress(ctx, &auth.Account{DBID: 778812}, "wss://chatgpt.com/backend-api/codex/responses", "direct://ipv6-state", true)
 	if route.Err != nil || route.DialProxyURL != "" || calls != 0 {
 		t.Fatalf("State direct egress changed: %+v calls=%d", route, calls)
+	}
+}
+
+func TestIPv6WebsocketLeaseRetiresOnlyWhenConnectionCloses(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.New("sqlite", filepath.Join(t.TempDir(), "lease.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	id, err := db.InsertAccountWithCredentials(ctx, "ws-lease", map[string]interface{}{"access_token": "fixture", "ipv6_egress_enabled": true}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, _ := db.IPv6EgressConfig(ctx)
+	cfg.Enabled = true
+	if err = db.SaveIPv6EgressConfig(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	routes := egressipv6.New(db)
+	routes.LocalIPs = func() ([]string, error) { return []string{"2604::1"}, nil }
+	previous := egressipv6.Current()
+	egressipv6.Install(routes)
+	defer egressipv6.Install(previous)
+	route, release, err := routes.AcquireAccount(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release()
+	manager := NewManager()
+	defer manager.Stop()
+	account := &auth.Account{DBID: id, IPv6EgressEnabled: true, IPv6EgressConfigured: true}
+	input := connectionDialRequest{account: account, url: "ws://127.0.0.1:1", proxyOverride: "local-ipv6://" + route.Binding.IP, headers: http.Header{}}
+	// The real TCP6 source bind cannot dial this IPv4 fixture. Failure must still
+	// clean up its durable lease and leave no reservation behind.
+	if _, err = manager.createConnection(ctx, input); err == nil {
+		t.Fatal("unexpected public source bind success")
+	}
+	if err = db.UpdateCredentials(ctx, id, map[string]interface{}{"ipv6_egress_enabled": false}); err != nil {
+		t.Fatal(err)
+	}
+	if err = routes.RetireAccount(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	bindings, _, err := db.IPv6EgressStatus(ctx, time.Now().Unix())
+	if err != nil || len(bindings) != 0 {
+		t.Fatalf("failed handshake leaked lease: %+v %v", bindings, err)
+	}
+	// Closing a live connection invokes its lease release once.
+	db.UpdateCredentials(ctx, id, map[string]interface{}{"ipv6_egress_enabled": true})
+	routes.LocalIPs = func() ([]string, error) { return []string{"2604::2"}, nil }
+	_, release, err = routes.AcquireAccount(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wc := NewWsConnection(nil, nil, "")
+	wc.ipv6Release = release
+	db.UpdateCredentials(ctx, id, map[string]interface{}{"ipv6_egress_enabled": false})
+	routes.RetireAccount(ctx, id)
+	bindings, _, _ = db.IPv6EgressStatus(ctx, time.Now().Unix())
+	if len(bindings) != 1 {
+		t.Fatal("retired before connection close")
+	}
+	wc.Close()
+	wc.Close()
+	bindings, _, _ = db.IPv6EgressStatus(ctx, time.Now().Unix())
+	if len(bindings) != 0 {
+		t.Fatal("connection close failed to release lease")
 	}
 }

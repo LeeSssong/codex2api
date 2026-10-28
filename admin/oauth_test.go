@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -392,7 +393,12 @@ func insertOAuthEditTestAccount(t *testing.T, db *database.DB, name string, refr
 }
 
 func newOAuthEditRequest(sessionID, code, state, proxyURL string) *http.Request {
-	body := fmt.Sprintf(`{"session_id":%q,"code":%q,"state":%q,"proxy_url":%q}`, sessionID, code, state, proxyURL)
+	payload := map[string]string{"session_id": sessionID, "code": code, "state": state}
+	if proxyURL != "" {
+		payload["proxy_url"] = proxyURL
+	}
+	encoded, _ := json.Marshal(payload)
+	body := string(encoded)
 	req := httptest.NewRequest(http.MethodPost, "/api/admin/accounts/1/oauth/exchange-code", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	return req
@@ -662,6 +668,18 @@ func TestUpdateOAuthAccountCodeUpdatesExistingAccountInPlace(t *testing.T) {
 	}
 
 	newOAuthExchangeTestServer(t)
+
+	// The explicit account proxy now carries the exchange itself. Stub that
+	// client's transport instead of using Resin to bypass the selected proxy.
+	exchangeClient := auth.BuildHTTPClient("http://new-proxy.example")
+	oldTransport := exchangeClient.Transport
+	exchangeClient.Transport = accountIPv6RoundTrip(func(req *http.Request) (*http.Response, error) {
+		if req.URL.String() != oauthTokenURL || req.Header.Get("X-Resin-Account") != "" {
+			t.Errorf("exchange ignored selected account proxy: %s", req.URL)
+		}
+		return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(`{"access_token":"access-from-exchange","refresh_token":"refresh-from-exchange","id_token":"id-from-exchange","expires_in":3600}`))}, nil
+	})
+	t.Cleanup(func() { exchangeClient.Transport = oldTransport })
 
 	id := insertOAuthEditTestAccount(t, db, "oauth-existing", "old-refresh", "http://old-proxy.example")
 	if err := store.LoadAccountByID(context.Background(), id); err != nil {

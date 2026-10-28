@@ -445,10 +445,7 @@ func (db *DB) CommitCredentialOpsLogin(ctx context.Context, id int64, owner stri
 			if len(creationDefaults) > 0 {
 				insertCredentials = mergeCredentialMaps(creationDefaults[0], credentials)
 			}
-			encoded, e := json.Marshal(encryptSensitiveCredentials(insertCredentials))
-			if e != nil {
-				return e
-			}
+
 			name := strings.TrimSpace(cfg.Name)
 			if name == "" {
 				name = email
@@ -460,6 +457,16 @@ func (db *DB) CommitCredentialOpsLogin(ctx context.Context, id int64, owner stri
 				if err != nil {
 					return err
 				}
+			}
+			// Only the insertion path gets native import defaults. Existing-account
+			// login/recovery above retains its route, timezone and enabled flag.
+			insertCredentials = mergeCredentialMaps(map[string]any{"ipv6_egress_enabled": proxyURL == "", "timezone": "America/New_York"}, insertCredentials)
+			if proxyURL != "" {
+				insertCredentials["ipv6_egress_enabled"] = false
+			}
+			encoded, e := json.Marshal(encryptSensitiveCredentials(insertCredentials))
+			if e != nil {
+				return e
 			}
 			if err = tx.QueryRowContext(ctx, "INSERT INTO accounts(name,credentials,proxy_url,credential_family_id) VALUES($1,$2,$3,$4) RETURNING id", name, encoded, proxyURL, family).Scan(&accountID); err != nil {
 				return err

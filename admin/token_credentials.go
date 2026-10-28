@@ -13,6 +13,11 @@ import (
 )
 
 type tokenCredentialSeed struct {
+	ipv6Enabled     *bool
+	newIPv6Enabled  *bool
+	timezone        *string
+	newTimezone     *string
+	routeOverride   bool
 	refreshToken    string
 	sessionToken    string
 	accessToken     string
@@ -288,6 +293,12 @@ func tokenCredentialMap(seed tokenCredentialSeed) map[string]interface{} {
 	if len(seed.customHeaders) > 0 {
 		credentials["custom_headers"] = cloneCustomHeaders(seed.customHeaders)
 	}
+	if seed.ipv6Enabled != nil {
+		credentials[auth.IPv6EgressCredentialKey] = *seed.ipv6Enabled
+	}
+	if seed.timezone != nil {
+		credentials[auth.AccountTimezoneCredentialKey] = *seed.timezone
+	}
 	return credentials
 }
 
@@ -305,6 +316,12 @@ func (h *Handler) defaultCodexFingerprintModeForNewAccount() string {
 // 避免重新导入时覆盖用户在账号上手动调整过的档位。
 func (h *Handler) newCodexAccountCredentials(seed tokenCredentialSeed) map[string]interface{} {
 	credentials := tokenCredentialMap(seed)
+	if seed.newIPv6Enabled != nil {
+		credentials[auth.IPv6EgressCredentialKey] = *seed.newIPv6Enabled
+	}
+	if seed.timezone == nil && seed.newTimezone != nil {
+		credentials[auth.AccountTimezoneCredentialKey] = *seed.newTimezone
+	}
 	if mode := h.defaultCodexFingerprintModeForNewAccount(); mode != auth.CodexFingerprintModeOff {
 		credentials[auth.CodexFingerprintModeCredentialKey] = mode
 	}
@@ -316,6 +333,15 @@ func (h *Handler) newCodexAccountCredentials(seed tokenCredentialSeed) map[strin
 func (h *Handler) newCodexAccountFromSeed(id int64, proxyURL string, seed tokenCredentialSeed) *auth.Account {
 	account := accountFromCredentialSeed(id, proxyURL, seed)
 	account.CodexFingerprintMode = h.defaultCodexFingerprintModeForNewAccount()
+	if seed.newIPv6Enabled != nil {
+		account.IPv6EgressConfigured = true
+		account.IPv6EgressEnabled = *seed.newIPv6Enabled
+	}
+	if seed.timezone != nil {
+		account.Timezone = *seed.timezone
+	} else if seed.newTimezone != nil {
+		account.Timezone = *seed.newTimezone
+	}
 	return account
 }
 

@@ -210,7 +210,7 @@ func executeBasispointsRequest(ctx context.Context, account *auth.Account, reque
 	if err != nil {
 		return nil, ErrInternalError("配置 Basispoints 代理失败", err)
 	}
-	if IsResinEnabled() {
+	if resinCarriesEgress(account) {
 		endpoint = BuildReverseProxyURL(endpoint)
 		client = getResinHTTPClient(account)
 	}
@@ -231,7 +231,7 @@ func executeBasispointsRequest(ctx context.Context, account *auth.Account, reque
 	req.Header.Del("X-Codex-Turn-State")
 	req.Header.Set("X-OpenAI-Internal-Basispoints-Client-Product", "basispoints-excel-plugin")
 	req.Header.Set("X-OpenAI-Internal-Basispoints-Client-Agent-Profile", "excel")
-	if IsResinEnabled() {
+	if resinCarriesEgress(account) {
 		req.Header.Set("X-Resin-Account", ResinAccountID(account))
 	}
 	if bridge.RequestedEffort != "" && bridge.RequestedEffort != bridge.Effort {

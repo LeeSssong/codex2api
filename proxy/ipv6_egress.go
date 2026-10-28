@@ -3,6 +3,9 @@ package proxy
 import (
 	"context"
 	"fmt"
+	"github.com/codex2api/database"
+	"io"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -18,7 +21,8 @@ const localIPv6RoutePrefix = "local-ipv6://"
 func IPv6RouteIP(route string) string { return strings.TrimPrefix(route, localIPv6RoutePrefix) }
 func IsIPv6Route(route string) bool   { return strings.HasPrefix(route, localIPv6RoutePrefix) }
 func NativeIPv6Account(account *auth.Account) bool {
-	return account != nil && !account.IsRelayStyle() && !resinCarriesEgress(account)
+	_, enabled := account.IPv6EgressSelection()
+	return enabled
 }
 
 func wrapIPv6Client(account *auth.Account, base *http.Client, replay, forceUTLS bool, scopes ...string) *http.Client {
@@ -34,6 +38,15 @@ func wrapIPv6Client(account *auth.Account, base *http.Client, replay, forceUTLS 
 }
 
 func wrapScopedIPv6Client(account *auth.Account, base *http.Client, replay bool, mode, scope string) *http.Client {
+	if mode == "" {
+		mode = codexTransportModeFromEnv()
+	}
+	if account != nil && account.HostIPv4Egress() {
+		configured, _ := account.IPv6EgressSelection()
+		if configured {
+			return hostIPv4Client(account.ID(), base, mode, scope)
+		}
+	}
 	if route, enrolled, err := resolveFixedRoute(context.Background(), account); enrolled {
 		if err != nil {
 			return &http.Client{Transport: errorTransport{err}}
@@ -46,10 +59,13 @@ func wrapScopedIPv6Client(account *auth.Account, base *http.Client, replay bool,
 		return fixedClientForRouteMode(account, route, base, mode, scope, replay)
 	}
 	m := egressipv6.Current()
-	if m == nil || !NativeIPv6Account(account) {
+	if !NativeIPv6Account(account) {
 		return base
 	}
-	return egressipv6.WrapClient(m, account.ID(), base, func(ip string) http.RoundTripper { return sourceIPv6Transport(account.ID(), ip, mode, scope) }, replay)
+	if m == nil {
+		return &http.Client{Transport: errorTransport{database.ErrIPv6Unavailable}}
+	}
+	return egressipv6.WrapAccountClient(m, account.ID(), base, func(ip string) http.RoundTripper { return sourceIPv6Transport(account.ID(), ip, mode, scope) }, replay)
 }
 
 func sourceIPv6Transport(id int64, ip, mode, scope string) http.RoundTripper {
@@ -93,22 +109,97 @@ func (e errorTransport) RoundTrip(*http.Request) (*http.Response, error) { retur
 
 // OAuth refresh must never replay a potentially consumed refresh token.
 func WrapOAuthIPv6Client(id int64, base *http.Client, forceUTLS bool) *http.Client {
-	if m := egressipv6.Current(); m != nil && !IsResinEnabled() {
-		mode, scope := codexTransportModeStandard, "oauth-refresh"
-		if forceUTLS {
-			mode, scope = codexTransportModeUTLSChrome, "oauth-session"
-		}
-		return egressipv6.WrapClient(m, id, base, func(ip string) http.RoundTripper { return sourceIPv6Transport(id, ip, mode, scope) }, false)
+	c := *base
+	c.Transport = oauthIPv6Transport{id, base, forceUTLS}
+	c.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	return &c
+}
+
+type oauthIPv6Transport struct {
+	id        int64
+	base      *http.Client
+	forceUTLS bool
+}
+
+func (t oauthIPv6Transport) RoundTrip(req *http.Request) (*http.Response, error) {
+	m := egressipv6.Current()
+	if m == nil {
+		return nil, database.ErrIPv6Unavailable
 	}
-	return base
+	configured, enabled, proxyURL, err := m.Selection(req.Context(), t.id)
+	if err != nil {
+		return nil, err
+	}
+	mode, scope := codexTransportModeStandard, "oauth-refresh"
+	if t.forceUTLS {
+		mode, scope = codexTransportModeUTLSChrome, "oauth-session"
+	}
+	client := t.base
+	if enabled {
+		client = egressipv6.WrapAccountClient(m, t.id, t.base, func(ip string) http.RoundTripper { return sourceIPv6Transport(t.id, ip, mode, scope) }, false)
+	} else if configured && proxyURL == "" {
+		client = hostIPv4Client(t.id, t.base, mode, scope)
+	}
+	rt := client.Transport
+	if rt == nil {
+		rt = http.DefaultTransport
+	}
+	return rt.RoundTrip(req)
+}
+
+// HostIPv4Dialer deliberately bypasses environment proxies and IPv6 DNS results.
+type HostIPv4Dialer struct{ net.Dialer }
+
+func (d *HostIPv4Dialer) DialContext(ctx context.Context, _ string, address string) (net.Conn, error) {
+	return d.Dialer.DialContext(ctx, "tcp4", address)
+}
+func (d *HostIPv4Dialer) Dial(_ string, address string) (net.Conn, error) {
+	return d.DialContext(context.Background(), "tcp4", address)
+}
+func hostIPv4Client(id int64, base *http.Client, mode, scope string) *http.Client {
+	key := fmt.Sprintf("ipv4|%d|%s|%s", id, mode, scope)
+	c := *base
+	if v, ok := clientPool.Load(key); ok {
+		entry := v.(*poolEntry)
+		entry.touch()
+		c.Transport = entry.client.Transport
+		return &c
+	}
+	dialer := &HostIPv4Dialer{net.Dialer{KeepAlive: 30 * time.Second}}
+	if mode == codexTransportModeUTLSChrome {
+		c.Transport = &utlsRoundTripper{connections: make(map[string]*utlsConn), pending: make(map[string]*sync.Cond), dialer: dialer}
+	} else {
+		tr := http.DefaultTransport.(*http.Transport).Clone()
+		tr.Proxy = nil
+		tr.DialContext = dialer.DialContext
+		tr.ResponseHeaderTimeout = 0
+		tr.TLSHandshakeTimeout = 0
+		tr.MaxIdleConnsPerHost = 4
+		tr.IdleConnTimeout = 90 * time.Second
+		c.Transport = tr
+	}
+	entry := &poolEntry{client: &c, createdAt: time.Now().UnixNano()}
+	entry.touch()
+	if v, loaded := clientPool.LoadOrStore(key, entry); loaded {
+		releaseEvictedClient(entry.client)
+		c.Transport = v.(*poolEntry).client.Transport
+	}
+	return &c
 }
 
 func resolveIPv6Websocket(ctx context.Context, account *auth.Account, egress CodexEgress) CodexEgress {
 	m := egressipv6.Current()
-	if m == nil || !NativeIPv6Account(account) || IsStateDirectRoute(egress.ProxyURL) || IsStateDirectRoute(egress.DialProxyURL) {
+	if !NativeIPv6Account(account) {
 		return egress
 	}
-	route, err := m.Acquire(ctx, account.ID())
+	if m == nil {
+		egress.Err = database.ErrIPv6Unavailable
+		return egress
+	}
+	route, release, err := m.AcquireAccount(ctx, account.ID())
+	if release != nil {
+		release()
+	}
 	if err != nil {
 		egress.Err = err
 		return egress
@@ -120,3 +211,46 @@ func resolveIPv6Websocket(ctx context.Context, account *auth.Account, egress Cod
 	}
 	return egress
 }
+
+// WrapBootstrapOAuthClient applies the requested new-account route before an ID
+// exists. The temporary reservation uses the same persistent pool lease table.
+func WrapBootstrapOAuthClient(base *http.Client, enabled bool) *http.Client {
+	c := *base
+	if !enabled {
+		return hostIPv4Client(0, base, codexTransportModeStandard, "oauth-bootstrap")
+	}
+	c.Transport = bootstrapIPv6Transport{}
+	c.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	return &c
+}
+
+type bootstrapIPv6Transport struct{}
+
+func (bootstrapIPv6Transport) RoundTrip(req *http.Request) (*http.Response, error) {
+	m := egressipv6.Current()
+	if m == nil {
+		return nil, database.ErrIPv6Unavailable
+	}
+	ip, release, err := m.AcquireBootstrap(req.Context())
+	if err != nil {
+		return nil, err
+	}
+	resp, err := sourceIPv6Transport(0, ip, codexTransportModeStandard, "oauth-bootstrap").RoundTrip(req)
+	if err != nil {
+		release()
+		return nil, err
+	}
+	if resp.Body == nil {
+		release()
+	} else {
+		resp.Body = &bootstrapLeaseBody{ReadCloser: resp.Body, release: release}
+	}
+	return resp, nil
+}
+
+type bootstrapLeaseBody struct {
+	io.ReadCloser
+	release func()
+}
+
+func (b *bootstrapLeaseBody) Close() error { err := b.ReadCloser.Close(); b.release(); return err }

@@ -16,7 +16,8 @@ func (db *DB) ListAccountListProjection(ctx context.Context, channel string) ([]
 	upstreamExpr := `LOWER(COALESCE(credentials->>'upstream_type', ''))`
 	fromClause := `FROM accounts
 		CROSS JOIN LATERAL jsonb_to_record(accounts.credentials) AS account_public(
-			upstream_type text, email text, base_url text, plan_type text,
+			ipv6_egress_enabled boolean,
+ upstream_type text, email text, base_url text, plan_type text,
 			models jsonb, api_key text, refresh_token text, scheduler_priority text,
 			avatar_url text, verified_email boolean, project_id text,
 			antigravity_sync_error text, antigravity_sync_warning text,
@@ -26,6 +27,7 @@ func (db *DB) ListAccountListProjection(ctx context.Context, channel string) ([]
 			subscription_expires_at text, subscription_sync_state text, subscription_grace_until text
 		)`
 	credentialColumns := `
+ account_public.ipv6_egress_enabled,
 		COALESCE(account_public.upstream_type, ''),
 		COALESCE(account_public.email, ''),
 		COALESCE(account_public.base_url, ''),
@@ -51,6 +53,7 @@ func (db *DB) ListAccountListProjection(ctx context.Context, channel string) ([]
 		upstreamExpr = `LOWER(COALESCE(json_extract(credentials, '$.upstream_type'), ''))`
 		fromClause = `FROM accounts`
 		credentialColumns = `
+ json_extract(credentials, '$.ipv6_egress_enabled'),
 			COALESCE(json_extract(credentials, '$.upstream_type'), ''),
 			COALESCE(json_extract(credentials, '$.email'), ''),
 			COALESCE(json_extract(credentials, '$.base_url'), ''),
@@ -115,12 +118,13 @@ func scanAccountListProjection(scanner accountProjectionScanner) (*AccountRow, e
 	var claudeUsageProbeAt, claudeUsageProbeError, claudeAuthKind string
 	var subscriptionExpiresAt, subscriptionSyncState, subscriptionGraceUntil string
 	var modelsRaw interface{}
+	var ipv6Enabled sql.NullBool
 	var hasAPIKey, hasRefreshToken, verifiedEmail bool
 	if err := scanner.Scan(
 		&row.ID, &row.Name, &row.Type, &row.ProxyURL, &row.Status, &row.CooldownReason, &cooldownRaw,
 		&row.ErrorMessage, &row.Enabled, &row.Locked, &row.ScoreBiasOverride, &row.BaseConcurrencyOverride,
 		&tagsRaw, &createdRaw, &updatedRaw, &row.CredentialGeneration, &row.CredentialFamilyID,
-		&upstreamType, &email, &baseURL, &planType, &modelsRaw,
+		&ipv6Enabled, &upstreamType, &email, &baseURL, &planType, &modelsRaw,
 		&hasAPIKey, &hasRefreshToken, &schedulerPriority,
 		&avatarURL, &verifiedEmail, &projectID,
 		&antigravitySyncError, &antigravitySyncWarning, &antigravityPermissions, &antigravityQuota,
@@ -148,6 +152,9 @@ func scanAccountListProjection(scanner accountProjectionScanner) (*AccountRow, e
 		"email":         email,
 		"base_url":      baseURL,
 		"plan_type":     planType,
+	}
+	if ipv6Enabled.Valid {
+		row.Credentials["ipv6_egress_enabled"] = ipv6Enabled.Bool
 	}
 	// 调度优先级参与列表排序(issue 截图反馈:排序不生效),投影缺了它会让
 	// 快照全员按 0 打平、退化成 ID 序。以文本取出交给 GetCredentialInt64 解析。

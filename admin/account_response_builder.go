@@ -284,6 +284,8 @@ func (h *Handler) buildAccountResponse(
 		CustomHeaders:                customHeaders,
 		UpstreamRequestIDHeader:      row.GetCredential(auth.UpstreamRequestIDHeaderCredentialKey),
 		ProxyURL:                     row.ProxyURL,
+		IPv6EgressEnabled:            row.GetCredentialBool(auth.IPv6EgressCredentialKey),
+		IPv6EgressIP:                 h.accountIPv6IP(row),
 		Enabled:                      row.Enabled,
 		Locked:                       row.Locked,
 		AllowedAPIKeyIDs:             allowedAPIKeyIDs,

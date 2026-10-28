@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/url"
 	"strings"
@@ -63,7 +64,11 @@ type CodexEgress struct {
 // account 为 nil 时不可能走 Resin(Resin 按账号粘性,无身份无从粘),退回代理/直连。
 func ResolveCodexEgress(account *auth.Account, targetURL, proxyURL string) CodexEgress {
 	if proxyURL == ipv6StateDirectRoute {
-		return CodexEgress{Kind: CodexEgressDirect, URL: targetURL, account: account, client: getRawPooledClient(account, "")}
+		client := getRawPooledClient(account, "")
+		if configured, _ := account.IPv6EgressSelection(); configured {
+			client = getPooledClient(account, "")
+		}
+		return CodexEgress{Kind: CodexEgressDirect, URL: targetURL, account: account, client: client}
 	}
 	if account != nil && !account.IsRelayStyle() && !IsStateDirectRoute(proxyURL) {
 		if route, enrolled, err := resolveFixedRoute(context.Background(), account); enrolled {
@@ -101,7 +106,8 @@ func ResolveCodexEgress(account *auth.Account, targetURL, proxyURL string) Codex
 // (Resin 按账号粘性,无身份无从粘)且不是中继型账号(Claude/Grok/Antigravity 不经 Resin)。
 // 与 auth.Store 的 fail-closed 放行、upstream_trace 的审计标签取同一口径。
 func resinCarriesEgress(account *auth.Account) bool {
-	return IsResinEnabled() && account != nil && !account.IsRelayStyle()
+	configured, _ := account.IPv6EgressSelection()
+	return IsResinEnabled() && account != nil && !account.IsRelayStyle() && !configured
 }
 
 // ViaResin 报告本次出站是否经 Resin。
@@ -228,6 +234,15 @@ func MaskResinBaseURL(raw string) string {
 // ResolveCodexRequestEgress picks the websocket or HTTP egress for one request.
 func ResolveCodexRequestEgress(ctx context.Context, account *auth.Account, targetURL, proxyURL string, websocket bool) CodexEgress {
 	if boundProxy, ok := AccountBoundEgress(ctx); ok {
+		if NativeIPv6Account(account) {
+			if strings.TrimSpace(boundProxy) != "" {
+				return CodexEgress{Err: errors.New("account-bound proxy conflicts with local IPv6 membership"), URL: targetURL, account: account}
+			}
+			if websocket {
+				return resolveIPv6Websocket(ctx, account, CodexEgress{Kind: CodexEgressDirect, URL: targetURL, account: account})
+			}
+			return CodexEgress{Kind: CodexEgressDirect, URL: targetURL, account: account, client: getPooledClient(account, "")}
+		}
 		boundProxy = strings.TrimSpace(boundProxy)
 		kind := CodexEgressDirect
 		if boundProxy != "" {
@@ -252,7 +267,7 @@ func ResolveCodexRequestEgress(ctx context.Context, account *auth.Account, targe
 		}
 	}
 	if websocket {
-		if IsStateDirectRoute(proxyURL) {
+		if IsStateDirectRoute(proxyURL) && !NativeIPv6Account(account) {
 			return ResolveCodexWebsocketEgress(account, targetURL, proxyURL)
 		}
 		return resolveIPv6Websocket(ctx, account, ResolveCodexWebsocketEgress(account, targetURL, proxyURL))

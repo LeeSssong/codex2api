@@ -31,6 +31,7 @@ const (
 
 // WsConnection WebSocket 连接包装
 type WsConnection struct {
+	ipv6Release  func()
 	fixedRelease func()
 	fixedRoute   fixedegress.Route
 	fixedManager *fixedegress.Manager
@@ -210,6 +211,9 @@ func (wc *WsConnection) Close() error {
 		return nil
 	}
 	wc.closeOnce.Do(func() {
+		if wc.ipv6Release != nil {
+			defer wc.ipv6Release()
+		}
 		if wc.fixedRelease != nil {
 			defer wc.fixedRelease()
 		}

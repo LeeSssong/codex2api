@@ -32,7 +32,17 @@ func requestProxyURL(ctx context.Context, fallback string) string {
 
 func getRequestClient(ctx context.Context, account *auth.Account, fallback string) *http.Client {
 	if route, ok := AccountBoundEgress(ctx); ok {
-		return getPooledClientForRoute(account, route, true)
+		if NativeIPv6Account(account) {
+			if route != "" {
+				return &http.Client{Transport: errorTransport{errors.New("account-bound proxy conflicts with local IPv6 membership")}}
+			}
+			return getPooledClient(account, "")
+		}
+		base := getPooledClientForRoute(account, route, true)
+		if configured, _ := account.IPv6EgressSelection(); configured && route == "" {
+			return wrapIPv6Client(account, base, true, false)
+		}
+		return base
 	}
 	return getPooledClient(account, fallback)
 }

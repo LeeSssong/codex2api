@@ -125,7 +125,7 @@ func (m *Manager) Acquire(ctx context.Context, id int64) (Route, error) {
 func (m *Manager) Rotate(ctx context.Context, id int64, ip, reason string) (Route, error) {
 	return m.claim(ctx, id, ip, reason)
 }
-func (m *Manager) claim(ctx context.Context, id int64, ip, reason string) (Route, error) {
+func (m *Manager) claim(ctx context.Context, id int64, ip, reason string, member ...bool) (Route, error) {
 	c, err := m.DB.IPv6EgressConfig(ctx)
 	if err != nil {
 		return Route{}, err
@@ -138,7 +138,7 @@ func (m *Manager) claim(ctx context.Context, id int64, ip, reason string) (Route
 	if err != nil {
 		return Route{}, err
 	}
-	b, c, err := m.DB.ClaimIPv6Egress(ctx, id, local, ip, reason, m.now().Unix())
+	b, c, err := m.DB.ClaimIPv6Egress(ctx, id, local, ip, reason, m.now().Unix(), member...)
 	if ip != "" && err == nil && b.IP != ip && c.Enabled {
 		log.Printf("[IPv6Egress] account=%d old_ip=%s new_ip=%s reason=%s", id, ip, b.IP, reason)
 	}

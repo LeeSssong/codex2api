@@ -19,6 +19,7 @@ type transport struct {
 	accountID int64
 	fallback  http.RoundTripper
 	source    func(string) http.RoundTripper
+	member    bool
 	replay    bool
 }
 
@@ -28,7 +29,7 @@ func WrapClient(m *Manager, id int64, base *http.Client, source func(string) htt
 	if fallback == nil {
 		fallback = http.DefaultTransport
 	}
-	c.Transport = &transport{m, id, fallback, source, replay}
+	c.Transport = &transport{manager: m, accountID: id, fallback: fallback, source: source, replay: replay}
 	// Credential-bearing direct requests must not follow redirects to a new host.
 	c.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 		if m.enabled.Load() {
@@ -44,8 +45,28 @@ func WrapClient(m *Manager, id int64, base *http.Client, source func(string) htt
 	}
 	return &c
 }
+func WrapAccountClient(m *Manager, id int64, base *http.Client, source func(string) http.RoundTripper, replay bool) *http.Client {
+	c := WrapClient(m, id, base, source, replay)
+	c.Transport.(*transport).member = true
+	c.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	return c
+}
+
+type leaseBody struct {
+	io.ReadCloser
+	release func()
+}
+
+func (b *leaseBody) Close() error { err := b.ReadCloser.Close(); b.release(); return err }
 func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
-	route, err := t.manager.Acquire(req.Context(), t.accountID)
+	var route Route
+	var err error
+	var release func()
+	if t.member {
+		route, release, err = t.manager.AcquireAccount(req.Context(), t.accountID)
+	} else {
+		route, err = t.manager.Acquire(req.Context(), t.accountID)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -58,6 +79,16 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 			t.manager.ObserveSource(req.Context(), t.accountID, route.Binding.IP)
 		}
 		resp, requestErr := t.source(route.Binding.IP).RoundTrip(attemptReq)
+		if release != nil {
+			if resp != nil && resp.Body != nil {
+				resp.Body = &leaseBody{resp.Body, release}
+			} else {
+				release()
+			}
+			if requestErr != nil {
+				release()
+			}
+		}
 		reason := ""
 		safeReplay := true
 		if requestErr != nil {
@@ -80,7 +111,7 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 				sourceIP := route.Binding.IP
 				resp.Body = &observedSSEBody{ReadCloser: resp.Body, retry5xx: route.Config.Retry5xx, onFailure: func(reason string) {
 					if req.Context().Err() == nil {
-						_, _ = t.manager.Rotate(req.Context(), t.accountID, sourceIP, reason)
+						_, _ = t.rotate(req.Context(), sourceIP, reason)
 					}
 				}}
 			}
@@ -88,7 +119,7 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		if reason == "" || req.Context().Err() != nil {
 			return resp, requestErr
 		}
-		next, rotateErr := t.manager.Rotate(req.Context(), t.accountID, route.Binding.IP, reason)
+		next, rotateErr := t.rotate(req.Context(), route.Binding.IP, reason)
 		if rotateErr != nil || !next.Config.Enabled || !t.replay || !safeReplay || attempt >= route.Config.MaxAttempts || next.Binding.IP == route.Binding.IP {
 			return resp, requestErr
 		}
@@ -104,6 +135,12 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		}
 		if resp != nil {
 			resp.Body.Close()
+		}
+		if t.member {
+			release, err = t.manager.TrackAccountRoute(req.Context(), t.accountID, next.Binding.IP)
+			if err != nil {
+				return nil, err
+			}
 		}
 		route = next
 		attemptReq = retryReq
@@ -152,4 +189,11 @@ func inspectSSEPrefix(resp *http.Response, retry5xx bool) (string, bool) {
 type prefixBody struct {
 	io.Reader
 	io.Closer
+}
+
+func (t *transport) rotate(ctx context.Context, ip, reason string) (Route, error) {
+	if t.member {
+		return t.manager.RotateAccount(ctx, t.accountID, ip, reason)
+	}
+	return t.manager.Rotate(ctx, t.accountID, ip, reason)
 }

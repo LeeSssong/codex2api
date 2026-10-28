@@ -26,6 +26,7 @@ type sub2apiCredentialRequest struct {
 }
 
 type sub2apiImportRequest struct {
+	nativeJSONPreferences
 	BaseURL string `json:"base_url"`
 	APIKey  string `json:"api_key"`
 	Scope   string `json:"scope"`
@@ -130,6 +131,11 @@ func (h *Handler) ImportFromSub2API(c *gin.Context) {
 		writeError(c, http.StatusBadRequest, "请求体解析失败")
 		return
 	}
+	settings, err := req.nativeJSONPreferences.settings()
+	if err != nil {
+		writeError(c, http.StatusBadRequest, err.Error())
+		return
+	}
 	baseURL, apiKey, errMsg := normalizeSub2APICreds(req.BaseURL, req.APIKey)
 	if errMsg != "" {
 		writeError(c, http.StatusBadRequest, errMsg)
@@ -178,7 +184,7 @@ func (h *Handler) ImportFromSub2API(c *gin.Context) {
 		return
 	}
 
-	h.importAccountsCommon(c, tokens, importSettings{})
+	h.importAccountsCommon(c, tokens, settings)
 }
 
 // sub2apiAccountInternal 后端聚合的中间结构，包含 credentials + 状态。
@@ -325,6 +331,7 @@ func sub2apiAccountToImportToken(a sub2apiAccountInternal) (importToken, bool) {
 		codex5HUsageUpdatedAt: stringFromMap(c, "codex_5h_usage_updated_at"),
 		codexUsageUpdatedAt:   stringFromMap(c, "codex_usage_updated_at"),
 	}
+	importPreferencesFromMap(&tok, c)
 	if tok.name == "" {
 		tok.name = tok.email
 	}

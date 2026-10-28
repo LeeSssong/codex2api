@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/codex2api/database"
-	"github.com/codex2api/egressipv6"
 	"github.com/codex2api/internal/openaiidentity"
 )
 
@@ -77,7 +76,8 @@ func (s *Store) refreshCodexAccount(ctx context.Context, acc *Account, force boo
 	if !usableEgress {
 		return fmt.Errorf("账号 %d 无可用出口，已拒绝刷新", dbID)
 	}
-	if strings.TrimSpace(proxyURL) == "" && s.GetProxyPoolEnabled() && !egressipv6.Enabled() && !ResinEgressEnabled() {
+	configured, _ := acc.IPv6EgressSelection()
+	if strings.TrimSpace(proxyURL) == "" && s.GetProxyPoolEnabled() && !configured && !ResinEgressEnabled() {
 		return fmt.Errorf("账号 %d 代理池已启用但无可用代理，已拒绝直连刷新", dbID)
 	}
 	if err := ctx.Err(); err != nil {

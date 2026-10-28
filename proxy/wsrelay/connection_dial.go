@@ -31,6 +31,26 @@ func (m *Manager) createConnection(ctx context.Context, input connectionDialRequ
 			input.capacity.release()
 		}
 	}()
+	var releaseIPv6 func()
+	route := input.proxyOverride
+	if bound, ok := proxy.AccountBoundEgress(ctx); ok && !(proxy.NativeIPv6Account(input.account) && bound == "") {
+		route = bound
+	}
+	if proxy.IsIPv6Route(route) {
+		manager := egressipv6.Current()
+		if manager == nil {
+			return nil, fmt.Errorf("local IPv6 egress unavailable")
+		}
+		releaseIPv6, err = manager.TrackAccountRoute(ctx, input.account.ID(), proxy.IPv6RouteIP(route))
+		if err != nil {
+			return nil, err
+		}
+		defer func() {
+			if err != nil {
+				releaseIPv6()
+			}
+		}()
+	}
 	var releaseFixed func()
 	var fixedRoute fixedegress.Route
 	if _, bound := proxy.AccountBoundEgress(ctx); !bound && !proxy.IsStateDirectRoute(input.proxyOverride) {
@@ -77,6 +97,7 @@ func (m *Manager) createConnection(ctx context.Context, input connectionDialRequ
 	}
 	logCompressionNegotiation(resp, input.account.ID())
 	wc = m.wrapDialedConnection(dialedConnection{conn: conn, response: resp, session: session, poolKey: poolKey, request: input})
+	wc.ipv6Release = releaseIPv6
 	wc.fixedRelease = releaseFixed
 	if releaseFixed != nil {
 		wc.fixedRoute = fixedRoute
@@ -112,7 +133,7 @@ func (m *Manager) connectionDialer(ctx context.Context, input connectionDialRequ
 		}
 	}
 
-	if boundProxy, ok := proxy.AccountBoundEgress(ctx); ok {
+	if boundProxy, ok := proxy.AccountBoundEgress(ctx); ok && !(proxy.NativeIPv6Account(input.account) && boundProxy == "") {
 		dialProxy = strings.TrimSpace(boundProxy)
 		dialer.Proxy = nil
 	}
@@ -121,6 +142,11 @@ func (m *Manager) connectionDialer(ctx context.Context, input connectionDialRequ
 		if err != nil {
 			return nil, err
 		}
+		dialer.Proxy = nil
+		dialer.NetDialContext = sourceDialer.DialContext
+		dialer.NetDialTLSContext = nil
+	} else if dialProxy == "" && input.account.HostIPv4Egress() {
+		sourceDialer := &proxy.HostIPv4Dialer{}
 		dialer.Proxy = nil
 		dialer.NetDialContext = sourceDialer.DialContext
 		dialer.NetDialTLSContext = nil

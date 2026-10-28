@@ -22,7 +22,6 @@ import (
 
 	"github.com/codex2api/cache"
 	"github.com/codex2api/database"
-	"github.com/codex2api/egressipv6"
 	"github.com/codex2api/fixedegress"
 	"github.com/codex2api/internal/openaiidentity"
 	"github.com/codex2api/security/promptfilter"
@@ -188,6 +187,8 @@ type Account struct {
 	AccountID            string
 	Email                string
 	PlanType             string
+	IPv6EgressEnabled    bool
+	IPv6EgressConfigured bool
 	ProxyURL             string
 	CustomHeaders        map[string]string
 	UpstreamType         string
@@ -5545,13 +5546,19 @@ func (s *Store) resolveProxyForAccountSnapshot(acc *Account) (string, bool) {
 		return "", false
 	}
 
-	if acc != nil && !acc.IsRelayStyle() {
+	if configured, enabled := acc.IPv6EgressSelection(); configured {
+		if enabled || acc.GetProxyURL() == "" {
+			return "", true
+		}
+	}
+	configuredIPv6, _ := acc.IPv6EgressSelection()
+	if acc != nil && !acc.IsRelayStyle() && !configuredIPv6 {
 		if m := fixedegress.Current(); m != nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
 			r, e := m.Acquire(ctx, acc.ID())
 			if r.Enrolled {
-				return r.Binding.ProxyURL, e == nil && !ResinEgressEnabled() && !egressipv6.Enabled()
+				return r.Binding.ProxyURL, e == nil && !ResinEgressEnabled()
 			}
 		}
 	}
@@ -5568,7 +5575,7 @@ func (s *Store) resolveProxyForAccountSnapshot(acc *Account) (string, bool) {
 		accountID = acc.DBID
 		accountProxy = strings.TrimSpace(acc.ProxyURL)
 		groupIDs = cloneInt64Slice(acc.GroupIDs)
-		resinCarriesEgress = (ResinEgressEnabled() || egressipv6.Enabled()) && !acc.isRelayStyleLocked()
+		resinCarriesEgress = ((ResinEgressEnabled() && !acc.IPv6EgressConfigured) || acc.IPv6EgressEnabled) && !acc.isRelayStyleLocked()
 		acc.mu.RUnlock()
 	}
 
@@ -6276,6 +6283,8 @@ func (s *Store) buildAccountFromRow(ctx context.Context, row *database.AccountRo
 		OAuthClientID:                row.GetCredential("client_id"),
 		SessionToken:                 st,
 		ProxyURL:                     strings.TrimSpace(row.ProxyURL),
+		IPv6EgressEnabled:            row.GetCredentialBool(IPv6EgressCredentialKey),
+		IPv6EgressConfigured:         row.GetCredentialOptionalBool(IPv6EgressCredentialKey) != nil,
 		CustomHeaders:                row.GetCredentialStringMap("custom_headers"),
 		UpstreamRequestIDHeader:      row.GetCredential(UpstreamRequestIDHeaderCredentialKey),
 		HealthTier:                   HealthTierWarm,
@@ -8117,6 +8126,9 @@ func (s *Store) affinityProxyStillValid(accountID int64, proxyURL string) bool {
 		return false
 	}
 
+	if configured, _ := account.IPv6EgressSelection(); configured {
+		return proxyURL == account.GetProxyURL()
+	}
 	if accountProxy := account.GetProxyURL(); accountProxy != "" {
 		if s.managedProxyUnavailable(accountProxy) {
 			return false

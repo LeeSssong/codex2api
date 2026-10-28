@@ -13,7 +13,7 @@ import (
 // proxy may actually dial through Resin or inherited dialer configuration.
 // The route snapshot also prevents an empty override re-reading account state.
 func requestProxyKey(ctx context.Context, account *auth.Account, override string) string {
-	if route, ok := proxy.AccountBoundEgress(ctx); ok {
+	if route, ok := proxy.AccountBoundEgress(ctx); ok && !(proxy.NativeIPv6Account(account) && route == "") {
 		return "\x00account-bound|" + strings.TrimSpace(route)
 	}
 	if account != nil && !account.IsRelayStyle() {

@@ -167,6 +167,15 @@ func wrapFixedClient(id int64, base *http.Client, mode, scope string, replay boo
 	return &c
 }
 func WrapOAuthFixedClient(id int64, base *http.Client, forceUTLS bool) *http.Client {
+	if m := egressipv6.Current(); m != nil {
+		configured, _, _, err := m.Selection(context.Background(), id)
+		if err != nil {
+			return &http.Client{Transport: errorTransport{err}}
+		}
+		if configured {
+			return base
+		}
+	}
 	mode := codexTransportModeStandard
 	scope := "oauth-refresh"
 	if forceUTLS {
@@ -191,7 +200,8 @@ func fixedClientForRouteMode(account *auth.Account, r fixedegress.Route, base *h
 }
 func resolveFixedRoute(ctx context.Context, account *auth.Account) (fixedegress.Route, bool, error) {
 	m := fixedegress.Current()
-	if m == nil || account == nil || account.IsRelayStyle() {
+	configured, _ := account.IPv6EgressSelection()
+	if m == nil || account == nil || account.IsRelayStyle() || configured {
 		return fixedegress.Route{}, false, nil
 	}
 	r, e := m.Acquire(ctx, account.ID())

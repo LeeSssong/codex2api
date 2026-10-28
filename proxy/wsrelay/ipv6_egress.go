@@ -25,20 +25,27 @@ func (e *Executor) ExecuteRequestViaWebsocket(ctx context.Context, account *auth
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if _, bound := proxy.AccountBoundEgress(ctx); bound || proxy.IsStateDirectRoute(proxyOverride) {
+	if _, bound := proxy.AccountBoundEgress(ctx); (bound || proxy.IsStateDirectRoute(proxyOverride)) && !proxy.NativeIPv6Account(account) {
 		return e.executeRequestViaWebsocket(ctx, account, body, sessionID, proxyOverride, apiKey, deviceCfg, headers, poolRouteKey)
 	}
 	m := egressipv6.Current()
-	if m == nil || !proxy.NativeIPv6Account(account) {
+	if !proxy.NativeIPv6Account(account) {
 		return e.executeRequestViaWebsocket(ctx, account, body, sessionID, proxyOverride, apiKey, deviceCfg, headers, poolRouteKey)
 	}
-	route, err := m.Acquire(ctx, account.ID())
+	if m == nil {
+		return nil, errors.New("local IPv6 egress unavailable")
+	}
+	if boundProxy, bound := proxy.AccountBoundEgress(ctx); bound && boundProxy != "" {
+		return nil, errors.New("account-bound route conflicts with local IPv6 membership")
+	}
+	route, release, err := m.AcquireAccount(ctx, account.ID())
+	if release != nil {
+		release()
+	}
 	if err != nil {
 		return nil, err
 	}
-	if !route.Config.Enabled {
-		return e.executeRequestViaWebsocket(ctx, account, body, sessionID, proxyOverride, apiKey, deviceCfg, headers, poolRouteKey)
-	}
+
 	a := &ipv6WSAttempt{ctx: ctx, manager: m, accountID: account.ID(), route: route}
 	a.execute = func(ip string) (*WsResponse, error) {
 		return e.executeRequestViaWebsocket(ctx, account, body, sessionID, "local-ipv6://"+ip, apiKey, deviceCfg, headers, poolRouteKey)
@@ -73,7 +80,7 @@ func (a *ipv6WSAttempt) rotate(reason string) bool {
 	if reason == "" || a.ctx.Err() != nil {
 		return false
 	}
-	next, err := a.manager.Rotate(a.ctx, a.accountID, a.route.Binding.IP, reason)
+	next, err := a.manager.RotateAccount(a.ctx, a.accountID, a.route.Binding.IP, reason)
 	if err != nil || !next.Config.Enabled || next.Binding.IP == a.route.Binding.IP || a.attempts >= a.route.Config.MaxAttempts {
 		return false
 	}
@@ -149,7 +156,7 @@ func (r *WsResponse) ReadStream(callback func([]byte) bool) error {
 		closed := r.closed
 		r.mu.Unlock()
 		if !closed {
-			_, _ = a.manager.Rotate(a.ctx, a.accountID, a.route.Binding.IP, "stream_disconnected")
+			_, _ = a.manager.RotateAccount(a.ctx, a.accountID, a.route.Binding.IP, "stream_disconnected")
 		}
 	}
 	return err

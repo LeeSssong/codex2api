@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/codex2api/egressipv6"
 	"io"
 	"log"
 	"net"
@@ -80,7 +81,8 @@ func RefreshAccessTokenForClient(ctx context.Context, refreshToken, proxyURL, cl
 	if len(resinAccountID) > 0 {
 		accountID = resinAccountID[0]
 	}
-	if ResinRequestDecorator != nil && accountID != "" {
+	useResin := useResinForOAuth(ctx, accountID)
+	if useResin {
 		targetURL = ResinRequestDecorator(TokenURL, accountID)
 	}
 
@@ -92,13 +94,13 @@ func RefreshAccessTokenForClient(ctx context.Context, refreshToken, proxyURL, cl
 	req.Header.Set("Accept", "application/json")
 
 	// Resin 反代：注入账号身份头
-	if ResinRequestDecorator != nil && accountID != "" {
+	if useResin {
 		req.Header.Set("X-Resin-Account", accountID)
 	}
 
 	// Resin 反代模式下使用标准 HTTP client（不走代理，Resin 处理路由）
 	var client *http.Client
-	if ResinRequestDecorator != nil && accountID != "" {
+	if useResin {
 		client = &http.Client{Timeout: 30 * time.Second}
 	} else {
 		client = buildHTTPClient(proxyURL)
@@ -225,7 +227,8 @@ func RefreshWithSessionToken(ctx context.Context, sessionToken string, proxyURL 
 	if len(resinAccountID) > 0 {
 		accountID = resinAccountID[0]
 	}
-	if ResinRequestDecorator != nil && accountID != "" {
+	useResin := useResinForOAuth(ctx, accountID)
+	if useResin {
 		targetURL = ResinRequestDecorator(SessionURL, accountID)
 	}
 
@@ -240,12 +243,12 @@ func RefreshWithSessionToken(ctx context.Context, sessionToken string, proxyURL 
 	req.Header.Set("Sec-Fetch-Mode", "cors")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	req.AddCookie(&http.Cookie{Name: "__Secure-next-auth.session-token", Value: sessionToken})
-	if ResinRequestDecorator != nil && accountID != "" {
+	if useResin {
 		req.Header.Set("X-Resin-Account", accountID)
 	}
 
 	var client *http.Client
-	if ResinRequestDecorator != nil && accountID != "" {
+	if useResin {
 		client = &http.Client{Timeout: 30 * time.Second}
 	} else {
 		client = buildUTLSHTTPClient(proxyURL)
@@ -697,4 +700,19 @@ func HashAccountID(accountID string) string {
 	}
 	h := sha256.Sum256([]byte(accountID))
 	return fmt.Sprintf("%x", h[:4])
+}
+
+func useResinForOAuth(ctx context.Context, id string) bool {
+	if ResinRequestDecorator == nil || id == "" {
+		return false
+	}
+	if m := egressipv6.Current(); m != nil {
+		if n, err := strconv.ParseInt(id, 10, 64); err == nil && n > 0 {
+			configured, _, _, err := m.Selection(ctx, n)
+			if err != nil || configured {
+				return false
+			}
+		}
+	}
+	return true
 }

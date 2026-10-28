@@ -1722,6 +1722,8 @@ func isDashboardRateLimitedAccount(status string, cooldownReason string) bool {
 // ==================== Accounts ====================
 
 type accountResponse struct {
+	IPv6EgressEnabled       bool                     `json:"ipv6_egress_enabled"`
+	IPv6EgressIP            string                   `json:"ipv6_egress_ip"`
 	CodexPaths              []auth.CodexPathSnapshot `json:"codex_paths,omitempty"`
 	StateModels             []accountStateModel      `json:"state_models,omitempty"`
 	CodexLastRefreshAt      string                   `json:"codex_last_refresh_at,omitempty"`
@@ -2248,6 +2250,7 @@ func (h *Handler) listAccountsLite(c *gin.Context, ctx context.Context) {
 }
 
 type updateAccountSchedulerReq struct {
+	IPv6EgressEnabled       json.RawMessage `json:"ipv6_egress_enabled"`
 	UpstreamRequestIDHeader json.RawMessage `json:"upstream_request_id_header"`
 	ScoreBiasOverride       json.RawMessage `json:"score_bias_override"`
 	BaseConcurrencyOverride json.RawMessage `json:"base_concurrency_override"`
@@ -2368,6 +2371,16 @@ func parseAccountSchedulerUpdate(req updateAccountSchedulerReq) (accountSchedule
 	if err != nil {
 		return accountSchedulerUpdate{}, err
 	}
+	ipv6Enabled, err := parseOptionalBoolField(req.IPv6EgressEnabled, "ipv6_egress_enabled")
+	if err != nil {
+		return accountSchedulerUpdate{}, err
+	}
+	if ipv6Enabled.Set && ipv6Enabled.Value && proxyURL.Set && proxyURL.Value != "" {
+		return accountSchedulerUpdate{}, errors.New("local IPv6 cannot be combined with proxy_url")
+	}
+	if ipv6Enabled.Set && ipv6Enabled.Value {
+		proxyURL = database.OptionalString{Set: true, Value: ""}
+	}
 	customHeaders, err := parseOptionalCustomHeadersField(req.CustomHeaders)
 	if err != nil {
 		return accountSchedulerUpdate{}, err
@@ -2441,6 +2454,9 @@ func parseAccountSchedulerUpdate(req updateAccountSchedulerReq) (accountSchedule
 			return accountSchedulerUpdate{}, err
 		}
 		credentialUpdates[auth.AccountHrefCredentialKey] = normalized
+	}
+	if proxyURL.Set || ipv6Enabled.Set {
+		credentialUpdates[auth.IPv6EgressCredentialKey] = ipv6Enabled.Set && ipv6Enabled.Value
 	}
 	if requestIDHeader.Set {
 		credentialUpdates[auth.UpstreamRequestIDHeaderCredentialKey] = strings.TrimSpace(requestIDHeader.Value)
@@ -2624,7 +2640,7 @@ func refineCodexTurnStateSetAt(row *database.AccountRow, update accountScheduler
 }
 
 func (u accountSchedulerUpdate) hasChanges() bool {
-	return u.ScoreBiasOverride.Set ||
+	return len(u.CredentialUpdates) > 0 || u.ScoreBiasOverride.Set ||
 		u.CodexTurnState.Set ||
 		u.CodexTurnStateModels.Set ||
 		u.BaseConcurrencyOverride.Set ||
@@ -2900,6 +2916,10 @@ func (h *Handler) UpdateAccountScheduler(c *gin.Context) {
 		return
 	}
 	h.applyAccountSchedulerRuntimeUpdate(id, update)
+	if err := h.retireIPv6Selection(ctx, id, update.CredentialUpdates); err != nil {
+		writeError(c, http.StatusInternalServerError, "IPv6 selection saved; retirement pending: "+err.Error())
+		return
+	}
 
 	writeMessage(c, http.StatusOK, "账号调度配置已更新")
 }
@@ -2947,6 +2967,9 @@ func (h *Handler) applyAccountSchedulerRuntimeUpdate(id int64, update accountSch
 	}
 	if update.GroupIDs.Set {
 		h.store.ApplyAccountGroups(id, update.GroupIDs.Values)
+	}
+	if enabled, ok := update.CredentialUpdates[auth.IPv6EgressCredentialKey].(bool); ok {
+		h.store.ApplyAccountIPv6Selection(id, enabled)
 	}
 	if update.ProxyURL.Set {
 		h.store.ApplyAccountProxyURL(id, update.ProxyURL.Value)
@@ -3669,12 +3692,14 @@ func (h *Handler) getAccountUsageWindows(ctx context.Context) (map[int64]*databa
 }
 
 type addAccountReq struct {
-	Name           string            `json:"name"`
-	RefreshToken   string            `json:"refresh_token"`
-	SessionToken   string            `json:"session_token"`
-	ProxyURL       string            `json:"proxy_url"`
-	CustomHeaders  map[string]string `json:"custom_headers"`
-	AllowDuplicate bool              `json:"allow_duplicate"`
+	IPv6EgressEnabled *bool `json:"ipv6_egress_enabled"`
+	proxySpecified    bool
+	Name              string            `json:"name"`
+	RefreshToken      string            `json:"refresh_token"`
+	SessionToken      string            `json:"session_token"`
+	ProxyURL          string            `json:"proxy_url"`
+	CustomHeaders     map[string]string `json:"custom_headers"`
+	AllowDuplicate    bool              `json:"allow_duplicate"`
 	// SkipRefresh 只入库、不换 AT、不打用量探测。大批量脚本导入时应打开，
 	// 避免每批 50 个裸 RT 立刻拉起无上限的上游刷新把网关打卡。
 	SkipRefresh bool `json:"skip_refresh"`
@@ -3758,6 +3783,10 @@ func (h *Handler) AddAccount(c *gin.Context) {
 
 	// 输入验证和清理
 	req.Name = security.SanitizeInput(req.Name)
+	if req.IPv6EgressEnabled != nil && *req.IPv6EgressEnabled && strings.TrimSpace(req.ProxyURL) != "" {
+		writeError(c, http.StatusBadRequest, "local IPv6 cannot be combined with proxy_url")
+		return
+	}
 	req.ProxyURL = security.SanitizeInput(req.ProxyURL)
 
 	if strings.TrimSpace(req.RefreshToken) == "" && strings.TrimSpace(req.SessionToken) == "" {
@@ -3804,7 +3833,7 @@ func (h *Handler) AddAccount(c *gin.Context) {
 
 	var seeds []tokenCredentialSeed
 	for i := 0; i < total; i++ {
-		seed := tokenCredentialSeed{allowDuplicate: req.AllowDuplicate, customHeaders: customHeaders}
+		seed := (importSettings{defaultProxyURL: req.ProxyURL, proxySpecified: req.proxySpecified, ipv6Enabled: req.IPv6EgressEnabled, defaultTimezone: stringPtrIPv6Internal("")}).applyPreferences(tokenCredentialSeed{allowDuplicate: req.AllowDuplicate, customHeaders: customHeaders}, importToken{})
 		if len(refreshTokens) > 0 {
 			seed.refreshToken = refreshTokens[i]
 		}
@@ -4014,11 +4043,13 @@ func (h *Handler) streamAddAccounts(c *gin.Context, req addAccountReq, seeds []t
 
 // addATAccountReq AT 模式添加账号请求
 type addATAccountReq struct {
-	Name           string            `json:"name"`
-	AccessToken    string            `json:"access_token"`
-	ProxyURL       string            `json:"proxy_url"`
-	CustomHeaders  map[string]string `json:"custom_headers"`
-	AllowDuplicate bool              `json:"allow_duplicate"`
+	IPv6EgressEnabled *bool `json:"ipv6_egress_enabled"`
+	proxySpecified    bool
+	Name              string            `json:"name"`
+	AccessToken       string            `json:"access_token"`
+	ProxyURL          string            `json:"proxy_url"`
+	CustomHeaders     map[string]string `json:"custom_headers"`
+	AllowDuplicate    bool              `json:"allow_duplicate"`
 	// GroupIDs 让添加时就把新账号绑进指定分组；重复跳过与命中已有身份被更新的账号不受影响。
 	GroupIDs json.RawMessage `json:"group_ids"`
 }
@@ -4032,6 +4063,10 @@ func (h *Handler) AddATAccount(c *gin.Context) {
 	}
 
 	req.Name = security.SanitizeInput(req.Name)
+	if req.IPv6EgressEnabled != nil && *req.IPv6EgressEnabled && strings.TrimSpace(req.ProxyURL) != "" {
+		writeError(c, http.StatusBadRequest, "local IPv6 cannot be combined with proxy_url")
+		return
+	}
 	req.ProxyURL = security.SanitizeInput(req.ProxyURL)
 
 	if req.AccessToken == "" {
@@ -4132,6 +4167,7 @@ func (h *Handler) AddATAccount(c *gin.Context) {
 			allowDuplicate: req.AllowDuplicate,
 			customHeaders:  customHeaders,
 		})
+		seed = (importSettings{defaultProxyURL: req.ProxyURL, proxySpecified: req.proxySpecified, ipv6Enabled: req.IPv6EgressEnabled, defaultTimezone: stringPtrIPv6Internal("")}).applyPreferences(seed, importToken{})
 		// codex_at 不走 OAuth 身份去重：whoami 补出来的 email+工作区会撞上同工作区的
 		// OAuth 账号，把 PAT 合并进去等于用 PAT 覆盖它的 access_token。PAT 始终按 token 路由键去重。
 		if seed.accessTokenType != accessTokenTypeCodexAT && seed.email != "" && effectiveWorkspaceIDFromSeed(seed) != "" {
@@ -4266,6 +4302,7 @@ func (h *Handler) streamAddATAccounts(c *gin.Context, req addATAccountReq, token
 		}
 
 		seed := normalizeTokenCredentialSeed(tokenCredentialSeed{accessToken: at, allowDuplicate: req.AllowDuplicate, customHeaders: req.CustomHeaders})
+		seed = (importSettings{defaultProxyURL: req.ProxyURL, proxySpecified: req.proxySpecified, ipv6Enabled: req.IPv6EgressEnabled, defaultTimezone: stringPtrIPv6Internal("")}).applyPreferences(seed, importToken{})
 		// 同 AddATAccount：codex_at 不进 OAuth 身份去重，见上方注释。
 		if seed.accessTokenType != accessTokenTypeCodexAT && seed.email != "" && effectiveWorkspaceIDFromSeed(seed) != "" {
 			id, updated, newAcc, err := h.upsertOAuthIdentityAccountDeferred(ctx, name, req.ProxyURL, seed, "manual_at", overwriteAccountProxy)
@@ -4946,6 +4983,9 @@ func (h *Handler) SyncAccountUpstreamModels(c *gin.Context) {
 
 // importToken 导入时的统一 token 载体
 type importToken struct {
+	ipv6Enabled           *bool
+	timezone              *string
+	proxySpecified        bool
 	refreshToken          string
 	sessionToken          string
 	accessToken           string // AT-only 兼容路径
@@ -4979,6 +5019,9 @@ type importToken struct {
 // importSettings 汇总一次导入请求的表单开关。这些开关要穿过"入口 → 4 个格式
 // 解析函数 → importAccountsCommon"三层，继续用位置参数堆叠会越加越长。
 type importSettings struct {
+	ipv6Enabled     *bool
+	defaultTimezone *string
+	proxySpecified  bool
 	// defaultProxyURL 是表单里填的代理：文件没带代理、或没开 importProxies 时的兜底。
 	defaultProxyURL string
 	// importProxies 打开后采用文件内携带的代理，并把它们注册进代理池。
@@ -5001,7 +5044,7 @@ func (s importSettings) proxyForToken(t importToken) string {
 // 文件带来的代理是被动数据，不覆盖目标端已有的绑定（那里可能已经做过精细分配）；
 // 表单里填的代理是操作员的显式换绑意图，维持既有的覆盖语义。
 func (s importSettings) proxyOverwritePolicyForToken(t importToken) proxyOverwritePolicy {
-	if s.importProxies && strings.TrimSpace(t.proxyURL) != "" {
+	if !s.proxySpecified && strings.TrimSpace(s.defaultProxyURL) == "" {
 		return preserveAccountProxy
 	}
 	return overwriteAccountProxy
@@ -5075,6 +5118,9 @@ func agentIdentityImportTokenFromNode(node *jsonAgentIdentityNode, fallbackName 
 
 // jsonAccountEntry CLIProxyAPI 凭证 JSON 条目
 type jsonAccountEntry struct {
+	IPv6EgressEnabled     *bool   `json:"ipv6_egress_enabled"`
+	Timezone              *string `json:"timezone"`
+	proxySpecified        bool
 	AuthMode              string                 `json:"auth_mode"`
 	AgentIdentity         *jsonAgentIdentityNode `json:"agent_identity"`
 	AgentRuntimeID        string                 `json:"agent_runtime_id"`
@@ -5128,8 +5174,11 @@ type sub2apiImportPayload struct {
 }
 
 type sub2apiAccountEntry struct {
-	Name        string                    `json:"name"`
-	Credentials sub2apiAccountCredentials `json:"credentials"`
+	IPv6EgressEnabled *bool   `json:"ipv6_egress_enabled"`
+	Timezone          *string `json:"timezone"`
+	proxySpecified    bool
+	Name              string                    `json:"name"`
+	Credentials       sub2apiAccountCredentials `json:"credentials"`
 	// 代理是账号属性而不是凭据，不同导出实现有的写在条目根上、有的塞进
 	// credentials，两处都收，根上的优先。
 	ProxyURL     string `json:"proxy_url"`
@@ -5147,6 +5196,9 @@ func (a sub2apiAccountEntry) proxyFields() (string, string, *bool) {
 }
 
 type sub2apiAccountCredentials struct {
+	IPv6EgressEnabled     *bool   `json:"ipv6_egress_enabled"`
+	Timezone              *string `json:"timezone"`
+	proxySpecified        bool
 	AuthMode              string                 `json:"auth_mode"`
 	AgentIdentity         *jsonAgentIdentityNode `json:"agent_identity"`
 	AgentRuntimeID        string                 `json:"agent_runtime_id"`
@@ -5370,6 +5422,9 @@ func jsonAccountEntriesToTokens(entries []jsonAccountEntry) []importToken {
 			agentNode = agentIdentityNodeFromFlatCredentials(entry.AuthMode, entry.AgentRuntimeID, entry.AgentPrivateKey, entry.AgentTaskID, accID, entry.ChatGPTUserID, email, planType, entry.AgentFedRAMP)
 		}
 		if tok, ok := agentIdentityImportTokenFromNode(agentNode, name); ok {
+			tok.ipv6Enabled = entry.IPv6EgressEnabled
+			tok.timezone = entry.Timezone
+			tok.proxySpecified = entry.proxySpecified
 			tok.proxyURL = strings.TrimSpace(entry.ProxyURL)
 			tok.proxyLabel = strings.TrimSpace(entry.ProxyLabel)
 			tok.proxyEnabled = entry.ProxyEnabled
@@ -5395,9 +5450,10 @@ func jsonAccountEntriesToTokens(entries []jsonAccountEntry) []importToken {
 				codex5HResetAt:        strings.TrimSpace(entry.Codex5HResetAt),
 				codex5HUsageUpdatedAt: strings.TrimSpace(entry.Codex5HUsageUpdatedAt),
 				codexUsageUpdatedAt:   strings.TrimSpace(entry.CodexUsageUpdatedAt),
-				proxyURL:              strings.TrimSpace(entry.ProxyURL),
-				proxyLabel:            strings.TrimSpace(entry.ProxyLabel),
-				proxyEnabled:          entry.ProxyEnabled,
+				ipv6Enabled:           entry.IPv6EgressEnabled, timezone: entry.Timezone, proxySpecified: entry.proxySpecified,
+				proxyURL:     strings.TrimSpace(entry.ProxyURL),
+				proxyLabel:   strings.TrimSpace(entry.ProxyLabel),
+				proxyEnabled: entry.ProxyEnabled,
 			})
 		}
 	}
@@ -5423,6 +5479,14 @@ func sub2apiAccountEntryToTokens(account sub2apiAccountEntry) []importToken {
 	var tokens []importToken
 	{
 		c := account.Credentials
+		ipv6Enabled, timezone := account.IPv6EgressEnabled, account.Timezone
+		if ipv6Enabled == nil {
+			ipv6Enabled = c.IPv6EgressEnabled
+		}
+		if timezone == nil {
+			timezone = c.Timezone
+		}
+		proxySpecified := account.proxySpecified || c.proxySpecified
 		rt := strings.TrimSpace(c.RefreshToken)
 		st := firstNonEmpty(c.SessionToken, c.SessionTokenCamel)
 		at := firstNonEmpty(c.AccessToken, c.AccessTokenCamel)
@@ -5445,6 +5509,9 @@ func sub2apiAccountEntryToTokens(account sub2apiAccountEntry) []importToken {
 			agentNode = agentIdentityNodeFromFlatCredentials(c.AuthMode, c.AgentRuntimeID, c.AgentPrivateKey, c.AgentTaskID, accID, c.ChatGPTUserID, email, planType, c.AgentFedRAMP)
 		}
 		if tok, ok := agentIdentityImportTokenFromNode(agentNode, name); ok {
+			tok.ipv6Enabled = ipv6Enabled
+			tok.timezone = timezone
+			tok.proxySpecified = proxySpecified
 			tok.proxyURL = proxyURL
 			tok.proxyLabel = proxyLabel
 			tok.proxyEnabled = proxyEnabled
@@ -5469,9 +5536,10 @@ func sub2apiAccountEntryToTokens(account sub2apiAccountEntry) []importToken {
 				codex5HResetAt:        strings.TrimSpace(c.Codex5HResetAt),
 				codex5HUsageUpdatedAt: strings.TrimSpace(c.Codex5HUsageUpdatedAt),
 				codexUsageUpdatedAt:   strings.TrimSpace(c.CodexUsageUpdatedAt),
-				proxyURL:              proxyURL,
-				proxyLabel:            proxyLabel,
-				proxyEnabled:          proxyEnabled,
+				ipv6Enabled:           ipv6Enabled, timezone: timezone, proxySpecified: proxySpecified,
+				proxyURL:     proxyURL,
+				proxyLabel:   proxyLabel,
+				proxyEnabled: proxyEnabled,
 			})
 		}
 	}
@@ -5605,6 +5673,10 @@ func (h *Handler) ImportAccounts(c *gin.Context) {
 		importProxies:  parseBoolForm(c.PostForm("import_proxy")) && (format == "json" || format == "json_at"),
 		allowDuplicate: parseBoolForm(c.PostForm("allow_duplicate")),
 		customHeaders:  customHeaders,
+	}
+	if err := settings.readPreferences(c); err != nil {
+		writeError(c, http.StatusBadRequest, err.Error())
+		return
 	}
 	// 分组校验放在解析文件之前：分组 ID 打错时一个账号都不该被导入。
 	groupCtx, groupCancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
@@ -6037,7 +6109,15 @@ func (h *Handler) importAccountsCommon(c *gin.Context, tokens []importToken, set
 	// 队列在去重阶段只读状态、不写库，复活动作放到后面的并发闸里执行。
 	var reviveRows []*database.AccountRow
 	queuedReviveIDs := make(map[int64]bool)
-	queueDuplicate := func(row *database.AccountRow) {
+	var preferenceErr error
+	queueDuplicate := func(row *database.AccountRow, t importToken) {
+		if row != nil {
+			if err := h.applyDuplicateImportPreferences(dedupeCtx, row.ID, settings, t); err != nil {
+				preferenceErr = err
+				return
+			}
+		}
+
 		if row != nil && accountErrorStateNeedsReset(row) && !queuedReviveIDs[row.ID] {
 			queuedReviveIDs[row.ID] = true
 			reviveRows = append(reviveRows, row)
@@ -6069,7 +6149,7 @@ func (h *Handler) importAccountsCommon(c *gin.Context, tokens []importToken, set
 					if err != nil {
 						log.Printf("查询已有 OAuth 账号 %d 失败: %v", duplicateID, err)
 					} else if importAccountCredentialFingerprint(row) == importTokenCredentialFingerprint(t, conflictingChatGPTIDs) {
-						queueDuplicate(row)
+						queueDuplicate(row, t)
 						continue
 					}
 				}
@@ -6096,7 +6176,7 @@ func (h *Handler) importAccountsCommon(c *gin.Context, tokens []importToken, set
 					if err != nil {
 						log.Printf("查询已有 OAuth 账号 %d 失败: %v", duplicateID, err)
 					} else if importAccountCredentialFingerprint(row) == importTokenCredentialFingerprint(t, conflictingChatGPTIDs) {
-						queueDuplicate(row)
+						queueDuplicate(row, t)
 						continue
 					}
 				}
@@ -6123,7 +6203,7 @@ func (h *Handler) importAccountsCommon(c *gin.Context, tokens []importToken, set
 						ownerRow = row
 					}
 				}
-				queueDuplicate(ownerRow)
+				queueDuplicate(ownerRow, t)
 				continue
 			}
 			newTokens = append(newTokens, t)
@@ -6133,6 +6213,10 @@ func (h *Handler) importAccountsCommon(c *gin.Context, tokens []importToken, set
 		}
 	}
 
+	if preferenceErr != nil {
+		writeError(c, http.StatusInternalServerError, "duplicate preferences update failed: "+preferenceErr.Error())
+		return
+	}
 	total := len(unique) + ambiguousOAuthIdentityCount + len(agentTokens)
 	if allowDuplicate && !workspaceOverrideKnown {
 		total = len(tokens) + len(agentTokens)
@@ -6249,7 +6333,7 @@ func (h *Handler) importAccountsCommon(c *gin.Context, tokens []importToken, set
 			// 清空，所以这里拿到的一定是校验过的 URL。
 			proxyURL := settings.proxyForToken(tok)
 
-			seed := importTokenSeed(tok, conflictingChatGPTIDs)
+			seed := settings.applyPreferences(importTokenSeed(tok, conflictingChatGPTIDs), tok)
 			seed.allowDuplicate = allowDuplicate
 			seed.customHeaders = cloneCustomHeaders(importCustomHeaders)
 			importSource := "import"
@@ -7099,6 +7183,12 @@ func (h *Handler) BatchUpdateAccounts(c *gin.Context) {
 		}
 	}
 
+	for _, id := range updatedIDs {
+		if err := h.retireIPv6Selection(ctx, id, schedulerUpdate.CredentialUpdates); err != nil {
+			writeError(c, http.StatusInternalServerError, "IPv6 selection saved; retirement pending: "+err.Error())
+			return
+		}
+	}
 	success := int64(len(updatedIDs))
 	failed := int64(len(ids)) - success
 	c.JSON(http.StatusOK, gin.H{

@@ -39,6 +39,8 @@ func (db *DB) ensureIPv6EgressSchema(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS ipv6_egress_config(id INTEGER PRIMARY KEY, enabled BOOLEAN NOT NULL DEFAULT FALSE, source_ips TEXT NOT NULL DEFAULT '[]', cooldown_seconds INTEGER NOT NULL DEFAULT 600, max_attempts INTEGER NOT NULL DEFAULT 3, retry_5xx BOOLEAN NOT NULL DEFAULT TRUE, revision BIGINT NOT NULL DEFAULT 1)`,
 		`INSERT INTO ipv6_egress_config(id) VALUES(1) ON CONFLICT(id) DO NOTHING`,
 		`CREATE TABLE IF NOT EXISTS ipv6_egress_bindings(account_id BIGINT PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE, ip TEXT NOT NULL UNIQUE, changed_at BIGINT NOT NULL DEFAULT 0, reason TEXT NOT NULL DEFAULT '', rotations BIGINT NOT NULL DEFAULT 0)`,
+		`CREATE TABLE IF NOT EXISTS ipv6_egress_leases(id TEXT PRIMARY KEY, account_id BIGINT NOT NULL, ip TEXT NOT NULL)`,
+		`CREATE INDEX IF NOT EXISTS ipv6_egress_leases_ip ON ipv6_egress_leases(ip)`,
 		`CREATE TABLE IF NOT EXISTS ipv6_egress_cooldowns(ip TEXT PRIMARY KEY, until_time BIGINT NOT NULL DEFAULT 0)`,
 	} {
 		if _, err := db.conn.ExecContext(ctx, q); err != nil {
@@ -87,7 +89,7 @@ func (db *DB) SaveIPv6EgressConfig(ctx context.Context, c IPv6EgressConfig) erro
 
 // A single database lock serializes claims across workers and blue/green instances.
 // expectedIP fences delayed failures so they cannot rotate a newer assignment.
-func (db *DB) ClaimIPv6Egress(ctx context.Context, accountID int64, localIPs []string, expectedIP, reason string, now int64) (IPv6Binding, IPv6EgressConfig, error) {
+func (db *DB) ClaimIPv6Egress(ctx context.Context, accountID int64, localIPs []string, expectedIP, reason string, now int64, member ...bool) (IPv6Binding, IPv6EgressConfig, error) {
 	var b IPv6Binding
 	var c IPv6EgressConfig
 	tx, err := db.conn.BeginTx(ctx, nil)
@@ -98,6 +100,16 @@ func (db *DB) ClaimIPv6Egress(ctx context.Context, accountID int64, localIPs []s
 	if _, err = tx.ExecContext(ctx, `UPDATE ipv6_egress_config SET revision=revision WHERE id=1`); err != nil {
 		return b, c, err
 	}
+	if len(member) > 0 && member[0] {
+		var raw, proxy string
+		if err = tx.QueryRowContext(ctx, `SELECT credentials,COALESCE(proxy_url,'') FROM accounts WHERE id=$1`, accountID).Scan(&raw, &proxy); err != nil {
+			return b, c, err
+		}
+		row := AccountRow{Credentials: decodeCredentials(raw)}
+		if !row.GetCredentialBool("ipv6_egress_enabled") || proxy != "" {
+			return b, c, ErrIPv6NotEnrolled
+		}
+	}
 	c, err = scanIPv6Config(tx.QueryRowContext(ctx, ipv6ConfigSelect))
 	if err != nil || !c.Enabled {
 		return b, c, err
@@ -105,6 +117,9 @@ func (db *DB) ClaimIPv6Egress(ctx context.Context, accountID int64, localIPs []s
 	err = tx.QueryRowContext(ctx, `SELECT account_id,ip,changed_at,reason,rotations FROM ipv6_egress_bindings WHERE account_id=$1`, accountID).Scan(&b.AccountID, &b.IP, &b.ChangedAt, &b.Reason, &b.Rotations)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return b, c, err
+	}
+	if b.Reason == "retired" {
+		return b, c, ErrIPv6Unavailable
 	}
 	candidates := make([]string, 0, len(localIPs))
 	for _, ip := range localIPs {
@@ -143,7 +158,7 @@ func (db *DB) ClaimIPv6Egress(ctx context.Context, accountID int64, localIPs []s
 		return b, c, tx.Commit()
 	}
 	used := map[string]bool{}
-	rows, err = tx.QueryContext(ctx, `SELECT ip FROM ipv6_egress_bindings WHERE account_id<>$1`, accountID)
+	rows, err = tx.QueryContext(ctx, `SELECT ip FROM ipv6_egress_bindings WHERE account_id<>$1 UNION SELECT ip FROM ipv6_egress_leases WHERE ip<>$2`, accountID, b.IP)
 	if err != nil {
 		return b, c, err
 	}

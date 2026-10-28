@@ -29,20 +29,22 @@ func isAgentIdentityCredentialRow(row *database.AccountRow) bool {
 type importAgentIdentityReq struct {
 	Name     string `json:"name"`
 	AuthJSON string `json:"auth_json"`
-	ProxyURL string `json:"proxy_url"`
+	nativeJSONPreferences
 }
 
 // agentIdentityFields 从 auth.json（agent_identity 对象或 auth_mode=agentIdentity 的根）
 // 解析出的字段，snake_case / camelCase 均兼容。
 type agentIdentityFields struct {
-	RuntimeID  string
-	PrivateKey string
-	TaskID     string
-	AccountID  string
-	UserID     string
-	Email      string
-	PlanType   string
-	FedRAMP    bool
+	preferences       *tokenCredentialSeed
+	sourcePreferences importToken
+	RuntimeID         string
+	PrivateKey        string
+	TaskID            string
+	AccountID         string
+	UserID            string
+	Email             string
+	PlanType          string
+	FedRAMP           bool
 }
 
 func agentIdentityString(node map[string]any, keys ...string) string {
@@ -120,6 +122,16 @@ func parseAgentIdentityAuthJSON(raw string) (*agentIdentityFields, error) {
 		PlanType:   agentIdentityString(node, "plan_type", "planType"),
 		FedRAMP:    agentIdentityBool(node, "chatgpt_account_is_fedramp", "chatgptAccountIsFedramp"),
 	}
+	importPreferencesFromMap(&fields.sourcePreferences, node)
+	if wrapped, ok := root["credentials"].(map[string]interface{}); ok {
+		importPreferencesFromMap(&fields.sourcePreferences, wrapped)
+	}
+	importPreferencesFromMap(&fields.sourcePreferences, root)
+	if fields.sourcePreferences.timezone != nil {
+		if err := validateAccountTimezone(*fields.sourcePreferences.timezone); err != nil {
+			return nil, err
+		}
+	}
 	if err := validateAgentIdentityFields(fields); err != nil {
 		return nil, err
 	}
@@ -156,7 +168,11 @@ func (h *Handler) ImportCodexAgentIdentity(c *gin.Context) {
 		return
 	}
 	req.Name = security.SanitizeInput(req.Name)
-	req.ProxyURL = security.SanitizeInput(req.ProxyURL)
+	settings, err := req.nativeJSONPreferences.settings()
+	if err != nil {
+		writeError(c, http.StatusBadRequest, err.Error())
+		return
+	}
 	if security.ContainsXSS(req.Name) || security.ContainsSQLInjection(req.Name) {
 		writeError(c, http.StatusBadRequest, "名称包含非法字符")
 		return
@@ -165,7 +181,7 @@ func (h *Handler) ImportCodexAgentIdentity(c *gin.Context) {
 		writeError(c, http.StatusBadRequest, "名称长度不能超过100字符")
 		return
 	}
-	if err := security.ValidateProxyURL(req.ProxyURL); err != nil {
+	if err := security.ValidateProxyURL(settings.defaultProxyURL); err != nil {
 		writeError(c, http.StatusBadRequest, "代理URL无效")
 		return
 	}
@@ -176,9 +192,10 @@ func (h *Handler) ImportCodexAgentIdentity(c *gin.Context) {
 		return
 	}
 
+	agentImportPreferences(fields, settings)
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
 	defer cancel()
-	id, duplicate, err := h.createAgentIdentityAccountIfAbsent(ctx, fields, req.Name, req.ProxyURL, "agent_identity_import")
+	id, duplicate, err := h.createAgentIdentityAccountIfAbsent(ctx, fields, req.Name, settings.proxyForToken(fields.sourcePreferences), "agent_identity_import")
 	if err != nil {
 		writeInternalError(c, err)
 		return
@@ -286,6 +303,17 @@ func (h *Handler) createAgentIdentityAccount(ctx context.Context, fields *agentI
 		"plan_type":                  planType,
 		"chatgpt_account_is_fedramp": fields.FedRAMP,
 	}
+	if fields.preferences != nil {
+		pref := fields.preferences
+		if pref.newIPv6Enabled != nil {
+			credentials[auth.IPv6EgressCredentialKey] = *pref.newIPv6Enabled
+		}
+		if pref.timezone != nil {
+			credentials[auth.AccountTimezoneCredentialKey] = *pref.timezone
+		} else if pref.newTimezone != nil {
+			credentials[auth.AccountTimezoneCredentialKey] = *pref.newTimezone
+		}
+	}
 	if fields.TaskID != "" {
 		credentials["task_id"] = fields.TaskID
 	}
@@ -336,6 +364,8 @@ func (h *Handler) importAgentIdentityTokens(ctx context.Context, tokens []import
 			PlanType:   strings.TrimSpace(t.planType),
 			FedRAMP:    t.agentFedRAMP,
 		}
+		pref := settings.applyPreferences(tokenCredentialSeed{}, t)
+		fields.preferences = &pref
 		id, duplicated, err := h.createAgentIdentityAccountChecked(ctx, fields, t.name, settings.proxyForToken(t), "import_agent_identity", runtimeIDs, allowDuplicate)
 		if err != nil {
 			failed++
@@ -356,8 +386,8 @@ func (h *Handler) importAgentIdentityTokens(ctx context.Context, tokens []import
 // batchImportAgentIdentityReq 是 Agent Identity 文件批量导入的请求体。
 // Files 每项是一个 auth.json 的原始 JSON 内容。
 type batchImportAgentIdentityReq struct {
-	Files    []string `json:"files"`
-	ProxyURL string   `json:"proxy_url"`
+	Files []string `json:"files"`
+	nativeJSONPreferences
 }
 
 type agentIdentityImportItem struct {
@@ -377,8 +407,12 @@ func (h *Handler) BatchImportCodexAgentIdentity(c *gin.Context) {
 		writeError(c, http.StatusBadRequest, "请求格式错误")
 		return
 	}
-	req.ProxyURL = security.SanitizeInput(req.ProxyURL)
-	if err := security.ValidateProxyURL(req.ProxyURL); err != nil {
+	settings, err := req.nativeJSONPreferences.settings()
+	if err != nil {
+		writeError(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := security.ValidateProxyURL(settings.defaultProxyURL); err != nil {
 		writeError(c, http.StatusBadRequest, "代理URL无效")
 		return
 	}
@@ -411,7 +445,8 @@ func (h *Handler) BatchImportCodexAgentIdentity(c *gin.Context) {
 			continue
 		}
 		item.Email = fields.Email
-		id, duplicated, err := h.createAgentIdentityAccountChecked(ctx, fields, "", req.ProxyURL, "agent_identity_file_import", runtimeIDs, false)
+		agentImportPreferences(fields, settings)
+		id, duplicated, err := h.createAgentIdentityAccountChecked(ctx, fields, "", settings.proxyForToken(fields.sourcePreferences), "agent_identity_file_import", runtimeIDs, false)
 		if duplicated {
 			item.Error = "账号已存在，已跳过"
 			items = append(items, item)

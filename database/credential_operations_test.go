@@ -54,6 +54,16 @@ func TestCredentialOperationsInitialImportPersistsAndEnrolls(t *testing.T) {
 	if id <= 0 {
 		t.Fatal("account not created")
 	}
+	row, err := db.GetAccountByID(ctx, id)
+	if err != nil || !row.GetCredentialBool("ipv6_egress_enabled") || row.GetCredential("timezone") != "America/New_York" {
+		t.Fatalf("new native import preferences: %+v %v", row, err)
+	}
+	if err = db.UpdateOAuthAccountCredentials(ctx, id, map[string]interface{}{"ipv6_egress_enabled": false, "timezone": "Asia/Tokyo"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.BatchUpdateAccountMetadata(ctx, []int64{id}, BatchAccountMetadataUpdate{Enabled: OptionalBool{Set: true, Value: false}}); err != nil {
+		t.Fatal(err)
+	}
 	stored, err := db.GetCredentialOpsLoginConfig(ctx, id)
 	if err != nil || stored == nil || !strings.HasPrefix(stored.PasswordCiphertext, "enc:") || stored.TOTPCiphertext == "" {
 		t.Fatalf("config = %#v %v", stored, err)
@@ -64,6 +74,10 @@ func TestCredentialOperationsInitialImportPersistsAndEnrolls(t *testing.T) {
 	}
 	if duplicate := queue(); duplicate != id {
 		t.Fatalf("duplicate import created account %d, want %d", duplicate, id)
+	}
+	row, err = db.GetAccountByID(ctx, id)
+	if err != nil || row.GetCredentialBool("ipv6_egress_enabled") || row.GetCredential("timezone") != "Asia/Tokyo" || row.Enabled {
+		t.Fatalf("duplicate import reset preferences/enablement: %+v %v", row, err)
 	}
 	tasks, err := db.ListCredentialOpsTasks(ctx)
 	if err != nil {
