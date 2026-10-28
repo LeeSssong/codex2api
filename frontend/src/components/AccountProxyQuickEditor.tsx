@@ -12,6 +12,8 @@ import Modal from "./Modal";
 import { ProxyPoolSelect } from "./ProxyPoolSelect";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { ProxyField } from "./ProxyField";
+import { selectAccountEgress } from "../lib/accountIPv6";
 
 const PROXY_SCHEMES = ["http:", "https:", "socks5:", "socks5h:"];
 
@@ -30,6 +32,8 @@ function isValidProxyInput(url: string): boolean {
 
 export interface ProxyQuickEditorAccount {
   id: number;
+  ipv6_egress_enabled?: boolean;
+  ipv6_egress_ip?: string;
   proxy_url?: string | null;
   group_ids?: number[] | null;
 }
@@ -38,17 +42,21 @@ interface AccountProxyQuickEditorProps {
   account: ProxyQuickEditorAccount | null;
   /** 账号显示名由各页自己的命名规则决定（Codex 用邮箱、Grok/Responses 用名称）。 */
   accountLabel: string;
+  allowLocalIPv6?: boolean;
+  onTestLocalIPv6?: () => void;
   proxies: ProxyRow[];
   ctx: ProxyBindingContext;
   onClose: () => void;
   onSaved: () => void | Promise<void>;
 }
 
-// 只改 proxy_url 一个字段的小弹窗：从账号列表的代理徽章直达，省掉"进编辑页→
+// 只改账号出口选择的小弹窗：从账号列表的代理徽章直达，省掉"进编辑页→
 // 翻到网络那一栏→连带提交整张表单"的绕路。
 export default function AccountProxyQuickEditor({
   account,
   accountLabel,
+  allowLocalIPv6 = false,
+  onTestLocalIPv6,
   proxies,
   ctx,
   onClose,
@@ -58,6 +66,7 @@ export default function AccountProxyQuickEditor({
   const { showToast } = useToast();
 
   const [value, setValue] = useState("");
+  const [ipv6Enabled, setIPv6Enabled] = useState(false);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [syncedId, setSyncedId] = useState<number | null>(null);
@@ -66,12 +75,15 @@ export default function AccountProxyQuickEditor({
   if (accountID !== syncedId) {
     setSyncedId(accountID);
     setValue((account?.proxy_url ?? "").trim());
+    setIPv6Enabled(Boolean(account?.ipv6_egress_enabled));
   }
 
   const busy = saving || testing;
   const trimmed = value.trim();
   const boundURL = (account?.proxy_url ?? "").trim();
-  const dirty = trimmed !== boundURL;
+  const dirty =
+    trimmed !== boundURL ||
+    (allowLocalIPv6 && ipv6Enabled !== Boolean(account?.ipv6_egress_enabled));
 
   const handleTest = async () => {
     if (!trimmed || testing) return;
@@ -111,7 +123,7 @@ export default function AccountProxyQuickEditor({
     }
   };
 
-  const submit = async (nextURL: string) => {
+  const submit = async (nextURL: string, nextIPv6 = ipv6Enabled) => {
     if (!account || saving) return;
     if (nextURL && !isValidProxyInput(nextURL)) {
       showToast(t("accounts.proxyQuickInvalid"), "error");
@@ -119,9 +131,14 @@ export default function AccountProxyQuickEditor({
     }
     setSaving(true);
     try {
-      await api.updateAccountScheduler(account.id, { proxy_url: nextURL });
+      await api.updateAccountScheduler(
+        account.id,
+        allowLocalIPv6
+          ? selectAccountEgress(nextIPv6, nextURL)
+          : { proxy_url: nextURL },
+      );
       showToast(
-        nextURL
+        nextURL || (allowLocalIPv6 && nextIPv6)
           ? t("accounts.proxyQuickSaveDone")
           : t("accounts.proxyQuickUnbindDone"),
       );
@@ -152,13 +169,21 @@ export default function AccountProxyQuickEditor({
             type="button"
             variant="outline"
             className="mr-auto gap-1.5 text-destructive hover:bg-destructive/10 hover:text-destructive"
-            disabled={busy || !boundURL}
-            onClick={() => void submit("")}
+            disabled={
+              busy ||
+              (!boundURL && !(allowLocalIPv6 && account?.ipv6_egress_enabled))
+            }
+            onClick={() => void submit("", false)}
           >
             <Unlink className="size-3.5" />
             {t("accounts.proxyQuickUnbind")}
           </Button>
-          <Button type="button" variant="outline" disabled={busy} onClick={onClose}>
+          <Button
+            type="button"
+            variant="outline"
+            disabled={busy}
+            onClick={onClose}
+          >
             {t("common.cancel")}
           </Button>
           <Button
@@ -181,41 +206,67 @@ export default function AccountProxyQuickEditor({
             <span className="text-xs">{t("accounts.proxyQuickCurrent")}</span>
             <AccountProxyBadge account={account} ctx={ctx} />
           </div>
-          <div className="mt-2 text-xs">{t("accounts.proxyQuickDesc")}</div>
+          <div className="mt-2 text-xs">
+            {t(
+              allowLocalIPv6
+                ? "accounts.localIPv6QuickDesc"
+                : "accounts.proxyQuickDesc",
+            )}
+          </div>
         </div>
 
-        <div className="space-y-2.5">
-          <label className="block text-sm font-semibold text-muted-foreground">
-            {t("accounts.proxyUrl")}
-          </label>
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-stretch">
-            <Input
-              className="min-w-0 flex-1"
-              placeholder={t("accounts.proxyUrlPlaceholder")}
-              value={value}
-              disabled={busy}
-              onChange={(event: ChangeEvent<HTMLInputElement>) =>
-                setValue(event.target.value)
-              }
-            />
-            <Button
-              type="button"
-              variant="outline"
-              className="shrink-0 justify-center gap-1.5 sm:min-w-[108px]"
-              disabled={busy || !trimmed}
-              onClick={() => void handleTest()}
-            >
-              <Zap className={`size-3.5 ${testing ? "animate-pulse" : ""}`} />
-              {testing ? t("accounts.testingProxy") : t("accounts.testProxy")}
-            </Button>
-          </div>
-          <ProxyPoolSelect
-            className="w-full"
+        {allowLocalIPv6 ? (
+          <ProxyField
+            value={value}
+            onChange={setValue}
             proxies={proxies}
             disabled={busy}
-            onSelect={setValue}
+            localIPv6={{
+              enabled: ipv6Enabled,
+              onChange: setIPv6Enabled,
+              ip: account?.ipv6_egress_enabled
+                ? account.ipv6_egress_ip
+                : undefined,
+              onTest:
+                !dirty && account?.ipv6_egress_enabled
+                  ? onTestLocalIPv6
+                  : undefined,
+            }}
           />
-        </div>
+        ) : (
+          <div className="space-y-2.5">
+            <label className="block text-sm font-semibold text-muted-foreground">
+              {t("accounts.proxyUrl")}
+            </label>
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-stretch">
+              <Input
+                className="min-w-0 flex-1"
+                placeholder={t("accounts.proxyUrlPlaceholder")}
+                value={value}
+                disabled={busy}
+                onChange={(event: ChangeEvent<HTMLInputElement>) =>
+                  setValue(event.target.value)
+                }
+              />
+              <Button
+                type="button"
+                variant="outline"
+                className="shrink-0 justify-center gap-1.5 sm:min-w-[108px]"
+                disabled={busy || !trimmed}
+                onClick={() => void handleTest()}
+              >
+                <Zap className={`size-3.5 ${testing ? "animate-pulse" : ""}`} />
+                {testing ? t("accounts.testingProxy") : t("accounts.testProxy")}
+              </Button>
+            </div>
+            <ProxyPoolSelect
+              className="w-full"
+              proxies={proxies}
+              disabled={busy}
+              onSelect={setValue}
+            />
+          </div>
+        )}
       </div>
     </Modal>
   );

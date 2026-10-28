@@ -1799,9 +1799,9 @@ export const api = {
   testProxy: (url: string, id?: number, lang?: string) =>
     request<ProxyTestResult>('/proxies/test', { method: 'POST', body: JSON.stringify({ url, id, lang }) }),
   // OAuth
-  generateOAuthURL: (data: { proxy_url?: string; redirect_uri?: string }) =>
+  generateOAuthURL: (data: { ipv6_egress_enabled?: boolean; proxy_url?: string; redirect_uri?: string }) =>
     request<OAuthURLResponse>('/oauth/generate-auth-url', { method: 'POST', body: JSON.stringify(data) }),
-  exchangeOAuthCode: (data: { session_id: string; code: string; state: string; name?: string; proxy_url?: string }) =>
+  exchangeOAuthCode: (data: { ipv6_egress_enabled?: boolean; session_id: string; code: string; state: string; name?: string; proxy_url?: string }) =>
     request<OAuthExchangeResponse>('/oauth/exchange-code', { method: 'POST', body: JSON.stringify(data) }),
   updateOAuthAccount: (id: number, data: UpdateOAuthAccountRequest) =>
     request<OAuthExchangeResponse>(`/accounts/${id}/oauth/exchange-code`, { method: 'POST', body: JSON.stringify(data) }),

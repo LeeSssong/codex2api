@@ -420,6 +420,8 @@ export interface AccountQuotaWindow {
 }
 
 export interface AccountRow {
+  ipv6_egress_enabled?: boolean
+  ipv6_egress_ip?: string
   quota_5h?: AccountQuotaWindow
   quota_7d?: AccountQuotaWindow
   /** Frontend loading state for the independent page-stats request. */
@@ -1100,6 +1102,7 @@ export interface RecycleBinAccountRow {
 export type RecycleBinAccountsResponse = ApiListResponse<'accounts', RecycleBinAccountRow>
 
 export interface AddAccountRequest {
+  ipv6_egress_enabled?: boolean
   name?: string
   refresh_token?: string
   session_token?: string
@@ -1111,6 +1114,7 @@ export interface AddAccountRequest {
 }
 
 export interface AddATAccountRequest {
+  ipv6_egress_enabled?: boolean
   name?: string
   access_token: string
   proxy_url: string
@@ -1122,6 +1126,8 @@ export interface AddATAccountRequest {
 
 // Codex Agent Identity auth.json 导入（auth_mode=agentIdentity，动态签名，不存 AT/RT）。
 export interface ImportAgentIdentityRequest {
+  default_timezone?: string
+  ipv6_egress_enabled?: boolean
   name?: string
   auth_json: string
   proxy_url?: string
@@ -1135,6 +1141,8 @@ export interface ImportAgentIdentityResponse {
 
 // Agent Identity auth.json 文件批量导入(每项一个文件的原始 JSON 内容)。
 export interface AgentIdentityBatchImportRequest {
+  default_timezone?: string
+  ipv6_egress_enabled?: boolean
   files: string[]
   proxy_url?: string
 }
@@ -1667,6 +1675,7 @@ export interface GrokBatchImportResponse {
 }
 
 export interface UpdateAccountSchedulerRequest {
+  ipv6_egress_enabled?: boolean
   account_href?: string | null
   upstream_request_id_header?: string | null
   score_bias_override?: number | null

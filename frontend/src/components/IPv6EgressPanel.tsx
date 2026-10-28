@@ -63,6 +63,7 @@ export default function IPv6EgressPanel() {
       <div className="min-w-0 space-y-1.5"><h2 id="ipv6-egress-heading" className="flex items-center gap-2 font-semibold"><Globe className="size-4 shrink-0" />{t('ipv6Egress.title')}</h2><p className="max-w-3xl text-sm leading-relaxed text-muted-foreground">{t('ipv6Egress.description')}</p></div>
       <Switch aria-label={t('ipv6Egress.enable')} checked={data?.config.enabled ?? false} onCheckedChange={value => void save(value)} disabled={!draft || busy || !!data?.resin_enabled} />
     </div>
+    <p className="text-xs leading-relaxed text-muted-foreground">{t("ipv6Egress.failClosed")}</p>
     {(error || refreshError) && <p role="alert" className="flex items-start gap-2 text-sm text-red-700 dark:text-red-300"><AlertTriangle className="size-4 shrink-0 mt-0.5" />{error || refreshError}</p>}
     {!data || !draft ? <p role="status" className="text-sm text-muted-foreground">{t('ipv6Egress.loading')}</p> : <>
       <div className="flex flex-wrap gap-x-5 gap-y-2 text-sm tabular-nums"><strong>{t(data.config.enabled ? 'ipv6Egress.on' : 'ipv6Egress.off')}</strong><span>{t('ipv6Egress.counts', counts!)}</span></div>

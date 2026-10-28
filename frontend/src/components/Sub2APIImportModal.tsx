@@ -1,7 +1,10 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 
-import { getAdminKey } from "../api";
+import { getAdminKey, type ProxyRow } from "../api";
+import { ProxyField } from "./ProxyField";
+import ImportTimezoneControl from "./ImportTimezoneControl";
+import { importTimezoneFields, selectAccountEgress } from "../lib/accountIPv6";
 import Modal from "./Modal";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -34,6 +37,7 @@ interface Sub2APIPreview {
 
 interface Sub2APIImportModalProps {
   show: boolean;
+  proxies?: ProxyRow[];
   onClose: () => void;
   onImportStart: (res: Response) => Promise<void>;
   onShowToast: (message: string, kind?: "success" | "error") => void;
@@ -41,11 +45,16 @@ interface Sub2APIImportModalProps {
 
 export default function Sub2APIImportModal({
   show,
+  proxies = [],
   onClose,
   onImportStart,
   onShowToast,
 }: Sub2APIImportModalProps) {
   const { t } = useTranslation();
+  const [proxyURL, setProxyURL] = useState("");
+  const [ipv6Enabled, setIPv6Enabled] = useState(true);
+  const [egressTouched, setEgressTouched] = useState(false);
+  const [newYorkTimezone, setNewYorkTimezone] = useState(true);
   const [baseUrl, setBaseUrl] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [previewing, setPreviewing] = useState(false);
@@ -111,6 +120,8 @@ export default function Sub2APIImportModal({
           base_url: baseUrl,
           api_key: apiKey,
           scope,
+          ...importTimezoneFields(newYorkTimezone),
+          ...(egressTouched ? selectAccountEgress(ipv6Enabled, proxyURL) : {}),
         }),
       });
       if (res.headers.get("content-type")?.includes("text/event-stream")) {
@@ -144,7 +155,8 @@ export default function Sub2APIImportModal({
   };
 
   const isImporting = importingScope !== null;
-  const canPreview = baseUrl.trim() !== "" && apiKey.trim() !== "" && !previewing;
+  const canPreview =
+    baseUrl.trim() !== "" && apiKey.trim() !== "" && !previewing;
 
   return (
     <Modal
@@ -154,6 +166,27 @@ export default function Sub2APIImportModal({
       onClose={onClose}
     >
       <div className="space-y-4">
+        <ProxyField
+          value={proxyURL}
+          onChange={setProxyURL}
+          proxies={proxies}
+          disabled={previewing || isImporting}
+          localIPv6={{
+            enabled: ipv6Enabled,
+            onChange: (enabled) => {
+              setIPv6Enabled(enabled);
+              setEgressTouched(true);
+            },
+          }}
+        />
+        <p className="text-[11px] text-muted-foreground">
+          {t("accounts.localIPv6ImportHint")}
+        </p>
+        <ImportTimezoneControl
+          checked={newYorkTimezone}
+          onChange={setNewYorkTimezone}
+          disabled={previewing || isImporting}
+        />
         <div className="space-y-2">
           <label className="text-sm font-medium">
             {t("accounts.sub2api.baseUrl")}
@@ -187,10 +220,7 @@ export default function Sub2APIImportModal({
         </div>
 
         <div className="flex items-center gap-2">
-          <Button
-            onClick={handlePreview}
-            disabled={!canPreview || isImporting}
-          >
+          <Button onClick={handlePreview} disabled={!canPreview || isImporting}>
             {previewing
               ? t("accounts.sub2api.previewing")
               : t("accounts.sub2api.preview")}
@@ -336,10 +366,10 @@ function Stat({
     tone === "success"
       ? "text-emerald-600 dark:text-emerald-400"
       : tone === "warning"
-      ? "text-amber-600 dark:text-amber-400"
-      : tone === "danger"
-      ? "text-rose-600 dark:text-rose-400"
-      : "text-foreground";
+        ? "text-amber-600 dark:text-amber-400"
+        : tone === "danger"
+          ? "text-rose-600 dark:text-rose-400"
+          : "text-foreground";
   return (
     <div className="rounded-lg border border-border px-3 py-2">
       <div className="text-[11px] text-muted-foreground">{label}</div>

@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { ChevronDown, MapPin, Check } from "lucide-react";
@@ -8,6 +15,7 @@ import { cn } from "@/lib/utils";
 
 interface ProxyPoolSelectProps {
   proxies: ProxyRow[];
+  localIPv6?: { enabled: boolean; onSelect: () => void; onClear: () => void };
   onSelect: (url: string) => void;
   /** 当前已选代理 URL(受控回显);与某条代理 URL 一致时该项高亮并在触发器回显。 */
   value?: string;
@@ -44,6 +52,7 @@ function applyManualScroll(el: HTMLElement, deltaY: number): boolean {
 // 会被弹窗 body 的 overflow 裁掉、压在 footer 按钮下;空间不够时自动向上翻。
 export function ProxyPoolSelect({
   proxies,
+  localIPv6,
   onSelect,
   value,
   disabled = false,
@@ -61,13 +70,25 @@ export function ProxyPoolSelect({
     const rect = anchor.getBoundingClientRect();
     const viewportHeight = window.innerHeight;
     const viewportWidth = window.innerWidth;
-    const spaceBelow = viewportHeight - rect.bottom - DROPDOWN_GAP - VIEWPORT_PADDING;
+    const spaceBelow =
+      viewportHeight - rect.bottom - DROPDOWN_GAP - VIEWPORT_PADDING;
     const spaceAbove = rect.top - DROPDOWN_GAP - VIEWPORT_PADDING;
-    const preferUp = spaceBelow < Math.min(DROPDOWN_MAX_HEIGHT, 160) && spaceAbove > spaceBelow;
-    const maxHeight = Math.max(120, Math.min(DROPDOWN_MAX_HEIGHT, preferUp ? spaceAbove : spaceBelow));
-    const width = Math.min(Math.max(rect.width, 240), viewportWidth - VIEWPORT_PADDING * 2);
+    const preferUp =
+      spaceBelow < Math.min(DROPDOWN_MAX_HEIGHT, 160) &&
+      spaceAbove > spaceBelow;
+    const maxHeight = Math.max(
+      120,
+      Math.min(DROPDOWN_MAX_HEIGHT, preferUp ? spaceAbove : spaceBelow),
+    );
+    const width = Math.min(
+      Math.max(rect.width, 240),
+      viewportWidth - VIEWPORT_PADDING * 2,
+    );
     const maxLeft = viewportWidth - width - VIEWPORT_PADDING;
-    const left = Math.min(Math.max(VIEWPORT_PADDING, rect.left), Math.max(VIEWPORT_PADDING, maxLeft));
+    const left = Math.min(
+      Math.max(VIEWPORT_PADDING, rect.left),
+      Math.max(VIEWPORT_PADDING, maxLeft),
+    );
     setPosition({
       top: preferUp ? rect.top - DROPDOWN_GAP : rect.bottom + DROPDOWN_GAP,
       left,
@@ -90,7 +111,11 @@ export function ProxyPoolSelect({
     const onDown = (e: PointerEvent) => {
       const target = e.target as Node | null;
       if (!target) return;
-      if (rootRef.current?.contains(target) || dropdownRef.current?.contains(target)) return;
+      if (
+        rootRef.current?.contains(target) ||
+        dropdownRef.current?.contains(target)
+      )
+        return;
       setOpen(false);
     };
     // Radix Dialog 在 capture 阶段就处理了 Escape;这里只负责收起下拉,
@@ -110,7 +135,10 @@ export function ProxyPoolSelect({
     document.addEventListener("keydown", onEsc);
     window.addEventListener("resize", onReposition);
     window.addEventListener("scroll", onReposition, true);
-    document.addEventListener("wheel", onWheel, { passive: false, capture: true });
+    document.addEventListener("wheel", onWheel, {
+      passive: false,
+      capture: true,
+    });
     return () => {
       document.removeEventListener("pointerdown", onDown);
       document.removeEventListener("keydown", onEsc);
@@ -122,7 +150,8 @@ export function ProxyPoolSelect({
 
   // 空闲(bound_count=0)优先,其余按绑定数升序,负载最轻的排前面。
   const sorted = useMemo(
-    () => [...proxies].sort((a, b) => (a.bound_count ?? 0) - (b.bound_count ?? 0)),
+    () =>
+      [...proxies].sort((a, b) => (a.bound_count ?? 0) - (b.bound_count ?? 0)),
     [proxies],
   );
   const selected = useMemo(
@@ -130,7 +159,7 @@ export function ProxyPoolSelect({
     [proxies, value],
   );
 
-  if (proxies.length === 0) return null;
+  if (proxies.length === 0 && !localIPv6) return null;
 
   const IdleBadge = () => (
     <span className="inline-flex shrink-0 items-center rounded-full bg-emerald-500/12 px-1.5 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-400">
@@ -175,6 +204,35 @@ export function ProxyPoolSelect({
                   }
             }
           >
+            {localIPv6 ? (
+              <>
+                <button
+                  type="button"
+                  role="option"
+                  aria-selected={localIPv6.enabled}
+                  className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm hover:bg-muted"
+                  onClick={() => {
+                    localIPv6.onSelect();
+                    setOpen(false);
+                  }}
+                >
+                  {localIPv6.enabled ? <Check className="size-3.5" /> : null}
+                  {t("accounts.localIPv6")}
+                </button>
+                <button
+                  type="button"
+                  role="option"
+                  aria-selected={!localIPv6.enabled && !value}
+                  className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm hover:bg-muted"
+                  onClick={() => {
+                    localIPv6.onClear();
+                    setOpen(false);
+                  }}
+                >
+                  {t("accounts.localIPv4")}
+                </button>
+              </>
+            ) : null}
             {sorted.map((proxy) => {
               const count = proxy.bound_count ?? 0;
               const loc = proxy.test_location?.trim();
@@ -196,16 +254,26 @@ export function ProxyPoolSelect({
                   )}
                 >
                   <span className="flex w-4 shrink-0 justify-center">
-                    {active ? <Check className="size-3.5 text-primary" /> : null}
+                    {active ? (
+                      <Check className="size-3.5 text-primary" />
+                    ) : null}
                   </span>
                   <span className="min-w-0 flex-1">
                     <span className="flex items-center gap-1.5">
-                      <span className="truncate text-[13px] font-medium text-foreground">{name}</span>
-                      {count === 0 ? <IdleBadge /> : <BoundBadge count={count} />}
+                      <span className="truncate text-[13px] font-medium text-foreground">
+                        {name}
+                      </span>
+                      {count === 0 ? (
+                        <IdleBadge />
+                      ) : (
+                        <BoundBadge count={count} />
+                      )}
                     </span>
                     <span className="flex items-center gap-2 text-[11px] text-muted-foreground">
                       {loc ? <LocationTag loc={loc} /> : null}
-                      <span className="truncate font-mono opacity-80">{proxy.url}</span>
+                      <span className="truncate font-mono opacity-80">
+                        {proxy.url}
+                      </span>
                     </span>
                   </span>
                 </button>
@@ -230,17 +298,32 @@ export function ProxyPoolSelect({
         )}
       >
         <span className="flex min-w-0 items-center gap-1.5">
-          {selected ? (
+          {localIPv6?.enabled ? (
+            <span>{t("accounts.localIPv6")}</span>
+          ) : selected ? (
             <>
-              <span className="truncate text-foreground">{selected.label?.trim() || selected.url}</span>
+              <span className="truncate text-foreground">
+                {selected.label?.trim() || selected.url}
+              </span>
               {selectedLoc ? <LocationTag loc={selectedLoc} /> : null}
-              {(selected.bound_count ?? 0) === 0 ? <IdleBadge /> : <BoundBadge count={selected.bound_count ?? 0} />}
+              {(selected.bound_count ?? 0) === 0 ? (
+                <IdleBadge />
+              ) : (
+                <BoundBadge count={selected.bound_count ?? 0} />
+              )}
             </>
           ) : (
-            <span className="truncate text-muted-foreground">{t("proxies.selectFromPool")}</span>
+            <span className="truncate text-muted-foreground">
+              {t("proxies.selectFromPool")}
+            </span>
           )}
         </span>
-        <ChevronDown className={cn("size-4 shrink-0 text-muted-foreground transition-transform", open && "rotate-180")} />
+        <ChevronDown
+          className={cn(
+            "size-4 shrink-0 text-muted-foreground transition-transform",
+            open && "rotate-180",
+          )}
+        />
       </button>
       {dropdown}
     </div>

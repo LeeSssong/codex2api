@@ -15,6 +15,7 @@ import { cn } from "@/lib/utils";
 // 账号列表里的代理徽章：一眼看出这个号在走谁的出口，以及它是不是已经没有出口了。
 // 判定全在 lib/accountProxyBinding，本组件只负责配色与文案。
 const TONE: Record<AccountProxyBindingKind, string> = {
+  local_ipv6: "bg-sky-50 text-sky-700 ring-sky-600/20 dark:bg-sky-950 dark:text-sky-300 dark:ring-sky-400/20",
   resin:
     "bg-emerald-50 text-emerald-700 ring-emerald-600/20 dark:bg-emerald-950 dark:text-emerald-300 dark:ring-emerald-400/20",
   bound:
@@ -56,6 +57,10 @@ export default function AccountProxyBadge({
   let text: string;
   let tip: string;
   switch (binding.kind) {
+    case "local_ipv6":
+      text = t("accounts.localIPv6");
+      tip = `${text} · ${account?.ipv6_egress_ip || t("accounts.localIPv6Pending")}`;
+      break;
     case "resin":
       text = t("accounts.proxyBadgeResin");
       tip = binding.url

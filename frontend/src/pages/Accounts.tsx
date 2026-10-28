@@ -8,7 +8,9 @@ import "./accounts-cards.css";
 import { useLocation, useNavigate } from "react-router-dom";
 import { api, getAdminKey, resetAdminAuthState } from "../api";
 import type { ProxyRow } from "../api";
-import { ProxyField } from "../components/ProxyField";
+import { ProxyField, type LocalIPv6Field } from "../components/ProxyField";
+import { accountEgressPatch, importEgressFields, importTimezoneFields, selectAccountEgress } from "../lib/accountIPv6";
+import ImportTimezoneControl from "../components/ImportTimezoneControl";
 import AccountProxyBadge from "../components/AccountProxyBadge";
 import AccountStateModels from "../components/AccountStateModels";
 import StateCoverage from "../components/StateCoverage";
@@ -1982,6 +1984,7 @@ export default function Accounts() {
     refresh_token: "",
     session_token: "",
     proxy_url: "",
+    ipv6_egress_enabled: true,
   });
   const [addCustomHeadersText, setAddCustomHeadersText] = useState("");
   const [workspaceRouteID, setWorkspaceRouteID] = useState("");
@@ -2066,6 +2069,7 @@ export default function Accounts() {
     number[]
   >([]);
   const [editProxyUrl, setEditProxyUrl] = useState("");
+  const [editIPv6Enabled, setEditIPv6Enabled] = useState(false);
   const [editCustomHeadersText, setEditCustomHeadersText] = useState("");
   const [editCodexFingerprintMode, setEditCodexFingerprintMode] =
     useState<CodexFingerprintMode>("off");
@@ -2118,6 +2122,9 @@ export default function Accounts() {
   const [importing, setImporting] = useState(false);
   const [showImportPicker, setShowImportPicker] = useState(false);
   const [importProxyUrl, setImportProxyUrl] = useState("");
+  const [importIPv6Enabled, setImportIPv6Enabled] = useState(true);
+  const [importEgressTouched, setImportEgressTouched] = useState(false);
+  const [importNewYorkTimezone, setImportNewYorkTimezone] = useState(true);
   const [importCustomHeadersText, setImportCustomHeadersText] = useState("");
   const [importWorkspaceRouteID, setImportWorkspaceRouteID] = useState("");
   const [showSub2APIImport, setShowSub2APIImport] = useState(false);
@@ -2175,6 +2182,8 @@ export default function Accounts() {
   >("oauth");
   const [agentIdentityJson, setAgentIdentityJson] = useState("");
   const [agentIdentityProxyUrl, setAgentIdentityProxyUrl] = useState("");
+  const [agentIdentityIPv6Enabled, setAgentIdentityIPv6Enabled] = useState(true);
+  const [agentIdentityEgressTouched, setAgentIdentityEgressTouched] = useState(false);
   const agentIdentityFileInputRef = useRef<HTMLInputElement | null>(null);
   const [agentIdentityFilesImporting, setAgentIdentityFilesImporting] =
     useState(false);
@@ -2187,9 +2196,12 @@ export default function Accounts() {
   const [atForm, setAtForm] = useState<AddATAccountRequest>({
     access_token: "",
     proxy_url: "",
+    ipv6_egress_enabled: true,
   });
   const [sessionJson, setSessionJson] = useState("");
   const [sessionProxyUrl, setSessionProxyUrl] = useState("");
+  const [sessionIPv6Enabled, setSessionIPv6Enabled] = useState(true);
+  const [sessionEgressTouched, setSessionEgressTouched] = useState(false);
   // 允许重复添加：勾选后本次添加/导入跳过去重，强制新建（添加弹窗与导入弹窗共用）。
   const [allowDuplicate, setAllowDuplicate] = useState(false);
   // 采用文件内代理：勾选后 JSON 文件里带的 proxy_url 生效，并自动注册进代理池。
@@ -2221,6 +2233,7 @@ export default function Accounts() {
     auth_url: string;
   } | null>(null);
   const [oauthProxyUrl, setOauthProxyUrl] = useState("");
+  const [oauthIPv6Enabled, setOauthIPv6Enabled] = useState(true);
   const [oauthCallbackUrl, setOauthCallbackUrl] = useState("");
   const [oauthName, setOauthName] = useState("");
   const [oauthGenerating, setOauthGenerating] = useState(false);
@@ -2243,7 +2256,7 @@ export default function Accounts() {
   );
   const [quickGroupIds, setQuickGroupIds] = useState<number[]>([]);
   const [quickGroupSubmitting, setQuickGroupSubmitting] = useState(false);
-  // 代理徽章点开的快速绑定弹窗：只改 proxy_url 一个字段。
+  // 代理徽章点开的快速绑定弹窗：只改账号出口选择。
   const [quickProxyAccount, setQuickProxyAccount] = useState<AccountRow | null>(
     null,
   );
@@ -2275,7 +2288,7 @@ export default function Accounts() {
   // 开启时成立,所以开关与全局代理都得跟着代理池一起进来。
   const [proxyPoolEnabled, setProxyPoolEnabled] = useState(false);
   const [globalProxyURL, setGlobalProxyURL] = useState("");
-  // Resin 启用时 Codex 账号出站整层改经 Resin,徽章要报 resin 而不是下面任何一层。
+  // 选择本机 IPv6 / IPv4 的原生账号使用各自选择，其余出口保留现有代理链标识。
   const [resinEnabled, setResinEnabled] = useState(false);
   // 单个对象且引用稳定:memo 行组件的 props 里不能出现每轮新建的数组/对象,
   // 否则整表 memo 失效(账号页性能优化的既有教训)。
@@ -2284,6 +2297,7 @@ export default function Accounts() {
   const proxyBindingCtx = useMemo<ProxyBindingContext>(
     () =>
       buildProxyBindingContext({
+        nativeCodex: true,
         proxies: proxyPool,
         groups: allGroups,
         poolEnabled: proxyPoolEnabled,
@@ -2385,17 +2399,20 @@ export default function Accounts() {
     label = t("accounts.proxyUrl"),
     placeholder = t("accounts.proxyUrlPlaceholder"),
     disabled = false,
+    localIPv6,
   }: {
     value: string;
     onChange: (value: string) => void;
     label?: string;
     placeholder?: string;
     disabled?: boolean;
+    localIPv6?: LocalIPv6Field;
   }) => (
     <ProxyField
       value={value}
       onChange={onChange}
       proxies={proxyPool}
+      localIPv6={localIPv6}
       label={label}
       labelClassName="text-sm"
       placeholder={placeholder}
@@ -3819,7 +3836,7 @@ export default function Accounts() {
         setShowAdd(false);
         await readImportSSE(res);
         showToast(t("accounts.addSuccess"));
-        setAddForm({ refresh_token: "", session_token: "", proxy_url: "" });
+        setAddForm({ refresh_token: "", session_token: "", proxy_url: "", ipv6_egress_enabled: true });
         setAddCustomHeadersText("");
         setWorkspaceRouteID("");
         return;
@@ -3828,7 +3845,7 @@ export default function Accounts() {
       await api.addAccount(payload);
       showToast(t("accounts.addSuccess"));
       setShowAdd(false);
-      setAddForm({ refresh_token: "", session_token: "", proxy_url: "" });
+      setAddForm({ refresh_token: "", session_token: "", proxy_url: "", ipv6_egress_enabled: true });
       setAddCustomHeadersText("");
       setWorkspaceRouteID("");
       void reload();
@@ -3865,7 +3882,7 @@ export default function Accounts() {
       setShowAdd(false);
       await readImportSSE(res);
       showToast(t("accounts.addSuccess"));
-      setAtForm({ access_token: "", proxy_url: "" });
+      setAtForm({ access_token: "", proxy_url: "", ipv6_egress_enabled: true });
       setAddCustomHeadersText("");
       setWorkspaceRouteID("");
     } catch (error) {
@@ -3967,6 +3984,7 @@ export default function Accounts() {
         sessionProxyUrl,
         addCustomHeadersText,
         workspaceRouteID,
+        { touched: sessionEgressTouched, enabled: sessionIPv6Enabled },
       );
       setShowAdd(false);
       setSessionJson("");
@@ -3991,7 +4009,8 @@ export default function Accounts() {
     try {
       const res = await api.importCodexAgentIdentity({
         auth_json: agentIdentityJson,
-        proxy_url: agentIdentityProxyUrl.trim() || undefined,
+        ...(agentIdentityEgressTouched ? selectAccountEgress(agentIdentityIPv6Enabled, agentIdentityProxyUrl) : {}),
+        ...importTimezoneFields(importNewYorkTimezone),
       });
       showToast(
         res.email
@@ -4022,7 +4041,8 @@ export default function Accounts() {
       );
       const res = await api.batchImportCodexAgentIdentity({
         files,
-        proxy_url: agentIdentityProxyUrl.trim() || undefined,
+        ...(agentIdentityEgressTouched ? selectAccountEgress(agentIdentityIPv6Enabled, agentIdentityProxyUrl) : {}),
+        ...importTimezoneFields(importNewYorkTimezone),
       });
       setAgentIdentityFilesResult(res);
       if (res.imported > 0) {
@@ -4175,7 +4195,7 @@ export default function Accounts() {
   };
 
   const startOAuthSession = async () => {
-    const result = await api.generateOAuthURL({ proxy_url: oauthProxyUrl });
+    const result = await api.generateOAuthURL(selectAccountEgress(oauthIPv6Enabled, oauthProxyUrl));
     setOauthSession(result);
     setOauthCallbackUrl("");
     setOauthStep("exchange");
@@ -4237,7 +4257,7 @@ export default function Accounts() {
         code,
         state,
         name: oauthName.trim() || undefined,
-        proxy_url: oauthProxyUrl.trim() || undefined,
+        ...selectAccountEgress(oauthIPv6Enabled, oauthProxyUrl),
       });
       showToast(
         result.email
@@ -4494,6 +4514,7 @@ export default function Accounts() {
     proxyOverride?: string,
     customHeadersText?: string,
     workspaceOverride?: string,
+    egressOverride?: { touched: boolean; enabled: boolean },
   ) => {
     const parsedCustomHeaders = parseCustomHeadersText(customHeadersText ?? "");
     if (!parsedCustomHeaders.ok) {
@@ -4552,8 +4573,10 @@ export default function Accounts() {
         const batch = batches[i];
         const formData = new FormData();
         if (format !== "txt") formData.append("format", format);
-        const trimmedImportProxy = (proxyOverride ?? importProxyUrl).trim();
-        if (trimmedImportProxy) formData.append("proxy_url", trimmedImportProxy);
+        const egress = egressOverride ?? { touched: importEgressTouched, enabled: importIPv6Enabled };
+        const fields = { ...importEgressFields(egress.touched, egress.enabled, proxyOverride ?? importProxyUrl),
+          ...importTimezoneFields(importNewYorkTimezone) };
+        for (const [key, value] of Object.entries(fields)) formData.append(key, value);
         if (carriesFileProxies) formData.append("import_proxy", "true");
         const routedHeaders = applyOptionalWorkspaceRouteHeader(
           parsedCustomHeaders.value,
@@ -6021,6 +6044,7 @@ export default function Accounts() {
       filterExistingAPIKeyIDs(account.allowed_api_key_ids ?? [], apiKeys),
     );
     setEditProxyUrl(account.proxy_url ?? "");
+    setEditIPv6Enabled(Boolean(account.ipv6_egress_enabled));
     setEditCustomHeadersText(formatCustomHeadersText(account.custom_headers));
     setEditCodexFingerprintMode(account.codex_fingerprint_mode ?? "off");
     setEditTimezone(account.timezone ?? "");
@@ -6231,7 +6255,9 @@ export default function Accounts() {
         skip_warm_tier: skipWarmTier,
         keep_concurrency_on_degrade: keepConcurrencyOnDegrade,
         allowed_api_key_ids: allowedAPIKeySelection,
-        proxy_url: editProxyUrl.trim() || null,
+        ...(isCodexOfficialAccount(editingAccount)
+          ? accountEgressPatch(editingAccount, editIPv6Enabled, editProxyUrl)
+          : { proxy_url: editProxyUrl.trim() || null }),
         tags: editTags,
         group_ids: editGroupIds,
         auto_pause_5h_threshold: percentThresholdInputToRatio(
@@ -6443,7 +6469,10 @@ export default function Accounts() {
     openQuickConfig: (account) => setQuickConfigAccount(account),
     openChannelMonitor: (account) => setChannelMonitorAccount(account),
     openQuickGroupEditor,
-    openQuickProxyEditor: (account) => setQuickProxyAccount(account),
+    openQuickProxyEditor: (account) => {
+      void api.getAccount(account.id).then(setQuickProxyAccount)
+        .catch((error) => showToast(getErrorMessage(error), "error"));
+    },
     openHrefEditor: (account) => setHrefAccount(account),
     openHref: (account) => {
       if (!openAccountHref(account)) {
@@ -8213,6 +8242,8 @@ export default function Accounts() {
               setOpenAIModelMappingEntries(emptyModelMappingEntries());
               setSessionJson("");
               setSessionProxyUrl("");
+              setSessionIPv6Enabled(true);
+              setSessionEgressTouched(false);
               setAddCustomHeadersText("");
               setWorkspaceRouteID("");
             }}
@@ -8254,6 +8285,8 @@ export default function Accounts() {
                     setOpenAIModelMappingEntries(emptyModelMappingEntries());
                     setSessionJson("");
                     setSessionProxyUrl("");
+              setSessionIPv6Enabled(true);
+              setSessionEgressTouched(false);
                     setAddCustomHeadersText("");
                     setWorkspaceRouteID("");
                   }}
@@ -8448,6 +8481,8 @@ export default function Accounts() {
                 </div>
                 {renderProxyInput({
                   value: addForm.proxy_url,
+                  localIPv6: { enabled: Boolean(addForm.ipv6_egress_enabled),
+                    onChange: (enabled) => setAddForm((form) => ({ ...form, ipv6_egress_enabled: enabled })) },
                   onChange: (value) =>
                     setAddForm((form) => ({
                       ...form,
@@ -8481,6 +8516,8 @@ export default function Accounts() {
                 </div>
                 {renderProxyInput({
                   value: addForm.proxy_url,
+                  localIPv6: { enabled: Boolean(addForm.ipv6_egress_enabled),
+                    onChange: (enabled) => setAddForm((form) => ({ ...form, ipv6_egress_enabled: enabled })) },
                   onChange: (value) =>
                     setAddForm((form) => ({
                       ...form,
@@ -8517,6 +8554,8 @@ export default function Accounts() {
                 </div>
                 {renderProxyInput({
                   value: atForm.proxy_url,
+                  localIPv6: { enabled: Boolean(atForm.ipv6_egress_enabled),
+                    onChange: (enabled) => setAtForm((form) => ({ ...form, ipv6_egress_enabled: enabled })) },
                   onChange: (value) =>
                     setAtForm((form) => ({
                       ...form,
@@ -8552,7 +8591,10 @@ export default function Accounts() {
                   value: sessionProxyUrl,
                   label: t("accounts.importProxyLabel"),
                   onChange: setSessionProxyUrl,
+                  localIPv6: { enabled: sessionIPv6Enabled,
+                    onChange: (enabled) => { setSessionIPv6Enabled(enabled); setSessionEgressTouched(true); } },
                 })}
+                <ImportTimezoneControl checked={importNewYorkTimezone} onChange={setImportNewYorkTimezone} />
                 {renderWorkspaceRouteInput()}
                 {renderCustomHeadersTextarea({
                   value: addCustomHeadersText,
@@ -8920,7 +8962,10 @@ export default function Accounts() {
                 {renderProxyInput({
                   value: agentIdentityProxyUrl,
                   onChange: setAgentIdentityProxyUrl,
+                  localIPv6: { enabled: agentIdentityIPv6Enabled,
+                    onChange: (enabled) => { setAgentIdentityIPv6Enabled(enabled); setAgentIdentityEgressTouched(true); } },
                 })}
+                <ImportTimezoneControl checked={importNewYorkTimezone} onChange={setImportNewYorkTimezone} />
               </div>
             ) : (
               <div className="space-y-5">
@@ -8949,6 +8994,7 @@ export default function Accounts() {
                       label: t("accounts.oauthProxyUrl"),
                       placeholder: t("accounts.oauthProxyUrlPlaceholder"),
                       onChange: setOauthProxyUrl,
+                      localIPv6: { enabled: oauthIPv6Enabled, onChange: setOauthIPv6Enabled },
                     })}
                   </>
                 ) : (
@@ -9064,9 +9110,11 @@ export default function Accounts() {
                 value: importProxyUrl,
                 label: t("accounts.importProxyLabel"),
                 onChange: setImportProxyUrl,
+                localIPv6: { enabled: importIPv6Enabled,
+                  onChange: (enabled) => { setImportIPv6Enabled(enabled); setImportEgressTouched(true); } },
               })}
               <p className="text-[11px] text-muted-foreground">
-                {t("accounts.importProxyHint")}
+                {t("accounts.localIPv6ImportHint")}
               </p>
               {renderCustomHeadersTextarea({
                 value: importCustomHeadersText,
@@ -9076,6 +9124,7 @@ export default function Accounts() {
                 value: importWorkspaceRouteID,
                 onChange: setImportWorkspaceRouteID,
               })}
+              <ImportTimezoneControl checked={importNewYorkTimezone} onChange={setImportNewYorkTimezone} />
               <label className="flex cursor-pointer items-center gap-2 pt-1 text-xs text-muted-foreground">
                 <input
                   type="checkbox"
@@ -9258,6 +9307,7 @@ export default function Accounts() {
             )}
           </Modal>
           <Sub2APIImportModal
+            proxies={proxyPool}
             show={showSub2APIImport}
             onClose={() => setShowSub2APIImport(false)}
             onImportStart={async (res) => {
@@ -9500,6 +9550,16 @@ export default function Accounts() {
                 usageReloadAttemptsRef.current.delete(testingAccount.id);
                 setUsageReloadTick((tick) => tick + 1);
                 void reloadSilently();
+                // A first test may allocate or rotate the binding. Refresh only the read-only snapshot,
+                // keeping any unsaved scheduler fields intact.
+                if (testingAccount.ipv6_egress_enabled &&
+                    (editingAccount?.id === testingAccount.id || quickProxyAccount?.id === testingAccount.id)) {
+                  void api.getAccount(testingAccount.id).then((fresh) => {
+                    const binding = { ipv6_egress_ip: fresh.ipv6_egress_ip };
+                    setEditingAccount((current) => current?.id === fresh.id ? { ...current, ...binding } : current);
+                    setQuickProxyAccount((current) => current?.id === fresh.id ? { ...current, ...binding } : current);
+                  }).catch((error) => showToast(getErrorMessage(error), "error"));
+                }
               }}
               onClose={() => setTestingAccount(null)}
             />
@@ -10531,6 +10591,13 @@ export default function Accounts() {
                           {renderProxyInput({
                             value: editProxyUrl,
                             onChange: setEditProxyUrl,
+                            localIPv6: isCodexOfficialAccount(editingAccount) ? {
+                              enabled: editIPv6Enabled, onChange: setEditIPv6Enabled,
+                              ip: editingAccount.ipv6_egress_enabled ? editingAccount.ipv6_egress_ip : undefined,
+                              onTest: editingAccount.ipv6_egress_enabled && editIPv6Enabled &&
+                                Object.keys(accountEgressPatch(editingAccount, editIPv6Enabled, editProxyUrl)).length === 0
+                                ? () => openTestingAccount(editingAccount) : undefined,
+                            } : undefined,
                           })}
                         </div>
 
@@ -10764,6 +10831,8 @@ export default function Accounts() {
             accountLabel={
               quickProxyAccount ? formatAccountName(quickProxyAccount) : ""
             }
+            allowLocalIPv6={Boolean(quickProxyAccount && isCodexOfficialAccount(quickProxyAccount))}
+            onTestLocalIPv6={() => { if (quickProxyAccount) openTestingAccount(quickProxyAccount); }}
             proxies={proxyPool}
             ctx={proxyBindingCtx}
             onClose={() => setQuickProxyAccount(null)}

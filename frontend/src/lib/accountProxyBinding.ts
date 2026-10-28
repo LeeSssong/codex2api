@@ -10,6 +10,7 @@
 //      两边必须恒等；任何"聪明"的归一化都会造出假的失配。
 
 export type AccountProxyBindingKind =
+  | "local_ipv6"
   // Resin 已启用:该账号所有出站经 Resin,下面各层配置暂不参与
   | "resin"
   // 账号自绑到代理池里的一条健康条目
@@ -47,11 +48,16 @@ export interface ProxyBindingGroup {
 }
 
 export interface ProxyBindingAccount {
+  openai_responses_api?: boolean;
+  grok_api?: boolean;
+  ipv6_egress_enabled?: boolean;
+  ipv6_egress_ip?: string;
   proxy_url?: string | null;
   group_ids?: number[] | null;
 }
 
 export interface ProxyBindingContext {
+  nativeCodex?: boolean;
   /** Resin 反代已启用(仅 Codex 账号页传 true;中继型渠道不经 Resin)。 */
   resinEnabled: boolean;
   poolEnabled: boolean;
@@ -89,6 +95,7 @@ export function proxyIsUsable(
 }
 
 export function buildProxyBindingContext(input: {
+  nativeCodex?: boolean;
   proxies?: ProxyBindingProxy[] | null;
   groups?: ProxyBindingGroup[] | null;
   poolEnabled?: boolean | null;
@@ -111,6 +118,7 @@ export function buildProxyBindingContext(input: {
   }
 
   return {
+    nativeCodex: Boolean(input.nativeCodex),
     resinEnabled: Boolean(input.resinEnabled),
     poolEnabled: Boolean(input.poolEnabled),
     globalProxy: trimValue(input.globalProxy),
@@ -140,7 +148,13 @@ export function resolveAccountProxyBinding(
 ): AccountProxyBinding {
   const base = { url: "", proxy: null, groupName: "", usable: true } as const;
 
+  if (account?.ipv6_egress_enabled) return { ...base, kind: "local_ipv6" };
+
   const accountProxy = trimValue(account?.proxy_url);
+  if (ctx.nativeCodex && !account?.openai_responses_api && !account?.grok_api &&
+      account?.ipv6_egress_enabled === false && !accountProxy) {
+    return { ...base, kind: "direct" };
+  }
   // Resin 整层覆盖:出口由 Resin 提供,池空/绑定失效都不再让账号被跳过。
   // 带上自绑 URL 只为提示"这条配置已被覆盖",不代表它在生效。
   if (ctx.resinEnabled) {

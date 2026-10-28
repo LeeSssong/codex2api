@@ -57,9 +57,17 @@ export function ProxyUrlInput({
 //   第三行:当前值命中池内节点时给一句关联提示——账号与节点按 URL 关联,
 //          在「代理」页改节点地址会同步到所有绑定账号,删除则自动解绑。
 // 各渠道的添加/编辑弹窗都必须用它,不要再各页自造导致体验割裂。
+export interface LocalIPv6Field {
+  enabled: boolean;
+  ip?: string;
+  onChange: (enabled: boolean) => void;
+  onTest?: () => void;
+}
+
 export function ProxyField({
   value,
   onChange,
+  localIPv6,
   proxies,
   label,
   labelClassName,
@@ -71,6 +79,7 @@ export function ProxyField({
   value: string;
   onChange: (value: string) => void;
   proxies: ProxyRow[];
+  localIPv6?: LocalIPv6Field;
   /** 字段标题;传空串则不渲染标题(由外层自行摆放)。 */
   label?: string;
   /** 标题样式覆盖,便于与所在弹窗相邻字段的标题风格对齐。 */
@@ -104,12 +113,16 @@ export function ProxyField({
       const res = await api.testProxy(url, undefined, lang);
       if (!res.success) {
         showToast(
-          t("accounts.proxyTestFailed", { error: res.error || t("accounts.proxyTestUnknownError") }),
+          t("accounts.proxyTestFailed", {
+            error: res.error || t("accounts.proxyTestUnknownError"),
+          }),
           "error",
         );
         return;
       }
-      const location = res.location || [res.country, res.region, res.city].filter(Boolean).join(" ");
+      const location =
+        res.location ||
+        [res.country, res.region, res.city].filter(Boolean).join(" ");
       showToast(
         t("accounts.proxyTestSuccess", {
           ip: res.ip || "-",
@@ -119,7 +132,10 @@ export function ProxyField({
         "success",
       );
     } catch (error) {
-      showToast(t("accounts.proxyTestFailed", { error: getErrorMessage(error) }), "error");
+      showToast(
+        t("accounts.proxyTestFailed", { error: getErrorMessage(error) }),
+        "error",
+      );
     } finally {
       setTesting(false);
     }
@@ -130,29 +146,98 @@ export function ProxyField({
   return (
     <div className={cn("space-y-2", className)}>
       {title ? (
-        <span className={cn("block text-xs font-semibold text-muted-foreground", labelClassName)}>{title}</span>
+        <span
+          className={cn(
+            "block text-xs font-semibold text-muted-foreground",
+            labelClassName,
+          )}
+        >
+          {title}
+        </span>
       ) : null}
       <div className="flex flex-col gap-2 sm:flex-row sm:items-stretch">
-        <ProxyUrlInput
-          className="min-w-0 flex-1"
-          value={value}
-          onChange={onChange}
-          placeholder={placeholder}
-          disabled={disabled}
-        />
+        {localIPv6?.enabled ? (
+          <div className="relative min-w-0 flex-1">
+            <textarea
+              className="block min-h-9 w-full resize-none rounded-md border border-input bg-background px-3 py-2 pr-8 font-mono text-xs break-all"
+              rows={2}
+              readOnly
+              aria-label={t("accounts.localIPv6Address")}
+              value={localIPv6.ip || t("accounts.localIPv6Pending")}
+            />
+            <button
+              type="button"
+              disabled={disabled}
+              aria-label={t("accounts.clearProxy")}
+              title={t("accounts.clearProxy")}
+              className="absolute inset-y-0 right-0 flex w-8 items-center justify-center text-muted-foreground"
+              onClick={() => {
+                localIPv6.onChange(false);
+                onChange("");
+              }}
+            >
+              <X className="size-3.5" />
+            </button>
+          </div>
+        ) : (
+          <ProxyUrlInput
+            className="min-w-0 flex-1"
+            value={value}
+            onChange={(url) => {
+              localIPv6?.onChange(false);
+              onChange(url);
+            }}
+            placeholder={placeholder}
+            disabled={disabled}
+          />
+        )}
         <Button
           type="button"
           variant="outline"
           className="shrink-0 justify-center gap-1.5 sm:min-w-[104px]"
-          disabled={disabled || testing || !trimmed}
-          onClick={() => void testProxy()}
+          disabled={
+            disabled ||
+            testing ||
+            (localIPv6?.enabled ? !localIPv6.onTest : !trimmed)
+          }
+          onClick={() =>
+            localIPv6?.enabled ? localIPv6.onTest?.() : void testProxy()
+          }
         >
           <Zap className={`size-3.5 ${testing ? "animate-pulse" : ""}`} />
-          {testing ? t("accounts.testingProxy") : t("accounts.testProxy")}
+          {localIPv6?.enabled
+            ? t("accounts.localIPv6Test")
+            : testing
+              ? t("accounts.testingProxy")
+              : t("accounts.testProxy")}
         </Button>
       </div>
-      {proxies.length > 0 ? (
-        <ProxyPoolSelect className="w-full" proxies={proxies} value={value} onSelect={onChange} disabled={disabled} />
+      {proxies.length > 0 || localIPv6 ? (
+        <ProxyPoolSelect
+          className="w-full"
+          proxies={proxies}
+          value={value}
+          localIPv6={
+            localIPv6
+              ? {
+                  enabled: localIPv6.enabled,
+                  onSelect: () => {
+                    localIPv6.onChange(true);
+                    onChange("");
+                  },
+                  onClear: () => {
+                    localIPv6.onChange(false);
+                    onChange("");
+                  },
+                }
+              : undefined
+          }
+          onSelect={(url) => {
+            localIPv6?.onChange(false);
+            onChange(url);
+          }}
+          disabled={disabled}
+        />
       ) : (
         // 代理池为空时仍显示一个禁用占位下拉 + 引导,让"从代理池选择"始终可见,
         // 避免让用户误以为该功能缺失(池条目来自「代理」页)。
@@ -161,8 +246,19 @@ export function ProxyField({
           <span className="opacity-60">▾</span>
         </div>
       )}
-      {linked ? (
-        <p className="text-[11px] leading-relaxed text-muted-foreground">{linkedHint ?? t("accounts.proxyPoolLinkedHint")}</p>
+      {localIPv6?.enabled ? (
+        <p className="text-[11px] leading-relaxed text-muted-foreground">
+          {t(
+            localIPv6.onTest
+              ? "accounts.localIPv6Hint"
+              : "accounts.localIPv6SaveFirst",
+          )}
+        </p>
+      ) : null}
+      {linked && !localIPv6?.enabled ? (
+        <p className="text-[11px] leading-relaxed text-muted-foreground">
+          {linkedHint ?? t("accounts.proxyPoolLinkedHint")}
+        </p>
       ) : null}
     </div>
   );
