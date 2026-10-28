@@ -2246,6 +2246,8 @@ export default function Accounts() {
     auth_url: string;
   } | null>(null);
   const [editOAuthProxyUrl, setEditOAuthProxyUrl] = useState("");
+  const [editOAuthIPv6Enabled, setEditOAuthIPv6Enabled] = useState(false);
+  const [editOAuthEgressTouched, setEditOAuthEgressTouched] = useState(false);
   const [editOAuthCallbackUrl, setEditOAuthCallbackUrl] = useState("");
   const [editOAuthGenerating, setEditOAuthGenerating] = useState(false);
   const [editOAuthUpdating, setEditOAuthUpdating] = useState(false);
@@ -4020,6 +4022,8 @@ export default function Accounts() {
       setShowAdd(false);
       setAgentIdentityJson("");
       setAgentIdentityProxyUrl("");
+      setAgentIdentityIPv6Enabled(true);
+      setAgentIdentityEgressTouched(false);
       void reload();
     } catch (error) {
       showToast(
@@ -4283,9 +4287,7 @@ export default function Accounts() {
   };
 
   const startEditOAuthSession = async () => {
-    const result = await api.generateOAuthURL({
-      proxy_url: editOAuthProxyUrl.trim() || undefined,
-    });
+    const result = await api.generateOAuthURL(selectAccountEgress(editOAuthIPv6Enabled, editOAuthProxyUrl));
     setEditOAuthSession(result);
     setEditOAuthCallbackUrl("");
     setEditOAuthStep("exchange");
@@ -4352,7 +4354,7 @@ export default function Accounts() {
         session_id: editOAuthSession.session_id,
         code,
         state,
-        proxy_url: editOAuthProxyUrl.trim() || undefined,
+        ...(editOAuthEgressTouched ? selectAccountEgress(editOAuthIPv6Enabled, editOAuthProxyUrl) : {}),
       });
       showToast(
         result.email
@@ -6081,6 +6083,8 @@ export default function Accounts() {
     setEditOAuthStep("generate");
     setEditOAuthSession(null);
     setEditOAuthProxyUrl(account.proxy_url ?? "");
+    setEditOAuthIPv6Enabled(Boolean(account.ipv6_egress_enabled));
+    setEditOAuthEgressTouched(false);
     setEditOAuthCallbackUrl("");
     setEditOAuthGenerating(false);
     setEditOAuthUpdating(false);
@@ -6137,6 +6141,8 @@ export default function Accounts() {
     setEditOAuthStep("generate");
     setEditOAuthSession(null);
     setEditOAuthProxyUrl("");
+    setEditOAuthIPv6Enabled(false);
+    setEditOAuthEgressTouched(false);
     setEditOAuthCallbackUrl("");
     setEditOAuthGenerating(false);
     setEditOAuthUpdating(false);
@@ -10134,7 +10140,12 @@ export default function Accounts() {
                           value: editOAuthProxyUrl,
                           label: t("accounts.oauthProxyUrl"),
                           placeholder: t("accounts.oauthProxyUrlPlaceholder"),
-                          onChange: setEditOAuthProxyUrl,
+                          onChange: (value) => { setEditOAuthProxyUrl(value); setEditOAuthEgressTouched(true); },
+                          localIPv6: {
+                            enabled: editOAuthIPv6Enabled,
+                            ip: editingAccount.ipv6_egress_enabled ? editingAccount.ipv6_egress_ip : undefined,
+                            onChange: (enabled) => { setEditOAuthIPv6Enabled(enabled); setEditOAuthEgressTouched(true); },
+                          },
                         })}
                       </>
                     ) : (

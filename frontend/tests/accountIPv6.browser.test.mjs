@@ -162,6 +162,7 @@ async function fixture(t, options = {}) {
             summary: { total: 1 },
           };
         if (name === "getAccount") return window.__account;
+        if (name === "generateOAuthURL") return {session_id:"fixture-session",auth_url:"https://auth.example.test/login"};
         if (name === "getAccountHealthBars") return { buckets: {} };
         if (name === "getIntelligenceBars") return { bars: {} };
         if (name === "getAccountPageStats") return { stats: {} };
@@ -425,4 +426,49 @@ test("Responses add has no native IPv6 enrollment control", async (t) => {
     await page.getByRole("button", { name: "Local IPV6", exact: true }).count(),
     0,
   );
+});
+
+test("reauthorization explicit clearing sends opt-out while untouched preserves route", async (t) => {
+  const page = await fixture(t, { mode: "accounts" });
+  await page.getByTitle("Edit Settings", {exact:true}).first().click();
+  await page.getByRole("button", {name:"Account",exact:true}).click();
+  assert.equal(await page.getByRole("textbox",{name:"Actual bound IPv6 address"}).inputValue(), fullIP);
+  await page.getByRole("button",{name:"Clear proxy",exact:true}).click();
+  await page.getByRole("button",{name:"Generate Auth Link",exact:true}).click();
+  const generated = (await calls(page,"generateOAuthURL"))[0].args[0];
+  assert.equal(generated.ipv6_egress_enabled,false);
+  assert.equal(generated.proxy_url,"");
+  await page.getByPlaceholder("http://localhost:1455/auth/callback?code=...&state=...").fill("http://localhost:1455/auth/callback?code=fixture&state=fixture");
+  await page.getByRole("button",{name:"Update Authorization Parameters",exact:true}).click();
+  await page.getByTitle("Edit Settings",{exact:true}).first().waitFor();
+  const updated = (await calls(page,"updateOAuthAccount"))[0].args[1];
+  assert.equal(updated.ipv6_egress_enabled,false);
+  assert.equal(updated.proxy_url,"");
+});
+test("reauthorization without route edits omits durable selection override", async (t) => {
+  const page = await fixture(t, { mode: "accounts" });
+  await page.getByTitle("Edit Settings", {exact:true}).first().click();
+  await page.getByRole("button", {name:"Account",exact:true}).click();
+  await page.getByRole("button",{name:"Generate Auth Link",exact:true}).click();
+  await page.getByPlaceholder("http://localhost:1455/auth/callback?code=...&state=...").fill("http://localhost:1455/auth/callback?code=fixture&state=fixture");
+  await page.getByRole("button",{name:"Update Authorization Parameters",exact:true}).click();
+  const updated = (await calls(page,"updateOAuthAccount"))[0].args[1];
+  assert.equal(Object.hasOwn(updated,"ipv6_egress_enabled"),false);
+  assert.equal(Object.hasOwn(updated,"proxy_url"),false);
+});
+test("successful Agent Identity import resets touched egress for the next import", async (t) => {
+  const page = await fixture(t, { mode: "accounts" });
+  async function open(){
+    await page.getByRole("button",{name:"Add Account",exact:true}).click();
+    await page.getByRole("button",{name:"Agent Identity",exact:true}).click();
+    await page.getByPlaceholder(/Paste the full auth.json/).fill('{"auth_mode":"agentIdentity"}');
+  }
+  await open();
+  await page.getByRole("button",{name:"Clear proxy",exact:true}).click();
+  await page.getByRole("button",{name:"Import & create account",exact:true}).click();
+  await open();
+  await page.getByRole("button",{name:"Import & create account",exact:true}).click();
+  const imported=(await calls(page,"importCodexAgentIdentity"))[1].args[0];
+  assert.equal(Object.hasOwn(imported,"ipv6_egress_enabled"),false);
+  assert.equal(Object.hasOwn(imported,"proxy_url"),false);
 });

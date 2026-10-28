@@ -4369,6 +4369,7 @@ export interface AccountPortalSubmitResponse {
 }
 
 export interface UpdateOAuthAccountRequest {
+  ipv6_egress_enabled?: boolean
   session_id: string
   code: string
   state: string
