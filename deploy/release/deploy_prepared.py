@@ -123,19 +123,30 @@ def installed_pool(root):
         subprocess.run(['systemctl', 'restart', unit], check=True)
         subprocess.run(['/usr/bin/python3', str(root / 'ipv6_pool.py'), 'ensure', '--config', str(config)], check=True)
         yield
-    except BaseException:
-        subprocess.run(['systemctl', 'stop', unit], check=True)
-        subprocess.run(['systemctl', 'disable', unit], check=True, stdout=subprocess.DEVNULL)
+    except BaseException as original:
+        recovery_errors = []
+        def recover(action):
+            try:
+                action()
+            except Exception as error:
+                recovery_errors.append(type(error).__name__ + ': ' + str(error))
+        # A partial first install may fail before the unit exists. systemctl's
+        # unit-not-found status must not prevent restoring the installed files.
+        unit_exists = pairs[2][1].exists()
+        recover(lambda: subprocess.run(['systemctl', 'stop', unit], check=unit_exists))
+        recover(lambda: subprocess.run(['systemctl', 'disable', unit], check=unit_exists, stdout=subprocess.DEVNULL))
         for target, snapshot in snapshots.items():
             if snapshot is None:
-                target.unlink(missing_ok=True)
+                recover(lambda target=target: target.unlink(missing_ok=True))
             else:
-                atomic_install(target, snapshot[0], snapshot[1])
-        subprocess.run(['systemctl', 'daemon-reload'], check=True)
+                recover(lambda target=target, snapshot=snapshot: atomic_install(target, snapshot[0], snapshot[1]))
+        recover(lambda: subprocess.run(['systemctl', 'daemon-reload'], check=True))
         if enabled:
-            subprocess.run(['systemctl', 'enable', unit], check=True, stdout=subprocess.DEVNULL)
+            recover(lambda: subprocess.run(['systemctl', 'enable', unit], check=True, stdout=subprocess.DEVNULL))
         if active:
-            subprocess.run(['systemctl', 'start', unit], check=True)
+            recover(lambda: subprocess.run(['systemctl', 'start', unit], check=True))
+        if recovery_errors:
+            original.add_note('Network restoration errors: ' + '; '.join(recovery_errors))
         raise
 
 

@@ -113,6 +113,29 @@ class InstallationTests(unittest.TestCase):
             self.assertFalse(targets[1].exists())
             self.assertFalse(targets[2].exists())
 
+    def test_first_install_stop_unit_not_found_still_restores_and_preserves_error(self):
+        import subprocess
+        with tempfile.TemporaryDirectory() as d:
+            root, targets = self.pool_fixture(d)
+            real_install = deploy.atomic_install
+            count = 0
+            def install(path, data, mode):
+                nonlocal count
+                count += 1
+                if count == 2:
+                    raise OSError('original install failure')
+                return real_install(path, data, mode)
+            def command(args, **kwargs):
+                if args[:2] in (['systemctl', 'stop'], ['systemctl', 'disable']):
+                    if kwargs.get('check'):
+                        raise subprocess.CalledProcessError(5, args)
+                    return mock.Mock(stdout='', returncode=5)
+                return mock.Mock(stdout='inactive', returncode=0)
+            with mock.patch.object(deploy, 'POOL_TARGETS', targets), mock.patch.object(deploy.subprocess, 'run', side_effect=command), mock.patch.object(deploy, 'atomic_install', side_effect=install):
+                with self.assertRaisesRegex(OSError, 'original install failure'):
+                    deploy.install_pool(root)
+            self.assertFalse(any(p.exists() for p in targets))
+
     def test_oci_graph_proves_index_to_config_and_rejects_wrong_or_tampered(self):
         import io,tarfile
         with tempfile.TemporaryDirectory() as d:
