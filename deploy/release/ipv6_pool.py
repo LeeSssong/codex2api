@@ -142,7 +142,7 @@ def ensure(cfg):
                 moved = True
             else:
                 validate_link(json.loads(current)[0], parent['ifindex'])
-            assigned = assigned_addresses(json.loads(ns('ip', '-j', '-6', 'addr', 'show', 'dev', cfg['interface']))[0])
+            assigned = assigned_addresses((json.loads(ns('ip', '-j', '-6', 'addr', 'show', 'dev', cfg['interface'])) or [{}])[0])
             routes = json.loads(ns('ip', '-j', '-6', 'route', 'show', 'default'))
             commands = address_commands(cfg, assigned, routes)
             # Inspect every existing address/route before changing link state.
@@ -157,7 +157,7 @@ def ensure(cfg):
                 deadline = time.monotonic() + 8
                 while True:
                     try:
-                        actual = assigned_addresses(json.loads(ns('ip', '-j', '-6', 'addr', 'show', 'dev', cfg['interface']))[0])
+                        actual = assigned_addresses((json.loads(ns('ip', '-j', '-6', 'addr', 'show', 'dev', cfg['interface'])) or [{}])[0])
                         if actual != set(cfg['addresses']):
                             raise RuntimeError('IPv6 pool incomplete')
                         break

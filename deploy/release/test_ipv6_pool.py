@@ -97,3 +97,10 @@ class NamespaceMutationTests(unittest.TestCase):
         with mock.patch.object(pool,'inspect_app',return_value=c),mock.patch.object(pool,'command',side_effect=command),mock.patch.object(pool.os,'open',return_value=99),mock.patch.object(pool.os,'close'),mock.patch.object(pool.os,'stat',return_value=SimpleNamespace(st_dev=1,st_ino=1)),mock.patch.object(pool.os,'fstat',return_value=SimpleNamespace(st_dev=1,st_ino=2)):
             with self.assertRaises(ValueError):pool.ensure(cfg)
         self.assertFalse(any('up' in cmd for cmd in calls))
+
+class EmptyInterfaceTests(unittest.TestCase):
+    def test_fresh_interface_empty_ipv6_inventory_is_an_empty_address_set(self):
+        # ip -j -6 addr show can return [] for an interface before IPv6 is up.
+        import json
+        inventory=json.loads('[]')
+        self.assertEqual(pool.assigned_addresses((inventory or [{}])[0]),set())
