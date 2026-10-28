@@ -54,6 +54,17 @@ class PoolTests(unittest.TestCase):
         addr['addr_info'][0]['dadfailed']=True
         with self.assertRaises(RuntimeError):pool.assigned_addresses(addr)
 
+    def test_same_gateway_router_advertisement_coexists_with_static_route(self):
+        cfg=pool.validate_config(self.config())
+        ra={'dst':'default','gateway':'fe80::1','dev':'c2a-v6','protocol':'ra','metric':1024,'expires':1797}
+        static={'dst':'default','gateway':'fe80::1','dev':'c2a-v6','metric':2048}
+        self.assertEqual(pool.address_commands(cfg,set(cfg['addresses']),[ra,static]),[])
+        self.assertEqual(pool.address_commands(cfg,set(cfg['addresses']),[ra]),[['ip','-6','route','add','default','via','fe80::1','dev','c2a-v6','metric','2048']])
+        with self.assertRaises(ValueError):
+            pool.address_commands(cfg,set(cfg['addresses']),[dict(ra,gateway='fe80::2'),static])
+        with self.assertRaises(ValueError):
+            pool.address_commands(cfg,set(cfg['addresses']),[dict(static,metric=1024)])
+
     def test_route_scope_does_not_change_ipv4_or_unrelated_ipv6_routes(self):
         cfg=pool.validate_config(self.config())
         commands=pool.address_commands(cfg, {cfg['addresses'][0]}, [])

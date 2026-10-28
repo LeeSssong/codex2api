@@ -81,9 +81,12 @@ def address_commands(cfg, assigned, routes):
     commands = [['ip', '-6', 'addr', 'add', ip + '/64', 'dev', cfg['interface']]
                 for ip in cfg['addresses'] if ip not in assigned]
     defaults = [r for r in routes if r.get('dst') == 'default' and r.get('dev') == cfg['interface']]
-    if any(r.get('gateway') != cfg['gateway'] or r.get('metric') != 2048 for r in defaults):
+    # Router advertisements may add a same-gateway expiring route at a
+    # different metric. Preserve it while independently ensuring our static route.
+    if any(r.get('gateway') != cfg['gateway'] or
+           (r.get('metric') != 2048 and r.get('protocol') != 'ra') for r in defaults):
         raise ValueError('unexpected dedicated default route')
-    if not defaults:
+    if not any(r.get('metric') == 2048 and r.get('protocol') != 'ra' for r in defaults):
         commands.append(['ip', '-6', 'route', 'add', 'default', 'via', cfg['gateway'],
                          'dev', cfg['interface'], 'metric', '2048'])
     return commands
