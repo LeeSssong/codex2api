@@ -6,3 +6,8 @@ test('IPv6 availability excludes bound, cooling and removed addresses', () => {
   const data = { config: { source_ips: ['2604::1', '2604::2', '2604::3', '2604::4', '2604::5'] }, local_ips: ['2604::1', '2604::2', '2604::3', '2604::4'], bindings: [{ ip: '2604::1' }, { ip: '2604::2' }], cooldowns: [{ ip: '2604::2' }, { ip: '2604::3' }] }
   assert.deepEqual(ipv6PoolCounts(data), { total: 4, available: 1, cooling: 2 })
 })
+
+test('IPv6 availability excludes lease-only addresses after their initial cooldown expires', () => {
+ const data = { config: { source_ips: [] }, local_ips: ['2604::1', '2604::2'], bindings: [], cooldowns: [], leased_ips: ['2604::1'] }
+ assert.deepEqual(ipv6PoolCounts(data), { total: 2, available: 1, cooling: 0 })
+})

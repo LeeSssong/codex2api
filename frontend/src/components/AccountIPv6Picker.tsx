@@ -44,7 +44,7 @@ export default function AccountIPv6Picker({
       setData(next);
       // The server snapshot is authoritative after a stale-binding conflict, including pending "".
       onRefreshRef.current(
-        next.bindings.find((row) => row.account_id === accountID)?.ip ?? "",
+        next.bindings.find((row) => row.account_id === accountID && row.reason !== "retired")?.ip ?? "",
       );
     } catch (error) {
       if (!signal?.aborted) setLoadError(getErrorMessage(error));
@@ -61,7 +61,7 @@ export default function AccountIPv6Picker({
   }, [open, accountID]);
 
   const currentIP =
-    data?.bindings.find((row) => row.account_id === accountID)?.ip ?? "";
+    data?.bindings.find((row) => row.account_id === accountID && row.reason !== "retired")?.ip ?? "";
   const options = data ? ipv6ManualOptions(data, accountID, currentIP) : [];
   const blockReason = data ? ipv6ManualBlockReason(data) : "";
   const busy = disabled || loading || saving;

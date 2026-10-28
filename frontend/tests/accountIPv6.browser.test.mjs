@@ -649,3 +649,15 @@ test('manual cooling 409 retains selection disabled until refresh makes it avail
   await page.getByText('IPv6 address updated.',{exact:true}).waitFor();
   assert.deepEqual((await calls(page,'setAccountIPv6Egress'))[1].args,[1,{ip:freeIP,expected_ip:fullIP}]);
 });
+
+test('retired bindings stay pending and lease-only addresses remain unavailable', async t => {
+ const page=await fixture(t,{account:{ipv6_egress_ip:''},egress:manualPool({bindings:[{account_id:1,ip:fullIP,reason:'retired'}],cooldowns:[],leased_ips:[fullIP,busyIP]})});
+ await openManual(page);
+ assert.equal(await page.getByRole('textbox',{name:'Actual bound IPv6 address'}).inputValue(),'Pending assignment');
+ assert.equal(await page.getByRole('radio',{name:fullIP,exact:true}).isDisabled(),true);
+ assert.equal(await page.getByRole('radio',{name:busyIP,exact:true}).isDisabled(),true);
+ await page.getByRole('radio',{name:freeIP,exact:true}).check();
+ await page.getByRole('button',{name:'Switch IP',exact:true}).click();
+ await page.getByText('IPv6 address updated.',{exact:true}).waitFor();
+ assert.deepEqual((await calls(page,'setAccountIPv6Egress'))[0].args,[1,{ip:freeIP,expected_ip:''}]);
+});

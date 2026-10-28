@@ -32,7 +32,7 @@ Files: deploy/release/, new deploy IPv6 helper/service and tests, docs/ipv6-egre
 - [x] Test attach command generation/idempotence/failure rollback and integrate readiness with maintenance deploy and rollback.
 
 ### Task 4: Integration and production
-- [ ] Integrate tasks; focused spec/quality review, relevant regression tests; fix actionable findings.
+- [x] Integrate tasks; focused spec/quality review, relevant regression tests; fix actionable findings.
 - [ ] Merge into clean root main, push origin/main, verify fetched commit/tree, build once and transfer pinned artifact.
 - [ ] Notify maintenance scope, acquire lock, recheck live identity, rehearsal and maintenance deployment only codex2api. Verify pool before enablement.
 - [ ] Real supported-model IPv6 request, account API/state and import defaults checks; verify other service identities unchanged.
@@ -45,5 +45,5 @@ Files: deploy/release/, new deploy IPv6 helper/service and tests, docs/ipv6-egre
 
 ### Original user requirement reconciliation: manual pool address selection
 - [x] Add atomic account-scoped manual IPv6 selection with expected-current fence, occupied/cooldown checks, and old lease drain; never change enabled state.
-- [ ] Add available-address picker in main and quick editors for a saved Local IPv6 selection, including pending accounts; refresh actual binding after success.
-- [ ] Verify conflict, occupied/cooldown, active connection retirement and frontend request/state behavior before including in the same release.
+- [x] Add available-address picker in main and quick editors for a saved Local IPv6 selection, including pending accounts; refresh actual binding after success.
+- [x] Verify conflict, occupied/cooldown, active connection retirement and frontend request/state behavior before including in the same release.

@@ -11,13 +11,14 @@ export interface IPv6EgressData {
   discovery_error?: boolean
   local_ips: string[]
   bindings: { account_id: number; ip: string; changed_at: number; reason: string; rotations: number }[]
+  leased_ips?: string[]
   cooldowns: { ip: string; until: number }[]
   account_names: Record<string, string>
   resin_enabled: boolean
 }
 export function ipv6PoolCounts(data: IPv6EgressData) {
   const pool = new Set(data.config.source_ips.length ? data.config.source_ips.filter(ip => data.local_ips.includes(ip)) : data.local_ips)
-  const used = new Set(data.bindings.map(row => row.ip))
+  const used = new Set([...data.bindings.map(row => row.ip), ...(data.leased_ips ?? [])])
   const cooling = new Set(data.cooldowns.map(row => row.ip))
   return { total: pool.size, available: [...pool].filter(ip => !used.has(ip) && !cooling.has(ip)).length, cooling: [...pool].filter(ip => cooling.has(ip)).length }
 }

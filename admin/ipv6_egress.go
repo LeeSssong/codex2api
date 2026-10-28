@@ -27,6 +27,11 @@ func (h *Handler) GetIPv6Egress(c *gin.Context) {
 		c.JSON(500, gin.H{"error": "无法读取 IPv6 出口状态"})
 		return
 	}
+	leasedIPs, err := h.db.IPv6EgressLeasedIPs(c.Request.Context())
+	if err != nil {
+		c.JSON(500, gin.H{"error": "无法读取 IPv6 连接占用状态"})
+		return
+	}
 	names := map[int64]string{}
 	for _, a := range h.store.Accounts() {
 		a.Mu().RLock()
@@ -34,7 +39,7 @@ func (h *Handler) GetIPv6Egress(c *gin.Context) {
 		a.Mu().RUnlock()
 		names[a.ID()] = name
 	}
-	c.JSON(200, gin.H{"discovery_error": discoveryError, "account_names": names, "config": cfg, "local_ips": local, "bindings": bindings, "cooldowns": cooldowns, "resin_enabled": proxy.IsResinEnabled()})
+	c.JSON(200, gin.H{"discovery_error": discoveryError, "account_names": names, "config": cfg, "local_ips": local, "bindings": bindings, "leased_ips": leasedIPs, "cooldowns": cooldowns, "resin_enabled": proxy.IsResinEnabled()})
 }
 
 func (h *Handler) UpdateIPv6Egress(c *gin.Context) {

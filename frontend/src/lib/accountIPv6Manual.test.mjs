@@ -99,3 +99,8 @@ test("disabled pool and failed discovery block manual assignment", () => {
     "discovery",
   );
 });
+
+test("a lease without a binding or live cooldown still occupies an address", () => {
+  const rows = ipv6ManualOptions(pool({ bindings: [], cooldowns: [], leased_ips: ["2604::4"] }), 8, "", 3000);
+  assert.equal(rows.find(row => row.ip === "2604::4").status, "occupied");
+});

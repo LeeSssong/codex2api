@@ -39,9 +39,10 @@ export function ipv6ManualOptions(
     : data.local_ips;
   const occupied = new Set(
     data.bindings
-      .filter((row) => row.account_id !== accountID)
+      .filter((row) => row.account_id !== accountID || row.reason === "retired")
       .map((row) => addressKey(row.ip)),
   );
+  for (const ip of data.leased_ips ?? []) occupied.add(addressKey(ip));
   const cooling = new Set(
     data.cooldowns
       .filter((row) => row.until > now)
