@@ -99,8 +99,28 @@ class NamespaceMutationTests(unittest.TestCase):
         self.assertFalse(any('up' in cmd for cmd in calls))
 
 class EmptyInterfaceTests(unittest.TestCase):
-    def test_fresh_interface_empty_ipv6_inventory_is_an_empty_address_set(self):
-        # ip -j -6 addr show can return [] for an interface before IPv6 is up.
+    def test_fresh_interface_empty_ipv6_inventory_is_configured_and_ready(self):
+        from unittest import mock
+        from types import SimpleNamespace
         import json
-        inventory=json.loads('[]')
-        self.assertEqual(pool.assigned_addresses((inventory or [{}])[0]),set())
+        cfg={'prefix':'2a0a:4cc0:101:799:c2a:28::/112','count':2,'parent':'eth0','interface':'c2a-v6','gateway':'fe80::1'}
+        c={'Id':'a'*64,'Name':'/codex2api','State':{'Running':True,'Pid':432},'Config':{'Labels':{'com.docker.compose.project':'codex2api','com.docker.compose.service':'codex2api'}}}
+        calls=[]; address_reads=[]
+        def command(args,**kwargs):
+            calls.append(args)
+            if args[0]=='ip' and 'show' in args:
+                return json.dumps([{'flags':['UP'],'ifindex':2}]).encode()
+            if args[0]=='nsenter' and 'link' in args and 'show' in args:
+                return None
+            if args[0]=='nsenter' and 'addr' in args and 'show' in args:
+                address_reads.append(True)
+                if len(address_reads)==1:return b'[]'
+                return json.dumps([{'addr_info':[{'family':'inet6','local':ip,'prefixlen':64,'scope':'global'} for ip in pool.validate_config(cfg)['addresses']]}]).encode()
+            if args[0]=='nsenter' and 'route' in args and 'show' in args:return b'[]'
+            return b''
+        with mock.patch.object(pool,'inspect_app',return_value=c),mock.patch.object(pool,'command',side_effect=command),mock.patch.object(pool.os,'open',return_value=99),mock.patch.object(pool.os,'close'),mock.patch.object(pool.os,'stat',return_value=SimpleNamespace(st_dev=1,st_ino=1)),mock.patch.object(pool.os,'fstat',return_value=SimpleNamespace(st_dev=1,st_ino=2)):
+            self.assertTrue(pool.ensure(cfg))
+        self.assertEqual(len(address_reads),2)
+        self.assertEqual(sum('addr' in cmd and 'add' in cmd for cmd in calls),2)
+        self.assertTrue(any('link' in cmd and 'up' in cmd for cmd in calls))
+        self.assertFalse(any('del' in cmd for cmd in calls))

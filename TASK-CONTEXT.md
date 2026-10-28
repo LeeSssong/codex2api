@@ -1,3 +1,33 @@
+# Current production: 2026-10-29 account IPv6 + reported client
+
+Deployed Codex2API application `f8721a4a410413d7d798afd960ba6278c114c75a`,
+tree `ca4edd150dc4800708be4cf11bb261dda635299b`, upstream `d967cda1`.
+Image/config `sha256:388ba8077ca684e346dfaf53fd2ec1156eb1d96bdd5c1f095efe99effc4589e7`.
+Persistent IPv6 helper directly updated from clean pushed main `efbbe65f`, hash
+`81432ccaae690756cc459d978c697eb2d2cc8422b3c0ea301d96a3f29c605971`.
+128-address pool enabled, 600 s cooldown/3 attempts/5xx rotation. New native account
+membership and New York import defaults, actual IP display, manual pool selection,
+source preferences and duplicate timezone preservation shipped. Historical
+reported-client snapshot feature port included. Allocation remains lazy.
+
+Live automatic and manually selected IPv6 inference both returned OK; original
+seven disabled account states preserved. Test account preferences restored and
+binding/connection leases released. All 25 protected containers and original
+shared ingress verified unchanged. Credential worker and intelligence settings,
+flags/history preserved. No Sub2API/database/Redis restart or cold-standby action;
+test station not queried/synchronized.
+
+Maintenance 02:44:27–02:55:05 Asia/Shanghai, 637.960 s. Fresh-interface network
+helper recovery used the same application image and current database, no old dump
+restore. Final release suite 102 tests and browser suite 25 tests passed. Known
+crash-orphan lease recovery limitation documented. All task candidates are merged
+historical evidence; original dirty checkout/source snapshot remain preserved.
+
+One release record/recovery entry: `docs/releases/2026-10-29-account-ipv6.md`.
+Earlier handoffs below are historical; do not redeploy stale candidates.
+
+---
+
 # Current status: relogin + intelligence recovery interval deployed
 
 User authorized downtime deployment on2026-10-28. Both tasks merged/pushed to main;

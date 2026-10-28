@@ -33,10 +33,10 @@ Files: deploy/release/, new deploy IPv6 helper/service and tests, docs/ipv6-egre
 
 ### Task 4: Integration and production
 - [x] Integrate tasks; focused spec/quality review, relevant regression tests; fix actionable findings.
-- [ ] Merge into clean root main, push origin/main, verify fetched commit/tree, build once and transfer pinned artifact.
-- [ ] Notify maintenance scope, acquire lock, recheck live identity, rehearsal and maintenance deployment only codex2api. Verify pool before enablement.
-- [ ] Real supported-model IPv6 request, account API/state and import defaults checks; verify other service identities unchanged.
-- [ ] Record source/tree/image, tests, timings, rollback and limitations in one release note/TASK-CONTEXT.
+- [x] Merge into clean root main, push origin/main, verify fetched commit/tree, build once and transfer pinned artifact.
+- [x] Notify maintenance scope, acquire lock, recheck live identity, rehearsal and maintenance deployment only codex2api. Verify pool before enablement.
+- [x] Real supported-model IPv6 request, account API/state and import defaults checks; verify other service identities unchanged.
+- [x] Record source/tree/image, tests, timings, rollback and limitations in one release note/TASK-CONTEXT.
 
 ### Additional user-authorized scope: reported client snapshot
 - [x] Port the reported-client feature from `.worktrees/codex-reported-client/` into current main-compatible code without copying its old source tree. Snapshot has no Git metadata and contains unrelated historical changes.
@@ -47,3 +47,5 @@ Files: deploy/release/, new deploy IPv6 helper/service and tests, docs/ipv6-egre
 - [x] Add atomic account-scoped manual IPv6 selection with expected-current fence, occupied/cooldown checks, and old lease drain; never change enabled state.
 - [x] Add available-address picker in main and quick editors for a saved Local IPv6 selection, including pending accounts; refresh actual binding after success.
 - [x] Verify conflict, occupied/cooldown, active connection retirement and frontend request/state behavior before including in the same release.
+
+Production completed: see `docs/releases/2026-10-29-account-ipv6.md`. All task branches are historical merged evidence.
