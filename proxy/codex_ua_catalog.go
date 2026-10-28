@@ -124,8 +124,8 @@ var codexUACatalog = map[CodexClientKind]*codexUAKindSpec{
 		AppNames:        []codexUAWeighted{{latestCodexClientName, 100}},
 		Terminals: []codexUAWeighted{
 			{"unknown", 30}, {"WindowsTerminal", 21}, {"kitty", 7}, {"xterm-256color", 7},
-			{"vscode/1.135.0", 3}, {"vscode/1.126.0", 3}, {"Apple_Terminal/470.2", 3}, {"Apple_Terminal/455.1", 2},
-			{"gnome-terminal", 3}, {"iTerm.app/3.6.11", 2}, {"vscode/1.101.2", 2}, {"xterm", 2}, {"ghostty/1.3.1", 1},
+			{"Apple_Terminal/470.2", 3}, {"Apple_Terminal/455.1", 2},
+			{"gnome-terminal", 3}, {"iTerm.app/3.6.11", 2}, {"xterm", 2}, {"ghostty/1.3.1", 1},
 		},
 		ReferenceTerminals: codexUAReferenceTerminals,
 		Platforms: []codexUAPlatform{
@@ -141,9 +141,10 @@ var codexUACatalog = map[CodexClientKind]*codexUAKindSpec{
 		Kind:            CodexClientKindDesktop,
 		ClientName:      "Codex Desktop",
 		DefaultPlatform: codexUAPlatform{OSName: "Windows", OSVersion: "10.0.26200", Arch: "x86_64"},
-		DefaultTerminal: "unknown",
+		DefaultTerminal: "Codex Desktop",
 		AppNames:        []codexUAWeighted{{"Codex Desktop", 100}},
-		Terminals:       []codexUAWeighted{{"unknown", 999}, {"dumb", 1}},
+		// 桌面端没有独立终端。终端位写应用名，和末尾标记、证明头一致。
+		Terminals: []codexUAWeighted{{"Codex Desktop", 1}},
 		Platforms: []codexUAPlatform{
 			{"Windows", "10.0.26200", "x86_64", 47}, {"Mac OS", "26.5.2", "arm64", 8}, {"Windows", "10.0.19045", "x86_64", 7},
 			{"Windows", "10.0.22631", "x86_64", 5}, {"Mac OS", "14.4.1", "arm64", 5}, {"Mac OS", "26.5.1", "arm64", 4},
@@ -337,8 +338,8 @@ func codexPoolMix(cfg CodexUserAgentConfig) []codexUAWeighted {
 	return out
 }
 
-// codexPoolPersona 按账号确定性地从目录抽取一套完整画像:同一账号永远得到同一画像,
-// 不同账号按配比与真实分布散开。
+// codexPoolPersona 按账号确定性地从目录抽取一套完整画像。官方日用量已确认
+// 客户端形态时优先使用该形态，否则按号池配比散开；版本仍由当前同步配对选择。
 func codexPoolPersona(cfg CodexUserAgentConfig, accountID int64, versionFloor string) (userAgent, version string, ok bool, err error) {
 	mix := codexPoolMix(cfg)
 	if len(mix) == 0 {
@@ -346,6 +347,9 @@ func codexPoolPersona(cfg CodexUserAgentConfig, accountID int64, versionFloor st
 	}
 	seed := fmt.Sprintf("%d", accountID)
 	kind := CodexClientKind(pickCodexUAWeighted(mix, "kind:"+seed))
+	if reported, ok := codexReportedClientKind(accountID); ok {
+		kind = reported
+	}
 	spec, found := codexUAKindSpecFor(kind)
 	if !found {
 		return "", "", false, nil

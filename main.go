@@ -369,6 +369,9 @@ func main() {
 		return proxy.WrapOAuthFixedClient(id, client, forceUTLS)
 	}
 
+	// 官方日用量已确认的客户端形态优先用于号池画像；
+	// 查不到记录或查询失败时仍按原号池配比抽样。
+	proxy.SetCodexReportedClientSource(db)
 	store := auth.NewStore(db, tc, settings)
 	proxy.ConfigureCredentialOperations(db, store)
 	store.SetSchedulerWaitLimits(cfg.SchedulerMaxWaiters, cfg.SchedulerMaxWaitersPerKey)

@@ -32,7 +32,9 @@ func TestCodexUACatalogIntegrity(t *testing.T) {
 			}
 		}
 		for _, term := range spec.Terminals {
-			if term.Weight <= 0 || !validCodexUserAgentToken(term.Value) {
+			// 桌面端终端位使用应用名；其余形态仍保持单 token。
+			valid := validCodexUserAgentToken(term.Value) || (kind == CodexClientKindDesktop && term.Value == "Codex Desktop")
+			if term.Weight <= 0 || !valid {
 				t.Fatalf("%s: bad terminal entry %+v", kind, term)
 			}
 		}
@@ -136,7 +138,7 @@ func TestBuildCodexStructuredUserAgentByKind(t *testing.T) {
 		wantV  string
 	}{
 		{"desktop preset", `{"client_kind":"codex-desktop"}`,
-			"Codex Desktop/0.160.0 (Windows 10.0.26200; x86_64) unknown (Codex Desktop; 26.930.51102)", "0.160.0"},
+			"Codex Desktop/0.160.0 (Windows 10.0.26200; x86_64) Codex Desktop (Codex Desktop; 26.930.51102)", "0.160.0"},
 		{"vscode preset with cursor host", `{"client_kind":"codex-vscode","app_name":"Cursor"}`,
 			"codex_vscode/0.160.0 (Ubuntu 22.4.0; x86_64) unknown (Cursor; 26.930.41038)", "0.160.0"},
 		{"exec preset follows cli", `{"client_kind":"codex-exec"}`,
@@ -146,7 +148,7 @@ func TestBuildCodexStructuredUserAgentByKind(t *testing.T) {
 		{"custom keeps free-form marker", `{"client_kind":"custom","client_name":"my-router","app_name":"My App","app_version":"9.9"}`,
 			"my-router/" + latestCodexCLIVersion + " (Mac OS 15.5.0; arm64) xterm-256color (My App; 9.9)", latestCodexCLIVersion},
 		{"desktop with mac platform and explicit cli", `{"client_kind":"codex-desktop","client_version":"0.153.3","os_name":"Mac OS","os_version":"26.5.2","arch":"arm64"}`,
-			"Codex Desktop/0.153.3 (Mac OS 26.5.2; arm64) unknown (Codex Desktop; 26.930.51102)", "0.153.3"},
+			"Codex Desktop/0.153.3 (Mac OS 26.5.2; arm64) Codex Desktop (Codex Desktop; 26.930.51102)", "0.153.3"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -333,5 +335,17 @@ func TestCodexUserAgentCatalogReferenceTerminals(t *testing.T) {
 	}
 	if len(codexUACatalog[CodexClientKindDesktop].ReferenceTerminals) != 0 {
 		t.Fatal("desktop app never runs inside a terminal; it must not offer terminal presets")
+	}
+}
+
+func TestCodexReportedPersonaTerminals(t *testing.T) {
+	for _, terminal := range codexUACatalog[CodexClientKindTUI].Terminals {
+		if strings.HasPrefix(terminal.Value, "vscode/") {
+			t.Errorf("TUI pool still samples IDE terminal %q", terminal.Value)
+		}
+	}
+	desktop := codexUACatalog[CodexClientKindDesktop]
+	if desktop.DefaultTerminal != "Codex Desktop" || len(desktop.Terminals) != 1 || desktop.Terminals[0].Value != "Codex Desktop" {
+		t.Errorf("desktop terminal shape = %q / %+v", desktop.DefaultTerminal, desktop.Terminals)
 	}
 }
