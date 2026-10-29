@@ -163,7 +163,7 @@ func TestSetGroupProxyURLsHotUpdate(t *testing.T) {
 	}
 }
 
-func TestResolveProxyForAccountSkipsDisabledManagedPin(t *testing.T) {
+func TestResolveProxyForAccountUsesDirectWhenManagedPinIsDisabled(t *testing.T) {
 	const (
 		disabledURL = "http://disabled.example:8080"
 		enabledURL  = "http://enabled.example:8080"
@@ -177,10 +177,10 @@ func TestResolveProxyForAccountSkipsDisabledManagedPin(t *testing.T) {
 	}
 	pinned := &Account{DBID: 1, ProxyURL: disabledURL}
 	if got := store.ResolveProxyForAccount(pinned); got != "" {
-		t.Fatalf("pinned disabled proxy = %q, want empty fail-closed", got)
+		t.Fatalf("disabled pin should use direct only, got %q", got)
 	}
-	if store.AccountHasUsableEgress(pinned) {
-		t.Fatal("pinned disabled proxy should not be schedulable while the pool is on")
+	if !store.AccountHasUsableEgress(pinned) {
+		t.Fatal("direct fallback account blocked")
 	}
 
 	unbound := &Account{DBID: 2}
@@ -203,7 +203,7 @@ func TestResolveProxyForAccountKeepsCustomProxyOutsidePool(t *testing.T) {
 	}
 }
 
-func TestNextSkipsPinnedDisabledProxyWhenPoolEnabled(t *testing.T) {
+func TestNextAllowsPinnedDisabledProxyForDirectFallback(t *testing.T) {
 	const (
 		disabledURL = "http://disabled.example:8080"
 		enabledURL  = "http://enabled.example:8080"
@@ -215,18 +215,17 @@ func TestNextSkipsPinnedDisabledProxyWhenPoolEnabled(t *testing.T) {
 		managedProxySet:  buildProxyPoolSet([]string{disabledURL, enabledURL}),
 	}).withMaxConcurrency(2)
 	store.AddAccount(&Account{DBID: 1, AccessToken: "tok-pinned", ProxyURL: disabledURL})
-	store.AddAccount(&Account{DBID: 2, AccessToken: "tok-unbound"})
 
 	selected := store.NextExcludingWithFilter(0, nil, nil)
 	if selected == nil {
-		t.Fatal("expected unbound account to remain schedulable")
+		t.Fatal("expected bound fallback account to remain schedulable")
 	}
 	defer store.Release(selected)
-	if selected.DBID != 2 {
+	if selected.DBID != 1 {
 		t.Fatalf("selected account %d, want unbound 2", selected.DBID)
 	}
-	if got := store.ResolveProxyForAccount(selected); got != enabledURL {
-		t.Fatalf("selected proxy = %q, want %q", got, enabledURL)
+	if got := store.ResolveProxyForAccount(selected); got != "" {
+		t.Fatalf("selected proxy = %q, want direct fallback", got)
 	}
 }
 
@@ -283,11 +282,12 @@ func TestUnusableManagedProxies(t *testing.T) {
 		t.Fatalf("UnusableManagedProxies = %v, want %v", got, want)
 	}
 
-	// 与单条判定对齐：这里报不可用的，ResolveProxyForAccount 就一定 fail-closed。
+	// A disabled bound route remains schedulable, but the resolved transport route
+	// must be direct rather than the disabled URL, global proxy, or another pool member.
 	for _, unusable := range got {
 		account := &Account{DBID: 1, ProxyURL: unusable}
-		if store.ResolveProxyForAccount(account) != "" || store.AccountHasUsableEgress(account) {
-			t.Fatalf("proxy %q reported unusable but the account is still schedulable", unusable)
+		if store.ResolveProxyForAccount(account) != "" || !store.AccountHasUsableEgress(account) {
+			t.Fatalf("unavailable binding must remain schedulable for direct fallback: %q", unusable)
 		}
 	}
 

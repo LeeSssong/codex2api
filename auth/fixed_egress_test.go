@@ -41,11 +41,11 @@ func TestFixedEgressSchedulingIgnoresEmptyLegacyPool(t *testing.T) {
 	}
 	c, _ := db.GetFixedEgressConfig(ctx)
 	db.SetFixedEgressConfigRevision(ctx, false, c.Revision)
-	if _, usable = s.ResolveUsableProxyForAccount(a); usable {
-		t.Fatal("disabled fixed routed via legacy")
+	if _, usable = s.ResolveUsableProxyForAccount(a); !usable {
+		t.Fatal("disabled fixed blocked direct fallback")
 	}
-	if got := s.ResolveProxyForAccount(a); got == "" {
-		t.Fatal("legacy string resolver turned fixed failure into direct")
+	if got := s.ResolveProxyForAccount(a); got != "" {
+		t.Fatalf("unavailable fixed leaked legacy substitute: %q", got)
 	}
 
 }

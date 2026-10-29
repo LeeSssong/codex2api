@@ -13,6 +13,7 @@ import (
 
 	"github.com/codex2api/auth"
 	"github.com/codex2api/fixedegress"
+	"github.com/codex2api/internal/egressroute"
 	"github.com/codex2api/security"
 	"github.com/gorilla/websocket"
 )
@@ -31,6 +32,7 @@ const (
 
 // WsConnection WebSocket 连接包装
 type WsConnection struct {
+	egress       egressroute.Observation
 	ipv6Release  func()
 	fixedRelease func()
 	fixedRoute   fixedegress.Route
@@ -116,6 +118,9 @@ type WsConnection struct {
 }
 
 func effectiveProxyURL(account *auth.Account, proxyOverride string) string {
+	if bound := account.GetProxyURL(); bound != "" {
+		return bound
+	}
 	proxyURL := ""
 	if account != nil {
 		account.Mu().RLock()
@@ -585,6 +590,15 @@ func (m *Manager) AcquireConnection(
 ) (*WsConnection, *PendingRequest, error) {
 	kind := requestConnectionCapacityKind(ctx)
 	key := m.poolKey(account.ID(), wsURL, sessionKey, requestProxyKey(ctx, account, proxyOverride))
+	// A connection that already fell back to direct is isolated from the bound
+	// proxy pool, but remains reusable for this account/session on later calls.
+	fallbackKey := m.poolKey(account.ID(), wsURL, sessionKey, "\x00fallback-direct")
+	if value, ok := m.connections.Load(fallbackKey); ok {
+		wc := value.(*WsConnection)
+		if wc.egress.Kind == "direct" && wc.egress.FallbackFrom != "" {
+			key = fallbackKey
+		}
+	}
 	lock, releaseKeyLock := m.keyLock(key)
 	defer releaseKeyLock()
 	accountLock, releaseAccountLock := m.accountLock(account.ID())
@@ -687,7 +701,7 @@ func (m *Manager) AcquireConnection(
 		}
 
 		// 存储新连接并立即占位 pending request，避免返回后才记账产生竞态
-		m.connections.Store(key, wc)
+		m.connections.Store(wc.PoolKey, wc)
 		if m.afterConnectionStored != nil {
 			m.afterConnectionStored(wc)
 		}
@@ -805,7 +819,7 @@ func (m *Manager) tryAcquireBusyOverflow(
 			log.Printf("[WS] busy overflow 新建连接失败，回落等待原连接 (account=%d): %v", account.ID(), err)
 			return nil, nil, false
 		}
-		m.connections.Store(key, wc)
+		m.connections.Store(wc.PoolKey, wc)
 		if m.afterConnectionStored != nil {
 			m.afterConnectionStored(wc)
 		}
@@ -937,7 +951,7 @@ func (m *Manager) AcquireReusableConnection(
 			lock.Unlock()
 			return nil, nil, "", err
 		}
-		m.connections.Store(key, wc)
+		m.connections.Store(wc.PoolKey, wc)
 		if m.afterConnectionStored != nil {
 			m.afterConnectionStored(wc)
 		}

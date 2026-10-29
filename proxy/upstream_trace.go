@@ -8,6 +8,7 @@ import (
 
 	"github.com/codex2api/auth"
 	"github.com/codex2api/database"
+	"github.com/codex2api/internal/egressroute"
 	"github.com/codex2api/security"
 	"github.com/gin-gonic/gin"
 )
@@ -200,6 +201,7 @@ func populateUpstreamTrace(c *gin.Context, input *database.UsageLogInput) {
 
 // RecordIPv6Source replaces the configured proxy label with the actual source.
 func RecordIPv6Source(ctx context.Context, accountID int64, ip string) {
+	egressroute.Record(ctx, egressroute.Observation{Kind: "local_ipv6", Source: "account", SourceIP: ip})
 	if audit := upstreamTraceFromContext(ctx); audit != nil {
 		audit.mu.Lock()
 		defer audit.mu.Unlock()

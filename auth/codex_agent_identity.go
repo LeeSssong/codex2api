@@ -205,16 +205,16 @@ func registerAgentIdentityTask(ctx context.Context, key agentIdentityRuntimeKey,
 	if accountBound {
 		proxyURL = boundProxy
 	}
-	client, err := grokHTTPClient(proxyURL) // 复用带代理配置的通用客户端构造器
+	client, err := grokHTTPClient(proxyURL) // inherited route
+	if accountBound {
+		client = buildHTTPClient(proxyURL)
+		err = nil
+	}
 	if err != nil {
 		return "", err
 	}
-	if accountBound {
-		if proxyURL == "" {
-			client.Transport.(*http.Transport).Proxy = nil
-		}
-		defer client.CloseIdleConnections()
-	}
+	copy := *client
+	client = &copy
 	client.Timeout = agentIdentityTaskRegistrationTimeout
 	body, err := json.Marshal(map[string]string{"timestamp": timestamp, "signature": signature})
 	if err != nil {

@@ -5524,8 +5524,8 @@ func (s *Store) NextProxy() string {
 
 // ResolveProxyForAccount returns the effective proxy for account-bound internal calls.
 // Priority: account proxy > group proxy > sticky proxy pool > global proxy > direct.
-// A pin to a managed proxy that is disabled, test-failed, or deleted does not
-// fall through and does not go direct while the proxy pool is enabled (issue #517).
+// When the account's managed pin is unavailable, the account remains schedulable
+// and its transport falls back to host direct only (never another proxy).
 func (s *Store) ResolveProxyForAccount(acc *Account) string {
 	proxyURL, usable := s.resolveProxyForAccountSnapshot(acc)
 	if !usable && acc != nil && !acc.IsRelayStyle() && fixedegress.HasEnrolled(acc.ID()) {
@@ -5558,7 +5558,10 @@ func (s *Store) resolveProxyForAccountSnapshot(acc *Account) (string, bool) {
 			defer cancel()
 			r, e := m.Acquire(ctx, acc.ID())
 			if r.Enrolled {
-				return r.Binding.ProxyURL, e == nil && !ResinEgressEnabled()
+				if e != nil {
+					return "", true
+				}
+				return r.Binding.ProxyURL, true
 			}
 		}
 	}
@@ -5594,7 +5597,7 @@ func (s *Store) resolveProxyForAccountSnapshot(acc *Account) (string, bool) {
 	}
 	if accountProxy != "" {
 		if managedProxyUnavailable(accountProxy) {
-			return "", resinCarriesEgress
+			return "", true
 		}
 		return accountProxy, true
 	}
@@ -5728,9 +5731,8 @@ func (s *Store) ManagedProxyUnavailable(proxyURL string) bool {
 	return s.managedProxyUnavailable(proxyURL)
 }
 
-// AccountHasUsableEgress reports whether this account can reach upstream without
-// violating proxy-pool fail-closed: when the pool is on, an empty resolved
-// proxy would have meant direct/dirty-IP, so the account is skipped instead.
+// AccountHasUsableEgress reports whether the account has an egress path. An
+// unavailable binding permits host-direct fallback in its transport.
 func (s *Store) AccountHasUsableEgress(acc *Account) bool {
 	_, usable := s.ResolveUsableProxyForAccount(acc)
 	return usable
@@ -5742,10 +5744,7 @@ func (s *Store) accountHasUsableEgress(acc *Account) bool {
 }
 
 // ResolveUsableProxyForAccount returns the exact proxy decision a caller must
-// use together with its fail-closed usability result. Proxy selection and the
-// direct-egress decision come from one policy snapshot, so a concurrent pool
-// reconfiguration cannot turn a rejected managed proxy into an empty direct
-// request.
+// use together with its direct-fallback decision from one policy snapshot.
 func (s *Store) ResolveUsableProxyForAccount(acc *Account) (string, bool) {
 	if s == nil || acc == nil {
 		return "", false
@@ -5826,10 +5825,7 @@ func (s *Store) ReloadProxyPool() error {
 
 // UnusableManagedProxies returns the subset of proxyURLs that are known to the
 // proxy table but absent from the enabled set — disabled, test-failed, or
-// deleted. It mirrors the fail-closed rule in resolveProxyForAccountSnapshot:
-// while the pool is enabled, an account pinned to one of these has no usable
-// egress and will not be scheduled. Callers use it to warn instead of silently
-// importing accounts that cannot serve traffic.
+// deleted. Callers use it to warn that the account will use direct fallback.
 func (s *Store) UnusableManagedProxies(proxyURLs []string) []string {
 	if s == nil {
 		return nil
@@ -8130,9 +8126,7 @@ func (s *Store) affinityProxyStillValid(accountID int64, proxyURL string) bool {
 		return proxyURL == account.GetProxyURL()
 	}
 	if accountProxy := account.GetProxyURL(); accountProxy != "" {
-		if s.managedProxyUnavailable(accountProxy) {
-			return false
-		}
+
 		return proxyURL == accountProxy
 	}
 	// 组代理变更(改列表/移组/删组)时,粘住旧代理的会话在此判失效并重绑。

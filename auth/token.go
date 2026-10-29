@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/codex2api/egressipv6"
+	"github.com/codex2api/internal/egressroute"
 	"io"
 	"log"
 	"net"
@@ -37,6 +38,31 @@ var ResinRequestDecorator func(targetURL, accountID string) string
 
 // CodexHTTPClientDecorator applies the dedicated source route without replaying OAuth.
 var CodexHTTPClientDecorator func(int64, *http.Client, bool) *http.Client
+
+// AccountOAuthEgress resolves current account binding before URL rewrite/client construction.
+var AccountProxyUnavailable func(int64, string) bool
+
+var AccountOAuthEgress func(context.Context, int64) (string, bool, error)
+
+func accountOAuthContext(ctx context.Context, id string, fallback string) (context.Context, string, error) {
+	if AccountOAuthEgress != nil {
+		if n, e := strconv.ParseInt(id, 10, 64); e == nil && n > 0 {
+			route, bound, err := AccountOAuthEgress(ctx, n)
+			if err != nil {
+				return ctx, fallback, err
+			}
+			if bound {
+				if route != "" && AccountProxyUnavailable != nil && AccountProxyUnavailable(n, route) {
+					// A disabled binding is still account policy: choose direct, never
+					// the global proxy or Resin route.
+					route = ""
+				}
+				return WithAccountBoundEgress(ctx, route), route, nil
+			}
+		}
+	}
+	return ctx, fallback, nil
+}
 
 // TokenData 保存一次 RT 刷新获得的 token 信息
 type TokenData struct {
@@ -80,6 +106,11 @@ func RefreshAccessTokenForClient(ctx context.Context, refreshToken, proxyURL, cl
 	accountID := ""
 	if len(resinAccountID) > 0 {
 		accountID = resinAccountID[0]
+	}
+	var routeErr error
+	ctx, proxyURL, routeErr = accountOAuthContext(ctx, accountID, proxyURL)
+	if routeErr != nil {
+		return nil, nil, routeErr
 	}
 	useResin := useResinForOAuth(ctx, accountID)
 	if useResin {
@@ -226,6 +257,11 @@ func RefreshWithSessionToken(ctx context.Context, sessionToken string, proxyURL 
 	accountID := ""
 	if len(resinAccountID) > 0 {
 		accountID = resinAccountID[0]
+	}
+	var routeErr error
+	ctx, proxyURL, routeErr = accountOAuthContext(ctx, accountID, proxyURL)
+	if routeErr != nil {
+		return nil, nil, routeErr
 	}
 	useResin := useResinForOAuth(ctx, accountID)
 	if useResin {
@@ -619,9 +655,42 @@ func evictExpiredAuthClients() {
 
 // buildHTTPClient 构建支持代理的 HTTP 客户端（连接池复用，带 TTL 清理）
 func buildHTTPClient(proxyURL string) *http.Client {
-	client, _ := buildHTTPClientChecked(proxyURL, false)
-	return client
+	proxyURL = strings.TrimSpace(proxyURL)
+	if proxyURL == "" {
+		client, _ := buildHTTPClientChecked("", true)
+		return client
+	}
+	// Keep fallback policy separate from the strict transport cache. Reusing the
+	// wrapper also preserves decorators installed by callers on this route.
+	key := "fallback|" + proxyURL
+	if v, ok := authClientPool.Load(key); ok {
+		entry := v.(*authPoolEntry)
+		entry.touch()
+		return entry.client
+	}
+	client, err := buildHTTPClientChecked(proxyURL, true)
+	direct, _ := buildHTTPClientChecked("", true)
+	primary := http.RoundTripper(nil)
+	if err != nil {
+		primary = authEgressError{egressroute.Unavailable(err)}
+	} else {
+		primary = client.Transport
+	}
+	copy := *direct
+	copy.Transport = egressroute.Fallback(primary, direct.Transport, egressroute.ProxyObservation(proxyURL))
+	entry := &authPoolEntry{client: &copy}
+	entry.touch()
+	if v, loaded := authClientPool.LoadOrStore(key, entry); loaded {
+		existing := v.(*authPoolEntry)
+		existing.touch()
+		return existing.client
+	}
+	return entry.client
 }
+
+type authEgressError struct{ err error }
+
+func (t authEgressError) RoundTrip(*http.Request) (*http.Response, error) { return nil, t.err }
 
 // buildHTTPClientChecked constructs a pooled auth client. When strict is true,
 // an invalid proxy configuration is returned to the caller instead of silently
@@ -703,6 +772,9 @@ func HashAccountID(accountID string) string {
 }
 
 func useResinForOAuth(ctx context.Context, id string) bool {
+	if _, bound := AccountBoundEgress(ctx); bound {
+		return false
+	}
 	if ResinRequestDecorator == nil || id == "" {
 		return false
 	}

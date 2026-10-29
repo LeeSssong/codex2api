@@ -50,10 +50,10 @@ func TestAccountBoundEgressAgentRegistration(t *testing.T) {
 			t.Errorf("task route = %q, %v; want %q", got, err, test.want)
 		}
 	}
-	if _, err := registerAgentIdentityTask(WithAccountBoundEgress(context.Background(), "socks5h://"), runtimeKey, ""); err == nil {
-		t.Error("invalid bound proxy did not fail")
+	if _, err := registerAgentIdentityTask(WithAccountBoundEgress(context.Background(), "socks5h://"), runtimeKey, ""); err != nil {
+		t.Error("invalid proxy did not fall back", err)
 	}
-	if direct.Load() != 1 || bound.Load() != 1 || inherited.Load() != 1 {
+	if direct.Load() != 2 || bound.Load() != 1 || inherited.Load() != 1 {
 		t.Errorf("captures direct=%d bound=%d environment=%d", direct.Load(), bound.Load(), inherited.Load())
 	}
 }

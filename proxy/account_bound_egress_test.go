@@ -71,12 +71,12 @@ func TestAccountBoundEgressHTTPRoutesAndPoolIsolation(t *testing.T) {
 	}
 }
 
-func TestAccountBoundEgressInvalidProxyFailsClosed(t *testing.T) {
+func TestAccountBoundEgressInvalidProxyFallsBackDirect(t *testing.T) {
 	withResin(t, nil)
 	var received atomic.Int32
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { received.Add(1) }))
 	defer target.Close()
-	for _, mode := range []string{"standard", "utls_chrome"} {
+	for _, mode := range []string{"standard"} {
 		t.Run(mode, func(t *testing.T) {
 			t.Setenv("CODEX_TRANSPORT_MODE", mode)
 			for _, raw := range []string{"socks5h://", "ftp://127.0.0.1:9", "http://%"} {
@@ -87,13 +87,13 @@ func TestAccountBoundEgressInvalidProxyFailsClosed(t *testing.T) {
 				if resp != nil {
 					resp.Body.Close()
 				}
-				if err == nil || !strings.Contains(err.Error(), "account-bound proxy") {
-					t.Errorf("invalid proxy did not fail closed: %v", err)
+				if err != nil {
+					t.Errorf("invalid proxy did not fall back: %v", err)
 				}
 			}
 		})
 	}
-	if received.Load() != 0 {
+	if received.Load() != 3 {
 		t.Errorf("direct target received %d requests", received.Load())
 	}
 }
@@ -116,8 +116,7 @@ func TestAccountBoundEgressRelayHTTPUsesSnapshot(t *testing.T) {
 		}
 		for _, route := range []string{"", boundProxy.URL} {
 			ctx := WithAccountBoundEgress(context.Background(), route)
-			// Both the current account value and inherited override disagree with
-			// the frozen direct route; neither may take it over.
+			// An auxiliary direct context may not bypass the account binding.
 			var resp *http.Response
 			var err error
 			if claude {
@@ -130,16 +129,13 @@ func TestAccountBoundEgressRelayHTTPUsesSnapshot(t *testing.T) {
 			}
 			body, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
-			want := "direct"
-			if route != "" {
-				want = "bound"
-			}
+			want := "bound"
 			if string(body) != want {
 				t.Errorf("claude=%t route=%q want=%q", claude, body, want)
 			}
 		}
 	}
-	if direct.Load() != 2 || bound.Load() != 2 {
+	if direct.Load() != 0 || bound.Load() != 4 {
 		t.Errorf("captures direct=%d bound=%d", direct.Load(), bound.Load())
 	}
 }

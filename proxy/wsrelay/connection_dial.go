@@ -9,9 +9,13 @@ import (
 	"github.com/codex2api/auth"
 	"github.com/codex2api/egressipv6"
 	"github.com/codex2api/fixedegress"
+	"github.com/codex2api/internal/egressroute"
 	"github.com/codex2api/proxy"
 	"github.com/gorilla/websocket"
+	"net"
 )
+
+type directFallbackKey struct{}
 
 type connectionDialRequest struct {
 	account       *auth.Account
@@ -25,21 +29,72 @@ type connectionDialRequest struct {
 }
 
 func (m *Manager) createConnection(ctx context.Context, input connectionDialRequest) (wc *WsConnection, err error) {
-	input.responsesLite = websocketResponsesLiteFromContext(ctx)
 	defer func() {
 		if err != nil {
 			input.capacity.release()
 		}
 	}()
+	if _, done := ctx.Value(directFallbackKey{}).(bool); !done {
+		var observation egressroute.Observation
+		if p := input.account.GetProxyURL(); p != "" {
+			observation = egressroute.ProxyObservation(p)
+		} else if proxy.NativeIPv6Account(input.account) {
+			observation = egressroute.Observation{Kind: "local_ipv6", Source: "account"}
+		} else if r, enrolled, _ := proxy.FixedRoute(ctx, input.account); enrolled {
+			observation = egressroute.ProxyObservation(r.Binding.ProxyURL)
+			observation.Kind = "fixed"
+		} else if p, bound := proxy.AccountBoundEgress(ctx); bound && p != "" {
+			observation = egressroute.ProxyObservation(p)
+		}
+		if observation.Kind != "" {
+			if p := input.account.GetProxyURL(); p != "" && auth.AccountProxyUnavailable != nil && auth.AccountProxyUnavailable(input.account.ID(), p) {
+				err = egressroute.Unavailable(fmt.Errorf("bound proxy disabled"))
+			} else {
+				wc, err = m.createBoundConnection(ctx, input)
+			}
+			if err == nil {
+				if observation.Kind == "local_ipv6" {
+					observation.SourceIP = proxy.IPv6RouteIP(input.proxyOverride)
+				}
+				egressroute.Record(ctx, observation)
+				wc.egress = observation
+				return wc, nil
+			}
+			if ctx.Err() != nil || !egressroute.CanFallback(err) {
+				return nil, err
+			}
+			eg := context.WithValue(ctx, directFallbackKey{}, true)
+			// Preserve the capacity reservation across the second handshake.
+			fallbackInput := input
+			fallbackInput.proxyOverride = ""
+			fallbackInput.fixedSnapshot = nil
+			wc, err = m.createBoundConnection(eg, fallbackInput)
+			if err == nil {
+				wc.egress = egressroute.Observation{Kind: "direct", Source: "account", FallbackFrom: observation.Kind, FallbackReason: "bound_egress_unavailable"}
+				egressroute.Record(ctx, wc.egress)
+			}
+			return wc, err
+		}
+	}
+	return m.createBoundConnection(ctx, input)
+}
+
+func (m *Manager) createBoundConnection(ctx context.Context, input connectionDialRequest) (wc *WsConnection, err error) {
+	input.responsesLite = websocketResponsesLiteFromContext(ctx)
+
 	var releaseIPv6 func()
+	direct, _ := ctx.Value(directFallbackKey{}).(bool)
 	route := input.proxyOverride
-	if bound, ok := proxy.AccountBoundEgress(ctx); ok && !(proxy.NativeIPv6Account(input.account) && bound == "") {
+	if bound := input.account.GetProxyURL(); bound != "" && !direct {
 		route = bound
 	}
-	if proxy.IsIPv6Route(route) {
+	if bound, ok := proxy.AccountBoundEgress(ctx); !direct && input.account.GetProxyURL() == "" && ok && !(proxy.NativeIPv6Account(input.account) && bound == "") {
+		route = bound
+	}
+	if !direct && proxy.IsIPv6Route(route) {
 		manager := egressipv6.Current()
 		if manager == nil {
-			return nil, fmt.Errorf("local IPv6 egress unavailable")
+			return nil, egressroute.Unavailable(fmt.Errorf("local IPv6 egress unavailable"))
 		}
 		releaseIPv6, err = manager.TrackAccountRoute(ctx, input.account.ID(), proxy.IPv6RouteIP(route))
 		if err != nil {
@@ -53,10 +108,10 @@ func (m *Manager) createConnection(ctx context.Context, input connectionDialRequ
 	}
 	var releaseFixed func()
 	var fixedRoute fixedegress.Route
-	if _, bound := proxy.AccountBoundEgress(ctx); !bound && !proxy.IsStateDirectRoute(input.proxyOverride) {
+	if _, bound := proxy.AccountBoundEgress(ctx); !direct && input.account.GetProxyURL() == "" && (!bound || fixedegress.HasEnrolled(input.account.ID())) {
 		r, enrolled, routeErr := proxy.FixedRoute(ctx, input.account)
 		if routeErr != nil {
-			return nil, routeErr
+			return nil, egressroute.Unavailable(routeErr)
 		}
 		if enrolled {
 			fixedRoute = r
@@ -74,7 +129,7 @@ func (m *Manager) createConnection(ctx context.Context, input connectionDialRequ
 	}
 	dialer, err := m.connectionDialer(ctx, input)
 	if err != nil {
-		return nil, err
+		return nil, egressroute.Unavailable(err)
 	}
 	session, poolKey := m.newDialSession(ctx, input)
 	conn, resp, err := dialer.DialContext(ctx, input.url, input.headers)
@@ -93,6 +148,9 @@ func (m *Manager) createConnection(ctx context.Context, input connectionDialRequ
 		}
 		m.sessions.CompareAndDelete(poolKey, session)
 		session.Close()
+		if resp != nil && resp.StatusCode == 407 {
+			return nil, egressroute.Unavailable(err)
+		}
 		return nil, formatDialHandshakeError(err, resp)
 	}
 	logCompressionNegotiation(resp, input.account.ID())
@@ -117,9 +175,16 @@ func (m *Manager) createConnection(ctx context.Context, input connectionDialRequ
 
 func (m *Manager) connectionDialer(ctx context.Context, input connectionDialRequest) (*websocket.Dialer, error) {
 	dialer := *m.dialer
+	if direct, _ := ctx.Value(directFallbackKey{}).(bool); direct {
+		source := &net.Dialer{}
+		dialer.Proxy = nil
+		dialer.NetDialContext = source.DialContext
+		dialer.NetDialTLSContext = nil
+		return &dialer, nil
+	}
 	proxyURL := effectiveProxyURL(input.account, input.proxyOverride)
 	dialProxy := proxy.CodexDialProxyURL(input.account, proxyURL)
-	if _, bound := proxy.AccountBoundEgress(ctx); !bound && !proxy.IsStateDirectRoute(input.proxyOverride) {
+	if _, bound := proxy.AccountBoundEgress(ctx); input.account.GetProxyURL() == "" && (!bound || fixedegress.HasEnrolled(input.account.ID())) {
 		if input.fixedSnapshot != nil {
 			dialProxy = input.fixedSnapshot.Binding.ProxyURL
 		} else {
@@ -133,7 +198,7 @@ func (m *Manager) connectionDialer(ctx context.Context, input connectionDialRequ
 		}
 	}
 
-	if boundProxy, ok := proxy.AccountBoundEgress(ctx); ok && !(proxy.NativeIPv6Account(input.account) && boundProxy == "") {
+	if boundProxy, ok := proxy.AccountBoundEgress(ctx); input.account.GetProxyURL() == "" && !fixedegress.HasEnrolled(input.account.ID()) && ok && !(proxy.NativeIPv6Account(input.account) && boundProxy == "") {
 		dialProxy = strings.TrimSpace(boundProxy)
 		dialer.Proxy = nil
 	}

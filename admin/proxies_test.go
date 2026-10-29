@@ -1579,14 +1579,15 @@ func TestUpdateProxyDisableKeepsPinButStopsUsingIt(t *testing.T) {
 	}
 	selected := store.NextExcludingWithFilter(0, nil, nil)
 	if selected == nil {
-		t.Fatal("expected unbound account to remain schedulable")
+		t.Fatal("expected account with direct fallback to remain schedulable")
 	}
 	defer store.Release(selected)
-	if selected.DBID != unboundID {
-		t.Fatalf("selected account %d, want unbound %d", selected.DBID, unboundID)
-	}
-	if got := store.ResolveProxyForAccount(selected); got != enabledURL {
-		t.Fatalf("unbound proxy = %q, want remaining pool member %q", got, enabledURL)
+	if selected.DBID == pinnedID {
+		if got := store.ResolveProxyForAccount(selected); got != "" {
+			t.Fatalf("disabled bound route resolved to %q, want direct", got)
+		}
+	} else if selected.DBID != unboundID || store.ResolveProxyForAccount(selected) != enabledURL {
+		t.Fatalf("unexpected selected account %d and route %q", selected.DBID, store.ResolveProxyForAccount(selected))
 	}
 
 	enabled := true

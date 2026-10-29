@@ -359,6 +359,9 @@ func LogCodexFingerprintDebug(ctx context.Context, kind string, account *auth.Ac
 
 // getPooledClient preserves account isolation and applies dedicated IPv6 egress.
 func getPooledClient(account *auth.Account, proxyURL string) *http.Client {
+	if account.GetProxyURL() != "" {
+		return accountProxyClient(account, false)
+	}
 	return wrapIPv6Client(account, getRawPooledClient(account, proxyURL), true, false)
 }
 

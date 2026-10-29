@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/codex2api/auth"
+	"github.com/codex2api/internal/egressroute"
 	"github.com/codex2api/proxy"
 	"github.com/codex2api/proxy/internal/jsonbody"
 	"github.com/gorilla/websocket"
@@ -142,9 +143,12 @@ func (e *Executor) executeRequestViaWebsocket(
 
 	// 出口链路统一由 ResolveCodexWebsocketEgress 决定(Resin > 代理 > 直连):
 	// Resin 模式下 WS 地址改写为反代路径,拨号侧(createConnection)同样按它跳过代理。
-	egress := proxy.ResolveCodexRequestEgress(ctx, account, wsURL, effectiveProxyURL(account, proxyOverride), true)
+	egress := proxy.CodexEgress{URL: wsURL}
+	if direct, _ := ctx.Value(directFallbackKey{}).(bool); !direct {
+		egress = proxy.ResolveCodexRequestEgress(ctx, account, wsURL, effectiveProxyURL(account, proxyOverride), true)
+	}
 	if egress.Err != nil {
-		return nil, egress.Err
+		egress.URL = wsURL
 	}
 	wsURL = egress.URL
 
@@ -247,6 +251,9 @@ func (e *Executor) executeRequestViaWebsocket(
 	// 记录调用前的 base lane。普通、stateless slot 与 preferred 路径在这里
 	// 做同一轮幂等校正。
 	poolSessionID = actualWebsocketPoolSessionID(wc, poolSessionID)
+	if wc.egress.Kind != "" {
+		egressroute.Record(ctx, wc.egress)
+	}
 	if wc.upstreamUserAgentKnown {
 		proxy.RecordUpstreamUserAgent(ctx, wc.upstreamUserAgent)
 		reused := headers.Clone()

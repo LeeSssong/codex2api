@@ -285,9 +285,16 @@ func TestCredentialOperationsExcelRefreshRejectsIdentityDrift(t *testing.T) {
 				json.NewEncoder(w).Encode(map[string]any{"access_token": at, "refresh_token": returnedRefresh, "id_token": id, "expires_in": 3600})
 			}))
 			defer server.Close()
-			oldDecorator := auth.ResinRequestDecorator
-			defer func() { auth.ResinRequestDecorator = oldDecorator }()
-			auth.ResinRequestDecorator = func(string, string) string { return server.URL }
+			oldDecorator := auth.CodexHTTPClientDecorator
+			defer func() { auth.CodexHTTPClientDecorator = oldDecorator }()
+			auth.CodexHTTPClientDecorator = func(_ int64, _ *http.Client, _ bool) *http.Client {
+				return &http.Client{Transport: ipv6TestRoundTrip(func(req *http.Request) (*http.Response, error) {
+					clone := req.Clone(req.Context())
+					local, _ := http.NewRequest(req.Method, server.URL, nil)
+					clone.URL = local.URL
+					return http.DefaultTransport.RoundTrip(clone)
+				})}
+			}
 			service := credentialGrantProvider.Load()
 			e := service.refreshExcel(ctx, account, "", original)
 			stored, readErr := db.GetCredentialOpsProfileGrant(ctx, account.ID(), "excel")

@@ -373,6 +373,30 @@ func main() {
 	// 查不到记录或查询失败时仍按原号池配比抽样。
 	proxy.SetCodexReportedClientSource(db)
 	store := auth.NewStore(db, tc, settings)
+	auth.AccountProxyUnavailable = func(_ int64, route string) bool { return store.ManagedProxyUnavailable(route) }
+	auth.AccountOAuthEgress = func(ctx context.Context, id int64) (string, bool, error) {
+		a := store.FindByID(id)
+		if a == nil {
+			if err := store.LoadAccountByID(ctx, id); err != nil {
+				return "", false, err
+			}
+			a = store.FindByID(id)
+		}
+		if a == nil {
+			return "", false, fmt.Errorf("account egress unavailable")
+		}
+		if bound := a.GetProxyURL(); bound != "" {
+			return bound, true, nil
+		}
+		if configured, _ := a.IPv6EgressSelection(); configured {
+			return "", true, nil
+		}
+		if fixedegress.HasEnrolled(id) {
+			return "", true, nil
+		}
+		return "", false, nil
+	}
+
 	proxy.ConfigureCredentialOperations(db, store)
 	store.SetSchedulerWaitLimits(cfg.SchedulerMaxWaiters, cfg.SchedulerMaxWaitersPerKey)
 

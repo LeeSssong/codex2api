@@ -281,11 +281,9 @@ func NewClaudeAuth(proxyURL string) *ClaudeAuth {
 
 // buildPlainClaudeOAuthClient 构建标准(非 uTLS)代理感知 HTTP 客户端,用作回退。
 func buildPlainClaudeOAuthClient(proxyURL string) *http.Client {
-	tr := http.DefaultTransport.(*http.Transport).Clone()
-	if strings.TrimSpace(proxyURL) != "" {
-		_ = ConfigureTransportProxy(tr, proxyURL, nil)
-	}
-	return &http.Client{Transport: tr, Timeout: claudeOAuthHTTPTimeout}
+	client := *buildHTTPClient(proxyURL)
+	client.Timeout = claudeOAuthHTTPTimeout
+	return &client
 }
 
 // doWithFallback 用 primary 发送请求;传输错误或 403 挑战时,用 fallback 以全新请求

@@ -18,7 +18,7 @@ func TestResinEgressExemptsCodexAccountsFromPoolFailClosed(t *testing.T) {
 	relay := &Account{DBID: 3, UpstreamType: UpstreamOpenAIResponses, BaseURL: "https://relay.example", APIKey: "sk-test"}
 
 	SetResinEgressEnabled(false)
-	if store.AccountHasUsableEgress(unbound) || store.AccountHasUsableEgress(pinned) {
+	if store.AccountHasUsableEgress(unbound) || !store.AccountHasUsableEgress(pinned) {
 		t.Fatal("without resin an empty pool must stay fail-closed")
 	}
 
@@ -30,7 +30,7 @@ func TestResinEgressExemptsCodexAccountsFromPoolFailClosed(t *testing.T) {
 		t.Fatal("resin carries codex egress: a disabled managed pin must not block a codex account")
 	}
 	if got := store.ResolveProxyForAccount(pinned); got != "" {
-		t.Fatalf("resolved proxy for disabled pin = %q, want empty (resin ignores it anyway)", got)
+		t.Fatalf("resolved proxy for disabled pin = %q, want direct fallback", got)
 	}
 	if !relay.IsRelayStyle() {
 		t.Fatal("fixture must be relay-style")

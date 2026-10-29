@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/codex2api/fixedegress"
 	"html"
 	"io"
 	"log"
@@ -795,12 +796,15 @@ func doOAuthCodeExchange(ctx context.Context, code, codeVerifier, redirectURI, p
 	form.Set("code_verifier", codeVerifier)
 
 	selection, selected := ctx.Value(nativeOAuthRouteKey{}).(nativeOAuthRoute)
-	useResin := proxy.IsResinEnabled() && !selected
+	useResin := proxy.IsResinEnabled() && !selected && strings.TrimSpace(proxyURL) == ""
 	// Resin 反代模式：改写 URL
 	targetURL := oauthTokenURL
 	tempID := ""
 	if len(resinTempID) > 0 {
 		tempID = resinTempID[0]
+	}
+	if n, e := strconv.ParseInt(tempID, 10, 64); e == nil && fixedegress.HasEnrolled(n) {
+		useResin = false
 	}
 	if useResin && tempID != "" {
 		targetURL = proxy.BuildReverseProxyURL(oauthTokenURL)
@@ -831,6 +835,9 @@ func doOAuthCodeExchange(ctx context.Context, code, codeVerifier, redirectURI, p
 		} else if proxyURL == "" {
 			client = proxy.WrapBootstrapOAuthClient(client, selection.enabled)
 		}
+	}
+	if n, e := strconv.ParseInt(tempID, 10, 64); e == nil && n > 0 && fixedegress.HasEnrolled(n) {
+		client = proxy.WrapOAuthFixedClient(n, client, false)
 	}
 	resp, err := client.Do(req)
 	if err != nil {

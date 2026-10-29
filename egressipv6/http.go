@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/codex2api/internal/egressroute"
 	"github.com/tidwall/gjson"
 )
 
@@ -68,13 +69,14 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		route, err = t.manager.Acquire(req.Context(), t.accountID)
 	}
 	if err != nil {
-		return nil, err
+		return nil, egressroute.Unavailable(err)
 	}
 	if !route.Config.Enabled {
 		return t.fallback.RoundTrip(req)
 	}
 	attemptReq := req
 	for attempt := 1; ; attempt++ {
+		egressroute.Record(req.Context(), egressroute.Observation{Kind: "local_ipv6", Source: "account", SourceIP: route.Binding.IP})
 		if t.manager.ObserveSource != nil {
 			t.manager.ObserveSource(req.Context(), t.accountID, route.Binding.IP)
 		}

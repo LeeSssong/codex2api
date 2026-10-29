@@ -8,6 +8,7 @@ import (
 
 	"github.com/codex2api/auth"
 	"github.com/codex2api/egressipv6"
+	"github.com/codex2api/internal/egressroute"
 	"github.com/codex2api/proxy"
 	"github.com/tidwall/gjson"
 )
@@ -33,7 +34,10 @@ func (e *Executor) ExecuteRequestViaWebsocket(ctx context.Context, account *auth
 		return e.executeRequestViaWebsocket(ctx, account, body, sessionID, proxyOverride, apiKey, deviceCfg, headers, poolRouteKey)
 	}
 	if m == nil {
-		return nil, errors.New("local IPv6 egress unavailable")
+		eg := context.WithValue(ctx, directFallbackKey{}, true)
+		egres := egressroute.Observation{Kind: "direct", Source: "account", FallbackFrom: "local_ipv6", FallbackReason: "bound_egress_unavailable"}
+		egressroute.Record(ctx, egres)
+		return e.executeRequestViaWebsocket(eg, account, body, sessionID, "", apiKey, deviceCfg, headers, poolRouteKey)
 	}
 	if boundProxy, bound := proxy.AccountBoundEgress(ctx); bound && boundProxy != "" {
 		return nil, errors.New("account-bound route conflicts with local IPv6 membership")
@@ -43,7 +47,12 @@ func (e *Executor) ExecuteRequestViaWebsocket(ctx context.Context, account *auth
 		release()
 	}
 	if err != nil {
-		return nil, err
+		if ctx.Err() != nil {
+			return nil, err
+		}
+		eg := context.WithValue(ctx, directFallbackKey{}, true)
+		egressroute.Record(ctx, egressroute.Observation{Kind: "direct", Source: "account", FallbackFrom: "local_ipv6", FallbackReason: "bound_egress_unavailable"})
+		return e.executeRequestViaWebsocket(eg, account, body, sessionID, "", apiKey, deviceCfg, headers, poolRouteKey)
 	}
 
 	a := &ipv6WSAttempt{ctx: ctx, manager: m, accountID: account.ID(), route: route}

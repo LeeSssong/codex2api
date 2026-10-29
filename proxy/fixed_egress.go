@@ -10,6 +10,7 @@ import (
 	"github.com/codex2api/database"
 	"github.com/codex2api/egressipv6"
 	"github.com/codex2api/fixedegress"
+	"github.com/codex2api/internal/egressroute"
 	"io"
 	"net"
 	"net/http"
@@ -29,7 +30,7 @@ func (t *fixedEgressTransport) CloseIdleConnections() {}
 func (t *fixedEgressTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	route, e := t.manager.Acquire(req.Context(), t.id)
 	if e != nil {
-		return nil, e
+		return nil, egressroute.Unavailable(e)
 	}
 	if !route.Enrolled {
 		rt := t.base.Transport
@@ -38,16 +39,17 @@ func (t *fixedEgressTransport) RoundTrip(req *http.Request) (*http.Response, err
 		}
 		return rt.RoundTrip(req)
 	}
-	if IsResinEnabled() || egressipv6.Enabled() {
-		return nil, errors.New("fixed egress conflicts with another active exit")
-	}
+
 	// The outer gateway owns retries for account/model errors. Only failures
 	// proving that no upstream request was accepted may replay here.
 	for attempt := 1; ; attempt++ {
 		release, e := t.manager.TrackRoute(req.Context(), route)
 		if e != nil {
-			return nil, e
+			return nil, egressroute.Unavailable(e)
 		}
+		eg := egressroute.ProxyObservation(route.Binding.ProxyURL)
+		eg.Kind = "fixed"
+		egressroute.Record(req.Context(), eg)
 		resp, requestErr := fixedRawTransport(t.id, route, t.mode, t.scope).RoundTrip(req)
 		reason := fixedFailureReason(resp, requestErr, route.Pool)
 		if resp != nil && resp.StatusCode >= 400 && ((resp.StatusCode == 429 && route.Pool.Rotate429) || (route.Pool.Retry5xx && resp.StatusCode >= 500)) {
@@ -162,7 +164,9 @@ func wrapFixedClient(id int64, base *http.Client, mode, scope string, replay boo
 		return base
 	}
 	c := *base
-	c.Transport = &fixedEgressTransport{m, id, base, mode, scope, replay}
+	primary := &fixedEgressTransport{m, id, base, mode, scope, replay}
+	direct := hostIPv4Client(id, base, mode, "fixed-fallback")
+	c.Transport = egressroute.Fallback(primary, direct.Transport, egressroute.Observation{Kind: "fixed", Source: "account"})
 	c.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	return &c
 }
@@ -205,9 +209,7 @@ func resolveFixedRoute(ctx context.Context, account *auth.Account) (fixedegress.
 		return fixedegress.Route{}, false, nil
 	}
 	r, e := m.Acquire(ctx, account.ID())
-	if r.Enrolled && (IsResinEnabled() || egressipv6.Enabled()) {
-		return r, true, errors.New("fixed egress conflicts with another active exit")
-	}
+
 	return r, r.Enrolled, e
 }
 func FixedRoute(ctx context.Context, account *auth.Account) (fixedegress.Route, bool, error) {

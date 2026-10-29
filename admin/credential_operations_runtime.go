@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"github.com/codex2api/credentialops"
 	"github.com/codex2api/database"
+	"github.com/codex2api/fixedegress"
 	"github.com/gin-gonic/gin"
 	"os"
 	"strconv"
@@ -131,6 +132,16 @@ func (h *Handler) credentialOpsProxy(ctx context.Context, id int64, cfg database
 			return "", errors.New("account egress cannot be resolved")
 		}
 		if a != nil {
+			if bound := a.GetProxyURL(); bound != "" {
+				return bound, nil
+			}
+			if configured, _ := a.IPv6EgressSelection(); configured {
+				return "", nil
+			}
+			if fixedegress.HasEnrolled(a.ID()) {
+				resolved, _ := h.store.ResolveUsableProxyForAccount(a)
+				return resolved, nil
+			}
 			resolved, usable := h.store.ResolveUsableProxyForAccount(a)
 			if !usable {
 				return "", errors.New("account egress unavailable")

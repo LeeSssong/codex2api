@@ -13,6 +13,9 @@ const basispointsTransportMode = "basispoints"
 // Basispoints has a separate pool without Codex's HTTP/2 PING deadlines.
 // A quiet reasoning stream must remain open until the caller cancels it.
 func getBasispointsClient(account *auth.Account, proxyURL string) (*http.Client, error) {
+	if account.GetProxyURL() != "" {
+		return accountProxyClient(account, false), nil
+	}
 	key := clientPoolKey(account, proxyURL, basispointsTransportMode)
 	if v, ok := clientPool.Load(key); ok {
 		entry := v.(*poolEntry)
