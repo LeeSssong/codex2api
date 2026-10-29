@@ -1,3 +1,38 @@
+# Current task: account-bound egress with direct fallback — deployment authorized
+
+User authorized implementation on 2026-10-29, initially deferred deployment, then
+explicitly authorized immediate production deployment on 2026-10-29.
+Corrected failure policy: if a bound account proxy, fixed route, or native IPv6
+route is unavailable, use host direct only; never substitute global/pool/Resin
+or another account route. Preserve one-shot request semantics: no replay after
+request headers/body may have been sent or after a stream begins.
+
+Owner/worktree: current Codex chat at
+`/Users/gongtengxinwen/.codex/worktrees/account-egress-fallback/codex2api`,
+branch `codex/account-egress-fallback`, base `7b28052976f9a1dc5f00fc1da3f77416d093bf55`.
+Implementation and tests were local/uncommitted at handoff. Deployment is now
+authorized and must follow the clean pushed-main release process below. Initial
+production checks were read-only: public health returned 200 with the deployed
+version, authenticated API routing returned the expected missing-key 401, and
+the live executable/source manifest matched the recorded production binary.
+Health reports zero available accounts; preserve all account enablement state.
+
+Verification: serial full Go suite `go test ./... -p 1 -count=1 -timeout=8m`
+passed every package; focused race `go test -race ./internal/egressroute
+./proxy/wsrelay -count=2`, `go build ./...`, and `git diff --check` passed.
+Parallel full-suite execution once encountered an unrelated credentialops
+child-process environment flake; the serial suite and five isolated repetitions
+of that test passed. Details and remaining rollout caveats are in
+`docs/superpowers/plans/2026-10-29-account-egress-fallback.md`.
+
+Existing Codex2API release rules apply: clean/pushed main, exact
+source/image/binary identity, serialized maintenance release lock, pre-stop DB
+backup and rehearsal, and preservation of the running detection
+configuration/history. Do not enable accounts or alter unrelated services as
+part of this release.
+
+---
+
 # Current production: 2026-10-29 account IPv6 + reported client
 
 Deployed Codex2API application `f8721a4a410413d7d798afd960ba6278c114c75a`,

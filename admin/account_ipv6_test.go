@@ -390,7 +390,8 @@ func TestAccountIPv6OAuthReauthSwitchRetiresAndPreservesDisabled(t *testing.T) {
 func TestAccountIPv6OAuthReauthOmittedPreservesLegacyPreferences(t *testing.T) {
 	h, store, db := newImportEndToEndHandler(t)
 	store.SetLazyMode(true)
-	store.SetProxyURL("http://inherited.invalid:8080")
+	// Keep this fixture local: the exchange server below is the intended Resin
+	// test route, and a configured proxy now correctly takes precedence over it.
 	newOAuthExchangeTestServer(t)
 	ctx := context.Background()
 	id, err := db.InsertAccountWithCredentials(ctx, "legacy-reauth", map[string]interface{}{"refresh_token": "old", "timezone": "Asia/Tokyo"}, "")

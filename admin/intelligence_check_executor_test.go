@@ -118,11 +118,11 @@ func TestIntelligenceUnboundAccountIgnoresGlobalProxyPool(t *testing.T) {
 	}
 }
 
-func TestIntelligenceBoundProxyFailureNeverFallsBack(t *testing.T) {
-	h, a, _ := newCodexDiagnosticsTestHandler(t, func(w http.ResponseWriter, r *http.Request) { t.Error("must not fall back to direct") })
+func TestIntelligenceBoundProxyFailureRecordsDirectFallback(t *testing.T) {
+	h, a, _ := newCodexDiagnosticsTestHandler(t, func(w http.ResponseWriter, r *http.Request) { fmt.Fprintf(w, "data: %s\n\n", intelligenceSuccess) })
 	a.ProxyURL = "http://127.0.0.1:1"
 	result := h.executeIntelligenceCheck(context.Background(), a, "gpt-4o-mini", "high", "answer")
-	if result.Interrupted || result.Complete || result.Error == "" {
-		t.Fatalf("proxy network failure result=%+v", result)
+	if result.Interrupted || !result.Complete || result.Error != "" || result.EffectiveContext["egress_kind"] != "direct" || result.EffectiveContext["fallback_from"] != "account_proxy" {
+		t.Fatalf("fallback result=%+v", result)
 	}
 }

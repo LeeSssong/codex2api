@@ -80,21 +80,21 @@ func TestAccountBoundEgressWebsocketRoutesAndPoolIsolation(t *testing.T) {
 		wc.session.RemovePendingRequest(pr.RequestID)
 		return wc
 	}
-	business := acquire(context.Background()) // Existing behavior: inherited dialer, Resin ignores account proxy.
+	business := acquire(context.Background()) // Bound account wins over inherited dialer and Resin.
 	directConn := acquire(proxy.WithAccountBoundEgress(context.Background(), ""))
 	boundConn := acquire(proxy.WithAccountBoundEgress(context.Background(), proxyServer.URL))
-	if business == directConn || business == boundConn || directConn == boundConn {
-		t.Error("cross-route WebSocket connection reused")
+	if business != directConn || business != boundConn {
+		t.Error("auxiliary route overrode account binding")
 	}
-	if got := acquire(proxy.WithAccountBoundEgress(context.Background(), "")); got != directConn {
-		t.Error("same explicit route did not reuse its connection")
+	if again := acquire(proxy.WithAccountBoundEgress(context.Background(), "")); again != business {
+		t.Error("account binding did not reuse its pool")
 	}
-	if direct.Load() != 3 || bound.Load() != 2 {
-		t.Errorf("captures upstream=%d proxy=%d, want 3/2", direct.Load(), bound.Load())
+	if direct.Load() != 1 || bound.Load() != 1 {
+		t.Errorf("upstream=%d proxy=%d want 1/1", direct.Load(), bound.Load())
 	}
 }
 
-func TestAccountBoundEgressWebsocketProxyFailureNeverDialsDirect(t *testing.T) {
+func TestAccountBoundEgressWebsocketProxyFailureFallsBackDirect(t *testing.T) {
 	old := proxy.GetResinConfig()
 	proxy.SetResinConfig(&proxy.ResinConfig{BaseURL: "http://127.0.0.1:1", PlatformName: "test"})
 	t.Cleanup(func() { proxy.SetResinConfig(old) })
@@ -111,7 +111,7 @@ func TestAccountBoundEgressWebsocketProxyFailureNeverDialsDirect(t *testing.T) {
 			t.Error("bound proxy failure should return an error")
 		}
 	}
-	if direct.Load() != 0 {
-		t.Errorf("direct received %d failed-proxy requests", direct.Load())
+	if direct.Load() != 2 {
+		t.Errorf("direct received %d fallback requests, want 2", direct.Load())
 	}
 }

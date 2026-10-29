@@ -67,6 +67,7 @@ func (h *Handler) executeIntelligenceCheck(ctx context.Context, account *auth.Ac
 		}
 	}
 	body, _ := json.Marshal(payload)
+	ctx = proxy.WithAccountEgressAudit(ctx)
 	proxyURL := strings.TrimSpace(account.GetProxyURL())
 	ctx, cancel := context.WithCancel(proxy.WithAccountBoundEgress(proxy.WithUpstreamIdentityAudit(proxy.WithCodexDetectorRequest(ctx)), proxyURL))
 	defer cancel()
@@ -102,6 +103,13 @@ func (h *Handler) executeIntelligenceCheck(ctx context.Context, account *auth.Ac
 		result.EffectiveContext = map[string]string{"fingerprint_mode": fingerprint, "timezone": timezone, "proxy": "direct", "transport": "http", "attempts": strconv.Itoa(proxy.UpstreamAttemptCount(ctx))}
 		if proxyURL != "" {
 			result.EffectiveContext["proxy"] = "configured"
+		}
+		for k, v := range proxy.AccountEgressAudit(ctx) {
+			result.EffectiveContext[k] = v
+		}
+		if _, ok := result.EffectiveContext["egress_kind"]; !ok {
+			result.EffectiveContext["proxy"] = "unknown"
+			result.EffectiveContext["egress_kind"] = "unknown"
 		}
 		if ua, ok := proxy.UpstreamIdentityAudit(ctx); ok {
 			result.EffectiveContext["user_agent"] = sanitizeCodexTestText(ua, secrets)

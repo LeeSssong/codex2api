@@ -92,8 +92,10 @@ func TestIPv6OAuthUsesDurableMembershipAndNeverReplays(t *testing.T) {
 	cfg, _ = db.IPv6EgressConfig(ctx)
 	cfg.Enabled = false
 	db.SaveIPv6EgressConfig(ctx, cfg)
-	if _, err = client.Get(server.URL); err == nil {
-		t.Fatal("OAuth ignored current membership/disabled pool")
+	if fallback, e := client.Get(server.URL); e != nil {
+		t.Fatal(e)
+	} else {
+		fallback.Body.Close()
 	}
 	cfg, _ = db.IPv6EgressConfig(ctx)
 	cfg.Enabled = true

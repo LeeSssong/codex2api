@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"fmt"
+	"github.com/codex2api/internal/egressroute"
 	"net"
 	"net/http"
 	"net/url"
@@ -141,7 +142,7 @@ func (t *utlsAuthRoundTripper) RoundTrip(req *http.Request) (*http.Response, err
 
 	h2Conn, err := t.getOrCreateConnection(hostname, addr)
 	if err != nil {
-		return nil, err
+		return nil, egressroute.Unavailable(err)
 	}
 
 	resp, err := h2Conn.RoundTrip(req)
@@ -348,6 +349,21 @@ func evictExpiredUTLSAuthClients() {
 // buildUTLSHTTPClient 构建使用 Chrome TLS 指纹的 HTTP 客户端（连接池复用）。
 // 用于请求受 Cloudflare 保护的 chatgpt.com 端点。
 func buildUTLSHTTPClient(proxyURL string) *http.Client {
+	if proxyURL != "" {
+		direct := buildUTLSHTTPClient("")
+		var primary http.RoundTripper
+		if err := ConfigureTransportProxy(&http.Transport{}, proxyURL, nil); err != nil {
+			primary = authEgressError{egressroute.Unavailable(err)}
+		} else {
+			primary = buildRawUTLSHTTPClient(proxyURL).Transport
+		}
+		copy := *direct
+		copy.Transport = egressroute.Fallback(primary, direct.Transport, egressroute.ProxyObservation(proxyURL))
+		return &copy
+	}
+	return buildRawUTLSHTTPClient(proxyURL)
+}
+func buildRawUTLSHTTPClient(proxyURL string) *http.Client {
 	if v, ok := utlsAuthClientPool.Load(proxyURL); ok {
 		entry := v.(*utlsAuthPoolEntry)
 		entry.touch()

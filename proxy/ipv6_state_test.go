@@ -44,17 +44,17 @@ func TestIPv6PluginOverridesBothStateLocationsAndClearsMissingState(t *testing.T
 	}
 }
 
-func TestIPv6PluginDirectRouteDoesNotUseAccountProxy(t *testing.T) {
+func TestIPv6PluginDirectRouteCannotBypassAccountProxy(t *testing.T) {
 	account := &auth.Account{DBID: 7, ProxyURL: "http://business.invalid:8080"}
 	httpEgress := ResolveCodexEgress(account, "https://chatgpt.com/backend-api/codex/responses", ipv6StateDirectRoute)
 	wsEgress := ResolveCodexWebsocketEgress(account, "wss://chatgpt.com/backend-api/codex/responses", ipv6StateDirectRoute)
 	for _, egress := range []CodexEgress{httpEgress, wsEgress} {
-		if egress.Kind != CodexEgressDirect || egress.DialProxyURL != "" || egress.ProxyURL != "" {
-			t.Fatal("plugin traffic retained a configured proxy")
+		if egress.Kind != CodexEgressProxy || egress.DialProxyURL != account.ProxyURL || egress.ProxyURL != account.ProxyURL {
+			t.Fatal("plugin traffic bypassed the account binding")
 		}
 	}
-	if CodexDialProxyURL(account, ipv6StateDirectRoute) != "" {
-		t.Fatal("WebSocket socket retained a configured proxy")
+	if CodexDialProxyURL(account, ipv6StateDirectRoute) != account.ProxyURL {
+		t.Fatal("WebSocket socket bypassed the account binding")
 	}
 }
 

@@ -412,7 +412,7 @@ func TestExecuteRequestViaWebsocketSendFailureRemovesEffectiveProxyConnection(t 
 	effectiveProxy := effectiveProxyURL(account, "")
 	exec := NewExecutorWithManager(manager)
 	headers := exec.prepareWebsocketHeaders(context.Background(), account.AccessToken, account, account.AccountID, sessionID, "", nil, http.Header{}, nil, "")
-	key := manager.poolKey(account.ID(), wsURL, websocketClientPoolKey(sessionID, headers), effectiveProxy)
+	key := manager.poolKey(account.ID(), wsURL, websocketClientPoolKey(sessionID, headers), requestProxyKey(context.Background(), account, effectiveProxy))
 	session := NewSession(account.ID(), manager)
 	session.SetConnected(true)
 	conn := &WsConnection{

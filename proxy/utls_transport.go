@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"fmt"
+	"github.com/codex2api/internal/egressroute"
 	"log"
 	"net"
 	"net/http"
@@ -407,7 +408,7 @@ func (t *utlsRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 
 	entry, err := t.getOrCreateConnection(hostname, addr)
 	if err != nil {
-		return nil, err
+		return nil, egressroute.Unavailable(err)
 	}
 
 	resp, err := entry.conn.RoundTrip(req)

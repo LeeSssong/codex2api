@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/codex2api/auth"
+	"github.com/codex2api/internal/egressroute"
 )
 
 // WithAccountBoundEgress freezes an account's bound proxy for this request.
@@ -31,7 +32,17 @@ func requestProxyURL(ctx context.Context, fallback string) string {
 }
 
 func getRequestClient(ctx context.Context, account *auth.Account, fallback string) *http.Client {
+	if account.GetProxyURL() != "" || NativeIPv6Account(account) {
+		return getPooledClient(account, fallback)
+	}
+	if r, enrolled, _ := resolveFixedRoute(ctx, account); enrolled {
+		_ = r
+		return getPooledClient(account, fallback)
+	}
 	if route, ok := AccountBoundEgress(ctx); ok {
+		if route == "" {
+			egressroute.Record(ctx, egressroute.Observation{Kind: "direct", Source: "account"})
+		}
 		if NativeIPv6Account(account) {
 			if route != "" {
 				return &http.Client{Transport: errorTransport{errors.New("account-bound proxy conflicts with local IPv6 membership")}}
@@ -62,14 +73,18 @@ func (accountBoundProxyErrorTransport) RoundTrip(*http.Request) (*http.Response,
 }
 
 func newAccountBoundTransport(proxyURL string) http.RoundTripper {
-	// Validate before legacy transport constructors, which deliberately fall back
-	// to direct on invalid configuration for ordinary requests.
-	if err := auth.ConfigureTransportProxy(&http.Transport{}, proxyURL, nil); err != nil {
-		return accountBoundProxyErrorTransport{}
-	}
-	transport := newCodexTransport(proxyURL)
-	if standard, ok := transport.(*http.Transport); ok && proxyURL == "" {
+	direct := newCodexTransport("")
+	if standard, ok := direct.(*http.Transport); ok {
 		standard.Proxy = nil
 	}
-	return transport
+	if proxyURL == "" {
+		return direct
+	}
+	var primary http.RoundTripper
+	if err := auth.ConfigureTransportProxy(&http.Transport{}, proxyURL, nil); err != nil {
+		primary = errorTransport{egressroute.Unavailable(err)}
+	} else {
+		primary = newCodexTransport(proxyURL)
+	}
+	return egressroute.Fallback(primary, direct, egressroute.ProxyObservation(proxyURL))
 }

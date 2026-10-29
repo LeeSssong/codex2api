@@ -9,7 +9,9 @@ import (
 	"github.com/codex2api/auth"
 	"github.com/codex2api/credentialops"
 	"github.com/codex2api/database"
+	"github.com/codex2api/fixedegress"
 	"github.com/codex2api/internal/openaiidentity"
+	"github.com/codex2api/proxy"
 	"github.com/gin-gonic/gin"
 	"net/http"
 	"net/url"
@@ -253,7 +255,13 @@ func (h *Handler) ClaimCredentialOpsWorker(c *gin.Context) {
 		return
 	}
 	proxyURL, e := dec(cfg.ProxyURLCiphertext)
-	if e == nil && cfg.ProxySource == "mihomo" {
+	accountRouteBound := false
+	if task.AccountID > 0 && h.store != nil {
+		if a := h.store.FindByID(task.AccountID); a != nil {
+			accountRouteBound = a.GetProxyURL() != "" || proxy.NativeIPv6Account(a) || fixedegress.HasEnrolled(a.ID())
+		}
+	}
+	if e == nil && cfg.ProxySource == "mihomo" && !accountRouteBound {
 		var release func()
 		proxyURL, release, e = credentialops.AcquireMihomo(c.Request.Context(), fmt.Sprintf("credential-operations:%d:%d", task.ID, task.Attempt))
 		if e == nil {
@@ -268,6 +276,29 @@ func (h *Handler) ClaimCredentialOpsWorker(c *gin.Context) {
 		_ = h.db.FailCredentialOpsTask(c.Request.Context(), task.ID, req.WorkerID, task.Attempt)
 		c.JSON(409, gin.H{"error": "configured egress unavailable"})
 		return
+	}
+	// Bind late, at claim time, so queued tasks cannot retain an obsolete route.
+	if task.AccountID > 0 && h.store != nil {
+		a := h.store.FindByID(task.AccountID)
+		if a != nil && (a.GetProxyURL() != "" || proxy.NativeIPv6Account(a) || fixedegress.HasEnrolled(a.ID())) {
+			if cfg.Engine == "session_studio" {
+				_ = h.db.FailCredentialOpsTask(c.Request.Context(), task.ID, req.WorkerID, task.Attempt)
+				c.JSON(409, gin.H{"error": "Session Studio cannot enforce account egress; select local_worker"})
+				return
+			}
+			var release func()
+			proxyURL, release, e = proxy.StartAccountEgressTunnel(a)
+			if e != nil {
+				_ = h.db.FailCredentialOpsTask(c.Request.Context(), task.ID, req.WorkerID, task.Attempt)
+				c.JSON(409, gin.H{"error": "account egress tunnel unavailable"})
+				return
+			}
+			key := fmt.Sprintf("%d:%d", task.ID, task.Attempt)
+			if previous, ok := credentialMihomoLeases.LoadAndDelete(key); ok {
+				previous.(func())()
+			}
+			credentialMihomoLeases.Store(key, release)
+		}
 	}
 	candidate, e := dec(cfg.CandidateCiphertext)
 	if e != nil {

@@ -13,6 +13,7 @@ import (
 
 	"github.com/codex2api/auth"
 	"github.com/codex2api/egressipv6"
+	"github.com/codex2api/internal/egressroute"
 )
 
 const localIPv6RoutePrefix = "local-ipv6://"
@@ -41,6 +42,9 @@ func wrapScopedIPv6Client(account *auth.Account, base *http.Client, replay bool,
 	if mode == "" {
 		mode = codexTransportModeFromEnv()
 	}
+	if account.GetProxyURL() != "" {
+		return accountProxyClient(account, mode == codexTransportModeUTLSChrome)
+	}
 	if account != nil && account.HostIPv4Egress() {
 		configured, _ := account.IPv6EgressSelection()
 		if configured {
@@ -49,23 +53,23 @@ func wrapScopedIPv6Client(account *auth.Account, base *http.Client, replay bool,
 	}
 	if route, enrolled, err := resolveFixedRoute(context.Background(), account); enrolled {
 		if err != nil {
-			return &http.Client{Transport: errorTransport{err}}
+			return directFallbackClient(account, &http.Client{Transport: errorTransport{egressroute.Unavailable(err)}}, "fixed", mode == codexTransportModeUTLSChrome)
 		}
 		// Build the transport with the requested TLS/profile mode, then bind its
 		// pool identity to the durable resource generation.
 		if mode == "" {
 			mode = codexTransportModeFromEnv()
 		}
-		return fixedClientForRouteMode(account, route, base, mode, scope, replay)
+		return directFallbackClient(account, fixedClientForRouteMode(account, route, base, mode, scope, replay), "fixed", mode == codexTransportModeUTLSChrome)
 	}
 	m := egressipv6.Current()
 	if !NativeIPv6Account(account) {
 		return base
 	}
 	if m == nil {
-		return &http.Client{Transport: errorTransport{database.ErrIPv6Unavailable}}
+		return directFallbackClient(account, &http.Client{Transport: errorTransport{egressroute.Unavailable(database.ErrIPv6Unavailable)}}, "local_ipv6", mode == codexTransportModeUTLSChrome)
 	}
-	return egressipv6.WrapAccountClient(m, account.ID(), base, func(ip string) http.RoundTripper { return sourceIPv6Transport(account.ID(), ip, mode, scope) }, replay)
+	return directFallbackClient(account, egressipv6.WrapAccountClient(m, account.ID(), base, func(ip string) http.RoundTripper { return sourceIPv6Transport(account.ID(), ip, mode, scope) }, replay), "local_ipv6", mode == codexTransportModeUTLSChrome)
 }
 
 func sourceIPv6Transport(id int64, ip, mode, scope string) http.RoundTripper {
@@ -123,20 +127,31 @@ type oauthIPv6Transport struct {
 
 func (t oauthIPv6Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	m := egressipv6.Current()
+	if bound, ok := auth.AccountBoundEgress(req.Context()); ok && bound != "" {
+		a := &auth.Account{DBID: t.id, ProxyURL: bound}
+		return accountProxyClient(a, t.forceUTLS).Transport.RoundTrip(req)
+	}
 	if m == nil {
-		return nil, database.ErrIPv6Unavailable
+		return t.base.Transport.RoundTrip(req)
 	}
 	configured, enabled, proxyURL, err := m.Selection(req.Context(), t.id)
 	if err != nil {
-		return nil, err
+		return nil, egressroute.Unavailable(err)
 	}
 	mode, scope := codexTransportModeStandard, "oauth-refresh"
 	if t.forceUTLS {
 		mode, scope = codexTransportModeUTLSChrome, "oauth-session"
 	}
 	client := t.base
+	if proxyURL != "" {
+		return accountProxyClient(&auth.Account{DBID: t.id, ProxyURL: proxyURL}, t.forceUTLS).Transport.RoundTrip(req)
+	}
 	if enabled {
-		client = egressipv6.WrapAccountClient(m, t.id, t.base, func(ip string) http.RoundTripper { return sourceIPv6Transport(t.id, ip, mode, scope) }, false)
+		primary := egressipv6.WrapAccountClient(m, t.id, t.base, func(ip string) http.RoundTripper { return sourceIPv6Transport(t.id, ip, mode, scope) }, false)
+		direct := hostIPv4Client(t.id, t.base, mode, "oauth-fallback")
+		copy := *primary
+		copy.Transport = egressroute.Fallback(primary.Transport, direct.Transport, egressroute.Observation{Kind: "local_ipv6", Source: "account"})
+		client = &copy
 	} else if configured && proxyURL == "" {
 		client = hostIPv4Client(t.id, t.base, mode, scope)
 	}

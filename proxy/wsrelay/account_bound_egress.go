@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/codex2api/auth"
+	"github.com/codex2api/fixedegress"
 	"github.com/codex2api/proxy"
 )
 
@@ -13,7 +14,13 @@ import (
 // proxy may actually dial through Resin or inherited dialer configuration.
 // The route snapshot also prevents an empty override re-reading account state.
 func requestProxyKey(ctx context.Context, account *auth.Account, override string) string {
-	if route, ok := proxy.AccountBoundEgress(ctx); ok && !(proxy.NativeIPv6Account(account) && route == "") {
+	if direct, _ := ctx.Value(directFallbackKey{}).(bool); direct {
+		return "\x00fallback-direct"
+	}
+	if bound := account.GetProxyURL(); bound != "" {
+		return "\x00account-bound|" + bound
+	}
+	if route, ok := proxy.AccountBoundEgress(ctx); (account == nil || !fixedegress.HasEnrolled(account.ID())) && ok && !(proxy.NativeIPv6Account(account) && route == "") {
 		return "\x00account-bound|" + strings.TrimSpace(route)
 	}
 	if account != nil && !account.IsRelayStyle() {

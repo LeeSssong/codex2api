@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/codex2api/auth"
+	"github.com/codex2api/internal/egressroute"
 	"github.com/codex2api/security"
 	"github.com/gorilla/websocket"
 	"github.com/tidwall/gjson"
@@ -134,7 +135,10 @@ func executeOpenAIResponsesWebsocket(ctx context.Context, account *auth.Account,
 	}
 	body := prepareOpenAIResponsesWebsocketBody(requestBody)
 	boundProxy, accountBound := AccountBoundEgress(ctx)
-	if accountBound {
+	if bound := account.GetProxyURL(); bound != "" {
+		proxyURL = bound
+		accountBound = true
+	} else if accountBound {
 		proxyURL = boundProxy
 	}
 	record := beginUpstreamTrace(ctx, account, proxyURL, true)
@@ -177,6 +181,7 @@ func (s openAIResponsesWSSpec) id() string {
 }
 
 type openAIResponsesWSConn struct {
+	egress   egressroute.Observation
 	spec     openAIResponsesWSSpec
 	conn     *websocket.Conn
 	created  time.Time
@@ -230,6 +235,7 @@ func (p *openAIResponsesWSPool) roundTrip(ctx context.Context, spec openAIRespon
 	if handshake != nil || err != nil || conn == nil {
 		return handshake, err
 	}
+	egressroute.Record(ctx, conn.egress)
 	send := func() error {
 		if err := CheckAutomaticIntelligenceCheckDispatch(ctx, spec.account); err != nil {
 			return err
@@ -434,12 +440,34 @@ func (p *openAIResponsesWSPool) dial(ctx context.Context, spec openAIResponsesWS
 	if spec.accountBound {
 		dialer.Proxy = nil
 	}
+	var configureErr error
 	if spec.proxyURL != "" {
-		if err := configureOpenAIResponsesWSProxy(dialer, spec.proxyURL); err != nil {
-			return nil, nil, err
-		}
+		configureErr = configureOpenAIResponsesWSProxy(dialer, spec.proxyURL)
 	}
-	conn, resp, err := dialer.DialContext(ctx, spec.wsURL, spec.headers)
+	var conn *websocket.Conn
+	var resp *http.Response
+	var err error
+	observed := egressroute.Observation{Kind: "direct", Source: "default"}
+	if spec.proxyURL != "" {
+		observed = egressroute.ProxyObservation(spec.proxyURL)
+	}
+	if configureErr != nil {
+		err = egressroute.Unavailable(configureErr)
+	} else {
+		conn, resp, err = dialer.DialContext(ctx, spec.wsURL, spec.headers)
+	}
+	if spec.accountBound && spec.proxyURL != "" && err != nil && ctx.Err() == nil && (egressroute.CanFallback(err) || (resp != nil && resp.StatusCode == 407)) {
+		if resp != nil && resp.Body != nil {
+			resp.Body.Close()
+		}
+		dialer.Proxy = nil
+		conn, resp, err = dialer.DialContext(ctx, spec.wsURL, spec.headers)
+		observed = egressroute.Observation{Kind: "direct", Source: "account", FallbackFrom: "account_proxy", FallbackReason: "bound_egress_unavailable"}
+		// Direct sockets never occupy the binding's reusable slot.
+		spec.proxyURL = ""
+		spec.baseURL += "|fallback-direct"
+	}
+
 	if err != nil {
 		handshake, handshakeErr := openAIResponsesWSHandshakeResponse(err, resp)
 		if handshake != nil {
@@ -451,6 +479,7 @@ func (p *openAIResponsesWSPool) dial(ctx context.Context, spec openAIResponsesWS
 		return nil, nil, fmt.Errorf("OpenAI Responses WebSocket 握手失败: %w", err)
 	}
 	wrapped := &openAIResponsesWSConn{
+		egress:   observed,
 		spec:     spec,
 		conn:     conn,
 		created:  time.Now(),

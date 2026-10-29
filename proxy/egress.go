@@ -21,11 +21,10 @@ import (
 //     (由 auth.Store.ResolveProxyForAccount 按 账号 > 分组 > 代理池 > 全局 选出一条)
 //  3. 直连
 //
-// 优先级固定为 Resin > 代理 > 直连,且 Resin 是整层覆盖:一旦启用,Codex 渠道
-// 所有携带账号身份的出站(/responses、compact、WS、wham 用量、订阅查询、遥测、
-// 令牌刷新)全部改经 Resin,第 2 层选出的代理只保留在日志/审计里、不参与拨号。
-// 显式模板刷新可通过 ResolveCodexRequestEgress 使用专属签发代理,不改变以上默认链路。
-// Claude / Grok / Antigravity 等中继型账号不经 Resin,继续走第 2 层。
+// Account-bound proxy/native IPv6/fixed routes take precedence over inherited
+// routes and Resin. An unavailable bound route falls back to host-direct only.
+// For unbound accounts, legacy resolver policy may still select Resin, an
+// inherited proxy, or direct. Relay-style accounts use their account route.
 //
 // 所有 Codex 出站选客户端的地方都必须经过本文件的解析器,禁止各自再写
 // `if IsResinEnabled()` 分支——分支散落正是"三套互相覆盖、看不出谁在生效"的根源。
@@ -60,23 +59,29 @@ type CodexEgress struct {
 }
 
 // ResolveCodexEgress 为一次携带账号身份的 Codex HTTP 出站决定链路。
-// proxyURL 是第 2 层已经解析好的代理(可为空);Resin 启用时被整层覆盖。
+// proxyURL 是已解析的继承代理(可为空);显式账号绑定优先于它和 Resin。
 // account 为 nil 时不可能走 Resin(Resin 按账号粘性,无身份无从粘),退回代理/直连。
 func ResolveCodexEgress(account *auth.Account, targetURL, proxyURL string) CodexEgress {
-	if proxyURL == ipv6StateDirectRoute {
+	if bound := account.GetProxyURL(); bound != "" {
+		return CodexEgress{Kind: CodexEgressProxy, URL: targetURL, ProxyURL: bound, DialProxyURL: bound, account: account, client: accountProxyClient(account, false)}
+	}
+	if NativeIPv6Account(account) {
+		return CodexEgress{Kind: "local_ipv6", URL: targetURL, account: account, client: getPooledClient(account, "")}
+	}
+	if proxyURL == ipv6StateDirectRoute && (account == nil || !fixedegress.HasEnrolled(account.ID())) {
 		client := getRawPooledClient(account, "")
 		if configured, _ := account.IPv6EgressSelection(); configured {
 			client = getPooledClient(account, "")
 		}
 		return CodexEgress{Kind: CodexEgressDirect, URL: targetURL, account: account, client: client}
 	}
-	if account != nil && !account.IsRelayStyle() && !IsStateDirectRoute(proxyURL) {
+	if account != nil && !account.IsRelayStyle() {
 		if route, enrolled, err := resolveFixedRoute(context.Background(), account); enrolled {
 			if err != nil {
-				return CodexEgress{Err: err, URL: targetURL, account: account, Fixed: route}
+				return CodexEgress{Kind: "fixed", URL: targetURL, account: account, Fixed: route, client: getPooledClient(account, "")}
 			}
 			base := getRawPooledClient(account, route.Binding.ProxyURL)
-			return CodexEgress{Kind: "fixed", URL: targetURL, ProxyURL: route.Binding.ProxyURL, DialProxyURL: route.Binding.ProxyURL, account: account, Fixed: route, client: fixedClientForRoute(account, route, base)}
+			return CodexEgress{Kind: "fixed", URL: targetURL, ProxyURL: route.Binding.ProxyURL, DialProxyURL: route.Binding.ProxyURL, account: account, Fixed: route, client: directFallbackClient(account, fixedClientForRoute(account, route, base), "fixed", false)}
 		}
 	}
 	proxyURL = strings.TrimSpace(proxyURL)
@@ -104,10 +109,10 @@ func ResolveCodexEgress(account *auth.Account, targetURL, proxyURL string) Codex
 
 // resinCarriesEgress 判定该账号的出站是否由 Resin 承担:Resin 已启用、有账号身份
 // (Resin 按账号粘性,无身份无从粘)且不是中继型账号(Claude/Grok/Antigravity 不经 Resin)。
-// 与 auth.Store 的 fail-closed 放行、upstream_trace 的审计标签取同一口径。
+// 与 auth.Store 的直接回退决策、upstream_trace 的审计标签取同一口径。
 func resinCarriesEgress(account *auth.Account) bool {
 	configured, _ := account.IPv6EgressSelection()
-	return IsResinEnabled() && account != nil && !account.IsRelayStyle() && !configured
+	return IsResinEnabled() && account != nil && !account.IsRelayStyle() && !configured && account.GetProxyURL() == "" && !fixedegress.HasEnrolled(account.ID())
 }
 
 // ViaResin 报告本次出站是否经 Resin。
@@ -144,6 +149,9 @@ func (e CodexEgress) ApplyHeaders(h http.Header) {
 // 拨号用代理。Resin 模式下 WS 地址改写为 Resin 的 ws:// 反代路径、拨号不走代理;
 // 账号身份头由调用方用 ApplyHeaders 注入。
 func ResolveCodexWebsocketEgress(account *auth.Account, wsURL, proxyURL string) CodexEgress {
+	if bound := account.GetProxyURL(); bound != "" {
+		return CodexEgress{Kind: CodexEgressProxy, URL: wsURL, ProxyURL: bound, DialProxyURL: bound, account: account}
+	}
 	if proxyURL == ipv6StateDirectRoute {
 		return CodexEgress{Kind: CodexEgressDirect, URL: wsURL, account: account}
 	}
@@ -173,6 +181,9 @@ func ResolveCodexWebsocketEgress(account *auth.Account, wsURL, proxyURL string) 
 // 路径,再套代理只会把 Resin 本身推到代理后面)。供只需要"拨号走不走代理"、
 // 手里 URL 已经改写过的调用方(WS 连接建立)使用,避免对改写后的地址二次改写。
 func CodexDialProxyURL(account *auth.Account, proxyURL string) string {
+	if bound := account.GetProxyURL(); bound != "" {
+		return bound
+	}
 	if proxyURL == ipv6StateDirectRoute {
 		return ""
 	}
@@ -233,6 +244,17 @@ func MaskResinBaseURL(raw string) string {
 
 // ResolveCodexRequestEgress picks the websocket or HTTP egress for one request.
 func ResolveCodexRequestEgress(ctx context.Context, account *auth.Account, targetURL, proxyURL string, websocket bool) CodexEgress {
+	if bound := account.GetProxyURL(); bound != "" {
+		return CodexEgress{Kind: CodexEgressProxy, URL: targetURL, ProxyURL: bound, DialProxyURL: bound, account: account, client: accountProxyClient(account, false)}
+	}
+	if !websocket && (NativeIPv6Account(account) || (account != nil && fixedegress.HasEnrolled(account.ID()))) {
+		return ResolveCodexEgress(account, targetURL, proxyURL)
+	}
+	if websocket && account != nil && account.GetProxyURL() == "" && !NativeIPv6Account(account) && fixedegress.HasEnrolled(account.ID()) {
+		route, _, _ := resolveFixedRoute(ctx, account)
+		return CodexEgress{Kind: "fixed", URL: targetURL, ProxyURL: route.Binding.ProxyURL, DialProxyURL: route.Binding.ProxyURL, account: account, Fixed: route}
+	}
+
 	if boundProxy, ok := AccountBoundEgress(ctx); ok {
 		if NativeIPv6Account(account) {
 			if strings.TrimSpace(boundProxy) != "" {
@@ -263,7 +285,7 @@ func ResolveCodexRequestEgress(ctx context.Context, account *auth.Account, targe
 				return CodexEgress{Kind: "fixed", URL: targetURL, ProxyURL: route.Binding.ProxyURL, DialProxyURL: route.Binding.ProxyURL, account: account, Fixed: route}
 			}
 			base := getRawPooledClient(account, route.Binding.ProxyURL)
-			return CodexEgress{Kind: "fixed", URL: targetURL, ProxyURL: route.Binding.ProxyURL, DialProxyURL: route.Binding.ProxyURL, account: account, Fixed: route, client: fixedClientForRoute(account, route, base)}
+			return CodexEgress{Kind: "fixed", URL: targetURL, ProxyURL: route.Binding.ProxyURL, DialProxyURL: route.Binding.ProxyURL, account: account, Fixed: route, client: directFallbackClient(account, fixedClientForRoute(account, route, base), "fixed", false)}
 		}
 	}
 	if websocket {

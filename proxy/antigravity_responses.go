@@ -26,6 +26,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/codex2api/auth"
+	"github.com/codex2api/internal/egressroute"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -226,6 +227,9 @@ func executeAntigravityOAuthRequest(ctx context.Context, account *auth.Account, 
 	}
 	query := call.Query
 	stream := method == "streamGenerateContent"
+	if bound := account.GetProxyURL(); bound != "" {
+		proxyURL = bound
+	}
 	client, err := antigravityHTTPClient(account.ID(), proxyURL)
 	if err != nil {
 		return nil, err
@@ -417,12 +421,18 @@ func antigravityHTTPClient(accountID int64, proxyURL string) (*http.Client, erro
 	}
 	if proxyURL != "" {
 		if err := auth.ConfigureTransportProxy(transport, proxyURL, dialer); err != nil {
-			transport.CloseIdleConnections()
-			return nil, fmt.Errorf("configure Antigravity proxy: %w", err)
+			transport.Proxy = nil
+			return &http.Client{Transport: egressroute.Fallback(errorTransport{egressroute.Unavailable(err)}, transport, egressroute.ProxyObservation(proxyURL))}, nil
 		}
 	}
 
 	client := &http.Client{Transport: transport}
+	if proxyURL != "" {
+		direct := transport.Clone()
+		direct.Proxy = nil
+		direct.DialContext = dialer.DialContext
+		client.Transport = egressroute.Fallback(transport, direct, egressroute.ProxyObservation(proxyURL))
+	}
 	actual, loaded := antigravityHTTPClients.LoadOrStore(key, client)
 	if loaded {
 		transport.CloseIdleConnections()
@@ -509,7 +519,14 @@ func executeAntigravityInteractionsRequest(ctx context.Context, account *auth.Ac
 	if err != nil {
 		return nil, err
 	}
+	if bound := account.GetProxyURL(); bound != "" {
+		proxyURL = bound
+	}
 	client, err := auth.BuildHTTPClientChecked(proxyURL)
+	if account.GetProxyURL() != "" {
+		client = accountProxyClient(account, false)
+		err = nil
+	}
 	if err != nil {
 		return nil, err
 	}
