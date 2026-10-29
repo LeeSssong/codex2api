@@ -1,4 +1,4 @@
-# Current task: account-bound egress with direct fallback — deployment authorized
+# Current production: account-bound egress with direct fallback — deployed 2026-10-29
 
 User authorized implementation on 2026-10-29, initially deferred deployment, then
 explicitly authorized immediate production deployment on 2026-10-29.
@@ -10,30 +10,48 @@ request headers/body may have been sent or after a stream begins.
 Owner/worktree: current Codex chat at
 `/Users/gongtengxinwen/.codex/worktrees/account-egress-fallback/codex2api`,
 branch `codex/account-egress-fallback`, base `7b28052976f9a1dc5f00fc1da3f77416d093bf55`.
-Implementation and tests were local/uncommitted at handoff. Deployment is now
-authorized and must follow the clean pushed-main release process below. Initial
-production checks were read-only: public health returned 200 with the deployed
-version, authenticated API routing returned the expected missing-key 401, and
-the live executable/source manifest matched the recorded production binary.
-Health reports zero available accounts; preserve all account enablement state.
+Fix commit `8fb0a05164450a892fba16c019f1dd728f7ca9ee` was merged into clean main
+and deployed as source `0671dbb7fda8cc5555f45233388604f9914133b2`, tree
+`4d0f8b9aaf926a87072fbc34664ec904a1a71ff4`, upstream
+`d967cda1ae07bc948cb1dd0fcd791eb3e69d71c1`. Target image/config digest
+`sha256:34dc81bba1bcec6e0eac6e6dda56604ac1c72c10e035b2e6777cdd0d5dc29875`,
+binary SHA256 `881703bf7517b7072030c46c5656105021ff58a8502be786502a60f57b56529e`,
+container `98ea0eaa70f32dd7500ae333f1e227a4a7da6c7f4e852f29576e655812af471f`,
+version `release-20261029-0671dbb7fda8`. Release, maintenance and recovery
+details are in `docs/releases/2026-10-29-account-egress-fallback.md`.
 
-Verification: serial full Go suite `go test ./... -p 1 -count=1 -timeout=8m`
-passed every package; focused race `go test -race ./internal/egressroute
-./proxy/wsrelay -count=2`, `go build ./...`, and `git diff --check` passed.
+The new account-bound egress policy is live. The user's clarified failure policy
+is direct-host fallback only when a bound proxy/fixed/native-IPv6 route is
+unavailable; never substitute global proxy, pool, Resin or another account's
+egress. Do not replay after HTTP request bytes may have been sent or streams
+start; WebSocket fallback is before handshake only.
+
+Public health and authenticated admin smoke passed; uncredentialed `/v1/models`
+returned expected 401. Health reports `available=0,total=7`; all seven active
+inference accounts remain disabled, so a real upstream inference smoke was not
+run and this deployment does not itself make the service serve inference.
+Intelligence detection remains `enabled=false`, interval 900 s, recovery 3600 s,
+revision 16; retained history `[265,265]`. Credential worker is online. All 25
+non-target containers/configurations and the non-Codex Caddy routes are unchanged.
+
+Verification: clean-main serial full Go suite `go test ./... -p 1 -count=1
+-timeout=8m` passed every package; focused race
+`go test -race ./internal/egressroute ./proxy/wsrelay -count=2`, `go build ./...`,
+frontend build and `git diff HEAD^1 HEAD --check` passed. Release controller tests
+passed 39 checks when run from `deploy/release`.
 Parallel full-suite execution once encountered an unrelated credentialops
 child-process environment flake; the serial suite and five isolated repetitions
 of that test passed. Details and remaining rollout caveats are in
 `docs/superpowers/plans/2026-10-29-account-egress-fallback.md`.
 
-Existing Codex2API release rules apply: clean/pushed main, exact
-source/image/binary identity, serialized maintenance release lock, pre-stop DB
-backup and rehearsal, and preservation of the running detection
-configuration/history. Do not enable accounts or alter unrelated services as
-part of this release.
+The commit-added task plan remains historical implementation context; this
+release supersedes its earlier local-only status. Do not redeploy a stale
+candidate, restore the pre-release DB dump after new writes, enable accounts, or
+alter unrelated services.
 
 ---
 
-# Current production: 2026-10-29 account IPv6 + reported client
+# Previous production: 2026-10-29 account IPv6 + reported client
 
 Deployed Codex2API application `f8721a4a410413d7d798afd960ba6278c114c75a`,
 tree `ca4edd150dc4800708be4cf11bb261dda635299b`, upstream `d967cda1`.
