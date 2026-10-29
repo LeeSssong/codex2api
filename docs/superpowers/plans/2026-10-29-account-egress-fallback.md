@@ -7,15 +7,18 @@ User-approved design: all account-bearing outbound traffic prefers the account's
 bound HTTP/SOCKS proxy, fixed resource or native IPv6. The user's 2026-10-29
 correction explicitly permits direct fallback when the binding is unavailable.
 No global/pool/Resin substitute on fallback. Never replay a possibly submitted
-OAuth refresh, generation request, or stream. No deployment, production writes,
-push, merge into main, or changes to unrelated services.
+OAuth refresh, generation request, or stream. The original implementation
+handoff was local-only; the user subsequently authorized deployment on
+2026-10-29. That later status supersedes the original restriction. Deployment
+evidence and current production status are recorded in
+`docs/releases/2026-10-29-account-egress-fallback.md`.
 
 - [x] Shared request audit and safe fallback transport, with failing-first tests.
 - [x] HTTP/business/maintenance/telemetry route precedence and fallback.
 - [x] Websocket route precedence, connection isolation and pre-send fallback.
 - [x] OAuth and associated credential worker route selection/fallback.
 - [x] Intelligence runs record actual route/source/fallback, preserve old history.
-- [x] Regression and race suites, build, self review and local-only handoff.
+- [x] Regression and race suites, build, self review and release handoff.
 
 Acceptance: a working bound route wins over inherited or explicit auxiliary
 routes. Unavailable bound routes try host direct with environment proxies off.
