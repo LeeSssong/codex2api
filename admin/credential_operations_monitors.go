@@ -147,6 +147,10 @@ func (h *Handler) runCredentialProbe(ctx context.Context, m database.CredentialO
 				account = h.store.FindByID(m.AccountID)
 			}
 		}
+		if account != nil && account.AdministrativelyDisabled() {
+			_, _ = h.db.CompleteCredentialOpsMonitor(ctx, m, "transient")
+			return
+		}
 		if account != nil {
 			resolved, usable := h.store.ResolveUsableProxyForAccount(account)
 			if !usable {

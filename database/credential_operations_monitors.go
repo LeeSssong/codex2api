@@ -59,7 +59,7 @@ func (db *DB) SaveCredentialOpsMonitor(ctx context.Context, m CredentialOpsMonit
 }
 func (db *DB) ListCredentialOpsMonitors(ctx context.Context) ([]CredentialOpsMonitorRow, error) {
 
-	rows, err := db.conn.QueryContext(ctx, `SELECT a.id,a.name,COALESCE(m.enabled,FALSE),COALESCE(m.auto_relogin_enabled,FALSE),COALESCE(m.probe_state,'pending'),COALESCE(m.probe_detail,''),COALESCE(m.fail_streak,0),COALESCE(m.next_probe_at,CURRENT_TIMESTAMP),m.cooldown_until,COALESCE(r.interval_seconds,1800),COALESCE(r.failure_threshold,2),COALESCE(r.cooldown_seconds,1800),m.last_probe_at,m.last_reauth_at,a.credentials FROM accounts a JOIN credential_operations_monitors m ON m.account_id=a.id LEFT JOIN credential_operations_rules r ON r.account_id=a.id WHERE a.status<>'deleted' AND a.platform='openai' AND a.type='oauth' ORDER BY a.id`)
+	rows, err := db.conn.QueryContext(ctx, `SELECT a.id,a.name,COALESCE(m.enabled,FALSE),COALESCE(m.auto_relogin_enabled,FALSE),COALESCE(m.probe_state,'pending'),COALESCE(m.probe_detail,''),COALESCE(m.fail_streak,0),COALESCE(m.next_probe_at,CURRENT_TIMESTAMP),m.cooldown_until,COALESCE(r.interval_seconds,1800),COALESCE(r.failure_threshold,2),COALESCE(r.cooldown_seconds,1800),m.last_probe_at,m.last_reauth_at,a.credentials FROM accounts a JOIN credential_operations_monitors m ON m.account_id=a.id LEFT JOIN credential_operations_rules r ON r.account_id=a.id WHERE a.status<>'deleted' AND COALESCE(a.enabled,TRUE)=TRUE AND a.platform='openai' AND a.type='oauth' ORDER BY a.id`)
 	if err != nil {
 		return nil, err
 	}

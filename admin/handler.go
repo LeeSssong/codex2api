@@ -6557,6 +6557,10 @@ func (h *Handler) RefreshAccountUsage(c *gin.Context) {
 		writeError(c, http.StatusNotFound, "账号不在运行时池中")
 		return
 	}
+	if account.AdministrativelyDisabled() {
+		writeError(c, http.StatusBadRequest, "账号已禁用，已停止用量查询")
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 15*time.Second)
 	defer cancel()

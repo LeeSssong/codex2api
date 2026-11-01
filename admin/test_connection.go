@@ -115,6 +115,10 @@ func (h *Handler) testConnection(c *gin.Context, quality *qualityTestRequest) {
 	if quality != nil && quality.ObservationOnly {
 		isTransient = true
 	}
+	if !isTransient && account.AdministrativelyDisabled() {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "账号已禁用，已停止连接测试"})
+		return
+	}
 	// Although this SSE endpoint uses GET, it can update authorization, errors, cooldowns,
 	// and recovery. Invalidate snapshots after streaming so confirmed 401s are not shown as unsampled.
 	if !isTransient {

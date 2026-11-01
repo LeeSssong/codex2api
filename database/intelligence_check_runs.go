@@ -87,6 +87,9 @@ func intelligenceCheckSnapshot(s ic.Settings, a IntelligenceCheckAccount, source
 }
 
 func (db *DB) intelligenceEnqueueTx(ctx context.Context, tx *sql.Tx, s ic.Settings, a IntelligenceCheckAccount, source string, now time.Time) (int64, error) {
+	if !a.ManualEnabled {
+		return 0, ErrIntelligenceCheckAccountDisabled
+	}
 	if err := validateIntelligenceAccountSettings(ctx, tx, s, a.Channel, a.OwnedAction); err != nil {
 		return 0, err
 	}
@@ -220,7 +223,7 @@ func (db *DB) ClaimIntelligenceCheck(ctx context.Context, owner string, now time
 		if active >= s.Concurrency {
 			return nil
 		}
-		rows, err := tx.QueryContext(ctx, `SELECT `+intelligenceRunColumns+` FROM intelligence_check_runs WHERE status='queued' AND ready_ms<=$1 AND (`+db.intelligenceJSONField("source")+`='manual' OR ($2 AND account_id IN (SELECT s.account_id FROM intelligence_check_accounts s JOIN accounts a ON a.id=s.account_id WHERE `+db.intelligenceAutomaticAvailableSQL("a", "s", "$3")+`))) ORDER BY ready_ms,id LIMIT 100`, now.UnixMilli(), s.Enabled, db.intelligenceCooldownTimeArg(now))
+		rows, err := tx.QueryContext(ctx, `SELECT `+intelligenceRunColumns+` FROM intelligence_check_runs WHERE status='queued' AND ready_ms<=$1 AND account_id IN (SELECT id FROM accounts WHERE COALESCE(enabled,TRUE)=TRUE) AND (`+db.intelligenceJSONField("source")+`='manual' OR ($2 AND account_id IN (SELECT s.account_id FROM intelligence_check_accounts s JOIN accounts a ON a.id=s.account_id WHERE `+db.intelligenceAutomaticAvailableSQL("a", "s", "$3")+`))) ORDER BY ready_ms,id LIMIT 100`, now.UnixMilli(), s.Enabled, db.intelligenceCooldownTimeArg(now))
 		if err != nil {
 			return err
 		}
@@ -270,7 +273,7 @@ func (db *DB) ClaimIntelligenceCheck(ctx context.Context, owner string, now time
 				continue
 			}
 
-			if r.Source == "automatic" && (!s.Enabled || !a.Enabled || !a.ManualEnabled) {
+			if !a.ManualEnabled || (r.Source == "automatic" && (!s.Enabled || !a.Enabled)) {
 				continue
 			}
 			if minimum := time.Duration(r.Settings.TimeoutSeconds+30) * time.Second; lease < minimum {

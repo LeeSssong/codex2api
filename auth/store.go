@@ -475,7 +475,7 @@ type Account struct {
 	AddedAt            atomic.Int64 // 加入号池的时间（UnixNano），用于过期清理
 	Locked             int32        // 原子标志，1 = 锁定，自动清理跳过此账号
 	IntelligencePaused int32        // 独立的持久化降智检测暂停；不修改人工 enabled
-	DispatchPaused     int32        // 原子标志，1 = 禁用调度选择，不影响刷新/探针/清理
+	DispatchPaused     int32        // 原子标志，1 = 管理员禁用：不调度，也不再发出刷新、用量、恢复或保活流量
 
 	// per-account 调度配置（nil = 跟随默认）
 	ScoreBiasOverride       *int64
@@ -3145,7 +3145,7 @@ func (a *Account) MarkResetCreditsProbed(t time.Time) {
 // 到期时间：仅付费套餐、且到期时间未知或临近/已过（续费窗口附近才可能变化）时需要；
 // 距上次尝试不足 minInterval 时节流。(issue #360)
 func (a *Account) NeedsSubscriptionExpiryProbe(now time.Time, minInterval time.Duration) bool {
-	if a == nil {
+	if a == nil || a.AdministrativelyDisabled() {
 		return false
 	}
 	a.mu.RLock()
@@ -3728,7 +3728,7 @@ func (a *Account) NeedsUsageProbe(maxAge time.Duration) bool {
 	defer a.mu.RUnlock()
 	now := time.Now()
 
-	if a.usageProbeInFlight || a.AccessToken == "" || a.Status == StatusError || a.isClaudeAPIKeyLocked() {
+	if a.AdministrativelyDisabled() || a.usageProbeInFlight || a.AccessToken == "" || a.Status == StatusError || a.isClaudeAPIKeyLocked() {
 		return false
 	}
 	if a.isRelayStyleLocked() && !a.isClaudeOAuthLocked() {
@@ -3818,7 +3818,7 @@ func (a *Account) NeedsUsageProbe(maxAge time.Duration) bool {
 func (a *Account) nextProbeBoundary(now time.Time) (time.Time, bool) {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	if a.AccessToken == "" || a.Status == StatusError {
+	if a.AdministrativelyDisabled() || a.AccessToken == "" || a.Status == StatusError {
 		return time.Time{}, false
 	}
 	var next time.Time
@@ -3885,7 +3885,7 @@ func (a *Account) NeedsRecoveryProbe(minInterval time.Duration) bool {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 
-	if a.recoveryProbeInFlight || a.healthTierLocked() != HealthTierBanned {
+	if a.AdministrativelyDisabled() || a.recoveryProbeInFlight || a.healthTierLocked() != HealthTierBanned {
 		return false
 	}
 	if a.isRelayStyleLocked() {
@@ -11942,7 +11942,7 @@ func (s *Store) TriggerUsageProbeForAccountAsync(account *Account) {
 	s.usageProbeMu.RLock()
 	probeFn := s.usageProbe
 	s.usageProbeMu.RUnlock()
-	if probeFn == nil || !account.TryBeginUsageProbe() {
+	if probeFn == nil || account.AdministrativelyDisabled() || !account.TryBeginUsageProbe() {
 		return
 	}
 
@@ -11978,7 +11978,7 @@ func (s *Store) VerifyAccountAuthAsync(account *Account) {
 	s.usageProbeMu.RLock()
 	probeFn := s.usageProbe
 	s.usageProbeMu.RUnlock()
-	if probeFn == nil {
+	if probeFn == nil || account.AdministrativelyDisabled() {
 		return
 	}
 

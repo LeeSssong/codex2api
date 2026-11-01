@@ -208,7 +208,7 @@ func resolveCodexFingerprintIDs(account *auth.Account, downstreamHeaders http.He
 		}
 		ids.sessionID = singleMachineIdentity(accountID, clientSession)
 		ids.threadID = singleMachineIdentity(accountID, clientThread)
-		ids.windowID = ids.threadID + ":0"
+		ids.windowID = singleMachineWindowID(accountID, clientThread)
 		return ids
 	}
 	sessionSeed := fmt.Sprintf("codex2api:codex-session-id:v1:%d", accountID)
@@ -232,7 +232,7 @@ func resolveCodexFingerprintIDs(account *auth.Account, downstreamHeaders http.He
 			ids.threadID = deriveStableCodexUUIDv7(threadSeed, codexIdentityUnixMilli(account, threadSeed))
 		}
 	}
-	ids.windowID = ids.threadID + ":0"
+	ids.windowID = deriveStableCodexUUIDv7("codex2api:codex-window-id:v1:"+ids.threadID, codexIdentityUnixMilli(account, "window:"+ids.threadID))
 	return ids
 }
 
@@ -320,9 +320,13 @@ func ApplyCodexFingerprintHeaders(outbound http.Header, account *auth.Account, d
 	}
 
 	// 有会话时窗口头始终发出，并与 turn metadata 的 window_id 相同。
-	// 不补 X-Codex-Installation-Id，也不给没有父线程的请求补 parent。
+	// 桌面端同时带安装标识头；TUI/VS Code/exec 仍只把 installation_id 放在 turn metadata。
+	// 没有父线程的请求不补 parent。
 	if ids.mode == auth.CodexFingerprintModeSingleMachineMultiWindow && ids.windowID != "" {
 		outbound.Set(codexWindowIDHeader, ids.windowID)
+		if codexDesktopPersona(outbound) && ids.installationID != "" {
+			outbound.Set(codexInstallationIDHeader, ids.installationID)
+		}
 	}
 
 	// 仅对确有 Codex 引擎特征的下游请求处理标识头。
@@ -369,12 +373,32 @@ func convergedClientRequestID(current string, ids *codexFingerprintIDs, downstre
 	clientSessionID, clientThreadID := extractClientCodexIdentity(downstreamHeaders)
 	switch {
 	case clientThreadID != "" && current == clientThreadID:
+		if ids.mode == auth.CodexFingerprintModeSingleMachineMultiWindow && clientThreadID == clientSessionID {
+			return singleMachineRequestID(ids.accountID, clientThreadID, current)
+		}
 		return ids.threadID
 	case clientSessionID != "" && current == clientSessionID:
+		if ids.mode == auth.CodexFingerprintModeSingleMachineMultiWindow {
+			return singleMachineRequestID(ids.accountID, clientSessionID, current)
+		}
 		return ids.sessionID
 	default:
 		return ""
 	}
+}
+
+func singleMachineRequestID(accountID int64, conversation, current string) string {
+	seed := fmt.Sprintf("codex2api:single-machine-request:v1:%d:%s:%s", accountID, conversation, current)
+	return deriveStableCodexUUIDv7(seed, seededIdentityUnixMilli(seed))
+}
+
+func codexDesktopPersona(headers http.Header) bool {
+	if headers == nil {
+		return false
+	}
+	originator := strings.TrimSpace(headers.Get("Originator"))
+	userAgent := headers.Get("User-Agent")
+	return strings.EqualFold(originator, "Codex Desktop") || strings.Contains(userAgent, "Codex Desktop/")
 }
 
 // explicitCodexSessionHeaders 只读取调用方直接放在会话头里的值。

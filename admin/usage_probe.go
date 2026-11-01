@@ -62,7 +62,7 @@ func inspectResponsesProbeBody(body []byte) (responsesTerminalOutcome, []byte, e
 // 只有真实 Responses 结果能确认账号是否已经恢复。
 // 鉴权裁决：wham 401 不单方面封号，由 /responses 回退探针定夺（issue #328）。
 func (h *Handler) ProbeUsageSnapshot(ctx context.Context, account *auth.Account) error {
-	if account == nil {
+	if account == nil || account.AdministrativelyDisabled() {
 		return nil
 	}
 	// Claude Code OAuth credentials are Anthropic-only. Never send them to the

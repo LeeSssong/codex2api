@@ -134,6 +134,11 @@ func TestWhamDailyUsageBackfillEligibleSkipsRelayGrokAndCodexAT(t *testing.T) {
 	if whamDailyUsageBackfillEligible(antigravity) {
 		t.Fatal("Antigravity (Google) account must not use the ChatGPT WHAM daily usage endpoint")
 	}
+	disabled := &auth.Account{DBID: 8, AccessToken: "at"}
+	disabled.DispatchPaused = 1
+	if whamDailyUsageBackfillEligible(disabled) || whamDailyUsageAutoRefreshEligible(disabled, time.Now()) {
+		t.Fatal("administratively disabled account must not query official usage")
+	}
 	if whamDailyUsageChannelSupported(antigravity) || !whamDailyUsageChannelSupported(&auth.Account{DBID: 7, AccessToken: "at"}) {
 		t.Fatal("channel gate must reject antigravity and accept codex oauth")
 	}

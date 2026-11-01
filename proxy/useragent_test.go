@@ -291,7 +291,7 @@ func TestCodexUserAgentConfigAllowsSpacedClientName(t *testing.T) {
 	if !ok {
 		t.Fatal("codexUserAgentFromConfig() ok = false")
 	}
-	wantUA := "Codex Desktop/0.153.3 (Windows 10.0.26100; x86_64) unknown (Codex Desktop; 26.930.51102)"
+	wantUA := "Codex Desktop/0.153.3 (Windows 10.0.26100; x86_64) xterm-256color (Codex Desktop; 26.930.51102)"
 	if userAgent != wantUA {
 		t.Fatalf("User-Agent = %q, want %q", userAgent, wantUA)
 	}

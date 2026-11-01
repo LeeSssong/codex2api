@@ -244,7 +244,7 @@ func (h *Handler) enqueueWhamDailyUsageBackfill(ids []int64) {
 }
 
 func whamDailyUsageBackfillEligible(account *auth.Account) bool {
-	if account == nil || account.DBID <= 0 {
+	if account == nil || account.DBID <= 0 || account.AdministrativelyDisabled() {
 		return false
 	}
 	if !whamDailyUsageChannelSupported(account) {

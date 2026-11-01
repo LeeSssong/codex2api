@@ -454,13 +454,12 @@ func TestIntelligenceCheckAutomaticSkipsManuallyDisabledAccounts(t *testing.T) {
 	if r, e = db.ClaimIntelligenceCheck(ctx, "worker", now, time.Minute); e != nil || r != nil {
 		t.Fatalf("automatic check claimed for a disabled account: %+v %v", r, e)
 	}
-	// An explicit manual check still runs against a disabled account.
-	if _, e = db.EnqueueIntelligenceChecks(ctx, []int64{disabled}, now); e != nil {
-		t.Fatal(e)
+	// A disabled account must not be queued or claimed, including a manual run.
+	if _, e = db.EnqueueIntelligenceChecks(ctx, []int64{disabled}, now); !errors.Is(e, ErrIntelligenceCheckAccountDisabled) {
+		t.Fatalf("manual check queued for a disabled account: %v", e)
 	}
-	r, e = db.ClaimIntelligenceCheck(ctx, "worker", now, time.Minute)
-	if e != nil || r == nil || r.AccountID != disabled || r.Source != "manual" {
-		t.Fatalf("manual check blocked by account disable: %+v %v", r, e)
+	if r, e = db.ClaimIntelligenceCheck(ctx, "worker", now, time.Minute); e != nil || r != nil {
+		t.Fatalf("manual check claimed for a disabled account: %+v %v", r, e)
 	}
 }
 func TestIntelligenceCheckExpiredOldConfigDoesNotOverwriteNewState(t *testing.T) {

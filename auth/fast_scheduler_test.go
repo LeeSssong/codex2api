@@ -265,7 +265,7 @@ func TestStoreNextSkipsDispatchPausedAccount(t *testing.T) {
 	}
 }
 
-func TestDispatchPausedDoesNotBlockUsageProbe(t *testing.T) {
+func TestDispatchPausedBlocksUsageProbe(t *testing.T) {
 	paused := newFastSchedulerTestAccount(1, HealthTierHealthy, 120, 1)
 	atomic.StoreInt32(&paused.DispatchPaused, 1)
 
@@ -274,21 +274,18 @@ func TestDispatchPausedDoesNotBlockUsageProbe(t *testing.T) {
 	}
 	var probed int32
 	store.SetUsageProbeFunc(func(_ context.Context, account *Account) error {
-		if account.DBID != paused.DBID {
-			t.Fatalf("usage probe account dbID=%d, want %d", account.DBID, paused.DBID)
-		}
 		atomic.AddInt32(&probed, 1)
 		return nil
 	})
 
 	store.parallelProbeUsage(context.Background())
 
-	if got := atomic.LoadInt32(&probed); got != 1 {
-		t.Fatalf("usage probe calls = %d, want 1", got)
+	if got := atomic.LoadInt32(&probed); got != 0 {
+		t.Fatalf("usage probe calls = %d, want 0 while the account is disabled", got)
 	}
 }
 
-func TestDispatchPausedDoesNotBlockRecoveryProbe(t *testing.T) {
+func TestDispatchPausedBlocksRecoveryProbe(t *testing.T) {
 	paused := newFastSchedulerTestAccount(1, HealthTierBanned, 120, 1)
 	paused.RefreshToken = "rt"
 	paused.ExpiresAt = time.Now().Add(time.Hour)
@@ -299,20 +296,20 @@ func TestDispatchPausedDoesNotBlockRecoveryProbe(t *testing.T) {
 	}
 	var probed int32
 	store.SetUsageProbeFunc(func(_ context.Context, account *Account) error {
-		if account.DBID != paused.DBID {
-			t.Fatalf("recovery probe account dbID=%d, want %d", account.DBID, paused.DBID)
-		}
 		atomic.AddInt32(&probed, 1)
 		return nil
 	})
 
 	store.parallelRecoveryProbe(context.Background())
 
-	if got := atomic.LoadInt32(&probed); got != 1 {
-		t.Fatalf("recovery probe calls = %d, want 1", got)
+	if got := atomic.LoadInt32(&probed); got != 0 {
+		t.Fatalf("recovery probe calls = %d, want 0 while the account is disabled", got)
 	}
 	if atomic.LoadInt32(&paused.DispatchPaused) != 1 {
 		t.Fatal("recovery probe cleared DispatchPaused; enable/disable must remain independent")
+	}
+	if atomic.LoadInt32(&paused.Disabled) != 0 {
+		t.Fatal("recovery probe changed the 401 fence")
 	}
 }
 

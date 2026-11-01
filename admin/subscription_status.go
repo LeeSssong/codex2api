@@ -78,6 +78,10 @@ func (h *Handler) RefreshAccountSubscription(c *gin.Context) {
 		writeError(c, http.StatusNotFound, "账号不在运行时池中")
 		return
 	}
+	if account.AdministrativelyDisabled() {
+		writeError(c, http.StatusBadRequest, "账号已禁用，已停止订阅查询")
+		return
+	}
 	// 只有 Codex/ChatGPT 账号有订阅提供方可查；其他渠道直接报不支持。
 	if account.IsOpenAIResponsesAPI() || account.IsGrokAPI() || account.IsAntigravityAPI() || account.IsClaudeOAuth() || account.IsClaudeAPIKey() {
 		c.JSON(http.StatusOK, gin.H{"outcome": string(proxy.SubscriptionSyncUnsupported)})

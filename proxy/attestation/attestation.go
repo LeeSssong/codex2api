@@ -67,7 +67,9 @@ func (s *Service) Generate(ctx context.Context, request Request) (string, error)
 	var result tokenResult
 	switch request.Platform {
 	case PlatformWindows:
-		result.errorCode = UnsupportedPlatform
+		// Windows 桌面端会带证明信封。没有本机 DeviceCheck 时状态为不可用，
+		// 但不把这个头留空：空头和 Linux 客户端一样，桌面流量会被单独分出来。
+		result.errorCode = UnsupportedDevice
 	case PlatformMacOS:
 		result = s.generateMacOS(ctx, request.Arch)
 	default:

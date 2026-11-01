@@ -31,6 +31,12 @@ func TestIntelligencePauseFencesBusinessButAllowsBoundedProbe(t *testing.T) {
 	if !accountDispatchBlocked(a) {
 		t.Fatal("clearing quality pause must not enable manually disabled account")
 	}
+	if s.TryAcquireIntelligenceCheck(a) {
+		t.Fatal("administrative disable must stop intelligence checks")
+	}
+	if a.AutomaticIntelligenceCheckAvailable(time.Now()) {
+		t.Fatal("administrative disable must stop automatic intelligence checks")
+	}
 }
 
 func TestAutomaticIntelligenceCheckAvailabilityUsesLiveQuotaWithoutChangingSwitches(t *testing.T) {

@@ -45,13 +45,12 @@ func (s *Store) RefreshIntelligenceAccount(ctx context.Context, id int64) error 
 	return s.reloadDispatchAccountByID(ctx, id)
 }
 
-// TryAcquireIntelligenceCheck reserves an ordinary occupied slot but ignores
-// administrative/quality pauses so recovery probes and explicit manual checks
-// can run; the queue already keeps automatic checks off manually disabled
-// accounts. It never changes either pause or the account's
-// authentication/quota status.
+// TryAcquireIntelligenceCheck reserves an ordinary occupied slot. An
+// administrative disable stops every check, including one already queued.
+// Detection's own quality pause still allows a bounded recovery slot.
+// It never changes either pause or the account's authentication/quota status.
 func (s *Store) TryAcquireIntelligenceCheck(a *Account) bool {
-	if a == nil || atomic.LoadInt32(&a.Disabled) != 0 {
+	if a == nil || atomic.LoadInt32(&a.Disabled) != 0 || a.AdministrativelyDisabled() {
 		return false
 	}
 	a.mu.RLock()
@@ -64,7 +63,7 @@ func (s *Store) TryAcquireIntelligenceCheck(a *Account) bool {
 		}
 		if a.OccupiedRequests.CompareAndSwap(occupied, occupied+1) {
 			a.ActiveRequests.Add(1)
-			if atomic.LoadInt32(&a.Disabled) != 0 {
+			if atomic.LoadInt32(&a.Disabled) != 0 || a.AdministrativelyDisabled() {
 				releaseOccupiedAccountSlot(a)
 				return false
 			}
@@ -74,11 +73,11 @@ func (s *Store) TryAcquireIntelligenceCheck(a *Account) bool {
 	}
 }
 
-// AutomaticIntelligenceCheckAvailable gates only automatic probes. Detection's
-// own quality pause must remain recoverable, and explicit manual probes retain
-// their existing behavior. No saved switch or account state is changed here.
+// AutomaticIntelligenceCheckAvailable gates scheduled probes. Detection's own
+// quality pause stays recoverable. An administrative disable stops the probe
+// without changing any saved switch or quota state.
 func (a *Account) AutomaticIntelligenceCheckAvailable(now time.Time) bool {
-	if a == nil || atomic.LoadInt32(&a.Disabled) != 0 {
+	if a == nil || atomic.LoadInt32(&a.Disabled) != 0 || a.AdministrativelyDisabled() {
 		return false
 	}
 	a.mu.RLock()

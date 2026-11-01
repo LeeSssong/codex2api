@@ -339,6 +339,33 @@ func TestCredentialOperationsMonitorMembershipPauseAndTransient(t *testing.T) {
 	}
 }
 
+func TestCredentialOperationsMonitorSkipsDisabledAccount(t *testing.T) {
+	db, e := New("sqlite", filepath.Join(t.TempDir(), "monitor-disabled.db"))
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	id, e := db.InsertAccountWithCredentials(ctx, "disabled-monitor", map[string]any{"email": "disabled@example.com", "access_token": "at"}, "")
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e = db.SaveCredentialOpsMonitor(ctx, CredentialOpsMonitorRow{AccountID: id, Enabled: true, AutoRelogin: true, IntervalSeconds: 1800, FailureThreshold: 2, CooldownSeconds: 1800}); e != nil {
+		t.Fatal(e)
+	}
+	if e = db.SetAccountEnabled(ctx, id, false); e != nil {
+		t.Fatal(e)
+	}
+	all, e := db.ListCredentialOpsMonitors(ctx)
+	if e != nil || len(all) != 0 {
+		t.Fatalf("disabled account stayed in the probe set: %+v %v", all, e)
+	}
+	lease, e := db.ClaimCredentialOpsMonitor(ctx, 0, "probe")
+	if e != nil || lease != nil {
+		t.Fatalf("disabled account was claimed for a probe: %+v %v", lease, e)
+	}
+}
+
 func TestCredentialOperationsLeaseRestartCancelAndStaleAttempt(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "restart.db")
 	db, e := New("sqlite", path)

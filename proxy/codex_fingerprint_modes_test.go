@@ -227,8 +227,11 @@ func TestSingleMachineCacheSeedDerivesSessionWithoutTouchingCacheKey(t *testing.
 		t.Fatal("header and body session differ")
 	}
 	windowID := gjson.Get(embedded, "window_id").String()
-	if windowID == "" || gjson.GetBytes(firstBody, "client_metadata.window_id").String() != windowID {
-		t.Fatal("body window_id does not match turn metadata")
+	if windowID == "" || windowID == session || strings.HasSuffix(windowID, ":0") || gjson.GetBytes(firstBody, "client_metadata.window_id").String() != windowID {
+		t.Fatal("body window_id does not match a distinct turn window")
+	}
+	if thread == "" || thread == session || gjson.Get(embedded, "thread_id").String() != thread {
+		t.Fatal("cache seed collapsed thread onto session")
 	}
 	if gjson.Get(embedded, "installation_id").String() == "" || gjson.GetBytes(firstBody, "client_metadata.installation_id").String() == "" {
 		t.Fatal("installation was not filled inside existing metadata")
@@ -279,7 +282,7 @@ func TestSingleMachineTurnMetadataFollowsCacheKey(t *testing.T) {
 	outbound.Set(codexTurnMetadataHeader, outHeaders.Get(codexTurnMetadataHeader))
 	ApplyCodexFingerprintHeaders(outbound, a, outHeaders)
 	metadata := outbound.Get(codexTurnMetadataHeader)
-	if gjson.Get(metadata, "session_id").String() != seeded || gjson.Get(metadata, "thread_id").String() != seeded {
+	if gjson.Get(metadata, "session_id").String() != seeded || gjson.Get(metadata, "thread_id").String() == "" || gjson.Get(metadata, "thread_id").String() == seeded {
 		t.Fatalf("turn metadata session = %s", metadata)
 	}
 	if gjson.Get(metadata, "installation_id").String() == "foreign-installation" || gjson.Get(metadata, "installation_id").String() == "" {

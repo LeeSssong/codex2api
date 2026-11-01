@@ -14,6 +14,7 @@ import (
 var ErrIntelligenceCheckRevisionConflict = errors.New("intelligence check settings revision conflict")
 var ErrIntelligenceCheckTargetGroup = errors.New("intelligence check target group is incompatible")
 var ErrIntelligenceCheckUnsupportedAccount = errors.New("account is not eligible for intelligence checks")
+var ErrIntelligenceCheckAccountDisabled = errors.New("account is disabled")
 
 type IntelligenceCheckTargetConflictAccount struct {
 	AccountID   int64  `json:"account_id"`
@@ -286,7 +287,8 @@ func (db *DB) intelligenceEligibleSQL() string {
 }
 
 // intelligenceAutomaticSQL admits scheduled checks only for accounts that opted
-// in and are not manually disabled. Manual checks bypass both switches.
+// in and are not administratively disabled. Manual enqueue uses the same
+// accounts.enabled gate so a disabled account never leaves the box.
 func intelligenceAutomaticSQL(account, state string) string {
 	return state + `.enabled=TRUE AND COALESCE(` + account + `.enabled,TRUE)=TRUE`
 }

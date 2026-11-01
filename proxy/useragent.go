@@ -450,8 +450,16 @@ func buildCodexStructuredUserAgent(cfg CodexUserAgentConfig, versionFloor string
 	appName = firstNonEmptyString(cfg.AppName, appName)
 	osVersion := firstNonEmptyString(cfg.OSVersion, platform.OSVersion)
 	arch := firstNonEmptyString(cfg.Arch, platform.Arch)
-	terminal = firstNonEmptyString(cfg.Terminal, terminal)
+	terminal = codexVisibleTerminal(firstNonEmptyString(cfg.Terminal, terminal))
 	return formatCodexUserAgentWithApp(clientName, cliVersion, osName, osVersion, arch, terminal, appName, appVersion), cliVersion, true, nil
+}
+
+func codexVisibleTerminal(terminal string) string {
+	terminal = strings.TrimSpace(terminal)
+	if terminal == "" || strings.EqualFold(terminal, "unknown") {
+		return defaultCodexUserAgentTerminal
+	}
+	return terminal
 }
 
 func firstNonEmptyString(values ...string) string {
@@ -470,7 +478,7 @@ func formatCodexUserAgent(clientName, clientVersion, osName, osVersion, arch, te
 	osName = firstNonEmptyString(osName, defaultCodexUserAgentOSName)
 	osVersion = firstNonEmptyString(osVersion, defaultCodexUserAgentOSVersion)
 	arch = firstNonEmptyString(arch, defaultCodexUserAgentArch)
-	terminal = firstNonEmptyString(terminal, defaultCodexUserAgentTerminal)
+	terminal = codexVisibleTerminal(firstNonEmptyString(terminal, defaultCodexUserAgentTerminal))
 	return formatCodexUserAgentWithApp(clientName, clientVersion, osName, osVersion, arch, terminal, clientName, clientVersion)
 }
 

@@ -146,10 +146,14 @@ func ApplyCodexSessionHeaders(outbound http.Header, account *auth.Account, fallb
 
 	outbound.Set(codexSessionIDHeader, sessionID)
 	outbound.Set(codexThreadIDHeader, threadID)
-	// x-client-request-id 实测恒等于 thread_id，且真实客户端无条件发送。下游若已
-	// 携带（白名单透传 + 收敛改写）就保留其取值，避免覆盖掉已经对齐的收敛结果。
+	// 单机多窗口下，一次请求的 X-Client-Request-Id 不能再等于 thread-id。
+	// 其它档位保持真实 CLI 的 thread_id 写法。下游已经带了独立请求号时保留。
 	if strings.TrimSpace(outbound.Get(codexClientRequestIDHeader)) == "" {
-		outbound.Set(codexClientRequestIDHeader, threadID)
+		requestID := threadID
+		if account != nil && account.EffectiveCodexFingerprintMode() == auth.CodexFingerprintModeSingleMachineMultiWindow && threadID != "" {
+			requestID = singleMachineRequestID(account.ID(), firstNonEmptyString(sessionID, threadID), threadID)
+		}
+		outbound.Set(codexClientRequestIDHeader, requestID)
 	}
 	// 下划线写法与 Conversation_id 都不属于真实形态；native 档下清掉，
 	// 否则等于同时发新旧两套会话头，比只发旧的更可疑。

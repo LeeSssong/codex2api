@@ -107,7 +107,7 @@ func TestConvergedIdentityUUIDVersionsAndTimestamp(t *testing.T) {
 	for name, id := range map[string]string{
 		"session": ids.sessionID,
 		"thread":  ids.threadID,
-		"window":  strings.TrimSuffix(ids.windowID, ":0"),
+		"window":  ids.windowID,
 	} {
 		parsed, err := uuid.Parse(id)
 		if err != nil {
@@ -169,8 +169,11 @@ func TestResolveCodexFingerprintIDsPerMode(t *testing.T) {
 	if session.threadID == session.sessionID {
 		t.Fatal("session mode thread id equals session id, want a thread derived from the client session")
 	}
-	if want := session.threadID + ":0"; session.windowID != want {
-		t.Fatalf("window id = %q, want %q", session.windowID, want)
+	if session.windowID == "" || session.windowID == session.threadID || strings.HasSuffix(session.windowID, ":0") {
+		t.Fatalf("window id = %q, want a distinct uuid", session.windowID)
+	}
+	if parsed, err := uuid.Parse(session.windowID); err != nil || parsed.Version() != 7 {
+		t.Fatalf("window id = %q, want uuid v7", session.windowID)
 	}
 
 	// 不同客户端会话派生出不同线程，同一客户端会话恒定派生同一线程。

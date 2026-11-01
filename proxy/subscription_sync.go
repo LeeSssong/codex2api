@@ -438,7 +438,7 @@ func MaybeSyncSubscriptionExpiry(ctx context.Context, store *auth.Store, account
 // confirmed。异步执行；同一账号在途时不重复发起。
 func init() {
 	auth.OnStaleSubscriptionCleared = func(store *auth.Store, account *auth.Account) {
-		if store == nil || account == nil {
+		if store == nil || account == nil || account.AdministrativelyDisabled() {
 			return
 		}
 		// 测试进程里没有替换订阅端点时不要真去打 chatgpt.com。

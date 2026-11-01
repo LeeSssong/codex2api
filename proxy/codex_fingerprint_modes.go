@@ -22,6 +22,16 @@ func singleMachineIdentity(accountID int64, original string) string {
 	return deriveStableCodexUUIDv7(seed, seededIdentityUnixMilli(seed))
 }
 
+// singleMachineWindowID is a stable UUIDv7 for one conversation window.
+// A real desktop client does not send thread_id+":0".
+func singleMachineWindowID(accountID int64, threadSeed string) string {
+	if threadSeed == "" {
+		return ""
+	}
+	seed := fmt.Sprintf("codex2api:single-machine-window:v1:%d:%s", accountID, threadSeed)
+	return deriveStableCodexUUIDv7(seed, seededIdentityUnixMilli(seed))
+}
+
 func convergeFingerprintLineageValue(ids *codexFingerprintIDs, key, original string) string {
 	if ids.mode == auth.CodexFingerprintModeSingleMachineMultiWindow && key != "context_window_id" {
 		return singleMachineIdentity(ids.accountID, original)
@@ -141,7 +151,7 @@ func AttachCodexFingerprintCacheSeed(account *auth.Account, headers http.Header,
 		out = make(http.Header)
 	}
 	out.Set(codexSessionIDHeader, cacheKey)
-	out.Set(codexThreadIDHeader, cacheKey)
+	out.Set(codexThreadIDHeader, "thread:"+cacheKey)
 	return out
 }
 

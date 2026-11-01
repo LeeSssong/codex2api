@@ -66,6 +66,12 @@ func (h *Handler) intelligenceTick(ctx context.Context) error {
 			return nil
 		}
 		account := h.store.FindByID(run.AccountID)
+		if account != nil && account.AdministrativelyDisabled() {
+			if err := h.db.RequeueIntelligenceCheck(opCtx, run.ID, owner, time.Now().Add(time.Hour)); err != nil {
+				return err
+			}
+			continue
+		}
 		if account != nil && ((run.Source == "automatic" && !account.AutomaticIntelligenceCheckAvailable(time.Now())) || !h.store.TryAcquireIntelligenceCheck(account)) {
 			if err := h.db.RequeueIntelligenceCheck(opCtx, run.ID, owner, time.Now()); err != nil {
 				return err

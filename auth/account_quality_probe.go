@@ -25,7 +25,7 @@ func (s *Store) TakeAccountQualityProbe(id int64) *Account {
 		return nil
 	}
 	account := s.FindByID(id)
-	if account == nil {
+	if account == nil || account.AdministrativelyDisabled() {
 		return nil
 	}
 	account.mu.RLock()

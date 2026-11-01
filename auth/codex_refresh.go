@@ -367,8 +367,12 @@ func (s *Store) shouldBackgroundRefresh(acc *Account, codexOnly bool) bool {
 		return false
 	}
 	// Grok 的 RT 家族每次刷新都会轮换：禁用账号继续后台刷新会让已交给 Grok CLI 的
-	// 凭据失效。Grok 的 DispatchPaused 只来自 enabled=false，没有额度类自动暂停。
+	// 凭据失效。Claude 与 Antigravity 同样在管理员禁用后停止后台刷新。
 	if acc.isGrokAPILocked() && (atomic.LoadInt32(&acc.Disabled) != 0 || atomic.LoadInt32(&acc.DispatchPaused) != 0) {
+		return false
+	}
+	// Claude 的 401 禁用仍按原策略刷新；管理员 enabled=false 则停止，避免禁用账号继续打上游。
+	if acc.isClaudeOAuthLocked() && atomic.LoadInt32(&acc.DispatchPaused) != 0 {
 		return false
 	}
 	if codexOnly && !codex {

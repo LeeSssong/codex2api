@@ -151,6 +151,9 @@ func (h *Handler) runChannelMonitorAccount(ctx context.Context, accountID int64,
 	if !config.Enabled {
 		return errors.New("该渠道尚未启用监控")
 	}
+	if account := h.store.FindByID(accountID); account != nil && account.AdministrativelyDisabled() {
+		return errors.New("账号已禁用，已停止渠道探测")
+	}
 	now := time.Now().UTC()
 	healthDue := force || !config.NextCheckAt.Valid || !now.Before(config.NextCheckAt.Time)
 	billingDue := force || !config.BillingNextCheckAt.Valid || !now.Before(config.BillingNextCheckAt.Time)

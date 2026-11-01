@@ -40,7 +40,7 @@ func intelligenceAPIError(c *gin.Context, err error) {
 		status = http.StatusConflict
 	case errors.Is(err, sql.ErrNoRows):
 		status = http.StatusNotFound
-	case errors.Is(err, database.ErrIntelligenceCheckUnsupportedAccount), errors.Is(err, database.ErrIntelligenceCheckTargetGroup):
+	case errors.Is(err, database.ErrIntelligenceCheckUnsupportedAccount), errors.Is(err, database.ErrIntelligenceCheckTargetGroup), errors.Is(err, database.ErrIntelligenceCheckAccountDisabled):
 		status = http.StatusBadRequest
 	}
 	c.JSON(status, gin.H{"error": err.Error()})

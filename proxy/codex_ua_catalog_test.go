@@ -34,7 +34,7 @@ func TestCodexUACatalogIntegrity(t *testing.T) {
 		for _, term := range spec.Terminals {
 			// 桌面端终端位使用应用名；其余形态仍保持单 token。
 			valid := validCodexUserAgentToken(term.Value) || (kind == CodexClientKindDesktop && term.Value == "Codex Desktop")
-			if term.Weight <= 0 || !valid {
+			if term.Weight <= 0 || !valid || strings.EqualFold(term.Value, "unknown") {
 				t.Fatalf("%s: bad terminal entry %+v", kind, term)
 			}
 		}
@@ -140,9 +140,9 @@ func TestBuildCodexStructuredUserAgentByKind(t *testing.T) {
 		{"desktop preset", `{"client_kind":"codex-desktop"}`,
 			"Codex Desktop/0.160.0 (Windows 10.0.26200; x86_64) Codex Desktop (Codex Desktop; 26.930.51102)", "0.160.0"},
 		{"vscode preset with cursor host", `{"client_kind":"codex-vscode","app_name":"Cursor"}`,
-			"codex_vscode/0.160.0 (Ubuntu 22.4.0; x86_64) unknown (Cursor; 26.930.41038)", "0.160.0"},
+			"codex_vscode/0.160.0 (Ubuntu 22.4.0; x86_64) xterm-256color (Cursor; 26.930.41038)", "0.160.0"},
 		{"exec preset follows cli", `{"client_kind":"codex-exec"}`,
-			"codex_exec/" + latestCodexCLIVersion + " (Windows 10.0.19045; x86_64) unknown (codex_exec; " + latestCodexCLIVersion + ")", latestCodexCLIVersion},
+			"codex_exec/" + latestCodexCLIVersion + " (Windows 10.0.19045; x86_64) dumb (codex_exec; " + latestCodexCLIVersion + ")", latestCodexCLIVersion},
 		{"legacy tui config unchanged", `{"client_name":"codex-tui"}`,
 			"codex-tui/" + latestCodexCLIVersion + " (Mac OS 15.5.0; arm64) xterm-256color (codex-tui; " + latestCodexCLIVersion + ")", latestCodexCLIVersion},
 		{"custom keeps free-form marker", `{"client_kind":"custom","client_name":"my-router","app_name":"My App","app_version":"9.9"}`,

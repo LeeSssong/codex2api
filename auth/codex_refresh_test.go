@@ -312,6 +312,10 @@ func TestCodexRefreshBackgroundEligibility(t *testing.T) {
 	if !store.shouldBackgroundRefresh(claude, false) {
 		t.Fatal("Codex change altered legacy Claude refresh policy")
 	}
+	pausedClaude := &Account{RefreshToken: "rt", ExpiresAt: time.Now(), UpstreamType: UpstreamClaude, DispatchPaused: 1, HealthTier: HealthTierHealthy}
+	if store.shouldBackgroundRefresh(pausedClaude, false) {
+		t.Fatal("administratively disabled Claude account still refreshes")
+	}
 	for _, tc := range []struct {
 		name             string
 		disabled, paused int32

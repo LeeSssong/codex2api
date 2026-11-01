@@ -123,7 +123,7 @@ var codexUACatalog = map[CodexClientKind]*codexUAKindSpec{
 		DefaultTerminal: defaultCodexUserAgentTerminal,
 		AppNames:        []codexUAWeighted{{latestCodexClientName, 100}},
 		Terminals: []codexUAWeighted{
-			{"unknown", 30}, {"WindowsTerminal", 21}, {"kitty", 7}, {"xterm-256color", 7},
+			{"xterm-256color", 37}, {"WindowsTerminal", 21}, {"kitty", 7},
 			{"Apple_Terminal/470.2", 3}, {"Apple_Terminal/455.1", 2},
 			{"gnome-terminal", 3}, {"iTerm.app/3.6.11", 2}, {"xterm", 2}, {"ghostty/1.3.1", 1},
 		},
@@ -167,9 +167,9 @@ var codexUACatalog = map[CodexClientKind]*codexUAKindSpec{
 		Kind:            CodexClientKindVSCode,
 		ClientName:      "codex_vscode",
 		DefaultPlatform: codexUAPlatform{OSName: "Ubuntu", OSVersion: "22.4.0", Arch: "x86_64"},
-		DefaultTerminal: "unknown",
+		DefaultTerminal: "xterm-256color",
 		AppNames:        []codexUAWeighted{{"VS Code", 96}, {"Cursor", 3}, {"Windsurf", 1}, {"Positron", 1}},
-		Terminals:       []codexUAWeighted{{"unknown", 70}, {"xterm-256color", 29}, {"WindowsTerminal", 1}, {"gnome-terminal", 1}},
+		Terminals:       []codexUAWeighted{{"xterm-256color", 99}, {"WindowsTerminal", 1}, {"gnome-terminal", 1}},
 		Platforms: []codexUAPlatform{
 			{"Ubuntu", "22.4.0", "x86_64", 36}, {"Windows", "10.0.26200", "x86_64", 20}, {"Windows", "10.0.19045", "x86_64", 11},
 			{"Ubuntu", "24.4.0", "x86_64", 9}, {"Mac OS", "26.6.2", "arm64", 3}, {"Mac OS", "26.4.0", "arm64", 3},
@@ -191,9 +191,9 @@ var codexUACatalog = map[CodexClientKind]*codexUAKindSpec{
 		ClientName:         "codex_exec",
 		AppFollowsCLI:      true,
 		DefaultPlatform:    codexUAPlatform{OSName: "Windows", OSVersion: "10.0.19045", Arch: "x86_64"},
-		DefaultTerminal:    "unknown",
+		DefaultTerminal:    "dumb",
 		AppNames:           []codexUAWeighted{{"codex_exec", 100}},
-		Terminals:          []codexUAWeighted{{"unknown", 56}, {"dumb", 43}, {"kitty", 1}},
+		Terminals:          []codexUAWeighted{{"dumb", 99}, {"kitty", 1}},
 		ReferenceTerminals: codexUAReferenceTerminals,
 		Platforms: []codexUAPlatform{
 			{"Windows", "10.0.19045", "x86_64", 52}, {"Ubuntu", "24.4.0", "x86_64", 40}, {"Ubuntu", "22.4.0", "x86_64", 3},
@@ -355,7 +355,7 @@ func codexPoolPersona(cfg CodexUserAgentConfig, accountID int64, versionFloor st
 		return "", "", false, nil
 	}
 	platform := pickCodexUAPlatform(spec.Platforms, "platform:"+seed)
-	terminal := pickCodexUAWeighted(spec.Terminals, "terminal:"+seed)
+	terminal := codexPoolTerminal(spec, seed)
 	appName := spec.ClientName
 	if !spec.AppFollowsCLI {
 		appName = pickCodexUAWeighted(spec.AppNames, "app:"+seed)
@@ -365,4 +365,24 @@ func codexPoolPersona(cfg CodexUserAgentConfig, accountID int64, versionFloor st
 		return "", "", false, err
 	}
 	return formatCodexUserAgentWithApp(spec.ClientName, cliVersion, platform.OSName, platform.OSVersion, platform.Arch, terminal, appName, appVersion), cliVersion, true, nil
+}
+
+// codexPoolTerminal never emits the literal token "unknown". Older catalogs
+// used that string when TERM was unset; a real client falls back to TERM or
+// the desktop app name instead.
+func codexPoolTerminal(spec *codexUAKindSpec, seed string) string {
+	items := make([]codexUAWeighted, 0, len(spec.Terminals))
+	for _, item := range spec.Terminals {
+		if strings.EqualFold(strings.TrimSpace(item.Value), "unknown") || item.Weight <= 0 {
+			continue
+		}
+		items = append(items, item)
+	}
+	if terminal := pickCodexUAWeighted(items, "terminal:"+seed); terminal != "" {
+		return terminal
+	}
+	if spec.DefaultTerminal != "" && !strings.EqualFold(spec.DefaultTerminal, "unknown") {
+		return spec.DefaultTerminal
+	}
+	return defaultCodexUserAgentTerminal
 }

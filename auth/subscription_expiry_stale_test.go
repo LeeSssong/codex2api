@@ -106,10 +106,14 @@ func TestNeedsSubscriptionExpiryProbe(t *testing.T) {
 		{"未知套餐不探", "", time.Time{}, time.Time{}, false},
 		{"节流:刚探过", "plus", time.Time{}, now.Add(-time.Hour), false},
 		{"节流:间隔已满", "plus", time.Time{}, now.Add(-7 * time.Hour), true},
+		{"管理员禁用", "plus", time.Time{}, time.Time{}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			acc := &Account{PlanType: tc.plan, SubscriptionExpiresAt: tc.expiresAt}
+			if tc.name == "管理员禁用" {
+				acc.DispatchPaused = 1
+			}
 			if !tc.probedAt.IsZero() {
 				acc.MarkSubscriptionExpiryProbed(tc.probedAt)
 			}

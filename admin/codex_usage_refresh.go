@@ -132,6 +132,9 @@ func (h *Handler) refreshCodexWhamSnapshot(ctx context.Context, account *auth.Ac
 	if h.store.FindByID(account.DBID) != account || !supportsCodexWhamRefresh(account) {
 		return errors.New("账号已移除或不再支持 WHAM 用量查询")
 	}
+	if account.AdministrativelyDisabled() {
+		return errors.New("账号已禁用，已停止用量查询")
+	}
 	if !account.TryBeginUsageProbe() {
 		return errors.New("账号正在刷新用量，请稍后重试")
 	}
