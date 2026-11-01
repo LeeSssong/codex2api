@@ -1,4 +1,37 @@
-# Current production: account-bound egress with direct fallback — deployed 2026-10-29
+# Current production: client identity and disabled-account quiet — deployed 2026-11-02
+
+User authorized the identity fixes and a direct deploy while Codex2API was not
+serving external traffic. Owner/worktree:
+`/Users/gongtengxinwen/Documents/codex2api/.worktrees/client-identity-fix`,
+branch `grok/client-identity-fix`. Deployed source
+`d12e0775399d2d0616767e8ba4b76472e3abf2a5`, tree
+`2fdb9122bab0ab975d07f6d7e2aee1b62a9761ec`, upstream
+`d967cda1ae07bc948cb1dd0fcd791eb3e69d71c1`.
+
+Live image/config `sha256:181bcd4b1177cf3c3376e29c2e680ad20edf1d04bd079376af7ba786b84da75a`,
+OCI index `sha256:c0813d2f4b8f3864dcf975b6b0a350856bd9f2acc88c215351f9e07fdfd48753`,
+binary `163ab461c4a75c8546313799c0cefef17bc5c9e2f835aba764bf4cd1a8a74409`,
+container `12a839910010579ce9b03003c2d4b11f327a15d7b0a436c786fc0323871c1713`,
+version `release-20261102-d12e0775399d`. Maintenance window 16.200 seconds,
+`2026-11-01 17:41:48.128 UTC` to `17:42:04.328 UTC`. Rollback image
+`sha256:33dbeff71a680ca807ccf54437f68e4e0dee1f03a73621f19e2cc771cf7ab1bf`.
+Details: `docs/releases/2026-11-02-client-identity.md`.
+
+Administratively disabled accounts send no scheduled probes or intelligence
+checks. Manual probe/check/usage/subscription/model/connection actions return
+400. Explicit admin token refresh can still contact upstream. Quota-paused
+Codex refresh and 401 Claude refresh stay available. Intelligence detection
+stays enabled at revision 17, interval 1800 s, recovery 3600 s, history
+`[274,274]`. Accounts 78/79/81/84 and the other active accounts stayed
+disabled. Health `available=0,total=7`. Credential worker online.
+
+Shared `/64` egress and Test-key prompt shape were not changed in code.
+Do not restore the stopped dump over newer writes, redeploy this candidate, or
+enable accounts from this record.
+
+---
+
+# Previous production: account-bound egress with direct fallback — deployed 2026-10-29
 
 User authorized implementation on 2026-10-29, initially deferred deployment, then
 explicitly authorized immediate production deployment on 2026-10-29.

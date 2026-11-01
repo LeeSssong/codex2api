@@ -90,3 +90,10 @@
 - Maintenance 14.907s. Full Go suite, targeted race x3,85 release tests; internal/public smoke and independent final checks passed. One writer, credential worker online; exact settings/accounts/runtime retained; non-target services unchanged.
 - Actual intelligence revision15/enabled=true/interval900/recovery3600, history[242,242]. All7 active accounts remain disabled by prior configuration: no real-account search smoke and no auto-enabling.
 - Release/recovery: docs/releases/2026-10-28-websearch-ws-mode-isolation.md; protected evidence /Users/gongtengxinwen/.config/codex2api/websearch-release-20261028/; artifacts /opt/codex2api/releases/websearch-ws-20261028-24258756/, backups /opt/codex2api/backups/websearch-ws-20261028-24258756/. New writes possible: never restore old dump or rerun stale release. Original shared dirty checkout preserved.
+
+## 2026-11-02 client identity and disabled-account quiet — deployed
+
+- Owner: current Grok chat; exclusive worktree `/Users/gongtengxinwen/Documents/codex2api/.worktrees/client-identity-fix`; branch `grok/client-identity-fix`.
+- User authorized the identity fixes and direct downtime deployment while Codex2API was not serving external traffic. Target netcup `159.195.12.230`, Codex2API only.
+- Deployed source `d12e0775399d2d0616767e8ba4b76472e3abf2a5`, tree `2fdb9122bab0ab975d07f6d7e2aee1b62a9761ec`, image/config `sha256:181bcd4b1177cf3c3376e29c2e680ad20edf1d04bd079376af7ba786b84da75a`, binary `163ab461c4a75c8546313799c0cefef17bc5c9e2f835aba764bf4cd1a8a74409`. Maintenance 16.200 s. All seven active accounts stayed disabled. Intelligence revision 17 stayed enabled.
+- Release/recovery: `docs/releases/2026-11-02-client-identity.md`. Artifacts `/opt/codex2api/releases/client-identity-quiet-20261102-d12e0775/`; backup `/opt/codex2api/backups/client-identity-quiet-20261102-d12e0775/`. Do not restore the stopped dump over newer writes or redeploy this candidate. The shared dirty checkout remains preserved.
