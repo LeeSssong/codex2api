@@ -82,6 +82,8 @@ var codexUAKindOrder = []CodexClientKind{
 // terminal-detection 规则推导:有 TERM_PROGRAM 时取 "TERM_PROGRAM/TERM_PROGRAM_VERSION",
 // 其次是 Konsole / VTE 等专属环境变量,最后回退 TERM。版本取 2026-09 各终端最新稳定版。
 var codexUAReferenceTerminals = []string{
+	// vscode/ is a VS Code client marker, not a TUI terminal. Keeping it out of
+	// the shared reference list stops a TUI persona from advertising an editor.
 	"iTerm.app/3.7.3",
 	"Apple_Terminal/470.2",
 	"ghostty/1.3.1",
@@ -125,8 +127,8 @@ var codexUACatalog = map[CodexClientKind]*codexUAKindSpec{
 		AppNames:        []codexUAWeighted{{latestCodexClientName, 100}},
 		Terminals: []codexUAWeighted{
 			{"unknown", 30}, {"WindowsTerminal", 21}, {"kitty", 7}, {"xterm-256color", 7},
-			{"vscode/1.135.0", 3}, {"vscode/1.126.0", 3}, {"Apple_Terminal/470.2", 3}, {"Apple_Terminal/455.1", 2},
-			{"gnome-terminal", 3}, {"iTerm.app/3.6.11", 2}, {"vscode/1.101.2", 2}, {"xterm", 2}, {"ghostty/1.3.1", 1},
+			{"Apple_Terminal/470.2", 3}, {"Apple_Terminal/455.1", 2},
+			{"gnome-terminal", 3}, {"iTerm.app/3.6.11", 2}, {"xterm", 2}, {"ghostty/1.3.1", 1},
 		},
 		ReferenceTerminals: codexUAReferenceTerminals,
 		Platforms: []codexUAPlatform{
@@ -142,9 +144,10 @@ var codexUACatalog = map[CodexClientKind]*codexUAKindSpec{
 		Kind:            CodexClientKindDesktop,
 		ClientName:      "Codex Desktop",
 		DefaultPlatform: codexUAPlatform{OSName: "Windows", OSVersion: "10.0.26200", Arch: "x86_64"},
-		DefaultTerminal: "unknown",
+		DefaultTerminal: "Codex Desktop",
 		AppNames:        []codexUAWeighted{{"Codex Desktop", 100}},
-		Terminals:       []codexUAWeighted{{"unknown", 999}, {"dumb", 1}},
+		// 桌面端没有独立终端。终端位写应用名，和末尾标记、证明头一致。
+		Terminals: []codexUAWeighted{{"Codex Desktop", 1}},
 		Platforms: []codexUAPlatform{
 			{"Windows", "10.0.26200", "x86_64", 47}, {"Mac OS", "26.5.2", "arm64", 8}, {"Windows", "10.0.19045", "x86_64", 7},
 			{"Windows", "10.0.22631", "x86_64", 5}, {"Mac OS", "14.4.1", "arm64", 5}, {"Mac OS", "26.5.1", "arm64", 4},
@@ -396,6 +399,8 @@ type codexVersionSelection struct {
 }
 
 // resolveCodexCurrentVersions 优先使用同步缓存，旧画像版本对只作默认值。
+// 画像抽样把目录配对放在 Fallback：已同步到桌面或插件构建时，整池用这一对，
+// 不再把新的 CLI 版本配回目录里更旧的构建号。
 func resolveCodexCurrentVersions(spec *codexUAKindSpec, choice codexVersionSelection) (string, string) {
 	if spec == nil || (spec.Kind != CodexClientKindDesktop && spec.Kind != CodexClientKindVSCode) {
 		return resolveCodexVersionPair(spec, choice.CLIOverride, choice.AppOverride, choice.VersionFloor)
@@ -416,6 +421,10 @@ func resolveCodexCurrentVersions(spec *codexUAKindSpec, choice codexVersionSelec
 	} else if strings.EqualFold(choice.OSName, "Mac OS") {
 		hasSyncedApp = strings.TrimSpace(settings.CodexSyncedDesktopMacBuild) != ""
 		autoApp = firstNonEmptyString(settings.CodexSyncedDesktopMacBuild, autoApp)
+	}
+	if hasSyncedApp && choice.CLIOverride == "" && choice.AppOverride == "" {
+		cli := effectiveCodexClientVersion(autoCLI, choice.VersionFloor)
+		return cli, autoApp
 	}
 	if !hasSyncedApp && choice.CLIOverride != "" && choice.AppOverride == "" {
 		_, autoApp = resolveCodexVersionPair(spec, choice.CLIOverride, "", choice.VersionFloor)
@@ -478,34 +487,78 @@ func codexPoolMix(cfg CodexUserAgentConfig) []codexUAWeighted {
 	return out
 }
 
-// codexPoolPersona 按账号确定性地从目录抽取一套完整画像:同一账号永远得到同一画像,
-// 不同账号按配比与真实分布散开。
+// codexPoolPersona 先按号池配比选定形态，再在该形态的合法元组里占一个不重复槽位。
+// client_kind 锁不参与抽样。某个形态的槽位用尽时，按配比顺序改占其他形态。
 func codexPoolPersona(cfg CodexUserAgentConfig, accountID int64, versionFloor string) (userAgent, version string, ok bool) {
-	mix := codexPoolMix(cfg)
+	tuples := codexLegalPersonaTuples(cfg, versionFloor)
+	if len(tuples) == 0 || accountID <= 0 {
+		return "", "", false
+	}
+	catalog := codexPersonaCatalogFingerprint(tuples)
+	baseKey := codexPersonaMixKey(cfg, versionFloor)
+	if repaired, version, ok := repairEstablishedCodexPersona(accountID, tuples); ok {
+		return repaired, version, true
+	}
+	for _, kind := range codexPersonaKindOrder(codexPoolMix(cfg), accountID) {
+		subset := codexPersonaTuplesOfKind(tuples, kind)
+		if len(subset) == 0 {
+			continue
+		}
+		idx, assigned := assignCodexPersonaSlot(baseKey+"|kind="+kind, catalog, accountID, len(subset), subset)
+		if !assigned {
+			continue
+		}
+		return subset[idx].UserAgent, subset[idx].Version, true
+	}
+	return "", "", false
+}
+
+// codexPersonaKindOrder 把配比命中的形态放在前面，其余形态按配比顺序接在后面。
+func codexPersonaKindOrder(mix []codexUAWeighted, accountID int64) []string {
 	if len(mix) == 0 {
-		return "", "", false
+		return nil
 	}
-	seed := fmt.Sprintf("%d", accountID)
-	kind := CodexClientKind(pickCodexUAWeighted(mix, "kind:"+seed))
-	spec, found := codexUAKindSpecFor(kind)
-	if !found {
-		return "", "", false
-	}
-	platform := pickCodexUAPlatform(spec.Platforms, "platform:"+seed)
-	terminal := pickCodexUAWeighted(spec.Terminals, "terminal:"+seed)
-	appName := spec.ClientName
-	if !spec.AppFollowsCLI {
-		appName = pickCodexUAWeighted(spec.AppNames, "app:"+seed)
-	}
-	fallback := codexUAVersionPair{}
-	if len(spec.VersionPairs) > 0 {
-		fallback = heaviestCodexPair(spec.VersionPairs)
-		if pair, picked := pickCodexUAVersionPair(spec.VersionPairs, "version:"+seed); picked {
-			fallback = pair
+	total := 0
+	for _, item := range mix {
+		if item.Weight > 0 {
+			total += item.Weight
 		}
 	}
-	cliVersion, appVersion := resolveCodexCurrentVersions(spec, codexVersionSelection{OSName: platform.OSName, VersionFloor: versionFloor, Fallback: fallback})
-	return formatCodexUserAgentWithApp(spec.ClientName, cliVersion, platform.OSName, platform.OSVersion, platform.Arch, terminal, appName, appVersion), cliVersion, true
+	preferred := ""
+	if total > 0 {
+		r := int(codexUAHash(fmt.Sprintf("persona-kind:%d", accountID)) % uint32(total))
+		for _, item := range mix {
+			if item.Weight <= 0 {
+				continue
+			}
+			if r < item.Weight {
+				preferred = item.Value
+				break
+			}
+			r -= item.Weight
+		}
+	}
+	order := make([]string, 0, len(mix))
+	if preferred != "" {
+		order = append(order, preferred)
+	}
+	for _, item := range mix {
+		if item.Weight <= 0 || item.Value == preferred {
+			continue
+		}
+		order = append(order, item.Value)
+	}
+	return order
+}
+
+func codexPersonaTuplesOfKind(tuples []codexPersonaTuple, kind string) []codexPersonaTuple {
+	out := make([]codexPersonaTuple, 0)
+	for _, tuple := range tuples {
+		if tuple.Kind == kind {
+			out = append(out, tuple)
+		}
+	}
+	return out
 }
 
 // ==================== 管理端视图 ====================

@@ -92,3 +92,61 @@ func TestSessionIdentityFingerprintReusableWebsocket(t *testing.T) {
 		t.Fatal("same conversation lost connection reuse")
 	}
 }
+
+func TestSingleMachineHTTPAndWebsocketShareIdentityHeaders(t *testing.T) {
+	t.Setenv("CODEX_SESSION_HEADER_MODE", "native")
+	prev := proxy.CurrentRuntimeSettings()
+	t.Cleanup(func() { proxy.ApplyRuntimeSettings(prev) })
+	proxy.ApplyRuntimeSettings(proxy.RuntimeSettings{ClientCompatMode: proxy.ClientCompatModePreserve, CodexForceWebsocket: false})
+	previous := proxy.GetResinConfig()
+	t.Cleanup(func() { proxy.SetResinConfig(previous) })
+	var httpHeaders http.Header
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		httpHeaders = r.Header.Clone()
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{}`)
+	}))
+	t.Cleanup(server.Close)
+	proxy.SetResinConfig(&proxy.ResinConfig{BaseURL: server.URL, PlatformName: "test"})
+
+	account := &auth.Account{DBID: 424242, AccountID: "424242", AccessToken: "fixture-token", CodexFingerprintMode: auth.CodexFingerprintModeSingleMachineMultiWindow}
+	body := []byte(`{"model":"gpt-5.6-codex","input":[],"prompt_cache_key":"conversation-a","client_metadata":{"sandbox":"workspace-write"}}`)
+	resp, err := proxy.ExecuteRequest(context.Background(), account, body, "", "", "fixture-key", nil, http.Header{}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	wsHeaders := NewExecutor().prepareWebsocketHeaders(context.Background(), "fixture-token", account, account.AccountID, "conversation-a", "fixture-key", nil, http.Header{}, body, "")
+	for _, name := range []string{"User-Agent", "Originator", "Version", "Session-Id", "Thread-Id"} {
+		if httpHeaders.Get(name) == "" || httpHeaders.Get(name) != wsHeaders.Get(name) {
+			t.Fatalf("%s http=%q ws=%q", name, httpHeaders.Get(name), wsHeaders.Get(name))
+		}
+	}
+	httpInstall := gjson.Get(httpHeaders.Get("X-Codex-Turn-Metadata"), "installation_id").String()
+	wsInstall := gjson.Get(wsHeaders.Get("X-Codex-Turn-Metadata"), "installation_id").String()
+	if httpInstall == "" || httpInstall != wsInstall {
+		t.Fatalf("installation http=%q ws=%q", httpInstall, wsInstall)
+	}
+	if gjson.Get(httpHeaders.Get("X-Codex-Turn-Metadata"), "session_id").String() != httpHeaders.Get("Session-Id") {
+		t.Fatal("HTTP session header and metadata differ")
+	}
+	for _, headers := range []http.Header{httpHeaders, wsHeaders} {
+		if headers.Get("Conversation_id") != "" || headers.Get("Session_id") != "" || headers.Get("X-Codex-Installation-Id") != "" {
+			t.Fatalf("unexpected identity header: %v", headers)
+		}
+	}
+
+	shared := NewExecutor().prepareWebsocketHeaders(context.Background(), "fixture-token", account, account.AccountID, "", "fixture-key", nil, http.Header{}, body, "")
+	if shared.Get("Session-Id") != "" || shared.Get("Thread-Id") != "" || shared.Get("Conversation_id") != "" {
+		t.Fatalf("shared handshake carried a session: %v", shared)
+	}
+	if gjson.Get(shared.Get("X-Codex-Turn-Metadata"), "installation_id").String() != httpInstall || shared.Get("User-Agent") != httpHeaders.Get("User-Agent") {
+		t.Fatal("shared handshake lost the device identity")
+	}
+	account.CustomHeaders = map[string]string{"User-Agent": "evil-ua", "X-Debug": "1"}
+	blocked := NewExecutor().prepareWebsocketHeaders(context.Background(), "fixture-token", account, account.AccountID, "conversation-a", "fixture-key", nil, http.Header{}, body, "")
+	if blocked.Get("User-Agent") == "evil-ua" || blocked.Get("User-Agent") != httpHeaders.Get("User-Agent") || blocked.Get("X-Debug") != "1" {
+		t.Fatalf("custom headers = UA %q debug %q", blocked.Get("User-Agent"), blocked.Get("X-Debug"))
+	}
+}

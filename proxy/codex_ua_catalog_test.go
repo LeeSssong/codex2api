@@ -32,7 +32,9 @@ func TestCodexUACatalogIntegrity(t *testing.T) {
 			}
 		}
 		for _, term := range spec.Terminals {
-			if term.Weight <= 0 || !validCodexUserAgentToken(term.Value) {
+			// 桌面端终端位就是应用名 "Codex Desktop"，允许空格。其余终端仍是单 token。
+			valid := validCodexUserAgentToken(term.Value) || (kind == CodexClientKindDesktop && term.Value == "Codex Desktop")
+			if term.Weight <= 0 || !valid {
 				t.Fatalf("%s: bad terminal entry %+v", kind, term)
 			}
 		}
@@ -136,7 +138,7 @@ func TestBuildCodexStructuredUserAgentByKind(t *testing.T) {
 		wantV  string
 	}{
 		{"desktop preset", `{"client_kind":"codex-desktop"}`,
-			"Codex Desktop/0.153.4 (Windows 10.0.26200; x86_64) unknown (Codex Desktop; 26.901.51231)", "0.153.4"},
+			"Codex Desktop/0.153.4 (Windows 10.0.26200; x86_64) Codex Desktop (Codex Desktop; 26.901.51231)", "0.153.4"},
 		{"vscode preset with cursor host", `{"client_kind":"codex-vscode","app_name":"Cursor"}`,
 			"codex_vscode/0.153.0 (Ubuntu 22.4.0; x86_64) unknown (Cursor; 26.901.22334)", "0.153.0"},
 		{"exec preset follows cli", `{"client_kind":"codex-exec"}`,
@@ -146,7 +148,7 @@ func TestBuildCodexStructuredUserAgentByKind(t *testing.T) {
 		{"custom keeps free-form marker", `{"client_kind":"custom","client_name":"my-router","app_name":"My App","app_version":"9.9"}`,
 			"my-router/" + latestCodexCLIVersion + " (Mac OS 15.5.0; arm64) xterm-256color (My App; 9.9)", latestCodexCLIVersion},
 		{"desktop with mac platform and explicit cli", `{"client_kind":"codex-desktop","client_version":"0.153.3","os_name":"Mac OS","os_version":"26.5.2","arch":"arm64"}`,
-			"Codex Desktop/0.153.3 (Mac OS 26.5.2; arm64) unknown (Codex Desktop; 26.901.41123)", "0.153.3"},
+			"Codex Desktop/0.153.3 (Mac OS 26.5.2; arm64) Codex Desktop (Codex Desktop; 26.901.41123)", "0.153.3"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -172,6 +174,8 @@ func TestBuildCodexStructuredUserAgentByKind(t *testing.T) {
 }
 
 func TestCodexPoolPersonaDeterministicAndHonorsMix(t *testing.T) {
+	t.Setenv("CODEX_PERSONA_STORE", "memory")
+	resetCodexPersonaAssignments()
 	normalized, err := NormalizeCodexUserAgentConfigJSON(`{"mode":"pool","pool_mix":{"codex-desktop":100,"codex-tui":0}}`)
 	if err != nil {
 		t.Fatalf("NormalizeCodexUserAgentConfigJSON() error = %v", err)
@@ -220,7 +224,114 @@ func TestCodexPoolPersonaDeterministicAndHonorsMix(t *testing.T) {
 	}
 }
 
+func TestEstablishedPersonaKeepsMachineAndDropsEditorTerminal(t *testing.T) {
+	t.Setenv("CODEX_PERSONA_STORE", "memory")
+	resetCodexPersonaAssignments()
+	normalized, err := NormalizeCodexUserAgentConfigJSON(`{"mode":"pool","pool_mix":{"codex-desktop":50,"codex-vscode":30,"codex-tui":20}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ua, version, ok := codexUserAgentFromConfig(normalized, 76, "")
+	if !ok {
+		t.Fatal("account 76 persona missing")
+	}
+	if !strings.Contains(ua, " (Ubuntu 20.4.0; aarch64) xterm-256color ") || !strings.HasPrefix(ua, "codex-tui/"+version+" ") {
+		t.Fatalf("account 76 changed machine: %s", ua)
+	}
+	if strings.Contains(ua, "vscode/") {
+		t.Fatalf("account 76 still advertises an editor: %s", ua)
+	}
+	again, _, _ := codexUserAgentFromConfig(normalized, 76, "")
+	if again != ua {
+		t.Fatalf("account 76 persona drifted: %s vs %s", ua, again)
+	}
+}
+
+func TestAccount78StaysOnObservedWindowsDesktop(t *testing.T) {
+	t.Setenv("CODEX_PERSONA_STORE", "memory")
+	resetCodexPersonaAssignments()
+	normalized, err := NormalizeCodexUserAgentConfigJSON(`{"mode":"pool","pool_mix":{"codex-desktop":50,"codex-vscode":30,"codex-tui":20}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ua, version, ok := codexUserAgentFromConfig(normalized, 78, "")
+	if !ok {
+		t.Fatal("account 78 persona missing")
+	}
+	if !strings.Contains(ua, "(Windows 10.0.19045; x86_64) Codex Desktop (Codex Desktop; 26.1021.31345)") || version != "0.164.0-alpha.11.1" || !strings.HasPrefix(ua, "Codex Desktop/0.164.0-alpha.11.1 ") {
+		t.Fatalf("account 78 left its verified Windows desktop: %s version %s", ua, version)
+	}
+	if strings.Contains(ua, " unknown ") || strings.Contains(ua, "codex_vscode/") {
+		t.Fatalf("account 78 kept a contradictory persona: %s", ua)
+	}
+}
+
+func TestRememberedWindowsDesktopPersonaDropsUnknownTerminal(t *testing.T) {
+	t.Setenv("CODEX_PERSONA_STORE", "memory")
+	resetCodexPersonaAssignments()
+	normalized, err := NormalizeCodexUserAgentConfigJSON(`{"mode":"pool","pool_mix":{"codex-desktop":100}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tuples := codexLegalPersonaTuples(codexUserAgentConfigFromJSON(normalized), "")
+	desktop := codexPersonaTuplesOfKind(tuples, string(CodexClientKindDesktop))
+	if len(desktop) == 0 {
+		t.Fatal("desktop tuples missing")
+	}
+	remembered := "Codex Desktop/0.164.0-alpha.11.1 (Windows 10.0.19045; x86_64) unknown (Codex Desktop; 26.1021.31345)"
+	codexPersonaSlots.mu.Lock()
+	codexPersonaSlots.loaded = true
+	codexPersonaSlots.byMix = map[string]*codexPersonaMixSlots{
+		codexPersonaMixKey(codexUserAgentConfigFromJSON(normalized), "") + "|kind=" + string(CodexClientKindDesktop): {
+			ByAccount: map[int64]int{78: 0},
+			ByUA:      map[int64]string{78: remembered},
+		},
+	}
+	codexPersonaSlots.mu.Unlock()
+
+	ua, _, ok := codexUserAgentFromConfig(normalized, 78, "")
+	if !ok {
+		t.Fatal("account 78 persona missing")
+	}
+	if !strings.Contains(ua, "(Windows 10.0.19045; x86_64) Codex Desktop (Codex Desktop;") {
+		t.Fatalf("account 78 changed machine or kept unknown: %s", ua)
+	}
+	again, _, _ := codexUserAgentFromConfig(normalized, 78, "")
+	if again != ua {
+		t.Fatalf("account 78 persona drifted: %s vs %s", ua, again)
+	}
+}
+
+func TestSyncedDesktopBuildReplacesCatalogPairs(t *testing.T) {
+	previous := CurrentRuntimeSettings()
+	t.Cleanup(func() { ApplyRuntimeSettings(previous) })
+	UpdateRuntimeSettings(func(settings RuntimeSettings) RuntimeSettings {
+		settings.CodexSyncedCLIVersion = "0.164.0"
+		settings.CodexSyncedDesktopWindowsBuild = "26.1021.31345"
+		settings.CodexSyncedDesktopMacBuild = "26.1021.31345"
+		return settings
+	})
+	t.Setenv("CODEX_PERSONA_STORE", "memory")
+	resetCodexPersonaAssignments()
+	normalized, err := NormalizeCodexUserAgentConfigJSON(`{"mode":"pool","pool_mix":{"codex-desktop":1}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ua, version, ok := codexUserAgentFromConfig(normalized, 11, "0.160.0")
+	if !ok {
+		t.Fatal("desktop persona missing")
+	}
+	if version != "0.164.0" || !strings.Contains(ua, "Codex Desktop/0.164.0 ") || !strings.Contains(ua, "; 26.1021.31345)") {
+		t.Fatalf("synced desktop pair was replaced by a catalog pair: %s version %s", ua, version)
+	}
+	if strings.Contains(ua, "0.149.1") || strings.Contains(ua, "0.153.4") {
+		t.Fatalf("catalog version leaked into a synced desktop persona: %s", ua)
+	}
+}
+
 func TestCodexPoolPersonaRespectsVersionFloor(t *testing.T) {
+	t.Setenv("CODEX_PERSONA_STORE", "memory")
+	resetCodexPersonaAssignments()
 	normalized, err := NormalizeCodexUserAgentConfigJSON(`{"mode":"pool","pool_mix":{"codex-desktop":1,"codex-vscode":1}}`)
 	if err != nil {
 		t.Fatalf("NormalizeCodexUserAgentConfigJSON() error = %v", err)
@@ -333,5 +444,33 @@ func TestCodexUserAgentCatalogReferenceTerminals(t *testing.T) {
 	}
 	if len(codexUACatalog[CodexClientKindDesktop].ReferenceTerminals) != 0 {
 		t.Fatal("desktop app never runs inside a terminal; it must not offer terminal presets")
+	}
+}
+
+func TestCodexTerminalAllowedMatchesRealPlatforms(t *testing.T) {
+	if codexTerminalAllowed(CodexClientKindTUI, "Mac OS", "gnome-terminal") || codexTerminalAllowed(CodexClientKindTUI, "Mac OS", "Konsole/260801") || codexTerminalAllowed(CodexClientKindTUI, "Mac OS", "WindowsTerminal") {
+		t.Fatal("Mac accepted a Linux or Windows terminal")
+	}
+	if !codexTerminalAllowed(CodexClientKindTUI, "Mac OS", "WezTerm/20260819-012343-33891b4a") || !codexTerminalAllowed(CodexClientKindTUI, "Mac OS", "iTerm.app/3.7.3") {
+		t.Fatal("Mac rejected a real Mac terminal")
+	}
+	if codexTerminalAllowed(CodexClientKindTUI, "Ubuntu", "Apple_Terminal/470.2") || codexTerminalAllowed(CodexClientKindDesktop, "Windows", "iTerm.app/3.6.11") {
+		t.Fatal("non-Mac accepted an Apple terminal")
+	}
+	if !codexTerminalAllowed(CodexClientKindTUI, "Ubuntu", "gnome-terminal") || !codexTerminalAllowed(CodexClientKindTUI, "Windows", "WindowsTerminal") {
+		t.Fatal("platform rejected its own terminal")
+	}
+	if codexTerminalAllowed(CodexClientKindTUI, "Ubuntu", "vscode/1.101.2") {
+		t.Fatal("TUI accepted an editor terminal")
+	}
+	cfg := codexUserAgentConfigFromJSON(`{"mode":"pool","pool_mix":{"codex-desktop":50,"codex-vscode":30,"codex-tui":20}}`)
+	for _, tuple := range codexLegalPersonaTuples(cfg, "") {
+		osName, terminal := codexPersonaOSAndTerminal(tuple.UserAgent)
+		if strings.HasPrefix(tuple.UserAgent, "codex-tui/") && strings.Contains(tuple.UserAgent, " vscode/") {
+			t.Fatalf("TUI persona still carries an editor terminal: %s", tuple.UserAgent)
+		}
+		if !codexTerminalAllowed(CodexClientKind(tuple.Kind), osName, terminal) {
+			t.Fatalf("illegal tuple %s", tuple.UserAgent)
+		}
 	}
 }

@@ -60,7 +60,7 @@ func (p subscriptionHeaderProfile) String() string {
 	return "codex"
 }
 
-func applySubscriptionHeaders(req *http.Request, profile subscriptionHeaderProfile) {
+func applySubscriptionHeaders(req *http.Request, account *auth.Account, profile subscriptionHeaderProfile) {
 	req.Header.Set("Accept", "application/json")
 	switch profile {
 	case subscriptionHeadersBrowser:
@@ -68,8 +68,10 @@ func applySubscriptionHeaders(req *http.Request, profile subscriptionHeaderProfi
 		req.Header.Set("Referer", "https://chatgpt.com/")
 		req.Header.Set("User-Agent", subscriptionsBrowserUserAgent)
 	default:
-		req.Header.Set("User-Agent", MinimalCodexCLIUserAgentForHeaders())
-		req.Header.Set("Originator", Originator)
+		if _, applied := applyCodexMaintenanceIdentity(req, account); !applied {
+			req.Header.Set("User-Agent", MinimalCodexCLIUserAgentForHeaders())
+			req.Header.Set("Originator", Originator)
+		}
 	}
 }
 
@@ -228,7 +230,7 @@ func queryChatGPTSubscriptionWith(ctx context.Context, account *auth.Account, pr
 		return nil, fmt.Errorf("build subscriptions request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+accessToken)
-	applySubscriptionHeaders(req, profile)
+	applySubscriptionHeaders(req, account, profile)
 	if viaResin {
 		req.Header.Set("X-Resin-Account", ResinAccountID(account))
 	}

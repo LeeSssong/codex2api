@@ -465,6 +465,7 @@ export interface AccountRow {
   base_concurrency_override?: number | null
   base_concurrency_effective?: number
   skip_warm_tier?: boolean
+  keep_concurrency_on_degrade?: boolean
   dynamic_concurrency_limit?: number
   allowed_api_key_ids?: number[]
   tags?: string[]
@@ -542,6 +543,9 @@ export interface AccountRow {
   usage_window_7d_seconds?: number
   billed_5h?: number
   billed_7d?: number
+  // 当前官方窗口打满时的预计总额度。page-stats 用窗口费用 / 占用百分比现算。
+  estimated_5h_quota_usd?: number
+  estimated_7d_quota_usd?: number
   // 官方结算口径的累计成本(美元)。来自 account_daily_usage 快照全窗口,
   // 与 billed_7d(本地日志算的网关成本)是两套账,列表里并排展示。
   official_usd?: number
@@ -635,6 +639,8 @@ export interface AccountPageStatsItem {
   usage_today_detail?: AccountUsageWindow
   billed_5h?: number
   billed_7d?: number
+  estimated_5h_quota_usd?: number
+  estimated_7d_quota_usd?: number
   official_usd?: number
   official_usd_7d?: number
   official_usage_synced?: boolean
@@ -1577,6 +1583,7 @@ export interface UpdateAccountSchedulerRequest {
   score_bias_override?: number | null
   base_concurrency_override?: number | null
   skip_warm_tier?: boolean
+  keep_concurrency_on_degrade?: boolean
   allowed_api_key_ids?: number[] | null
   proxy_url?: string | null
   tags?: string[] | null
@@ -2264,6 +2271,8 @@ export interface SystemSettings {
   continuous_retry_max_duration_seconds: number
   /** 新导入/新建 Codex 账号默认盖上的设备指纹收敛档位（off/device/session/full）。 */
   codex_fingerprint_default_mode: string
+  /** 进程环境变量 CODEX_TRANSPORT_MODE 的只读视图（standard / utls_chrome）。 */
+  codex_transport_mode?: string
   allow_remote_migration: boolean
   database_driver: string
   database_label: string

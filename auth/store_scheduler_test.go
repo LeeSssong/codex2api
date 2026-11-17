@@ -123,6 +123,49 @@ func TestAccountBaseConcurrencyOverrideControlsDynamicLimit(t *testing.T) {
 	}
 }
 
+func TestAccountKeepConcurrencyOnDegradeKeepsBaseForWarmAndRisky(t *testing.T) {
+	acc := &Account{
+		AccessToken:              "token",
+		Status:                   StatusReady,
+		PlanType:                 "plus",
+		BaseConcurrencyOverride:  int64Ptr(4),
+		KeepConcurrencyOnDegrade: true,
+	}
+
+	acc.mu.Lock()
+	acc.LastFailureAt = time.Now()
+	acc.mu.Unlock()
+	recomputeTestAccount(acc, 10)
+	if acc.HealthTier != HealthTierWarm {
+		t.Fatalf("warm HealthTier = %s, want %s", acc.HealthTier, HealthTierWarm)
+	}
+	if acc.DynamicConcurrencyLimit != 4 {
+		t.Fatalf("warm DynamicConcurrencyLimit = %d, want base 4", acc.DynamicConcurrencyLimit)
+	}
+
+	acc.mu.Lock()
+	acc.LastUnauthorizedAt = time.Now()
+	acc.mu.Unlock()
+	recomputeTestAccount(acc, 10)
+	if acc.HealthTier != HealthTierRisky {
+		t.Fatalf("risky HealthTier = %s, want %s", acc.HealthTier, HealthTierRisky)
+	}
+	if acc.DynamicConcurrencyLimit != 4 {
+		t.Fatalf("risky DynamicConcurrencyLimit = %d, want base 4", acc.DynamicConcurrencyLimit)
+	}
+
+	acc.mu.Lock()
+	acc.HealthTier = HealthTierBanned
+	acc.mu.Unlock()
+	recomputeTestAccount(acc, 10)
+	if acc.HealthTier != HealthTierBanned {
+		t.Fatalf("HealthTier = %s, want %s", acc.HealthTier, HealthTierBanned)
+	}
+	if acc.DynamicConcurrencyLimit != 0 {
+		t.Fatalf("banned DynamicConcurrencyLimit = %d, want 0", acc.DynamicConcurrencyLimit)
+	}
+}
+
 func TestAccountSkipWarmTierPromotesWarmScoreToHealthy(t *testing.T) {
 	acc := &Account{
 		AccessToken:   "token",

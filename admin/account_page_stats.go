@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"log"
+	"math"
 	"net/http"
 	"time"
 
@@ -20,6 +21,11 @@ type accountPageStatsItem struct {
 	UsageTodayDetail *accountUsageWindow `json:"usage_today_detail,omitempty"`
 	Billed5h         *float64            `json:"billed_5h,omitempty"`
 	Billed7d         *float64            `json:"billed_7d,omitempty"`
+	// Estimated5hQuotaUSD / Estimated7dQuotaUSD 是「窗口打满时的预计总额度」。
+	// 公式与 sub2api 相同：当前窗口网关费用 × 100 / 官方占用百分比。
+	// 分子只含经本网关转发的请求，所以这是估算，不是官方配额。
+	Estimated5hQuotaUSD *float64 `json:"estimated_5h_quota_usd,omitempty"`
+	Estimated7dQuotaUSD *float64 `json:"estimated_7d_quota_usd,omitempty"`
 	// OfficialUSD 是官方结算口径的累计成本（本地快照全窗口，默认一年）。
 	// 与上面按本地日志算的 Billed7d 是两套账：网关只看得到自己转发的请求，
 	// 官方账单还含用户直接用官方客户端的消耗。读的是快照表，不打上游。
@@ -139,6 +145,16 @@ func (h *Handler) GetAccountPageStats(c *gin.Context) {
 		if value, ok := billed7d[id]; ok {
 			item.Billed7d = &value
 		}
+		if h.store != nil {
+			if account := h.store.FindByID(id); account != nil {
+				if pct, ok := account.GetUsagePercent5h(); ok {
+					item.Estimated5hQuotaUSD = estimateWindowQuotaUSD(billed5h[id], pct)
+				}
+				if pct, ok := account.GetUsagePercent7d(); ok {
+					item.Estimated7dQuotaUSD = estimateWindowQuotaUSD(billed7d[id], pct)
+				}
+			}
+		}
 		// 没有快照的账号不下发这个字段，前端显示占位而不是 $0；
 		// 当前页缺快照时异步回补，不挡本次响应。已经成功同步过但
 		// 上游没有数据的账号下发显式空态，不再反复回补。
@@ -180,4 +196,18 @@ func (h *Handler) accountBillingWindows(ids []int64) (map[int64]time.Time, map[i
 		}
 	}
 	return shortWindows, longWindows
+}
+
+// estimateWindowQuotaUSD 用当前窗口已花费和官方占用百分比反推打满时的总额度。
+// 占用 ≤ 0、费用 ≤ 0 或结果非有限时不返回，避免窗口刚重置时放大成无穷大。
+func estimateWindowQuotaUSD(spent, usedPercent float64) *float64 {
+	if spent <= 0 || usedPercent <= 0 || math.IsNaN(spent) || math.IsNaN(usedPercent) || math.IsInf(spent, 0) || math.IsInf(usedPercent, 0) {
+		return nil
+	}
+	estimate := spent * 100 / usedPercent
+	if estimate <= 0 || math.IsNaN(estimate) || math.IsInf(estimate, 0) {
+		return nil
+	}
+	rounded := math.Round(estimate*100) / 100
+	return &rounded
 }

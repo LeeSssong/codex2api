@@ -474,6 +474,11 @@ func fetchCodexModelsManifestWithURL(ctx context.Context, account *auth.Account,
 	if clientVersion == "" {
 		clientVersion = effectiveLatestCodexCLIVersion()
 	}
+	if account.EffectiveCodexFingerprintMode() == auth.CodexFingerprintModeSingleMachineMultiWindow {
+		if _, version := generatedCodexClientHeaders(account, CurrentRuntimeSettings()); version != "" {
+			clientVersion = version
+		}
+	}
 	requestURL := endpoint + "?client_version=" + url.QueryEscape(clientVersion)
 
 	reqCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
@@ -486,9 +491,11 @@ func fetchCodexModelsManifestWithURL(ctx context.Context, account *auth.Account,
 	req.Header.Set("Accept", "application/json")
 	// UA 版本段与 Version 头、client_version query 三者保持同一版本，
 	// 避免出站身份自相矛盾（UA 钉内置常量、Version 跟随同步值）。
-	req.Header.Set("User-Agent", replaceCodexUserAgentVersion(defaultCodexCLIUserAgent, clientVersion))
-	req.Header.Set("Originator", Originator)
-	req.Header.Set("Version", clientVersion)
+	if _, applied := applyCodexMaintenanceIdentity(req, account); !applied {
+		req.Header.Set("User-Agent", replaceCodexUserAgentVersion(defaultCodexCLIUserAgent, clientVersion))
+		req.Header.Set("Originator", Originator)
+		req.Header.Set("Version", clientVersion)
+	}
 	if ifNoneMatch = strings.TrimSpace(ifNoneMatch); ifNoneMatch != "" {
 		req.Header.Set("If-None-Match", ifNoneMatch)
 	}
