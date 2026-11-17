@@ -52,12 +52,11 @@ func buildCodexTelemetryProfile(client codexTelemetryClient, input codexTelemetr
 	// 从不上行的私有标识；遥测里的 session_id 只能取真正发往上游的身份。
 	sessionID := firstNonEmptyString(convergedSession, gjson.GetBytes(input.body, "client_metadata.session_id").String(), metadata.Get("session_id").String(), input.sessionID)
 	threadID := firstNonEmptyString(convergedThread, gjson.GetBytes(input.body, "client_metadata.thread_id").String(), metadata.Get("thread_id").String(), sessionID)
-	if sessionID == "" {
-		sessionID = NewUpstreamSessionUUID()
+	// 出站没有会话时不另造一个。遥测会话必须等于已经发出去的身份。
+	if sessionID == "" || threadID == "" {
+		return codexTelemetryProfile{}
 	}
-	if threadID == "" {
-		threadID = sessionID
-	}
+	rawSeed := codexRawConversationSeed(input.headers)
 	turnID := firstNonEmptyString(metadata.Get("turn_id").String(), NewUpstreamSessionUUID())
 	effort := firstNonEmptyString(gjson.GetBytes(input.body, "reasoning.effort").String(), "medium")
 	return codexTelemetryProfile{
@@ -65,8 +64,18 @@ func buildCodexTelemetryProfile(client codexTelemetryClient, input codexTelemetr
 		rootTurnID: firstNonEmptyString(metadata.Get("root_turn_id").String(), turnID),
 		model:      firstNonEmptyString(gjson.GetBytes(input.body, "model").String(), "gpt-6-astra"),
 		effort:     effort, serviceTier: firstNonEmptyString(gjson.GetBytes(input.body, "service_tier").String(), "default"),
-		started: time.Now(), turnMetadata: metadata,
+		started: time.Now(), turnMetadata: metadata, rawSeed: rawSeed,
 	}
+}
+
+// codexTelemetryParentThread 返回已经改写过的父线程。没有父线程时保持 null，
+// 避免给普通回合补一个真实客户端不会有的字段值。
+func codexTelemetryParentThread(profile codexTelemetryProfile) any {
+	parentID := strings.TrimSpace(profile.turnMetadata.Get("parent_thread_id").String())
+	if parentID == "" || parentID == profile.threadID {
+		return nil
+	}
+	return parentID
 }
 
 // codexTurnMetadata 读取请求体或请求头中的 turn metadata。
@@ -93,26 +102,18 @@ func firstHeaderValue(headers map[string][]string, name string) string {
 
 // codexInitializationEvents 生成用户、guardian 与标题线程的初始化事件。
 func codexInitializationEvents(profile codexTelemetryProfile) []codexAnalyticsEvent {
-	events := make([]codexAnalyticsEvent, 0, 4)
-	if profile.firstThread {
-		events = append(events, codexThreadInitialized(profile, codexThreadSpec{
-			threadID: profile.threadID, sessionID: profile.sessionID, source: "user", model: profile.model,
-		}))
+	if profile.sessionID == "" || profile.threadID == "" || !profile.firstThread {
+		return nil
 	}
-	guardianID := NewUpstreamSessionUUID()
-	events = append(events, codexThreadInitialized(profile, codexThreadSpec{
-		threadID: guardianID, sessionID: profile.sessionID, parentThreadID: profile.threadID,
-		source: "guardian_review", subagentSource: "guardian", model: "codex-auto-review",
-	}))
-	if !profile.firstThread {
-		return events
+	source := "user"
+	var parent any
+	if parentID := strings.TrimSpace(profile.turnMetadata.Get("parent_thread_id").String()); parentID != "" && parentID != profile.threadID {
+		source = "subagent"
+		parent = parentID
 	}
-	titleThreadID := NewUpstreamSessionUUID()
-	events = append(events, codexThreadInitialized(profile, codexThreadSpec{
-		threadID: titleThreadID, sessionID: titleThreadID, source: "thread_title", model: "gpt-5.6-luna", ephemeral: true,
-	}))
-	events = append(events, codexTitleTurnEvent(profile, titleThreadID))
-	return events
+	return []codexAnalyticsEvent{codexThreadInitialized(profile, codexThreadSpec{
+		threadID: profile.threadID, sessionID: profile.sessionID, source: source, parentThreadID: parent, model: profile.model,
+	})}
 }
 
 // codexThreadInitialized 按线程规格生成初始化事件。
@@ -163,9 +164,6 @@ func codexTerminalEvents(profile codexTelemetryProfile, result codexTelemetryTer
 	if profile.fileChange {
 		events = append(events, codexFileChangeEvent(profile, result.body), codexAcceptedLinesEvent(profile))
 	}
-	for range 4 {
-		events = append(events, codexHookEvent(profile, result.status))
-	}
 	events = append(events, codexMainTurnEvent(profile, result))
 	return events
 }
@@ -206,7 +204,7 @@ func codexTurnEventBase(profile codexTelemetryProfile, spec codexTurnSpec) map[s
 		"guardian_v2_enabled": true, "image_generation_count": 0, "image_preparations": []any{},
 		"initialization_mode": "new", "input_tokens": 0, "is_first_turn": profile.firstThread,
 		"mcp_tool_call_count": 0, "model": spec.model, "model_provider": "openai", "num_input_images": 0,
-		"output_tokens": 0, "parent_thread_id": nil, "personality": "pragmatic",
+		"output_tokens": 0, "parent_thread_id": codexTelemetryParentThread(profile), "personality": "pragmatic",
 		"reasoning_effort": spec.effort, "reasoning_output_tokens": 0, "reasoning_summary": "detailed",
 		"root_turn_id": profile.rootTurnID, "runtime": codexRuntime(profile), "sampling_request_count": 1,
 		"sampling_retry_count": 0, "sandbox_network_access": false, "service_tier": profile.serviceTier,

@@ -81,6 +81,8 @@ var codexUAKindOrder = []CodexClientKind{
 // terminal-detection 规则推导:有 TERM_PROGRAM 时取 "TERM_PROGRAM/TERM_PROGRAM_VERSION",
 // 其次是 Konsole / VTE 等专属环境变量,最后回退 TERM。版本取 2026-09 各终端最新稳定版。
 var codexUAReferenceTerminals = []string{
+	// vscode/ is a VS Code client marker, not a TUI terminal. Keeping it out of
+	// the shared reference list stops a TUI persona from advertising an editor.
 	"iTerm.app/3.7.3",
 	"Apple_Terminal/470.2",
 	"ghostty/1.3.1",
