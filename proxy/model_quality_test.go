@@ -15,7 +15,7 @@ func TestModelQualityFiltersOnlySelectedAccountModel(t *testing.T) {
 	cfg := database.ModelQualityConfig{Enabled: true, Models: []string{"gpt-a", "gpt-b"}}
 	states := []database.ModelQualityState{{AccountID: 1, Model: "gpt-a", Status: "fail", Generation: 7}, {AccountID: 1, Model: "gpt-b", Status: "pass", Generation: 7}}
 	s.ApplyModelQualitySnapshot(cfg, states)
-	filters := []auth.AccountFilter{accountFilterForModel("gpt-a"), accountFilterForResponsesWebSocket("gpt-a"), accountFilterForResponsesModelCandidates([]string{"gpt-a"}, "gpt-a", true), accountFilterForCompactResponsesModelWithOriginal("gpt-a", "gpt-a", true)}
+	filters := []auth.AccountFilter{accountFilterForModel("gpt-a"), accountFilterForResponsesWebSocket("gpt-a"), accountFilterForResponsesModelCandidates([]string{"gpt-a"}, "gpt-a", true, enforceModelRateLimits), accountFilterForCompactResponsesModelWithOriginal("gpt-a", "gpt-a", true)}
 	for _, filter := range filters {
 		if filter(a) || !filter(b) {
 			t.Fatal("failed model not isolated across HTTP/WS/compact filters")

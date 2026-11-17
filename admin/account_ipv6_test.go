@@ -350,15 +350,21 @@ func TestAccountIPv6OAuthReauthSwitchRetiresAndPreservesDisabled(t *testing.T) {
 	}
 	defer release()
 	const proxyURL = "http://reauth-proxy.invalid:8080"
-	client := auth.BuildHTTPClient(proxyURL)
-	oldTransport := client.Transport
+	client := &http.Client{}
+	previousBuilder := oauthCodeExchangeHTTPClient
+	oauthCodeExchangeHTTPClient = func(selectedProxy string) *http.Client {
+		if selectedProxy != proxyURL {
+			t.Errorf("selected OAuth proxy = %q", selectedProxy)
+		}
+		return client
+	}
 	client.Transport = accountIPv6RoundTrip(func(req *http.Request) (*http.Response, error) {
 		if req.URL.String() != oauthTokenURL || req.Header.Get("X-Resin-Account") != "" {
 			t.Fatalf("wrong exchange route: %s", req.URL)
 		}
 		return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(`{"access_token":"new","refresh_token":"new-refresh","expires_in":3600}`))}, nil
 	})
-	t.Cleanup(func() { client.Transport = oldTransport })
+	t.Cleanup(func() { oauthCodeExchangeHTTPClient = previousBuilder })
 	sessionID := "ipv6-reauth-switch"
 	globalOAuthStore.set(sessionID, &oauthSession{State: "state", CodeVerifier: "verifier", RedirectURI: oauthDefaultRedirectURI, CreatedAt: time.Now()})
 	t.Cleanup(func() { globalOAuthStore.delete(sessionID) })

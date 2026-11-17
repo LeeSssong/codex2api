@@ -188,7 +188,8 @@ func TestSingleMachineFingerprintHTTPAndCompactWire(t *testing.T) {
 			// Body-only identity: real executor must share original IDs with headers.
 			body := []byte(`{"model":"gpt-5.6-codex","input":[],"prompt_cache_key":"private-cache","client_metadata":{"installation_id":"device","session_id":"root","thread_id":"child","parent_thread_id":"root"}}`)
 			h := http.Header{}
-			expected := resolveCodexFingerprintIDs(a, PrepareCodexFingerprintHeaders(a, h, body))
+			_, scopedHeaders, _ := prepareCodexConversationIdentity(context.Background(), a, h, body, "test-key")
+			expected := resolveCodexFingerprintIDs(a, scopedHeaders)
 			var gotBody []byte
 			var gotHeaders http.Header
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -406,12 +407,21 @@ func TestSingleMachineForcesGeneratedClientHeaders(t *testing.T) {
 	downstream.Set("User-Agent", "codex-tui/0.153.3 (Linux Unknown; x86_64) xterm-256color (codex-tui; 0.153.3)")
 	downstream.Set("Originator", "codex-tui")
 	account := fingerprintAccount(t, auth.CodexFingerprintModeSingleMachineMultiWindow)
-	userAgent, _, used := resolveCodexOutboundClientHeaders(account, "api-key", nil, downstream)
+	identity, err := ResolveCodexOutboundClientIdentity(CodexClientIdentityInput{Account: account, APIKey: "api-key", Headers: downstream})
+	if err != nil {
+		t.Fatal(err)
+	}
+	userAgent, used := identity.UserAgent, identity.Generated
 	if !used || userAgent == "" || userAgent == downstream.Get("User-Agent") {
 		t.Fatalf("single machine leaked downstream UA %q used=%v", userAgent, used)
 	}
 	device := fingerprintAccount(t, auth.CodexFingerprintModeDevice)
-	passed, _, used := resolveCodexOutboundClientHeaders(device, "api-key", nil, downstream)
+	identity, err = ResolveCodexOutboundClientIdentity(CodexClientIdentityInput{Account: device, APIKey: "api-key", Headers: downstream})
+	if err != nil {
+		t.Fatal(err)
+	}
+	passed := identity.UserAgent
+	used = identity.Generated
 	if used || passed != downstream.Get("User-Agent") {
 		t.Fatalf("device mode changed UA %q used=%v", passed, used)
 	}

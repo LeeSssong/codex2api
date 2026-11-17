@@ -286,7 +286,7 @@ func (h *Handler) withCodexRouteFilter(c *gin.Context, requested, model string, 
 	}
 	c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), codexRouteKey{}, d))
 	base := filter
-	if h.store != nil {
+	if h.store != nil && (row == nil || !row.Limits.ExternalScheduler) {
 		base = h.store.WithModelCooldownFilter(model, base)
 	}
 	return func(account *auth.Account) bool {

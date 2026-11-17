@@ -386,3 +386,8 @@ func buildRawUTLSHTTPClient(proxyURL string) *http.Client {
 	}
 	return client
 }
+
+// BuildUTLSHTTPClient builds a Chrome TLS fingerprint HTTP client (exported for admin OAuth flow).
+func BuildUTLSHTTPClient(proxyURL string) *http.Client {
+	return buildUTLSHTTPClient(proxyURL)
+}

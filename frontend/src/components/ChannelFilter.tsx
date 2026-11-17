@@ -6,7 +6,9 @@ import { cn } from "@/lib/utils";
 import { useVisibleChannels } from "../visibleChannels";
 
 // Dashboard and usage share a persisted provider filter.
-export type UsageChannel = "" | "codex" | "grok" | "antigravity" | "claude";
+// 仪表盘/用量页共用的上游渠道过滤（全部/Codex/Grok/Antigravity/Claude/Kiro）。
+// 选择持久化到 localStorage，两页共享同一份状态键。
+export type UsageChannel = "" | "codex" | "grok" | "antigravity" | "claude" | "kiro";
 
 const USAGE_CHANNEL_KEY = "codex2api:usage:channel";
 
@@ -14,7 +16,7 @@ export function useUsageChannel(): [UsageChannel, (next: UsageChannel) => void] 
   const [channel, setChannel] = useState<UsageChannel>(() => {
     try {
       const raw = window.localStorage.getItem(USAGE_CHANNEL_KEY);
-      if (raw === "codex" || raw === "grok" || raw === "antigravity" || raw === "claude") return raw;
+      if (raw === "codex" || raw === "grok" || raw === "antigravity" || raw === "claude" || raw === "kiro") return raw;
     } catch {
       // ignore
     }
@@ -44,13 +46,14 @@ export default function ChannelFilter({
   const allOptions: Array<{
     key: UsageChannel;
     label: string;
-    logo?: "codex" | "grok" | "antigravity" | "claude";
+    logo?: "codex" | "grok" | "antigravity" | "claude" | "kiro";
   }> = [
     { key: "", label: t("usage.channelAll") },
     { key: "codex", label: "Codex", logo: "codex" },
     { key: "grok", label: "Grok", logo: "grok" },
     { key: "antigravity", label: "Antigravity", logo: "antigravity" },
     { key: "claude", label: "Claude", logo: "claude" },
+    { key: "kiro", label: "Kiro", logo: "kiro" },
   ];
   const options = allOptions.filter((o) => !o.logo || isChannelVisible(o.logo));
   // Hidden providers cannot remain selected by a saved filter.

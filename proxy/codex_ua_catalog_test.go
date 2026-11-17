@@ -303,14 +303,14 @@ func TestRememberedWindowsDesktopPersonaDropsUnknownTerminal(t *testing.T) {
 }
 
 func TestSyncedDesktopBuildReplacesCatalogPairs(t *testing.T) {
-	previous := CurrentRuntimeSettings()
-	t.Cleanup(func() { ApplyRuntimeSettings(previous) })
-	UpdateRuntimeSettings(func(settings RuntimeSettings) RuntimeSettings {
-		settings.CodexSyncedCLIVersion = "0.164.0"
-		settings.CodexSyncedDesktopWindowsBuild = "26.1021.31345"
-		settings.CodexSyncedDesktopMacBuild = "26.1021.31345"
-		return settings
-	})
+	previous := codexClientVersions.Load()
+	t.Cleanup(func() { codexClientVersions.Store(previous) })
+	targets := map[string]CodexClientVersionTarget{}
+	for _, platform := range []string{"darwin-arm64", "darwin-x64", "win32-x64", "linux-x64", "linux-arm64"} {
+		target := CodexClientVersionTarget{ClientKind: string(CodexClientKindDesktop), TargetPlatform: platform, Status: "verified", Pairs: []CodexClientVersionPair{{CLIVersion: "0.164.0", AppVersion: "26.1021.31345", Source: "test"}}}
+		targets[codexClientVersionKey(target.ClientKind, platform)] = target
+	}
+	codexClientVersions.Store(&codexClientVersionSnapshot{targets: targets})
 	t.Setenv("CODEX_PERSONA_STORE", "memory")
 	resetCodexPersonaAssignments()
 	normalized, err := NormalizeCodexUserAgentConfigJSON(`{"mode":"pool","pool_mix":{"codex-desktop":1}}`)

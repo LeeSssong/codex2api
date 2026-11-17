@@ -30,6 +30,7 @@ import (
 	"github.com/codex2api/database"
 	"github.com/codex2api/proxy/internal/jsonbody"
 	"github.com/codex2api/security"
+	"github.com/codex2api/security/outputguard"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/tidwall/gjson"
@@ -177,6 +178,12 @@ func dispatchPolicyForModel(model string) auth.DispatchPolicy {
 	return auth.DispatchPolicyStandard
 }
 
+// DispatchPolicyForModel 供请求处理之外的调用方（如后台检测）按模型取得与选号一致的
+// 用量窗口口径。
+func DispatchPolicyForModel(model string) auth.DispatchPolicy {
+	return dispatchPolicyForModel(model)
+}
+
 // withModelCooldownFilter 在既有过滤器上叠加单一公开模型的跨实例共享缓存冷却检查，
 // 其它实例写入的冷却也能在本实例选号时滤掉该账号；store 未装配时原样返回入参过滤器。
 func (h *Handler) withModelCooldownFilter(ctx context.Context, model string, filter auth.AccountFilter) auth.AccountFilter {
@@ -191,15 +198,15 @@ func (h *Handler) withModelCooldownFilter(ctx context.Context, model string, fil
 	return h.store.WithModelCooldownFilterContext(ctx, model, filter)
 }
 
-// antigravityRequestCooldownKeys 解析 public model 对应的 wireModel 与（Gemini 家族）
-// 共享 familyKey，供跨实例三键冷却检查使用。wireModel 取自模型目录
+// antigravityRequestCooldownKeys 解析 public model 对应的 wireModel 与（Argon / 普通 Gemini）
+// 各自共享的 familyKey，供跨实例三键冷却检查使用。wireModel 取自模型目录
 // （AntigravityWireModelID），与 antigravityResolvePublicModelForAccount 对受支持账号返回
 // 的 wire 完全一致；账号是否具备该 wire 支撑已由 antigravityChannelAccountFilter 单独把关，
 // 这里只负责冷却键。非 Gemini 模型的 familyKey 为空串。
 func antigravityRequestCooldownKeys(model string) (wireModel string, familyKey string) {
 	wireModel, _ = AntigravityWireModelID(model)
 	if antigravityIsGeminiModel(model) || antigravityIsGeminiModel(wireModel) {
-		familyKey = antigravityGeminiFamilyCooldownKey
+		familyKey = antigravityGeminiQuotaCooldownKey(model, wireModel)
 	}
 	return wireModel, familyKey
 }
@@ -466,6 +473,10 @@ func accountFilterForResponsesWebSocket(model string) auth.AccountFilter {
 }
 
 func accountFilterForModel(model string) auth.AccountFilter {
+	return accountFilterForModelWithGate(model, enforceModelRateLimits)
+}
+
+func accountFilterForModelWithGate(model string, gate modelRateLimitGate) auth.AccountFilter {
 	model = strings.TrimSpace(model)
 	return func(account *auth.Account) bool {
 		if account == nil {
@@ -477,7 +488,7 @@ func accountFilterForModel(model string) auth.AccountFilter {
 		if account.IsRelayStyle() {
 			return false
 		}
-		if model != "" && (account.IsModelRateLimited(model) || account.IsModelQualityBlocked(model)) {
+		if gate.blocks(account, model) {
 			return false
 		}
 		if !account.SupportsCodexModel(model) {
@@ -503,6 +514,10 @@ func requestUpstreamChannel(c *gin.Context) string {
 // 保留既有端点能力约束很重要：compact / Messages / Chat 等路径可能显式排除
 // 某类账号，渠道选择不能把这些硬门覆盖掉。
 func (h *Handler) applyUpstreamChannelFilter(c *gin.Context, effectiveModel string, filter auth.AccountFilter) auth.AccountFilter {
+	return h.applyUpstreamChannelFilterWithGate(c, effectiveModel, filter, enforceModelRateLimits)
+}
+
+func (h *Handler) applyUpstreamChannelFilterWithGate(c *gin.Context, effectiveModel string, filter auth.AccountFilter, gate modelRateLimitGate) auth.AccountFilter {
 	combine := func(channelFilter auth.AccountFilter) auth.AccountFilter {
 		return func(account *auth.Account) bool {
 			return channelFilter(account) && (filter == nil || filter(account))
@@ -510,14 +525,16 @@ func (h *Handler) applyUpstreamChannelFilter(c *gin.Context, effectiveModel stri
 	}
 	switch requestUpstreamChannel(c) {
 	case database.UpstreamChannelGrok:
-		return combine(grokChannelAccountFilter(effectiveModel))
+		return combine(grokChannelAccountFilterWithGate(effectiveModel, gate))
 	case database.UpstreamChannelAntigravity:
-		return combine(antigravityChannelAccountFilter(effectiveModel))
+		return combine(antigravityChannelAccountFilterWithGate(effectiveModel, gate))
 	case database.UpstreamChannelClaude:
-		return combine(claudeChannelAccountFilter(effectiveModel))
+		return combine(claudeChannelAccountFilterWithGate(effectiveModel, gate))
+	case database.UpstreamChannelKiro:
+		return combine(kiroChannelAccountFilterWithGate(effectiveModel, gate))
 	case database.UpstreamChannelCodex:
 		return func(account *auth.Account) bool {
-			if account == nil || account.IsGrokAPI() || account.IsAntigravityAPI() || account.IsClaudeOAuth() {
+			if account == nil || account.IsGrokAPI() || account.IsAntigravityAPI() || account.IsClaudeOAuth() || account.IsKiro() {
 				return false
 			}
 			return filter == nil || filter(account)
@@ -527,10 +544,14 @@ func (h *Handler) applyUpstreamChannelFilter(c *gin.Context, effectiveModel stri
 }
 
 func claudeChannelAccountFilter(model string) auth.AccountFilter {
+	return claudeChannelAccountFilterWithGate(model, enforceModelRateLimits)
+}
+
+func claudeChannelAccountFilterWithGate(model string, gate modelRateLimitGate) auth.AccountFilter {
 	model = strings.TrimSpace(model)
 	return func(account *auth.Account) bool {
 		return account != nil && account.IsClaudeOAuth() &&
-			!account.IsModelRateLimited(model) && claudeAccountSupportsModel(account, model)
+			!gate.blocks(account, model) && claudeAccountSupportsModel(account, model)
 	}
 }
 
@@ -546,6 +567,10 @@ func excludeClaudeAccountsFilter(filter auth.AccountFilter) auth.AccountFilter {
 // mapping 先行。账号写了模型列表时，只调度列表里的模型；列表为空时用可见目录，
 // 还没同步目录时用默认模型列表。
 func grokChannelAccountFilter(model string) auth.AccountFilter {
+	return grokChannelAccountFilterWithGate(model, enforceModelRateLimits)
+}
+
+func grokChannelAccountFilterWithGate(model string, gate modelRateLimitGate) auth.AccountFilter {
 	model = strings.TrimSpace(model)
 	return func(account *auth.Account) bool {
 		if account == nil || !account.IsGrokAPI() {
@@ -555,7 +580,7 @@ func grokChannelAccountFilter(model string) auth.AccountFilter {
 		if mappedModel, ok := resolveAccountModelMapping(account, model); ok && mappedModel != "" {
 			routedModel = mappedModel
 		}
-		if routedModel != "" && account.IsModelRateLimited(routedModel) {
+		if gate.blocks(account, routedModel) {
 			return false
 		}
 		return grokAccountSupportsVisibleModel(account, routedModel)
@@ -563,6 +588,10 @@ func grokChannelAccountFilter(model string) auth.AccountFilter {
 }
 
 func antigravityChannelAccountFilter(model string) auth.AccountFilter {
+	return antigravityChannelAccountFilterWithGate(model, enforceModelRateLimits)
+}
+
+func antigravityChannelAccountFilterWithGate(model string, gate modelRateLimitGate) auth.AccountFilter {
 	model = strings.TrimSpace(model)
 	return func(account *auth.Account) bool {
 		if account == nil || !account.IsAntigravityAPI() || !account.AntigravityDispatchEnabled() {
@@ -572,7 +601,7 @@ func antigravityChannelAccountFilter(model string) auth.AccountFilter {
 		if !supported {
 			return false
 		}
-		if antigravityAccountModelRateLimited(account, model, wireModel) {
+		if gate.blocksAntigravity(account, model, wireModel) {
 			return false
 		}
 		return true
@@ -584,24 +613,32 @@ func accountFilterForResponsesModel(model string, allowCodexAccounts bool) auth.
 }
 
 func accountFilterForResponsesModelWithOriginal(originalModel string, effectiveModel string, allowCodexAccounts bool) auth.AccountFilter {
-	return accountFilterForResponsesModelCandidates([]string{originalModel, effectiveModel}, effectiveModel, allowCodexAccounts)
+	return accountFilterForResponsesModelWithGate(originalModel, effectiveModel, allowCodexAccounts, enforceModelRateLimits)
+}
+
+func accountFilterForResponsesModelWithGate(originalModel string, effectiveModel string, allowCodexAccounts bool, gate modelRateLimitGate) auth.AccountFilter {
+	return accountFilterForResponsesModelCandidates([]string{originalModel, effectiveModel}, effectiveModel, allowCodexAccounts, gate)
 }
 
 func accountFilterForCompactResponsesModelWithOriginal(originalModel string, effectiveModel string, allowCodexAccounts bool) auth.AccountFilter {
 	inner := accountFilterForInlineCompactionModelWithOriginal(originalModel, effectiveModel, allowCodexAccounts)
 	return func(account *auth.Account) bool {
-		// The dedicated compact executor has no Grok adapter. Inline compaction
+		// The dedicated compact executor has no Grok or Kiro adapter. Inline compaction
 		// on ordinary Responses has a separate provider capability boundary.
-		return account != nil && !account.IsGrokAPI() && inner(account)
+		return account != nil && !account.IsGrokAPI() && !account.IsKiro() && inner(account)
 	}
 }
 
 func accountFilterForInlineCompactionModelWithOriginal(originalModel string, effectiveModel string, allowCodexAccounts bool) auth.AccountFilter {
+	return accountFilterForInlineCompactionModelWithGate(originalModel, effectiveModel, allowCodexAccounts, enforceModelRateLimits)
+}
+
+func accountFilterForInlineCompactionModelWithGate(originalModel string, effectiveModel string, allowCodexAccounts bool, gate modelRateLimitGate) auth.AccountFilter {
 	candidates := compactMappingCandidates(originalModel, effectiveModel)
 	resolveMapping := func(account *auth.Account) (string, bool) {
 		return resolveAccountCompactModelMappingForCandidates(account, candidates)
 	}
-	inner := accountFilterForResponsesModelResolver(effectiveModel, allowCodexAccounts, resolveMapping)
+	inner := accountFilterForResponsesModelResolver(effectiveModel, allowCodexAccounts, resolveMapping, gate)
 	return func(account *auth.Account) bool {
 		if account == nil || account.IsAntigravityAPI() || account.IsClaudeOAuth() || !inner(account) {
 			return false
@@ -618,15 +655,15 @@ func accountFilterForInlineCompactionModelWithOriginal(originalModel string, eff
 	}
 }
 
-func accountFilterForResponsesModelCandidates(modelCandidates []string, effectiveModel string, allowCodexAccounts bool) auth.AccountFilter {
+func accountFilterForResponsesModelCandidates(modelCandidates []string, effectiveModel string, allowCodexAccounts bool, gate modelRateLimitGate) auth.AccountFilter {
 	return accountFilterForResponsesModelResolver(effectiveModel, allowCodexAccounts, func(account *auth.Account) (string, bool) {
 		return resolveAccountModelMappingForCandidates(account, modelCandidates...)
-	})
+	}, gate)
 }
 
-func accountFilterForResponsesModelResolver(effectiveModel string, allowCodexAccounts bool, resolveMapping func(*auth.Account) (string, bool)) auth.AccountFilter {
+func accountFilterForResponsesModelResolver(effectiveModel string, allowCodexAccounts bool, resolveMapping func(*auth.Account) (string, bool), gate modelRateLimitGate) auth.AccountFilter {
 	effectiveModel = strings.TrimSpace(effectiveModel)
-	codexFilter := accountFilterForModel(effectiveModel)
+	codexFilter := accountFilterForModelWithGate(effectiveModel, gate)
 	return func(account *auth.Account) bool {
 		if account == nil {
 			return false
@@ -636,7 +673,7 @@ func accountFilterForResponsesModelResolver(effectiveModel string, allowCodexAcc
 				return false
 			}
 			wireModel, supported := antigravityResolvePublicModelForAccount(account, effectiveModel)
-			return supported && !antigravityAccountModelRateLimited(account, effectiveModel, wireModel)
+			return supported && !gate.blocksAntigravity(account, effectiveModel, wireModel)
 		}
 		if account.IsRelayStyle() {
 			routedModel := effectiveModel
@@ -644,8 +681,7 @@ func accountFilterForResponsesModelResolver(effectiveModel string, allowCodexAcc
 				routedModel = mappedModel
 			}
 			supported := relayAccountSupportsModel(account, routedModel)
-			rateLimited := routedModel != "" && account.IsModelRateLimited(routedModel)
-			return supported && !rateLimited
+			return supported && !gate.blocks(account, routedModel)
 		}
 		if !allowCodexAccounts {
 			return false
@@ -667,6 +703,9 @@ func relayAccountSupportsModel(account *auth.Account, model string) bool {
 	// 该分支对所有非 claude 账号恒不进入，保持既有准入行为不变。
 	if account.IsClaudeOAuth() {
 		return claudeAccountSupportsModel(account, model)
+	}
+	if account.IsKiro() {
+		return kiroAccountSupportsModel(account, model)
 	}
 	if account.IsAntigravityAPI() {
 		if !account.AntigravityDispatchEnabled() {
@@ -729,6 +768,10 @@ func (h *Handler) modelSupportedByAccountMapping(model string) bool {
 				return true
 			}
 			continue
+		}
+		// Kiro 账号直接服务自己目录里的模型（含 claude-*），不需要先配映射。
+		if account.IsKiro() && kiroAccountSupportsModel(account, model) {
+			return true
 		}
 		mappedModel, ok := resolveAccountModelMapping(account, model)
 		if ok && mappedModel != "" && relayAccountSupportsModel(account, mappedModel) {
@@ -1207,18 +1250,40 @@ func forwardGrokNativeResponse(c *gin.Context, resp *http.Response, protocol Gro
 }
 
 func forwardGrokNativeResponseTo(readCtx context.Context, c *gin.Context, resp *http.Response, protocol GrokProtocol, streaming bool, startedAt time.Time, firstVisible func(), output io.Writer, outputFlusher http.Flusher) (*UsageInfo, streamOutcome, bool, int) {
-	return forwardGrokNativeResponseObserved(readCtx, c, resp, protocol, streaming, startedAt, firstVisible, output, outputFlusher, nil)
+	return forwardGrokNativeResponseObserved(readCtx, c, resp, protocol, streaming, startedAt, firstVisible, output, outputFlusher, nil, nil)
 }
 
 // observe stages metadata without changing the provider's wire bytes. The
 // handler commits that metadata only after this attempt and its replay succeed.
-func forwardGrokNativeResponseObserved(readCtx context.Context, c *gin.Context, resp *http.Response, protocol GrokProtocol, streaming bool, startedAt time.Time, firstVisible func(), output io.Writer, outputFlusher http.Flusher, observe func([]byte)) (*UsageInfo, streamOutcome, bool, int) {
+//
+// requestGuard 由调用方在 attempt 循环外创建并跨 attempt 共享，使被缓冲的
+// 重试 attempt 承接已消耗的事件/字节预算；为 nil 时才新建（仅供单次转发的
+// 旧测试入口使用）。绝不能在本函数内无条件重建状态机。
+func forwardGrokNativeResponseObserved(readCtx context.Context, c *gin.Context, resp *http.Response, protocol GrokProtocol, streaming bool, startedAt time.Time, firstVisible func(), output io.Writer, outputFlusher http.Flusher, observe func([]byte), requestGuard *outputguard.RequestGuard) (*UsageInfo, streamOutcome, bool, int) {
+	return forwardGrokNativeResponseObservedWithScope(readCtx, c, resp, protocol, streaming, startedAt, firstVisible, output, outputFlusher, observe, requestGuard, "")
+}
+
+func forwardGrokNativeResponseObservedWithScope(readCtx context.Context, c *gin.Context, resp *http.Response, protocol GrokProtocol, streaming bool, startedAt time.Time, firstVisible func(), output io.Writer, outputFlusher http.Flusher, observe func([]byte), requestGuard *outputguard.RequestGuard, scope string) (*UsageInfo, streamOutcome, bool, int) {
 	privateAttempt := output != nil && output != c.Writer
 	resp.Header.Del(grokNativeRouteHeader)
+	// [OutputGuard] 原生透传严格按真实上游协议选择投影器；终止协调器以 resp.Body
+	// 为关闭目标，命中后先取消/关闭上游，再尽力交付下游协议终态。
+	if requestGuard == nil {
+		requestGuard = outputguard.NewRequestGuard(nativeGuardCoreConfig())
+	}
+	projector := selectNativeProjectorWithScope(string(protocol), false, false, scope)
+	guardCoord := NewGuardTerminationCoordinator(requestGuard, nil, resp.Body)
 	if !streaming {
 		body, err := readAllLimitedWithContinuousRetryKeepalive(readCtx, resp.Body, grokMaxDecodedBody)
 		if err != nil {
 			return nil, classifyStreamOutcome(nil, err, nil, false), false, 0
+		}
+		// [OutputGuard 全量 Snapshot 检查] 在任何响应字节写出之前判定完整响应。
+		if err := ObserveEvent(requestGuard, projector, "", body); err != nil || requestGuard.IsTripped() {
+			reason := requestGuard.TrippedReason()
+			trippedOutcome := guardCoord.HandleTripped(reason)
+			_ = SendDownstreamGuardTerminalHTTP(c, nil, nil, grokProtocolGuardName(protocol), reason)
+			return nil, trippedOutcome, false, 0
 		}
 		if failure, failed := protocolNonStreamFailure(protocol, body); failed {
 			return grokNativeUsage(protocol, body), failure, false, 0
@@ -1277,6 +1342,21 @@ func forwardGrokNativeResponseObserved(readCtx context.Context, c *gin.Context, 
 	frameErr := error(nil)
 	readErr := readRawGrokSSEFramesWithContinuousRetryKeepalive(readCtx, resp.Body, func(frame rawGrokSSEFrame) bool {
 		if frame.HasData && !frame.Done {
+			// [OutputGuard 前置检查] 命中帧不得进入 observe、usage 统计、
+			// pending 缓冲或下游写入；guard 判定必须先于所有转发副作用。
+			if err := ObserveEvent(requestGuard, projector, frame.Event, frame.Data); err != nil || requestGuard.IsTripped() {
+				reason := requestGuard.TrippedReason()
+				failure = guardCoord.HandleTripped(reason, func() { pending.Reset() })
+				// 原生流命中交付协议终态：
+				// - 若尚未提交任何响应头（!c.Writer.Written()，如首帧即命中），
+				//   SendDownstreamGuardTerminalHTTP 的未提交分支会直接写出脱敏 502 JSON 错误，
+				//   避免下游按 HTTP 状态码误判为 200 成功。
+				// - 若部分内容已下发导致响应头已提交，保持 HTTP 200 + 协议专属 SSE error envelope，
+				//   通过协议内的错误帧通知客户端中断并完成脱敏。
+				_ = SendDownstreamGuardTerminalHTTP(c, nil, nil, grokProtocolGuardName(protocol), reason)
+				terminal, failed = true, true
+				return false
+			}
 			if observe != nil {
 				observe(frame.Data)
 			}
@@ -1351,9 +1431,11 @@ func forwardGrokNativeResponseObserved(readCtx context.Context, c *gin.Context, 
 	}
 	if failed {
 		failure = overlayContinuousRetryLocalFailure(failure, readErr, writeErr)
+		failure = OverlayGuardOutcome(failure, requestGuard)
 		return usage, failure, wrote, firstTokenMs
 	}
 	outcome := classifyStreamOutcome(continuousRetryContextError(c.Request.Context()), readErr, writeErr, terminal)
+	outcome = OverlayGuardOutcome(outcome, requestGuard)
 	if !terminal && wrote && c.Request.Context().Err() == nil && writeErr == nil {
 		_ = writeGrokNativeStreamBreakTo(output, protocol, streamCreatedAt)
 		outputFlusher.Flush()
@@ -1639,6 +1721,8 @@ func (h *Handler) logUsage(input *database.UsageLogInput) {
 					input.Channel = database.UpstreamChannelAntigravity
 				case acc.IsClaudeOAuth():
 					input.Channel = database.UpstreamChannelClaude
+				case acc.IsKiro():
+					input.Channel = database.UpstreamChannelKiro
 				}
 			}
 		}
@@ -2142,10 +2226,13 @@ func responseCachePreparationFailure(prepared responsesBodyPreparation) (status 
 	return 0, "", false
 }
 
-func sendResponseContextUnavailable(c *gin.Context, status int, reason string) {
+// sendResponseContextUnavailable rejects a continuation whose parent context
+// cannot be proven. The 409 uses OpenAI's previous_response_not_found code so a
+// client resends the full conversation instead of retrying the same parent.
+func sendResponseContextUnavailable(c *gin.Context, status int, reason string, prepared responsesBodyPreparation) {
 	code := api.ErrCodeResponseContextUnavailable
 	errType := api.ErrorTypeInvalidRequest
-	message := "Previous response context is unavailable"
+	message := responseContextUnavailableMessage
 	if status == http.StatusServiceUnavailable {
 		code = api.ErrCodeServiceUnavailable
 		errType = api.ErrorTypeServer
@@ -2154,6 +2241,7 @@ func sendResponseContextUnavailable(c *gin.Context, status int, reason string) {
 	if status == http.StatusConflict {
 		recordResponseCacheKnownUnavailableError()
 	}
+	logResponseContextUnavailable(c, status, reason, prepared)
 	api.SendErrorWithStatus(c, api.NewAPIErrorWithDetails(
 		code,
 		message,
@@ -2365,6 +2453,38 @@ type streamOutcome struct {
 	// terminalLocal 标记代理自身的回放/存储失败；它们不参与上游重试或账号健康度，
 	// 并且必须以协议终态错误结束。
 	terminalLocal bool
+	// guardTripped 标记本次请求因模型输出失控防护触发而被强制终止。
+	guardTripped bool
+	// guardReason 冻结首次触发原因（由终止协调器保证），仅用于用量日志与脱敏终态。
+	guardReason string
+}
+
+// OverlayGuardOutcome 以 guard 终态绝对覆盖既有 outcome：输出失控防护命中时，
+// 499/598 等断流分类不得再遮蔽 502 终态。failurePayload 置 nil，防止把已经
+// 判定为失控的上游原始帧带入策略匹配或日志回显；penalize=false 保证不会把
+// 被网关主动终止的请求记成上游账号故障。
+//
+// 除 penalize 外，capacityShed / modelUnsupported / requestScoped /
+// verifyAccountAuth 这些会改变下游分支的分类标记也必须清零：它们分别对应
+// 容量降载重试、模型不支持换号、请求级故障归因与 WS 鉴权探针，残留任意一个
+// 都会让 guard 终态被当成普通上游故障处理，破坏“绝对优先”语义。
+func OverlayGuardOutcome(outcome streamOutcome, guard *outputguard.RequestGuard) streamOutcome {
+	if guard == nil || !guard.IsTripped() {
+		return outcome
+	}
+	outcome.guardTripped = true
+	outcome.guardReason = guard.TrippedReason()
+	outcome.logStatusCode = http.StatusBadGateway
+	outcome.failureKind = "model_output_guard"
+	outcome.failureMessage = GuardTriggeredPublicMessage
+	outcome.failurePayload = nil
+	outcome.penalize = false
+	outcome.capacityShed = false
+	outcome.modelUnsupported = false
+	outcome.requestScoped = false
+	outcome.verifyAccountAuth = false
+	outcome.terminalLocal = true
+	return outcome
 }
 
 const continuousRetryLocalFailureMessage = "Internal proxy replay failure"
@@ -3480,6 +3600,10 @@ func (h *Handler) authMiddlewareWithQuotaRead(allowQuotaRead bool) gin.HandlerFu
 		c.Set(contextAPIKeyMasked, security.MaskAPIKey(apiKeyRow.Key))
 		c.Set(contextAPIKeyRow, apiKeyRow)
 		c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), codexRouteLimitsKey{}, apiKeyRow.Limits))
+		if rejectExternalSchedulerIngress(c, apiKeyRow) {
+			c.Abort()
+			return
+		}
 		h.attachAPIKeyModelRequestQuota(c, false)
 		c.Set("apiKey", key)
 		if h.enforceRequiredNewAPIIdentityAtIngress(c) {
@@ -3537,7 +3661,7 @@ const (
 
 // upstreamStreamBreakMessage 是断流反馈给下游的稳定可读消息；机器识别用
 // 稳定错误码 ErrorCodeUpstreamStreamBreak，下游网关/客户端可据此自动重试。
-const upstreamStreamBreakMessage = "Upstream stream ended prematurely; safe to retry"
+const upstreamStreamBreakMessage = "Upstream stream ended prematurely; safe to retry (status 502)"
 
 // writeResponsesStreamBreakEvent 在已写出正文的 Responses SSE 流上合成
 // response.failed 终止事件。首包后断流无法整段静默重试，又不能让 SSE 静默
@@ -4048,6 +4172,17 @@ func firstGJSONInt(body []byte, paths ...string) int64 {
 	return 0
 }
 
+// outputGuardHTTPGateArmed 判断 HTTP 入口是否应执行输出失控防护就绪门禁。
+// 生产 main 在注册路由前必定先尝试加载配置：成功则 IsOutputGuardReady，
+// 失败则 lastSyncError 非空，两者都说明 readiness 已有结论。只有从未尝试
+// 过加载的进程（例如直接构造 Handler 的单元测试）才保持旧的放行语义。
+func outputGuardHTTPGateArmed() bool {
+	if IsOutputGuardReady() {
+		return true
+	}
+	return GetOutputGuardConfigSyncStatus().LastSyncError != ""
+}
+
 // Responses 处理 /v1/responses 请求（原生透传，增强输入验证）
 func (h *Handler) Responses(c *gin.Context) {
 	// 1. 读取请求体
@@ -4067,6 +4202,19 @@ func (h *Handler) Responses(c *gin.Context) {
 		api.SendError(c, contextErr)
 		return
 	}
+	// [OutputGuard 门禁与状态机初始化] 必须在 attempt 循环外初始化一次，
+	// 跨 attempt 继承事件与字节预算，严禁每次 attempt 重建。
+	if outputGuardHTTPGateArmed() && !RequireOutputGuardReadyHTTP(c) {
+		return
+	}
+	guardSnapshot := CurrentOutputGuardConfig()
+	reqGuard := outputguard.NewRequestGuard(outputguard.Config{
+		Enabled:               guardSnapshot.Enabled,
+		MaxToolArgumentBytes:  guardSnapshot.MaxToolArgumentBytes,
+		MaxToolArgumentDeltas: guardSnapshot.MaxToolArgumentDeltas,
+		MaxChannelBytes:       guardSnapshot.MaxChannelBytes,
+		MaxRequestBytes:       guardSnapshot.MaxRequestBytes,
+	})
 	h.capturePromptRequestIngress(c, rawBody)
 	bodyReadDone := time.Now()
 	compactionMeta := requestCompactionMetaForHTTP(c, rawBody)
@@ -4183,14 +4331,19 @@ func (h *Handler) Responses(c *gin.Context) {
 		return
 	}
 	isStream := gjson.GetBytes(rawBody, "stream").Bool()
-	continuousRetryPolicy := continuousRetryPolicyForCall(nil)
+	pin := pinnedAccountDispatchForRequest(c)
+	continuousRetryPolicy := pin.continuousRetryPolicy(continuousRetryPolicyForCall(nil))
 	rememberContinuousRetryPolicyForRequest(c, continuousRetryPolicy)
 	sessionIdentity := resolveRequestSessionIdentity(c.Request.Header, rawBody)
 	apiKeyID := requestAPIKeyID(c)
 	affinityKey := sessionAffinityKey(sessionIdentity.affinityID, apiKeyID)
 	turnContinuation := codexTurnContinuationToken(c.Request.Header, rawBody) != ""
-	_, turnHasBinding := h.store.SessionAffinityAccountID(affinityKey)
-	turnContinuationPinned := turnContinuation && turnHasBinding
+	var turnAccountID int64
+	var turnContinuationPinned bool
+	if turnContinuation && pin == nil {
+		turnAccountID, turnContinuationPinned = h.store.SessionAffinityAccountID(affinityKey)
+	}
+	quotaFailover := false
 	ruleIdentity := h.payloadRuleIdentity(c)
 	reasoningEffort := extractReasoningEffort(rawBody)
 	serviceTier := extractServiceTier(rawBody)
@@ -4241,21 +4394,30 @@ func (h *Handler) Responses(c *gin.Context) {
 		defer releaseAPIKeyConcurrency()
 	}
 	allowCodexAccounts := modelIDInList(effectiveModel, SupportedModelIDs(c.Request.Context(), h.db))
+	// A pinned request keeps only capability checks; cooldowns and pool
+	// routing belong to the external scheduler.
+	rateLimitGate := modelRateLimitGateFor(pin)
 	var accountFilter auth.AccountFilter
 	if nativeRemoteCompactionV2 {
-		accountFilter = accountFilterForInlineCompactionModelWithOriginal(logModel, effectiveModel, allowCodexAccounts)
+		accountFilter = accountFilterForInlineCompactionModelWithGate(logModel, effectiveModel, allowCodexAccounts, rateLimitGate)
 	} else {
-		accountFilter = accountFilterForResponsesModelWithOriginal(logModel, effectiveModel, allowCodexAccounts)
+		accountFilter = accountFilterForResponsesModelWithGate(logModel, effectiveModel, allowCodexAccounts, rateLimitGate)
+	}
+	if pin == nil {
+		accountFilter = h.withRequestModelCooldownFilter(c, c.Request.Context(), effectiveModel, accountFilter)
 	}
 	accountFilter = h.withCodexRouteFilter(c, logModel, effectiveModel, codexBody, accountFilter)
-	accountFilter = h.withRequestModelCooldownFilter(c, c.Request.Context(), effectiveModel, accountFilter)
 	if continuationUnavailable {
 		accountFilter = responsesContinuationRelayFilter(accountFilter)
 	}
-	accountFilter = h.applyUpstreamChannelFilter(c, effectiveModel, accountFilter)
+	accountFilter = h.applyUpstreamChannelFilterWithGate(c, effectiveModel, accountFilter, rateLimitGate)
 	accountFilter = excludeClaudeAccountsFilter(accountFilter)
-	accountFilter = applyAffinityGroupRouting(c, sessionIdentity, accountFilter)
-	accountFilter = h.applyScopeBudgetFilter(c, accountFilter)
+	if pin != nil {
+		accountFilter = daybreakAccountFilter(c, accountFilter)
+	} else {
+		accountFilter = applyAffinityGroupRouting(c, sessionIdentity, accountFilter)
+		accountFilter = h.applyScopeBudgetFilter(c, accountFilter)
+	}
 	// resolveCompactionAffinity 只在已知来源相互冲突时报错；缓存故障按未知
 	// 来源处理，保持正常调度。
 	compactionAffinity, compactionAffinityErr := h.resolveCompactionAffinity(c.Request.Context(), rawBody)
@@ -4276,8 +4438,8 @@ func (h *Handler) Responses(c *gin.Context) {
 	activateContinuousRetryKeepalive(c.Request.Context())
 
 	// 3. 带重试的上游请求
-	maxRetries := h.getMaxRetries()
-	maxRateLimitRetries := h.getMaxRateLimitRetries()
+	maxRetries := pin.retryLimit(h.getMaxRetries())
+	maxRateLimitRetries := pin.retryLimit(h.getMaxRateLimitRetries())
 	generalRetries := 0
 	rateLimitRetries := 0
 	var lastStatusCode int
@@ -4311,7 +4473,34 @@ func (h *Handler) Responses(c *gin.Context) {
 	grokQualityAttempts := 0
 	for attempt := 0; ; attempt++ {
 		account, stickyProxyURL, retainedHTTPFallback := wsHTTPFallback.Take()
-		if !retainedHTTPFallback {
+		if !retainedHTTPFallback && pin != nil {
+			// stickyProxyURL stays empty: the account's own proxy policy picks the route.
+			affinityGuard = auth.SessionAffinityGuard{}
+			account = pin.next(c, h.store, accountFilter, retryExclusions)
+		} else if !retainedHTTPFallback {
+			quotaAffinityReleased := false
+			if turnContinuationPinned {
+				if limited := h.quotaBlockedContinuationAccount(turnAccountID); limited != nil {
+					if continuationUnavailable {
+						sendResponseContextUnavailable(c, continuationStatus, continuationReason, bodyPreparation)
+						return
+					}
+					replayRaw, contextErr := responsesQuotaReplayBody(rawBody, codexBody)
+					if contextErr != nil {
+						logQuotaFailoverRejected(c, "http", limited.ID(), attempt+1, rawBody, contextErr)
+						api.SendError(c, contextErr)
+						return
+					}
+					rawBody = replayRaw
+					codexBody, _ = sjson.DeleteBytes(codexBody, "client_metadata.x-codex-turn-state")
+					resetOpenAIResponsesBody()
+					turnContinuationPinned = false
+					quotaFailover = true
+					quotaAffinityReleased = true
+					h.store.UnbindSessionAffinity(affinityKey, limited.ID())
+					log.Printf("[quota-failover] complete HTTP context admitted; releasing exhausted account affinity (account=%d, attempt=%d, encrypted_reasoning=%d)", limited.ID(), attempt+1, quotaFailoverEncryptedReasoning(rawBody))
+				}
+			}
 			affinityGuard = auth.SessionAffinityGuard{}
 			if attempt == 0 && compactionAffinity.Known && !turnContinuationPinned {
 				account = h.store.TakePreferredAccountWithDispatch(compactionAffinity.PreferredAccountID, apiKeyID, retryExclusions.ForSelection(), accountFilter, dispatchPolicy)
@@ -4323,11 +4512,15 @@ func (h *Handler) Responses(c *gin.Context) {
 			} else if turnContinuationPinned {
 				// 续链重试同样传 SelectionOptions，避免重试把选号上下文丢掉。
 				account, stickyProxyURL, selectionErr = h.nextRetryAccountForContinuationWithSelection(c.Request.Context(), affinityKey, apiKeyID, retryExclusions, accountFilter, selectionOpts)
-			} else {
+			} else if !quotaAffinityReleased || h.quotaFailoverHasCandidate(affinityKey, apiKeyID, retryExclusions.ForSelection(), accountFilter, dispatchPolicy) {
 				account, stickyProxyURL, affinityGuard, selectionErr = h.nextRetryAccountForSessionWithDispatchGuard(c.Request.Context(), affinityKey, apiKeyID, retryExclusions, accountFilter, selectionOpts)
 			}
 		}
 		if account == nil {
+			if pin != nil {
+				pin.writeFailure(c, continuousRetryProtocolResponses, isStream)
+				return
+			}
 			if writeSchedulerQueueError(c, selectionErr, continuousRetryProtocolResponses) {
 				return
 			}
@@ -4376,7 +4569,7 @@ func (h *Handler) Responses(c *gin.Context) {
 				if isStream && writeCommittedResponsesRetryError(c, "Previous response context is unavailable") {
 					return
 				}
-				sendResponseContextUnavailable(c, continuationStatus, continuationReason)
+				sendResponseContextUnavailable(c, continuationStatus, continuationReason, bodyPreparation)
 				return
 			}
 			if h.accountPoolConcurrencySaturated(apiKeyID, retryExclusions.ForSelection(), accountFilter, dispatchPolicy) {
@@ -4413,10 +4606,11 @@ func (h *Handler) Responses(c *gin.Context) {
 			return
 		}
 		h.AcquireAPIKeyScopeConcurrency(c, account)
-		attemptMaxRateLimitRetries := h.effectiveMaxRateLimitRetries(account, maxRateLimitRetries)
+		attemptMaxRateLimitRetries := pin.retryLimit(h.effectiveMaxRateLimitRetries(account, maxRateLimitRetries))
 		start := time.Now()
 		proxyURL := h.resolveProxyForAttempt(account, stickyProxyURL)
-		if !retainedHTTPFallback && !continuousRetryBuffersAttempts(continuousRetryPolicy) {
+		// Pinned requests never read session affinity, so they do not write it.
+		if pin == nil && !retainedHTTPFallback && !continuousRetryBuffersAttempts(continuousRetryPolicy) {
 			if !bindContinuousRetrySessionAffinityWithGuard(c.Request.Context(), h.store, affinityKey, account, proxyURL, affinityGuard) {
 				h.store.Release(account)
 				return
@@ -4462,6 +4656,9 @@ func (h *Handler) Responses(c *gin.Context) {
 
 		// 透传下游请求头用于指纹学习
 		downstreamHeaders := c.Request.Header.Clone()
+		if quotaFailover {
+			downstreamHeaders.Del(codexTurnStateHeader)
+		}
 
 		if account.IsRelayStyle() {
 			relayContinuationAttempted = true
@@ -4611,11 +4808,17 @@ func (h *Handler) Responses(c *gin.Context) {
 				errBody, _ := readUpstreamErrorBody(readCtx, resp.Body)
 				rememberContinuousRetryHTTPFailure(c.Request.Context(), resp, errBody)
 				resp.Body.Close()
+				markPinnedUpstreamResponse(c, resp)
 				if continuousRetryCommitExpired(c, continuousRetryProtocolResponses) {
 					h.store.Release(account)
 					return
 				}
 				antigravityRefreshFailed := false
+				if h.kiroRefreshAfterUnauthorized(c.Request.Context(), account, resp.StatusCode, antigravityRefreshRetried) {
+					h.store.Release(account)
+					h.store.UnbindSessionAffinity(affinityKey, account.ID())
+					continue
+				}
 				if resp.StatusCode == http.StatusUnauthorized && account.IsAntigravityAPI() && account.AntigravityAuthKind() == auth.AntigravityAuthKindOAuth && !antigravityRefreshRetried[account.ID()] {
 					antigravityRefreshRetried[account.ID()] = true
 					if refreshErr := h.store.RefreshAntigravityAccount(c.Request.Context(), account); refreshErr == nil {
@@ -4743,7 +4946,7 @@ func (h *Handler) Responses(c *gin.Context) {
 				downstreamFlusher, _ := c.Writer.(http.Flusher)
 				streamAttempt := h.newContinuousRetryStreamAttempt(isStream && continuousRetryBuffersAttempts(continuousRetryPolicy), c.Writer, downstreamFlusher)
 				var compactionDigests compactionProvenanceDigests
-				usage, outcome, wroteAnyBody, firstTokenMs := forwardGrokNativeResponseObserved(readCtx, c, resp, GrokProtocolResponses, isStream, start, stopTTFTGuard, streamAttempt.writerOr(c.Writer), streamAttempt.flusherOr(downstreamFlusher), compactionDigests.addPayload)
+				usage, outcome, wroteAnyBody, firstTokenMs := forwardGrokNativeResponseObserved(readCtx, c, resp, GrokProtocolResponses, isStream, start, stopTTFTGuard, streamAttempt.writerOr(c.Writer), streamAttempt.flusherOr(downstreamFlusher), compactionDigests.addPayload, reqGuard)
 				totalDuration := int(time.Since(start).Milliseconds())
 				stopTTFTGuard()
 				resp.Body.Close()
@@ -4783,7 +4986,9 @@ func (h *Handler) Responses(c *gin.Context) {
 				if continuousRetryBufferedAttemptCommitted(continuousRetryPolicy, outcome) {
 					h.store.BindSessionAffinityWithGuard(affinityKey, account, proxyURL, affinityGuard)
 				}
-				if outcome.terminalLocal && c.Request.Context().Err() == nil {
+				if outcome.guardTripped {
+					// guard 终态已由 native forwarder 写出，绝不合成 local 收尾。
+				} else if outcome.terminalLocal && c.Request.Context().Err() == nil {
 					writeContinuousRetryLocalResponsesError(c)
 				} else if !downstreamWrote && outcome.logStatusCode != http.StatusOK && c.Request.Context().Err() == nil {
 					if !writeCommittedResponsesRetryError(c, outcome.failureMessage) {
@@ -4864,6 +5069,13 @@ func (h *Handler) Responses(c *gin.Context) {
 			promptPolicyIncidentID := ""
 			upstreamCyberPolicyLogged := false
 			var streamAttempt *continuousRetryStreamAttempt
+			// [OutputGuard] relay-style 分支（OpenAI Responses 中转、Antigravity
+			// Responses 等）拥有独立于标准 Codex 主分支的流式事件循环与非流式
+			// 响应体路径：沿用入口处创建的 reqGuard（跨 attempt 继承预算），再按
+			// attempt 建立终止协调器与 Responses 投影器，确保命中后先取消上游、
+			// 丢弃本地缓冲，最后才尽力交付脱敏终态。
+			guardCoord := NewGuardTerminationCoordinator(reqGuard, upstreamCancel, resp.Body)
+			responsesProjector := NewResponsesProjector()
 
 			if isStream {
 				setSSEStreamHeaders(c, "text/event-stream")
@@ -4890,6 +5102,18 @@ func (h *Handler) Responses(c *gin.Context) {
 				var pendingFirstTokenEvents bytes.Buffer
 				emptyIncomplete := &emptyIncompleteTracker{}
 				readErr = readSSEStreamWithContinuousRetryKeepalive(readCtx, resp.Body, func(sseEvent string, data []byte) bool {
+					// [OutputGuard 前置检查] 必须早于 provenance/usage 记录、事件重写、
+					// 首 token 统计与下游写路径；命中事件对后续逻辑绝对不可见。
+					if err := ObserveEvent(reqGuard, responsesProjector, normalizedUpstreamSSEEventType(sseEvent, data), data); err != nil || reqGuard.IsTripped() {
+						gotTerminal = true
+						guardCoord.HandleTripped(reqGuard.TrippedReason(), func() {
+							compactionDigests = nil
+							pendingFirstTokenEvents.Reset()
+							streamWriter.DiscardBuffered()
+						})
+						_ = SendDownstreamGuardTerminalHTTP(c, nil, &clientGone, "responses", reqGuard.TrippedReason())
+						return false
+					}
 					streamDiag.markUpstreamFrame()
 					if account.IsGrokAPI() || continuousRetryBuffersAttempts(continuousRetryPolicy) {
 						compactionDigests.addPayload(data)
@@ -5007,25 +5231,38 @@ func (h *Handler) Responses(c *gin.Context) {
 					if isEmptyIncompleteResponseBody(respBody) {
 						respBody = synthesizeEmptyIncompleteFailureBody(respBody)
 					}
-					nonStreamResponseBody = append([]byte(nil), respBody...)
-					usage = extractUsageFromResult(gjson.GetBytes(respBody, "usage"))
-					actualServiceTier = gjson.GetBytes(respBody, "service_tier").String()
-					observeUpstreamResponseModelBody(responseModelObserver, respBody)
-					imageLogInfo = imageUsageLogInfoFromResponseJSON(respBody)
-					gotTerminal = true
-					if contentType := resp.Header.Get("Content-Type"); contentType != "" {
-						nonStreamContentType = contentType
-					}
-					if failure, failed := protocolNonStreamFailure(GrokProtocolResponses, respBody); failed {
-						failureCopy := failure
-						nonStreamFailure = &failureCopy
-						terminalFailurePayload = append([]byte(nil), respBody...)
+					// [OutputGuard 全量 Snapshot 检查] relay 非流式响应体是完整
+					// Responses JSON；必须在聚合、用量提取与任何写出之前判定，
+					// 命中后绝不把已经失控的响应体下发。
+					if err := ObserveEvent(reqGuard, responsesProjector, "", respBody); err != nil || reqGuard.IsTripped() {
+						gotTerminal = true
+						guardCoord.HandleTripped(reqGuard.TrippedReason(), func() {
+							nonStreamResponseBody = nil
+							nonStreamFailure = nil
+							terminalFailurePayload = nil
+						})
+					} else {
+						nonStreamResponseBody = append([]byte(nil), respBody...)
+						usage = extractUsageFromResult(gjson.GetBytes(respBody, "usage"))
+						actualServiceTier = gjson.GetBytes(respBody, "service_tier").String()
+						observeUpstreamResponseModelBody(responseModelObserver, respBody)
+						imageLogInfo = imageUsageLogInfoFromResponseJSON(respBody)
+						gotTerminal = true
+						if contentType := resp.Header.Get("Content-Type"); contentType != "" {
+							nonStreamContentType = contentType
+						}
+						if failure, failed := protocolNonStreamFailure(GrokProtocolResponses, respBody); failed {
+							failureCopy := failure
+							nonStreamFailure = &failureCopy
+							terminalFailurePayload = append([]byte(nil), respBody...)
+						}
 					}
 				}
 			}
 
 			totalDuration := int(time.Since(start).Milliseconds())
 			outcome := classifyStreamOutcome(continuousRetryContextError(c.Request.Context()), readErr, writeErr, gotTerminal)
+			outcome = OverlayGuardOutcome(outcome, reqGuard)
 			outcome = overlayContinuousRetryLocalFailure(outcome, readErr, writeErr)
 			if nonStreamFailure != nil {
 				outcome = *nonStreamFailure
@@ -5125,7 +5362,22 @@ func (h *Handler) Responses(c *gin.Context) {
 			if continuousRetryBufferedAttemptCommitted(continuousRetryPolicy, outcome) {
 				h.store.BindSessionAffinityWithGuard(affinityKey, account, proxyURL, affinityGuard)
 			}
-			if isStream && outcome.terminalLocal {
+			if outcome.guardTripped {
+				// 非流式完整响应快照命中时尚未提交任何下游字节：直接返回 502
+				// 脱敏 envelope。流式命中已由 SendDownstreamGuardTerminalHTTP
+				// 写出（未提交则同为 502 JSON，已提交则写协议内终态帧），此处
+				// 不再重复写。
+				if !downstreamWrote && !c.Writer.Written() {
+					c.Header("Content-Type", "application/json; charset=utf-8")
+					c.JSON(http.StatusBadGateway, gin.H{
+						"error": gin.H{
+							"message": outcome.failureMessage,
+							"type":    outputguard.TriggeredCode,
+							"code":    outputguard.TriggeredCode,
+						},
+					})
+				}
+			} else if isStream && outcome.terminalLocal {
 				writeContinuousRetryLocalResponsesError(c)
 			} else if isStream && abortedForHTTPError && !downstreamWrote {
 				// 流式:首 token 前上游失败、未向下游写过任何内容,HTTP 200 header 尚未提交,
@@ -5373,6 +5625,7 @@ func (h *Handler) Responses(c *gin.Context) {
 			errBody, _ := readUpstreamErrorBody(readCtx, resp.Body)
 			rememberContinuousRetryHTTPFailure(c.Request.Context(), resp, errBody)
 			resp.Body.Close()
+			markPinnedUpstreamResponse(c, resp)
 			if continuousRetryCommitExpired(c, continuousRetryProtocolResponses) {
 				h.store.Release(account)
 				return
@@ -5521,6 +5774,10 @@ func (h *Handler) Responses(c *gin.Context) {
 		var streamAttempt *continuousRetryStreamAttempt
 		// 断流现场判据(issue #491):区分下游背压拖停上游读取 vs 上游自己重置。
 		streamDiag := newStreamPhaseDiagnostics()
+		// [OutputGuard] 本次 attempt 的原子终止协调器与 Responses projector：
+		// 流式与非流式共用同一套上游取消、缓冲清理与 502 终态语义。
+		guardCoord := NewGuardTerminationCoordinator(reqGuard, upstreamCancel, resp.Body)
+		responsesProjector := NewResponsesProjector()
 
 		if isStream {
 			// 流式透传 + TTFT 跟踪
@@ -5566,6 +5823,19 @@ func (h *Handler) Responses(c *gin.Context) {
 					data = restoreCodexMultiAgentV2Response(data, multiAgentV2State)
 				}
 				streamDiag.markUpstreamFrame()
+				// [OutputGuard 前置检查] 必须早于 provenance bytes.Clone、collector
+				// 累积、replay 与 downstreamMu 写路径；命中事件对后续逻辑绝对不可见。
+				if err := ObserveEvent(reqGuard, responsesProjector, normalizedUpstreamSSEEventType(sseEvent, data), data); err != nil {
+					gotTerminal = true
+					guardCoord.HandleTripped(reqGuard.TrippedReason(), func() {
+						compactionProvenancePayloads = nil
+						outputCollector.clearOverflow()
+						streamWriter.DiscardBuffered()
+						completedResponseData = nil
+					})
+					_ = SendDownstreamGuardTerminalHTTP(c, &downstreamMu, &clientGone, "responses", reqGuard.TrippedReason())
+					return false
+				}
 				if continuousRetryBuffersAttempts(continuousRetryPolicy) {
 					compactionProvenancePayloads = append(compactionProvenancePayloads, bytes.Clone(data))
 				} else {
@@ -5828,6 +6098,16 @@ func (h *Handler) Responses(c *gin.Context) {
 				if multiAgentV2State.isOptimizedFor(account.ID()) {
 					data = restoreCodexMultiAgentV2Response(data, multiAgentV2State)
 				}
+				// [OutputGuard 前置检查] 必须早于 provenance 记录与聚合。
+				if err := ObserveEvent(reqGuard, responsesProjector, normalizedUpstreamSSEEventType(sseEvent, data), data); err != nil {
+					gotTerminal = true
+					guardCoord.HandleTripped(reqGuard.TrippedReason(), func() {
+						compactionProvenancePayloads = nil
+						outputCollector.clearOverflow()
+						completedResponseData = nil
+					})
+					return false
+				}
 				if continuousRetryBuffersAttempts(continuousRetryPolicy) {
 					compactionProvenancePayloads = append(compactionProvenancePayloads, bytes.Clone(data))
 				} else {
@@ -5897,6 +6177,7 @@ func (h *Handler) Responses(c *gin.Context) {
 		// 断流检测 + token 估算
 		totalDuration := int(time.Since(start).Milliseconds())
 		outcome := classifyStreamOutcome(continuousRetryContextError(c.Request.Context()), readErr, writeErr, gotTerminal)
+		outcome = OverlayGuardOutcome(outcome, reqGuard)
 		outcome = overlayContinuousRetryLocalFailure(outcome, readErr, writeErr)
 		var candidatePromoted bool
 		terminalFailurePayload, candidatePromoted = resolvePreContentRetryErrorCandidate(terminalFailurePayload, preContentErrorCandidate, contentTokenSeen, wroteAnyBody, gotTerminal, readErr, c.Request.Context().Err(), writeErr)
@@ -6074,7 +6355,18 @@ func (h *Handler) Responses(c *gin.Context) {
 			}
 		}
 
-		if isStream && outcome.terminalLocal {
+		if outcome.guardTripped {
+			if !downstreamWrote && !c.Writer.Written() {
+				c.Header("Content-Type", "application/json; charset=utf-8")
+				c.JSON(http.StatusBadGateway, gin.H{
+					"error": gin.H{
+						"message": outcome.failureMessage,
+						"type":    outputguard.TriggeredCode,
+						"code":    outputguard.TriggeredCode,
+					},
+				})
+			}
+		} else if isStream && outcome.terminalLocal {
 			writeContinuousRetryLocalResponsesError(c)
 		} else if isStream && abortedForHTTPError && !downstreamWrote {
 			// 流式:首 token 前上游失败、未向下游写过任何内容,HTTP 200 header 尚未提交,
@@ -6191,6 +6483,13 @@ func (h *Handler) Responses(c *gin.Context) {
 
 // ResponsesCompact 处理 /v1/responses/compact 请求（非流式压缩接口，透传到上游 /responses/compact）
 func (h *Handler) ResponsesCompact(c *gin.Context) {
+	// /v1/responses can hand body-signal compaction over to this handler, which
+	// has no pinned-account path yet. Refuse instead of scheduling internally.
+	if _, pinned := pinnedAccountIDFromContext(c); pinned {
+		writeExternalSchedulerIngressError(c, "", http.StatusForbidden, "external_scheduler_endpoint_unsupported",
+			"Remote compaction does not support pinned accounts yet, so external scheduler API keys cannot use it")
+		return
+	}
 	// 1. 读取请求体
 	rawBody, err := readRawRequestBody(c)
 	if err != nil {
@@ -6392,7 +6691,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 				if !claimContinuousRetryTerminal(c, continuousRetryProtocolResponses) {
 					return
 				}
-				sendResponseContextUnavailable(c, continuationStatus, continuationReason)
+				sendResponseContextUnavailable(c, continuationStatus, continuationReason, bodyPreparation)
 				return
 			}
 			account, stickyProxyURL, affinityGuard, selectionErr = h.nextRetryAccountForSessionWithDispatchGuard(c.Request.Context(), affinityKey, apiKeyID, retryExclusions, accountFilter, selectionOpts)
@@ -7095,6 +7394,19 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		api.SendError(c, api.NewAPIError(api.ErrCodeInvalidRequest, "Failed to read request body", api.ErrorTypeInvalidRequest))
 		return
 	}
+	// [OutputGuard 门禁与状态机初始化] 必须在 attempt 循环外初始化一次，
+	// 跨 attempt 继承事件与字节预算，严禁每次 attempt 重建。
+	if outputGuardHTTPGateArmed() && !RequireOutputGuardReadyHTTP(c) {
+		return
+	}
+	guardSnapshot := CurrentOutputGuardConfig()
+	reqGuard := outputguard.NewRequestGuard(outputguard.Config{
+		Enabled:               guardSnapshot.Enabled,
+		MaxToolArgumentBytes:  guardSnapshot.MaxToolArgumentBytes,
+		MaxToolArgumentDeltas: guardSnapshot.MaxToolArgumentDeltas,
+		MaxChannelBytes:       guardSnapshot.MaxChannelBytes,
+		MaxRequestBytes:       guardSnapshot.MaxRequestBytes,
+	})
 	if rejectDuplicateJSONField(c, rawBody, "messages") {
 		return
 	}
@@ -7159,7 +7471,8 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 	}
 
 	isStream := gjson.GetBytes(rawBody, "stream").Bool()
-	continuousRetryPolicy := continuousRetryPolicyForCall(nil)
+	pin := pinnedAccountDispatchForRequest(c)
+	continuousRetryPolicy := pin.continuousRetryPolicy(continuousRetryPolicyForCall(nil))
 	rememberContinuousRetryPolicyForRequest(c, continuousRetryPolicy)
 	reasoningEffort := extractReasoningEffort(rawBody)
 	ruleIdentity := h.payloadRuleIdentity(c)
@@ -7190,12 +7503,21 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 	}
 	// /v1/chat/completions 同时允许官方 Codex OAuth 账号与中转（OpenAI Responses API）账号：
 	// 翻译后的请求体本身就是 Responses 形态，中转账号直接以 HTTP 转发（issue #181）。
-	accountFilter := accountFilterForResponsesModelWithOriginal(logModel, effectiveModel, modelIDInList(effectiveModel, SupportedModelIDs(c.Request.Context(), h.db)))
-	accountFilter = h.withCodexRouteFilter(c, logModel, effectiveModel, codexBody, accountFilter)
-	accountFilter = h.withRequestModelCooldownFilter(c, c.Request.Context(), effectiveModel, accountFilter)
-	accountFilter = h.applyUpstreamChannelFilter(c, effectiveModel, accountFilter)
+	// A pinned request keeps only capability checks; cooldowns and pool
+	// routing belong to the external scheduler.
+	rateLimitGate := modelRateLimitGateFor(pin)
+	accountFilter := accountFilterForResponsesModelWithGate(logModel, effectiveModel, modelIDInList(effectiveModel, SupportedModelIDs(c.Request.Context(), h.db)), rateLimitGate)
+	if pin == nil {
+		accountFilter = h.withCodexRouteFilter(c, logModel, effectiveModel, codexBody, accountFilter)
+		accountFilter = h.withRequestModelCooldownFilter(c, c.Request.Context(), effectiveModel, accountFilter)
+	}
+	accountFilter = h.applyUpstreamChannelFilterWithGate(c, effectiveModel, accountFilter, rateLimitGate)
 	accountFilter = excludeClaudeAccountsFilter(accountFilter)
-	accountFilter = h.applyScopeBudgetFilter(c, accountFilter)
+	if pin != nil {
+		accountFilter = daybreakAccountFilter(c, accountFilter)
+	} else {
+		accountFilter = h.applyScopeBudgetFilter(c, accountFilter)
+	}
 	// scope 并发位在选中账号后才能占，请求退出时统一释放（issue #439 v2）。
 	defer h.ReleaseAPIKeyScopeConcurrency(c)
 	stopRetryDeadline := installContinuousRetryHTTPDeadline(c, continuousRetryPolicy, continuousRetryProtocolChat)
@@ -7205,13 +7527,15 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 	activateContinuousRetryKeepalive(c.Request.Context())
 
 	sessionIdentity := resolveRequestSessionIdentity(c.Request.Header, codexBody)
-	accountFilter = applyAffinityGroupRouting(c, sessionIdentity, accountFilter)
+	if pin == nil {
+		accountFilter = applyAffinityGroupRouting(c, sessionIdentity, accountFilter)
+	}
 	apiKeyID := requestAPIKeyID(c)
 	affinityKey := sessionAffinityKey(sessionIdentity.affinityID, apiKeyID)
 
 	// 3. 带重试的上游请求
-	maxRetries := h.getMaxRetries()
-	maxRateLimitRetries := h.getMaxRateLimitRetries()
+	maxRetries := pin.retryLimit(h.getMaxRetries())
+	maxRateLimitRetries := pin.retryLimit(h.getMaxRateLimitRetries())
 	generalRetries := 0
 	rateLimitRetries := 0
 	var lastStatusCode int
@@ -7237,11 +7561,19 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 	grokQualityAttempts := 0
 	for attempt := 0; ; attempt++ {
 		account, stickyProxyURL, retainedHTTPFallback := wsHTTPFallback.Take()
-		if !retainedHTTPFallback {
+		if !retainedHTTPFallback && pin != nil {
+			// stickyProxyURL stays empty: the account's own proxy policy picks the route.
+			affinityGuard = auth.SessionAffinityGuard{}
+			account = pin.next(c, h.store, accountFilter, retryExclusions)
+		} else if !retainedHTTPFallback {
 			affinityGuard = auth.SessionAffinityGuard{}
 			account, stickyProxyURL, affinityGuard, selectionErr = h.nextRetryAccountForSessionWithDispatchGuard(c.Request.Context(), affinityKey, apiKeyID, retryExclusions, accountFilter, selectionOpts)
 		}
 		if account == nil {
+			if pin != nil {
+				pin.writeFailure(c, continuousRetryProtocolChat, isStream)
+				return
+			}
 			if writeSchedulerQueueError(c, selectionErr, continuousRetryProtocolChat) {
 				return
 			}
@@ -7289,10 +7621,11 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		}
 
 		h.AcquireAPIKeyScopeConcurrency(c, account)
-		attemptMaxRateLimitRetries := h.effectiveMaxRateLimitRetries(account, maxRateLimitRetries)
+		attemptMaxRateLimitRetries := pin.retryLimit(h.effectiveMaxRateLimitRetries(account, maxRateLimitRetries))
 		start := time.Now()
 		proxyURL := h.resolveProxyForAttempt(account, stickyProxyURL)
-		if !retainedHTTPFallback && !continuousRetryBuffersAttempts(continuousRetryPolicy) {
+		// Pinned requests never read session affinity, so they do not write it.
+		if pin == nil && !retainedHTTPFallback && !continuousRetryBuffersAttempts(continuousRetryPolicy) {
 			if !bindContinuousRetrySessionAffinityWithGuard(c.Request.Context(), h.store, affinityKey, account, proxyURL, affinityGuard) {
 				h.store.Release(account)
 				return
@@ -7504,12 +7837,18 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			errBody, _ := readUpstreamErrorBody(readCtx, resp.Body)
 			rememberContinuousRetryHTTPFailure(c.Request.Context(), resp, errBody)
 			resp.Body.Close()
+			markPinnedUpstreamResponse(c, resp)
 			if continuousRetryCommitExpired(c, continuousRetryProtocolChat) {
 				h.store.Release(account)
 				return
 			}
 			// Antigravity 的 401 是过期 access token，刷新后同号重试一次即可恢复；
 			// 不刷新会把可用账号当成鉴权失败换掉（与 /v1/responses 一致）。
+			if h.kiroRefreshAfterUnauthorized(c.Request.Context(), account, resp.StatusCode, antigravityRefreshRetried) {
+				h.store.Release(account)
+				h.store.UnbindSessionAffinity(affinityKey, account.ID())
+				continue
+			}
 			if resp.StatusCode == http.StatusUnauthorized && account.IsAntigravityAPI() && account.AntigravityAuthKind() == auth.AntigravityAuthKindOAuth && !antigravityRefreshRetried[account.ID()] {
 				antigravityRefreshRetried[account.ID()] = true
 				if refreshErr := h.store.RefreshAntigravityAccount(c.Request.Context(), account); refreshErr == nil {
@@ -7605,7 +7944,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		if isGrokNativeRouteResponse(resp) {
 			downstreamFlusher, _ := c.Writer.(http.Flusher)
 			streamAttempt := h.newContinuousRetryStreamAttempt(isStream && continuousRetryBuffersAttempts(continuousRetryPolicy), c.Writer, downstreamFlusher)
-			usage, outcome, wroteAnyBody, firstTokenMs := forwardGrokNativeResponseTo(readCtx, c, resp, GrokProtocolChatCompletions, isStream, start, ttftGuard.Stop, streamAttempt.writerOr(c.Writer), streamAttempt.flusherOr(downstreamFlusher))
+			usage, outcome, wroteAnyBody, firstTokenMs := forwardGrokNativeResponseObserved(readCtx, c, resp, GrokProtocolChatCompletions, isStream, start, ttftGuard.Stop, streamAttempt.writerOr(c.Writer), streamAttempt.flusherOr(downstreamFlusher), nil, reqGuard)
 			totalDuration := int(time.Since(start).Milliseconds())
 			ttftGuard.Stop()
 			resp.Body.Close()
@@ -7642,7 +7981,9 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			if continuousRetryBufferedAttemptCommitted(continuousRetryPolicy, outcome) {
 				h.store.BindSessionAffinityWithGuard(affinityKey, account, proxyURL, affinityGuard)
 			}
-			if outcome.terminalLocal && c.Request.Context().Err() == nil {
+			if outcome.guardTripped {
+				// guard 终态已由 native forwarder 写出，绝不合成 local 收尾。
+			} else if outcome.terminalLocal && c.Request.Context().Err() == nil {
 				writeContinuousRetryLocalChatError(c)
 			} else if !downstreamWrote && outcome.logStatusCode != http.StatusOK && c.Request.Context().Err() == nil {
 				if !writeCommittedChatRetryError(c, outcome.failureMessage) {
@@ -7717,6 +8058,10 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		chunkID := "chatcmpl-" + uuid.New().String()[:8]
 		emptyIncomplete := &emptyIncompleteTracker{}
 		created := time.Now().Unix()
+		// [OutputGuard] 上游始终是 Responses SSE；projector 与终止协调器在
+		// 流式/非流式之间共享，保证命中后只执行一次原子终止。
+		guardCoord := NewGuardTerminationCoordinator(reqGuard, upstreamCancel, resp.Body)
+		chatResponsesProjector := NewResponsesProjector()
 
 		if isStream {
 			streamTranslator := NewStreamTranslator(chunkID, responseModel, created)
@@ -7748,6 +8093,16 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			readErr = readSSEStreamWithContinuousRetryKeepalive(readCtx, resp.Body, func(sseEvent string, data []byte) bool {
 				parsed := gjson.ParseBytes(data)
 				eventType := normalizedUpstreamSSEEventType(sseEvent, data)
+				// [OutputGuard 前置检查] 必须早于 streamTranslator 累积与下游写出。
+				if err := ObserveEvent(reqGuard, chatResponsesProjector, eventType, data); err != nil {
+					gotTerminal = true
+					guardCoord.HandleTripped(reqGuard.TrippedReason(), func() {
+						pendingFirstTokenChunks.Reset()
+						streamWriter.DiscardBuffered()
+					})
+					_ = SendDownstreamGuardTerminalHTTP(c, nil, &clientGone, "chat", reqGuard.TrippedReason())
+					return false
+				}
 				ApplyCodexUsageEventFrame(h.store, account, eventType, parsed, time.Now())
 				if eventType == "response.failed" {
 					statusCode := classifyResponseFailedOutcome(data).logStatusCode
@@ -7914,9 +8269,17 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			var finishReasonOverride string
 
 			readErr = readSSEStreamWithContinuousRetryKeepalive(readCtx, resp.Body, func(sseEvent string, data []byte) bool {
-				outputCollector.Add(data)
 				parsed := gjson.ParseBytes(data)
 				eventType := normalizedUpstreamSSEEventType(sseEvent, data)
+				// [OutputGuard 前置检查] 必须早于 fullContent/fullReasoning 累加。
+				if err := ObserveEvent(reqGuard, chatResponsesProjector, eventType, data); err != nil {
+					gotTerminal = true
+					guardCoord.HandleTripped(reqGuard.TrippedReason(), func() {
+						outputCollector.clearOverflow()
+					})
+					return false
+				}
+				outputCollector.Add(data)
 				ApplyCodexUsageEventFrame(h.store, account, eventType, parsed, time.Now())
 				ttftGuard.MarkProgress(eventType)
 				if !ttftRecorded && isLooseFirstTokenResult(parsed) {
@@ -7973,6 +8336,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		// 断流检测 + token 估算
 		totalDuration := int(time.Since(start).Milliseconds())
 		outcome := classifyStreamOutcome(continuousRetryContextError(c.Request.Context()), readErr, writeErr, gotTerminal)
+		outcome = OverlayGuardOutcome(outcome, reqGuard)
 		var candidatePromoted bool
 		terminalFailurePayload, candidatePromoted = resolvePreContentRetryErrorCandidate(terminalFailurePayload, preContentErrorCandidate, contentTokenSeen, wroteAnyBody, gotTerminal, readErr, c.Request.Context().Err(), writeErr)
 		if candidatePromoted && isStream {
@@ -8090,7 +8454,18 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 				}
 			}
 		}
-		if isStream && outcome.terminalLocal {
+		if outcome.guardTripped {
+			if !downstreamWrote && !c.Writer.Written() {
+				c.Header("Content-Type", "application/json; charset=utf-8")
+				c.JSON(http.StatusBadGateway, gin.H{
+					"error": gin.H{
+						"message": outcome.failureMessage,
+						"type":    outputguard.TriggeredCode,
+						"code":    outputguard.TriggeredCode,
+					},
+				})
+			}
+		} else if isStream && outcome.terminalLocal {
 			writeContinuousRetryLocalChatError(c)
 		} else if isStream && abortedForHTTPError && !downstreamWrote {
 			// 流式:首 token 前上游失败、未向下游写过任何内容,HTTP 200 header 尚未提交,
@@ -8186,75 +8561,6 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		}
 		return
 	}
-}
-
-// handleStreamResponse 处理流式响应（翻译 Codex → OpenAI）
-func (h *Handler) handleStreamResponse(c *gin.Context, body io.Reader, model, chunkID string, created int64) {
-	c.Header("Content-Type", "text/event-stream")
-	c.Header("Cache-Control", "no-cache")
-	c.Header("Connection", "keep-alive")
-	c.Header("X-Accel-Buffering", "no")
-
-	flusher, ok := c.Writer.(http.Flusher)
-	if !ok {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": gin.H{"message": "streaming not supported", "type": "server_error"},
-		})
-		return
-	}
-
-	streamWriter := h.newStreamFlushWriter(c, c.Writer, flusher)
-	err := ReadSSEStream(body, func(data []byte) bool {
-		translation := TranslateStreamChunkResult(data, model, chunkID, created)
-		if translation.Chunk != nil {
-			if err := streamWriter.WriteSSEData(translation.Chunk); err != nil {
-				return false
-			}
-		}
-		if translation.Terminal {
-			if !translation.Failed {
-				if err := streamWriter.WriteString("data: [DONE]\n\n"); err != nil {
-					return false
-				}
-			}
-			_ = streamWriter.Flush()
-			return false
-		}
-		return true
-	})
-	_ = streamWriter.Flush()
-
-	if err != nil {
-		log.Printf("读取上游流失败: %v", err)
-	}
-}
-
-// handleCompactResponse 处理非流式响应
-func (h *Handler) handleCompactResponse(c *gin.Context, body io.Reader, model, chunkID string, created int64) {
-	var fullContent strings.Builder
-	var fullReasoning strings.Builder
-	var usage *UsageInfo
-
-	_ = ReadSSEStream(body, func(data []byte) bool {
-		eventType := gjson.GetBytes(data, "type").String()
-		switch eventType {
-		case "response.output_text.delta":
-			delta := gjson.GetBytes(data, "delta").String()
-			fullContent.WriteString(delta)
-		case "response.reasoning_summary_text.delta", "response.reasoning_text.delta":
-			fullReasoning.WriteString(gjson.GetBytes(data, "delta").String())
-		case "response.completed":
-			usage = extractUsage(data)
-			return false
-		case "response.failed":
-			return false
-		}
-		return true
-	})
-
-	result := BuildCompactResponse(chunkID, model, created, fullContent.String(), fullReasoning.String(), nil, usage)
-
-	c.Data(http.StatusOK, "application/json", result)
 }
 
 // ==================== 通用辅助 ====================
@@ -8843,6 +9149,9 @@ func (h *Handler) applyCooldownForModel(account *auth.Account, statusCode int, b
 	if account.IsGrokAPI() {
 		return h.applyGrokCooldownForModel(account, statusCode, body, resp, model)
 	}
+	if account.IsKiro() {
+		return applyKiroCooldown(h.store, account, statusCode, body, model)
+	}
 	// Antigravity 401 is recovered by RefreshAntigravityAccount. Do not apply
 	// Codex subscription/payment semantics. 429/503 carry Google's structured
 	// quota status instead, which sizes the per-(account, model) cooldown from
@@ -9188,7 +9497,7 @@ func syncCodexUsageState(store *auth.Store, account *auth.Account, resp *http.Re
 		// 被动 /responses 头刷新了 5h 窗口重置时刻：武装「到点即探」，窗口翻新即刷新进度条。
 		store.WakeBoundaryProbe(result.Reset5hAt)
 	}
-	if !opts.asyncPersist && usageApplied && result.Used5hHeaders && account.IsPremium5hPlan() && result.HasUsage5h && result.UsagePct5h >= 100 && !account.SkipsUsageWindowLimits() {
+	if !opts.asyncPersist && usageApplied && result.Used5hHeaders && account.IsPremium5hPlan() && result.HasUsage5h && result.UsagePct5h >= 100 && result.Reset5hAt.After(observedAt) && !account.SkipsUsageWindowLimits() {
 		if store != nil {
 			// The per-frame path may decide not to persist this observation; a
 			// repeated 100% frame must not issue another cooldown write.
@@ -9585,6 +9894,9 @@ func (h *Handler) supportedModelIDs(ctx context.Context) []string {
 			// 且被 resolveAnthropicModel 视为已知模型(保持原生路由,不降级为 Codex)。
 			if account.IsClaudeOAuth() {
 				declared = DefaultClaudeModelIDsForAccount(account)
+			}
+			if account.IsKiro() {
+				declared = KiroAccountModelIDs(account)
 			}
 			// 未声明 models 白名单的 Grok 账号：补默认 Grok 模型集，让 grok-4.5 等
 			// 出现在 /v1/models（否则下游客户端拉不到可用的 Grok 模型名）。

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -59,7 +58,6 @@ func relayCodexTurnStateResponseHeader(c *gin.Context, affinityKey string, accou
 	}
 	c.Header(codexTurnStateHeader, token)
 	noteCodexTurnStateProvenance(affinityKey, account)
-	noteCodexThreadTurnStateFromAffinity(affinityKey, account, token)
 }
 
 // commitResponsesStreamAttempt publishes the winning account's turn-state only
@@ -99,7 +97,6 @@ func (h *Handler) commitResponsesStreamAttempt(c *gin.Context, attempt *continuo
 	}
 	if stagedHeader && token != "" {
 		noteCodexTurnStateProvenance(affinityKey, account)
-		noteCodexThreadTurnStateFromAffinity(affinityKey, account, token)
 	}
 	return nil
 }
@@ -180,23 +177,10 @@ type codexThreadTurnState struct {
 	expiresAt time.Time
 }
 
-var (
-	codexThreadTurnStates   sync.Map // accountID:session -> codexThreadTurnState
-	codexThreadTurnSessions sync.Map // affinityKey -> accountID:session
-)
+var codexThreadTurnStates sync.Map // accountID:API-key-scoped-thread -> codexThreadTurnState
 
 func codexThreadTurnStateKey(accountID int64, sessionID string) string {
 	return fmt.Sprintf("%d:%s", accountID, strings.TrimSpace(sessionID))
-}
-
-// bindCodexThreadTurnStateSession 记下这次出站会话，响应回带的 turn-state 才能按线程存。
-func bindCodexThreadTurnStateSession(affinityKey string, accountID int64, sessionID string) {
-	affinityKey = strings.TrimSpace(affinityKey)
-	sessionID = strings.TrimSpace(sessionID)
-	if affinityKey == "" || accountID <= 0 || sessionID == "" {
-		return
-	}
-	codexThreadTurnSessions.Store(affinityKey, codexThreadTurnStateKey(accountID, sessionID))
 }
 
 func rememberCodexThreadTurnState(accountID int64, sessionID, token string) {
@@ -210,30 +194,12 @@ func rememberCodexThreadTurnState(accountID int64, sessionID, token string) {
 	})
 }
 
-// noteCodexThreadTurnStateFromAffinity 把这次响应的 turn-state 记到出站时绑定的线程上。
-// 没有绑定就跳过，避免把异线程或未声明会话的 blob 写进共享表。
-func noteCodexThreadTurnStateFromAffinity(affinityKey string, account *auth.Account, token string) {
-	affinityKey = strings.TrimSpace(affinityKey)
-	if affinityKey == "" {
-		return
+// Only the attempt that received a token can name its owning account/thread.
+func noteCodexThreadTurnStateFromContext(ctx context.Context, token string) {
+	owner, ok := codexConversationOwnerFromContext(ctx)
+	if ok {
+		rememberCodexThreadTurnState(owner.accountID, owner.threadID, token)
 	}
-	raw, ok := codexThreadTurnSessions.Load(affinityKey)
-	if !ok {
-		return
-	}
-	key, _ := raw.(string)
-	accountPart, sessionID, ok := strings.Cut(key, ":")
-	if !ok {
-		return
-	}
-	id, err := strconv.ParseInt(accountPart, 10, 64)
-	if err != nil || id <= 0 || strings.TrimSpace(sessionID) == "" {
-		return
-	}
-	if account != nil && account.ID() != id {
-		return
-	}
-	rememberCodexThreadTurnState(id, sessionID, token)
 }
 
 func storedCodexThreadTurnState(accountID int64, sessionID string) string {
@@ -251,21 +217,18 @@ func storedCodexThreadTurnState(accountID int64, sessionID string) string {
 
 // applyCodexThreadTurnState 只回带本账号本线程上游铸造过的 turn-state。
 // 新线程不发送；异账号或异线程的回带值丢掉。
-func applyCodexThreadTurnState(account *auth.Account, headers http.Header, body []byte) ([]byte, http.Header) {
+func applyCodexThreadTurnState(ctx context.Context, account *auth.Account, headers http.Header, body []byte) ([]byte, http.Header) {
 	if account == nil || account.EffectiveCodexFingerprintMode() != auth.CodexFingerprintModeSingleMachineMultiWindow {
 		return body, headers
 	}
 	if headers == nil {
 		headers = make(http.Header)
 	}
-	sessionID, threadID := ConvergedCodexSessionIdentity(account, headers)
-	token := ""
-	key := threadID
-	if key == "" {
-		key = sessionID
-	}
-	if key != "" {
-		token = storedCodexThreadTurnState(account.ID(), key)
+	token, selected := codexTurnStateInjectionDecision(ctx)
+	if !selected {
+		if owner, ok := codexConversationOwnerFromContext(ctx); ok && owner.accountID == account.ID() {
+			token = storedCodexThreadTurnState(owner.accountID, owner.threadID)
+		}
 	}
 	if token == "" {
 		headers.Del(codexTurnStateHeader)

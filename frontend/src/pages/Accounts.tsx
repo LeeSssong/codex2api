@@ -1,4 +1,8 @@
 import { CodexRouteBadges, CodexRouteManager } from "../components/CodexRoutes";
+import { AccountCardSurface } from "../components/AccountCardSurface";
+import AccountUsageBar from "../components/AccountUsageBar";
+import APIKeyMultiSelect from "../components/APIKeyMultiSelect";
+import PlanBadge, { normalizePlanType } from "../components/AccountPlanBadge";
 import { useIntelligenceBars } from "../hooks/useIntelligenceBars";
 import AccountIntelligenceBar, { AccountIntelligenceActions } from "../components/AccountIntelligenceBar";
 import type { IntelligenceBar } from "../lib/intelligenceCheck";
@@ -50,6 +54,7 @@ import {
 import GrokAccounts from "./GrokAccounts";
 import AntigravityAccounts from "./AntigravityAccounts";
 import ClaudeAccounts from "./ClaudeAccounts";
+import KiroAccounts from "./KiroAccounts";
 import { mergeAccountLiveState, useAccountLiveState } from "../hooks/useAccountLiveState";
 import PageHeader from "../components/PageHeader";
 import {
@@ -103,6 +108,11 @@ import { SUBSCRIPTION_FILTER_OPTIONS } from "../types";
 import { getErrorMessage } from "../utils/error";
 import { formatRelativeTime, formatBeijingTime } from "../utils/time";
 import { buildBatchMetadataUpdate } from "../lib/accountBatchUpdate";
+import {
+  autoPauseThresholdPercentToRatio as percentThresholdInputToRatio,
+  formatAutoPauseThresholdPercent as formatQuotaAutoPausePercentInput,
+  isAutoPauseThresholdPercentInvalid as isPercentThresholdInputInvalid,
+} from "../lib/autoPauseThreshold";
 import {
   collectAccountOperationResult,
   snapshotAccountOperationResults,
@@ -920,28 +930,6 @@ function parseOAuthCallbackParams(rawUrl: string): { code: string; state: string
       state: params.get("state") ?? "",
     };
   }
-}
-
-function formatQuotaAutoPausePercentInput(value?: number | null): string {
-  if (typeof value !== "number" || value <= 0) return "";
-  const percent = value * 100;
-  if (Number.isInteger(percent)) return String(percent);
-  return String(Number(percent.toFixed(2)));
-}
-
-function isPercentThresholdInputInvalid(value: string): boolean {
-  const trimmed = value.trim();
-  if (!trimmed) return false;
-  const parsed = Number(trimmed);
-  return !Number.isFinite(parsed) || parsed < 0 || parsed > 100;
-}
-
-function percentThresholdInputToRatio(value: string): number | null {
-  const trimmed = value.trim();
-  if (!trimmed) return null;
-  const parsed = Number(trimmed);
-  if (!Number.isFinite(parsed) || parsed <= 0) return null;
-  return parsed / 100;
 }
 
 function formatDispatchCountLimitInput(value?: number | null): string {
@@ -1877,7 +1865,9 @@ export default function Accounts() {
       ? "antigravity"
       : normalizedPath.endsWith("/accounts/claude")
         ? "claude"
-        : "codex";
+        : normalizedPath.endsWith("/accounts/kiro")
+          ? "kiro"
+          : "codex";
   const { channels: visibleChannels, isChannelVisible } = useVisibleChannels();
   // 设置页隐藏了某个渠道后，直接打开它的账号路由要回落到 Codex 视图。
   useEffect(() => {
@@ -1892,7 +1882,9 @@ export default function Accounts() {
             ? "/accounts/antigravity"
             : view === "claude"
               ? "/accounts/claude"
-              : "/accounts",
+              : view === "kiro"
+                ? "/accounts/kiro"
+                : "/accounts",
       );
     },
     [navigate],
@@ -3238,6 +3230,8 @@ export default function Accounts() {
         account.billed_5h == null && stats.billed_5h != null
           ? stats.billed_5h
           : account.billed_5h;
+      const estimated5h = account.estimated_5h_quota_usd ?? stats.estimated_5h_quota_usd;
+      const estimated7d = account.estimated_7d_quota_usd ?? stats.estimated_7d_quota_usd;
       const billed7d =
         account.billed_7d == null && stats.billed_7d != null
           ? stats.billed_7d
@@ -3274,6 +3268,8 @@ export default function Accounts() {
         sameOptional(quota5h, account.quota_5h) &&
         sameOptional(quota7d, account.quota_7d) &&
         quotaStatsStatus === account.quota_stats_status &&
+        sameOptional(estimated5h, account.estimated_5h_quota_usd) &&
+        sameOptional(estimated7d, account.estimated_7d_quota_usd) &&
         sameOptional(billed5h, account.billed_5h) &&
         sameOptional(billed7d, account.billed_7d) &&
         sameOptional(nextOfficialUsd, account.official_usd) &&
@@ -3289,6 +3285,8 @@ export default function Accounts() {
       merged.quota_5h = quota5h;
       merged.quota_7d = quota7d;
       merged.quota_stats_status = quotaStatsStatus;
+      merged.estimated_5h_quota_usd = estimated5h;
+      merged.estimated_7d_quota_usd = estimated7d;
       merged.billed_5h = billed5h;
       merged.billed_7d = billed7d;
       merged.official_usd = nextOfficialUsd;
@@ -6558,13 +6556,14 @@ export default function Accounts() {
           ["grok", t("accounts.providerViewGrok")],
           ["antigravity", t("accounts.providerViewAntigravity")],
           ["claude", t("accounts.providerViewClaude")],
+          ["kiro", t("accounts.providerViewKiro")],
         ] as const
       ).filter(([key]) => visibleChannels.includes(key)),
     [t, visibleChannels],
   );
   const providerSwitcher = useMemo(() => (
     <div
-      className="relative grid w-full max-w-[560px] items-center rounded-lg border border-border bg-muted/40 p-0.5"
+      className="relative grid w-full max-w-[680px] items-center rounded-lg border border-border bg-muted/40 p-0.5"
       style={{ gridTemplateColumns: `repeat(${providerSwitcherOptions.length}, minmax(0, 1fr))` }}
     >
       <span
@@ -6644,6 +6643,14 @@ export default function Accounts() {
     return (
       <div key="provider-claude" className="animate-channel-switch-in">
         <ClaudeAccounts headerSlot={providerSwitcher} />
+      </div>
+    );
+  }
+
+  if (providerView === "kiro") {
+    return (
+      <div key="provider-kiro" className="animate-channel-switch-in">
+        <KiroAccounts headerSlot={providerSwitcher} />
       </div>
     );
   }
@@ -11652,7 +11659,9 @@ export default function Accounts() {
                                       ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300"
                                       : group.channel === "claude"
                                         ? "bg-orange-50 text-orange-700 dark:bg-orange-950 dark:text-orange-300"
-                                        : "bg-sky-50 text-sky-700 dark:bg-sky-950 dark:text-sky-300"
+                                        : group.channel === "kiro"
+                                          ? "bg-purple-50 text-purple-700 dark:bg-purple-950 dark:text-purple-300"
+                                          : "bg-sky-50 text-sky-700 dark:bg-sky-950 dark:text-sky-300"
                                 }`}
                               >
                                 <ChannelLogo channel={group.channel} size={11} />
@@ -11662,7 +11671,9 @@ export default function Accounts() {
                                     ? t("accounts.providerViewAntigravity")
                                     : group.channel === "claude"
                                       ? t("accounts.providerViewClaude")
-                                      : t("accounts.providerViewCodex")}
+                                      : group.channel === "kiro"
+                                        ? t("accounts.providerViewKiro")
+                                        : t("accounts.providerViewCodex")}
                               </span>
                               <span className="shrink-0 rounded-md bg-muted px-1.5 py-0.5 text-[11px] font-semibold text-muted-foreground">
                                 {t("accounts.groupMembers")}{" "}
@@ -11756,7 +11767,7 @@ export default function Accounts() {
                       return (
                         <>
                           <div className="flex gap-2">
-                            {(["codex", "grok", "antigravity", "claude"] as const).map((channel) => (
+                            {(["codex", "grok", "antigravity", "claude", "kiro"] as const).map((channel) => (
                               <button
                                 key={channel}
                                 type="button"
@@ -11780,7 +11791,9 @@ export default function Accounts() {
                                     ? t("accounts.providerViewAntigravity")
                                     : channel === "claude"
                                       ? t("accounts.providerViewClaude")
-                                      : t("accounts.providerViewCodex")}
+                                      : channel === "kiro"
+                                        ? t("accounts.providerViewKiro")
+                                        : t("accounts.providerViewCodex")}
                               </button>
                             ))}
                           </div>
@@ -13005,136 +13018,6 @@ function filterExistingAPIKeyIDs(
   );
 }
 
-function formatAPIKeyOptionLabel(apiKey: APIKeyRow): string {
-  const name = apiKey.name?.trim() || `API Key #${apiKey.id}`;
-  return `${name} · ${apiKey.key}`;
-}
-
-function APIKeyMultiSelect({
-  options,
-  value,
-  disabled,
-  onChange,
-  allLabel,
-  selectedLabel,
-  placeholder,
-  emptyLabel,
-  emptyHint,
-}: {
-  options: APIKeyRow[];
-  value: number[];
-  disabled: boolean;
-  onChange: (value: number[]) => void;
-  allLabel: string;
-  selectedLabel: string;
-  placeholder: string;
-  emptyLabel: string;
-  emptyHint: string;
-}) {
-  const [open, setOpen] = useState(false);
-  const rootRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-
-    const handlePointerDown = (event: MouseEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) {
-        setOpen(false);
-      }
-    };
-
-    const handleEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setOpen(false);
-      }
-    };
-
-    document.addEventListener("mousedown", handlePointerDown);
-    document.addEventListener("keydown", handleEscape);
-    return () => {
-      document.removeEventListener("mousedown", handlePointerDown);
-      document.removeEventListener("keydown", handleEscape);
-    };
-  }, [open]);
-
-  const summary = value.length === 0 ? allLabel : selectedLabel;
-
-  const toggleOption = (id: number) => {
-    if (disabled) return;
-    if (value.includes(id)) {
-      onChange(value.filter((item) => item !== id));
-      return;
-    }
-    onChange([...value, id].sort((a, b) => a - b));
-  };
-
-  return (
-    <div ref={rootRef} className="relative">
-      <button
-        type="button"
-        disabled={disabled}
-        className={`flex w-full items-center justify-between gap-3 rounded-md border border-input bg-background px-3.5 py-3 text-left shadow-xs transition-[border-color,box-shadow] ${
-          disabled
-            ? "cursor-not-allowed opacity-70"
-            : "hover:border-primary/30 hover:bg-accent/40"
-        } ${open ? "border-primary/35 ring-[3px] ring-primary/10" : ""}`}
-        onClick={() => {
-          if (!disabled) {
-            setOpen((current) => !current);
-          }
-        }}
-      >
-        <div className="min-w-0">
-          <div className="truncate text-[15px] text-foreground">{summary}</div>
-          <div className="mt-0.5 truncate text-xs text-muted-foreground">
-            {disabled ? emptyHint : placeholder}
-          </div>
-        </div>
-        <ChevronDown
-          className={`size-4 shrink-0 text-muted-foreground transition-transform ${open ? "rotate-180" : ""}`}
-        />
-      </button>
-
-      {open ? (
-        <div className="absolute left-0 right-0 top-[calc(100%+0.5rem)] z-50 overflow-hidden rounded-lg border border-border bg-popover shadow-[0_18px_40px_hsl(222_30%_18%/0.12)] backdrop-blur-sm">
-          {options.length === 0 ? (
-            <div className="px-4 py-3 text-sm text-muted-foreground">
-              {emptyLabel}
-            </div>
-          ) : (
-            <div className="max-h-72 space-y-1 overflow-auto p-2">
-              {options.map((option) => {
-                const checked = value.includes(option.id);
-                return (
-                  <button
-                    key={option.id}
-                    type="button"
-                    className={`flex w-full items-center gap-3 rounded-md px-3 py-2.5 text-left transition-colors ${
-                      checked
-                        ? "bg-primary/10 text-primary"
-                        : "text-foreground hover:bg-accent/70"
-                    }`}
-                    onClick={() => toggleOption(option.id)}
-                  >
-                    <span
-                      className={`flex size-4 items-center justify-center rounded border ${checked ? "border-primary bg-primary text-primary-foreground" : "border-border bg-background text-transparent"}`}
-                    >
-                      <Check className="size-3" />
-                    </span>
-                    <span className="min-w-0 flex-1 truncate text-sm">
-                      {formatAPIKeyOptionLabel(option)}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
 type ModelProbeStatus =
   | "pending"
   | "testing"
@@ -13487,22 +13370,6 @@ function SchedulerPriorityBadge({ account }: { account: AccountRow }) {
 // OpenAI reports the $100 Pro tier as "prolite" and the top Pro tier as
 // "promax" — functionally Pro plans with a different usage cap. Keep behavioral comparisons (usage windows, plan filter,
 // scheduler bias) aligned with the Go side by folding it into "pro".
-function normalizePlanType(planType?: string): string {
-  const raw = (planType || "").toLowerCase().trim();
-  if (raw === "prolite" || raw === "pro_lite" || raw === "pro-lite")
-    return "pro";
-  if (raw === "promax" || raw === "pro_max" || raw === "pro-max")
-    return "pro";
-  if (
-    raw === "ent26" ||
-    raw === "enterprise_cbp_usage_based" ||
-    raw === "enterprise_cbp_automation"
-  )
-    return "enterprise";
-  if (raw === "edu_plus" || raw === "edu_pro") return "edu";
-  return raw;
-}
-
 function isFutureTime(value?: string): boolean {
   if (!value) return false;
   const timestamp = Date.parse(value);
@@ -13830,105 +13697,8 @@ function OperationProgressToast({
   );
 }
 
-function formatPlanLabel(planType?: string): string {
-  const raw = (planType || "").trim();
-  if (!raw) return "-";
-  const lower = raw.toLowerCase();
-  if (lower === "prolite" || lower === "pro_lite" || lower === "pro-lite")
-    return "ProLite";
-  if (lower === "promax" || lower === "pro_max" || lower === "pro-max")
-    return "ProMax";
-  if (lower === "self_serve_business_prolite") return "team5x";
-  if (lower === "self_serve_business_usage_based") return "Business";
-  if (lower === "ent26" || lower === "enterprise_cbp_usage_based")
-    return "Enterprise";
-  if (lower === "enterprise_cbp_automation") return "Enterprise (Automation)";
-  if (lower === "edu_plus") return "Edu Plus";
-  if (lower === "edu_pro") return "Edu Pro";
-  return raw;
-}
-
-function isWorkspacePlan(planType?: string): boolean {
-  const normalized = normalizePlanType(planType);
-  return (
-    normalized === "team" ||
-    normalized === "teamplus" ||
-    normalized === "k12" ||
-    normalized === "edu" ||
-    normalized === "education"
-  );
-}
-
 function accountWorkspaceId(account: Pick<AccountRow, "effective_workspace_id" | "token_workspace_id">): string {
   return (account.effective_workspace_id || account.token_workspace_id || "").trim();
-}
-
-function PlanBadge({
-  planType,
-  workspaceId,
-}: {
-  planType?: string;
-  workspaceId?: string;
-}) {
-  const { t } = useTranslation();
-  const label = formatPlanLabel(planType);
-  if (label === "-")
-    return <span className="text-[12px] text-muted-foreground">-</span>;
-
-  const style: Record<string, string> = {
-    pro: "bg-violet-100 text-violet-700 ring-violet-500/30 dark:bg-violet-500/20 dark:text-violet-300 dark:ring-violet-400/30",
-    prolite:
-      "bg-purple-50 text-purple-600 ring-purple-400/25 dark:bg-purple-500/15 dark:text-purple-300 dark:ring-purple-400/25",
-    promax:
-      "bg-fuchsia-100 text-fuchsia-700 ring-fuchsia-500/35 dark:bg-fuchsia-500/20 dark:text-fuchsia-300 dark:ring-fuchsia-400/35",
-    plus: "bg-blue-100 text-blue-700 ring-blue-500/30 dark:bg-blue-500/20 dark:text-blue-300 dark:ring-blue-400/30",
-    team: "bg-amber-100 text-amber-700 ring-amber-500/30 dark:bg-amber-500/20 dark:text-amber-300 dark:ring-amber-400/30",
-    k12: "bg-emerald-100 text-emerald-700 ring-emerald-500/30 dark:bg-emerald-500/20 dark:text-emerald-300 dark:ring-emerald-400/30",
-    free: "bg-zinc-100 text-zinc-500 ring-zinc-400/20 dark:bg-zinc-500/10 dark:text-zinc-400 dark:ring-zinc-400/15",
-  };
-
-  const normalized = normalizePlanType(planType);
-  const key =
-    normalized === "pro" && label === "ProLite"
-      ? "prolite"
-      : normalized === "pro" && label === "ProMax"
-        ? "promax"
-        : label === "team5x"
-        ? "team"
-        : normalized;
-  const cls =
-    style[key] ||
-    "bg-slate-100 text-slate-600 ring-slate-400/20 dark:bg-slate-500/15 dark:text-slate-300 dark:ring-slate-400/20";
-  const trimmedWorkspaceId = workspaceId?.trim() ?? "";
-  const badge = (
-    <span
-      className={`inline-flex min-w-0 max-w-full items-center truncate rounded-md px-2.5 py-1 text-[13px] font-semibold ring-1 ring-inset ${cls}`}
-    >
-      {label}
-    </span>
-  );
-  if (!isWorkspacePlan(planType) || !trimmedWorkspaceId) {
-    return badge;
-  }
-
-  return (
-    <TooltipProvider delayDuration={0} skipDelayDuration={0}>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <span className="inline-flex min-w-0 max-w-full cursor-help">
-            {badge}
-          </span>
-        </TooltipTrigger>
-        <TooltipContent
-          side="top"
-          sideOffset={6}
-          className="max-w-[360px] font-mono text-[11px]"
-        >
-          {t("accounts.planWorkspaceId", { id: trimmedWorkspaceId })}
-        </TooltipContent>
-      </Tooltip>
-    </TooltipProvider>
-  );
 }
 
 function getDefaultScoreBias(planType?: string): number {
@@ -14537,7 +14307,7 @@ function AccountMobileCard({
   const showMetadata = showTags || showColumn("groups") || showColumn("proxy");
 
   return (
-    <article
+    <AccountCardSurface
       className={cn(
         "codex-account-card",
         isPersonal && "codex-account-card--personal",
@@ -14924,7 +14694,7 @@ function AccountMobileCard({
           onDelete={onDelete}
         />
       </footer>
-    </article>
+    </AccountCardSurface>
   );
 }
 
@@ -15022,22 +14792,12 @@ function hasUsageWindowDetail(detail?: AccountRow["usage_5h_detail"]): boolean {
   );
 }
 
-// 用量进度条颜色
-function usageBarColor(pct: number): string {
-  if (pct >= 90) return "bg-red-500";
-  if (pct >= 70) return "bg-amber-500";
-  return "bg-emerald-500";
-}
-
-// 标签 / 条 / 百分比 三列固定，避免 7d 与 spark 把进度条拉成不同长度。
-const USAGE_BAR_LABEL_CLASS =
-  "w-10 shrink-0 text-[11px] font-medium text-muted-foreground";
-const USAGE_BAR_TRACK_CLASS =
-  "account-usage-track h-1.5 w-[88px] shrink-0 rounded-full bg-muted overflow-hidden";
-const USAGE_BAR_META_CLASS =
-  "account-usage-meta text-[11px] font-medium text-muted-foreground mt-0.5 pl-[46px]";
-
 // 单行用量进度条
+const USAGE_BAR_LABEL_CLASS = "w-10 shrink-0 text-[11px] font-medium text-muted-foreground";
+const USAGE_BAR_TRACK_CLASS = "account-usage-track h-1.5 w-[88px] shrink-0 overflow-hidden rounded-full bg-muted";
+const USAGE_BAR_META_CLASS = "account-usage-meta mt-0.5 pl-[46px] text-[11px] font-medium text-muted-foreground";
+const usageBarColor = (pct: number) => pct >= 90 ? "bg-red-500" : pct >= 70 ? "bg-amber-500" : "bg-emerald-500";
+
 function UsageBar({
   label,
   pct,

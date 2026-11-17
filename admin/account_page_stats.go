@@ -146,11 +146,11 @@ func (h *Handler) GetAccountPageStats(c *gin.Context) {
 		}
 		if h.store != nil {
 			if account := h.store.FindByID(id); account != nil {
-				if pct, ok := account.GetUsagePercent5h(); ok {
-					item.Estimated5hQuotaUSD = estimateWindowQuotaUSD(billed5h[id], pct)
+				if pct, ok := account.GetUsagePercent5h(); ok && item.Billed5h != nil {
+					item.Estimated5hQuotaUSD = estimateWindowQuotaUSD(*item.Billed5h, pct)
 				}
-				if pct, ok := account.GetUsagePercent7d(); ok {
-					item.Estimated7dQuotaUSD = estimateWindowQuotaUSD(billed7d[id], pct)
+				if pct, ok := account.GetUsagePercent7d(); ok && item.Billed7d != nil {
+					item.Estimated7dQuotaUSD = estimateWindowQuotaUSD(*item.Billed7d, pct)
 				}
 			}
 		}

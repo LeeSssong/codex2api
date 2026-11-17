@@ -58,8 +58,18 @@ func CodexTurnStateInjectionFromContext(ctx context.Context) string {
 	return value
 }
 
-// prepareCodexTurnStateInjection copies headers and WebSocket metadata only when
-// the account's configured model scope matches and no managed state owns it.
+// codexTurnStateInjectionDecision distinguishes an explicit empty managed
+// selection from the absence of a selection (where observed thread state may win).
+func codexTurnStateInjectionDecision(ctx context.Context) (string, bool) {
+	if ctx == nil {
+		return "", false
+	}
+	value, ok := ctx.Value(codexTurnStateInjectionKey{}).(string)
+	return value, ok
+}
+
+// prepareCodexTurnStateInjection chooses managed state before configured state.
+// The same selected value must reach both a new handshake and every WS frame.
 func prepareCodexTurnStateInjection(ctx context.Context, account *auth.Account, requestBody []byte, headers http.Header, websocket bool) (context.Context, []byte, http.Header) {
 	if account == nil {
 		return ctx, requestBody, headers
@@ -68,30 +78,29 @@ func prepareCodexTurnStateInjection(ctx context.Context, account *auth.Account, 
 	if ctx != nil && ctx.Value(statePoolBypassKey{}) == true {
 		return ctx, requestBody, headers
 	}
+	selected := false
+	injected := ""
 	if provider := ipv6StateProvider.Load(); provider != nil && provider.Applies != nil && provider.Applies(account, upstreamModel) {
-		return withCodexTurnStateInjection(ctx, headers.Get(codexTurnStateHeader)), requestBody, headers
+		injected, selected = headers.Get(codexTurnStateHeader), true
+	} else if provider := verifiedStateProvider.Load(); provider != nil && provider.claims != nil && provider.claims(account, upstreamModel, gjson.GetBytes(requestBody, "reasoning.effort").String(), headers.Get(codexTurnStateHeader)) {
+		injected, selected = headers.Get(codexTurnStateHeader), true
+	} else {
+		injected = account.CodexTurnStateInjection(codexClientModelFromContext(ctx), upstreamModel)
+		selected = injected != ""
 	}
-	// Resolve already checked the actual business proxy before injection.
-	if provider := verifiedStateProvider.Load(); provider != nil && provider.claims != nil {
-		state := headers.Get(codexTurnStateHeader)
-		if provider.claims(account, upstreamModel, gjson.GetBytes(requestBody, "reasoning.effort").String(), state) {
-			return withCodexTurnStateInjection(ctx, state), requestBody, headers
-		}
-	}
-	injected := account.CodexTurnStateInjection(codexClientModelFromContext(ctx), upstreamModel)
-	if injected == "" {
+	if !selected {
 		return ctx, requestBody, headers
 	}
 	ctx = withCodexTurnStateInjection(ctx, injected)
+	headers = headers.Clone()
 	if headers == nil {
 		headers = make(http.Header)
-	} else {
-		headers = headers.Clone()
 	}
-	headers.Set(codexTurnStateHeader, injected)
+	applyCodexTurnStateInjectionHeader(ctx, headers)
 	if websocket {
-		// Existing sockets require state in each response.create frame.
-		if updated, err := sjson.SetBytes(requestBody, "client_metadata."+codexTurnStateMetadataKey, injected); err == nil {
+		if injected == "" {
+			requestBody, _ = sjson.DeleteBytes(requestBody, "client_metadata."+codexTurnStateMetadataKey)
+		} else if updated, err := sjson.SetBytes(requestBody, "client_metadata."+codexTurnStateMetadataKey, injected); err == nil {
 			requestBody = updated
 		}
 	}
@@ -103,8 +112,12 @@ func applyCodexTurnStateInjectionHeader(ctx context.Context, headers http.Header
 	if headers == nil {
 		return
 	}
-	if value := CodexTurnStateInjectionFromContext(ctx); value != "" {
-		headers.Set(codexTurnStateHeader, value)
+	if value, selected := codexTurnStateInjectionDecision(ctx); selected {
+		if value == "" {
+			headers.Del(codexTurnStateHeader)
+		} else {
+			headers.Set(codexTurnStateHeader, value)
+		}
 	}
 }
 
@@ -180,7 +193,7 @@ func ObserveCodexTurnStateFrame(ctx context.Context, payload []byte) string {
 	state := codexTurnStateFromFrame(payload)
 	if state != "" {
 		noteUpstreamTurnState(ctx, state)
-		noteCodexThreadTurnStateFromAffinity(CodexTurnStateAffinityKeyFromContext(ctx), nil, state)
+		noteCodexThreadTurnStateFromContext(ctx, state)
 	}
 	if id := strings.TrimSpace(gjson.GetBytes(payload, "response.id").String()); id != "" {
 		typ := gjson.GetBytes(payload, "type").String()

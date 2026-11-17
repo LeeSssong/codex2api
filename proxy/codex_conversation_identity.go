@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -52,10 +54,25 @@ func codexIdentityStorePath() string {
 		}
 		return value
 	}
-	if dir := strings.TrimSpace(os.Getenv("DATA_DIR")); dir != "" {
-		return filepath.Join(dir, "codex-conversation-identity.json")
+	return filepath.Join(codexPersistentStateDir(), "codex-conversation-identity.json")
+}
+
+// Operation and OS/decoder error only: omit configured paths and stored values.
+func logCodexIdentityStoreError(operation string, err error) {
+	var pathErr *os.PathError
+	var linkErr *os.LinkError
+	if errors.As(err, &pathErr) {
+		err = pathErr.Err
+	} else if errors.As(err, &linkErr) {
+		err = linkErr.Err
 	}
-	return ""
+	// JSON decoder type errors may embed a stored numeric/string value.
+	var syntaxErr *json.SyntaxError
+	var typeErr *json.UnmarshalTypeError
+	if errors.As(err, &syntaxErr) || errors.As(err, &typeErr) {
+		err = errors.New("invalid stored JSON")
+	}
+	log.Printf("[CODEX-IDENTITY] store %s failed: %v", operation, err)
 }
 
 func (s *codexConversationIdentityState) loadLocked() {
@@ -70,11 +87,15 @@ func (s *codexConversationIdentityState) loadLocked() {
 		return
 	}
 	raw, err := os.ReadFile(path)
-	if err != nil || len(raw) == 0 {
+	if err != nil {
+		if !os.IsNotExist(err) {
+			logCodexIdentityStoreError("read", err)
+		}
 		return
 	}
 	var file codexConversationStampFile
-	if json.Unmarshal(raw, &file) != nil {
+	if err := json.Unmarshal(raw, &file); err != nil {
+		logCodexIdentityStoreError("decode", err)
 		return
 	}
 	if file.Stamps != nil {
@@ -92,16 +113,21 @@ func (s *codexConversationIdentityState) saveLocked() {
 	}
 	payload, err := json.Marshal(codexConversationStampFile{Stamps: s.stamps, Responses: s.responses})
 	if err != nil {
+		logCodexIdentityStoreError("encode", err)
 		return
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		logCodexIdentityStoreError("mkdir", err)
 		return
 	}
 	tmp := path + ".tmp"
-	if os.WriteFile(tmp, payload, 0o600) != nil {
+	if err := os.WriteFile(tmp, payload, 0o600); err != nil {
+		logCodexIdentityStoreError("write", err)
 		return
 	}
-	_ = os.Rename(tmp, path)
+	if err := os.Rename(tmp, path); err != nil {
+		logCodexIdentityStoreError("rename", err)
+	}
 }
 
 func conversationFirstSeenUnixMilli(seed string, persist bool) int64 {
@@ -155,38 +181,133 @@ func codexRawConversationSeed(headers http.Header) string {
 	return threadID
 }
 
-type codexConversationRecall struct {
-	accountID int64
-	seed      string
+// codexConversationOwner belongs to one outbound attempt, never to a mutable
+// affinity binding. A concurrent attempt may choose another account or thread.
+type codexConversationOwner struct {
+	accountID   int64
+	scope       string
+	sessionSeed string
+	threadSeed  string
+	threadID    string
+}
+type codexConversationOwnerKey struct{}
+
+func codexConversationOwnerFromContext(ctx context.Context) (codexConversationOwner, bool) {
+	if ctx == nil {
+		return codexConversationOwner{}, false
+	}
+	owner, ok := ctx.Value(codexConversationOwnerKey{}).(codexConversationOwner)
+	return owner, ok && owner.accountID > 0 && owner.threadID != ""
 }
 
-var codexConversationRecalls sync.Map // affinityKey -> codexConversationRecall
+func (owner codexConversationOwner) responseKey(id string) string {
+	return codexConversationResponseKey(owner.accountID, id) + "|scope:" + owner.scope
+}
 
-// bindCodexConversationRecall 记住这次出站用的原始种子，响应里的 response id 才能找回同一段对话。
-// 存收敛后的 UUID 会在下一轮被再哈希一次，续聊会漂到另一条线程。
-func bindCodexConversationRecall(affinityKey string, accountID int64, seed string) {
-	affinityKey = strings.TrimSpace(affinityKey)
-	seed = strings.TrimSpace(seed)
-	if affinityKey == "" || accountID <= 0 || seed == "" || strings.HasPrefix(seed, "oneshot:") {
-		return
-	}
-	codexConversationRecalls.Store(affinityKey, codexConversationRecall{accountID: accountID, seed: seed})
+type codexConversationSeeds struct {
+	Session string `json:"session"`
+	Thread  string `json:"thread"`
 }
 
 func noteCodexConversationResponseFromContext(ctx context.Context, responseID string) {
-	affinityKey := CodexTurnStateAffinityKeyFromContext(ctx)
-	if affinityKey == "" {
+	owner, ok := codexConversationOwnerFromContext(ctx)
+	if !ok || strings.TrimSpace(responseID) == "" {
 		return
 	}
-	raw, ok := codexConversationRecalls.Load(affinityKey)
-	if !ok {
+	raw, err := json.Marshal(codexConversationSeeds{owner.sessionSeed, owner.threadSeed})
+	if err != nil {
 		return
 	}
-	recall, ok := raw.(codexConversationRecall)
-	if !ok {
-		return
+	s := codexConversationIdentity
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.loadLocked()
+	key := owner.responseKey(strings.TrimSpace(responseID))
+	if s.responses[key] != string(raw) {
+		s.responses[key] = string(raw)
+		s.saveLocked()
 	}
-	rememberCodexConversationResponse(recall.accountID, responseID, recall.seed)
+}
+
+// prepareCodexConversationIdentity preserves the account's small upstream window
+// set, but namespaces thread/cache/transport identities by downstream API key.
+// All raw lineage references use that same namespace before fingerprinting.
+func prepareCodexConversationIdentity(ctx context.Context, account *auth.Account, headers http.Header, body []byte, apiKey string) (context.Context, http.Header, []byte) {
+	if account == nil || account.EffectiveCodexFingerprintMode() != auth.CodexFingerprintModeSingleMachineMultiWindow {
+		return ctx, headers, body
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	headers = PrepareCodexFingerprintHeaders(account, headers, body).Clone()
+	if headers == nil {
+		headers = make(http.Header)
+	}
+	scope := ""
+	if apiKey != "" {
+		scope = deriveStableCodexUUID("codex2api:conversation-scope:v1:" + apiKey)
+	}
+	owner := codexConversationOwner{accountID: account.ID(), scope: scope}
+	session, thread := explicitCodexSessionHeaders(headers)
+	recovered := false
+	if session == "" && thread == "" && clientPromptCacheKey(body) == "" {
+		if prev := strings.TrimSpace(gjson.GetBytes(body, "previous_response_id").String()); prev != "" {
+			s := codexConversationIdentity
+			s.mu.Lock()
+			s.loadLocked()
+			raw := s.responses[owner.responseKey(prev)]
+			s.mu.Unlock()
+			var seeds codexConversationSeeds
+			if json.Unmarshal([]byte(raw), &seeds) == nil && seeds.Session != "" && seeds.Thread != "" {
+				headers.Set(codexSessionIDHeader, seeds.Session)
+				headers.Set(codexThreadIDHeader, seeds.Thread)
+				recovered = true
+			}
+		}
+	}
+	headers = ensureSingleMachineConversationSeed(account, headers, body, false)
+	if scope != "" {
+		scoped := func(raw string) string {
+			if raw == "" {
+				return ""
+			}
+			return deriveStableCodexUUID("codex2api:conversation-seed:v1:" + scope + ":" + raw)
+		}
+		if !recovered {
+			session, thread = explicitCodexSessionHeaders(headers)
+			headers.Set(codexSessionIDHeader, scoped(session))
+			headers.Set(codexThreadIDHeader, scoped(thread))
+		}
+		for _, name := range []string{codexParentThreadIDHeader, codexClientRequestIDHeader} {
+			if value := headers.Get(name); value != "" {
+				headers.Set(name, scoped(value))
+			}
+		}
+		scopeMetadata := func(raw string) string {
+			for _, key := range codexLineageMetadataPaths {
+				if v := gjson.Get(raw, key); v.Type == gjson.String && v.String() != "" {
+					raw, _ = sjson.Set(raw, key, scoped(v.String()))
+				}
+			}
+			return raw
+		}
+		if raw := headers.Get(codexTurnMetadataHeader); gjson.Valid(raw) {
+			headers.Set(codexTurnMetadataHeader, scopeMetadata(raw))
+		}
+		body = bytes.Clone(body)
+		for _, key := range codexLineageMetadataPaths {
+			path := "client_metadata." + key
+			if v := gjson.GetBytes(body, path); v.Type == gjson.String && v.String() != "" {
+				body, _ = sjson.SetBytes(body, path, scoped(v.String()))
+			}
+		}
+		if v := gjson.GetBytes(body, "client_metadata.x-codex-turn-metadata"); v.Type == gjson.String && gjson.Valid(v.String()) {
+			body, _ = sjson.SetBytes(body, "client_metadata.x-codex-turn-metadata", scopeMetadata(v.String()))
+		}
+	}
+	owner.sessionSeed, owner.threadSeed = explicitCodexSessionHeaders(headers)
+	_, owner.threadID = ConvergedCodexSessionIdentity(account, headers)
+	return context.WithValue(ctx, codexConversationOwnerKey{}, owner), headers, body
 }
 
 func lookupCodexConversationResponse(accountID int64, responseID string) string {
@@ -202,14 +323,8 @@ func lookupCodexConversationResponse(accountID int64, responseID string) string 
 }
 
 func upstreamContentSeed(body []byte) string {
-	if strings.TrimSpace(gjson.GetBytes(body, "previous_response_id").String()) == "" {
-		return deriveContentSessionSeed(body)
-	}
-	stripped, err := sjson.DeleteBytes(append([]byte(nil), body...), "previous_response_id")
-	if err != nil {
-		return ""
-	}
-	return deriveContentSessionSeed(stripped)
+	// Incremental continuation input is not the opening of a new conversation.
+	return deriveContentSessionSeed(body)
 }
 
 func clientPromptCacheKey(body []byte) string {
@@ -217,9 +332,9 @@ func clientPromptCacheKey(body []byte) string {
 }
 
 // ensureSingleMachineConversationSeed 给这次请求钉上一段对话种子。
-// 顺序：显式 session/thread，客户端自己的 prompt_cache_key，内容种子，
-// previous_response_id 找回，否则并入该账号的常驻窗口。无状态连接 ID 和网关隔离 UUID 不在这里。
-func ensureSingleMachineConversationSeed(account *auth.Account, headers http.Header, body []byte) http.Header {
+// 顺序：显式 session/thread，客户端自己的 prompt_cache_key，previous_response_id
+// 找回，内容种子，否则并入该账号的常驻窗口。出站路径在调用前完成 API Key 隔离的续链找回。
+func ensureSingleMachineConversationSeed(account *auth.Account, headers http.Header, body []byte, legacyRecall ...bool) http.Header {
 	if account == nil || account.EffectiveCodexFingerprintMode() != auth.CodexFingerprintModeSingleMachineMultiWindow {
 		return headers
 	}
@@ -242,17 +357,17 @@ func ensureSingleMachineConversationSeed(account *auth.Account, headers http.Hea
 		out.Set(codexThreadIDHeader, key)
 		return out
 	}
-	if seed := upstreamContentSeed(body); seed != "" {
-		out.Set(codexSessionIDHeader, seed)
-		out.Set(codexThreadIDHeader, seed)
-		return out
-	}
-	if prev := strings.TrimSpace(gjson.GetBytes(body, "previous_response_id").String()); prev != "" {
+	if prev := strings.TrimSpace(gjson.GetBytes(body, "previous_response_id").String()); prev != "" && (len(legacyRecall) == 0 || legacyRecall[0]) {
 		if recovered := lookupCodexConversationResponse(account.ID(), prev); recovered != "" {
 			out.Set(codexSessionIDHeader, recovered)
 			out.Set(codexThreadIDHeader, recovered)
 			return out
 		}
+	}
+	if seed := upstreamContentSeed(body); seed != "" {
+		out.Set(codexSessionIDHeader, seed)
+		out.Set(codexThreadIDHeader, seed)
+		return out
 	}
 	standing := fmt.Sprintf("window:%d", account.ID()%singleMachineOutboundWindows)
 	out.Set(codexSessionIDHeader, standing)
@@ -282,21 +397,24 @@ func AttachCodexMaintenanceThread(account *auth.Account, headers http.Header) ht
 
 type codexResponseRecallBody struct {
 	io.ReadCloser
-	accountID int64
-	seed      string
-	buf       []byte
-	done      bool
+	ctx  context.Context
+	buf  []byte
+	done bool
 }
 
-func watchCodexConversationResponse(resp *http.Response, account *auth.Account, headers http.Header) {
-	if resp == nil || resp.Body == nil || account == nil || account.EffectiveCodexFingerprintMode() != auth.CodexFingerprintModeSingleMachineMultiWindow {
+func watchCodexConversationResponse(ctx context.Context, resp *http.Response) {
+	if resp == nil || resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return
 	}
-	seed := codexRawConversationSeed(headers)
-	if seed == "" || strings.HasPrefix(seed, "oneshot:") {
+	if _, ok := codexConversationOwnerFromContext(ctx); !ok {
 		return
 	}
-	resp.Body = &codexResponseRecallBody{ReadCloser: resp.Body, accountID: account.ID(), seed: seed}
+	// HTTP response headers belong to this attempt even when a retry heartbeat has
+	// already committed downstream headers. Never recover ownership via affinity.
+	noteCodexThreadTurnStateFromContext(ctx, resp.Header.Get(codexTurnStateHeader))
+	if resp.Body != nil {
+		resp.Body = &codexResponseRecallBody{ReadCloser: resp.Body, ctx: ctx}
+	}
 }
 
 func (b *codexResponseRecallBody) Read(p []byte) (int, error) {
@@ -319,7 +437,7 @@ func (b *codexResponseRecallBody) scan() {
 		return
 	}
 	if id := responseIDFromRecallBuffer(b.buf); id != "" {
-		rememberCodexConversationResponse(b.accountID, id, b.seed)
+		noteCodexConversationResponseFromContext(b.ctx, id)
 		b.done = true
 	}
 }

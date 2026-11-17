@@ -49,7 +49,10 @@ func (h *Handler) intelligenceTick(ctx context.Context) error {
 	if _, err := h.db.ExpireIntelligenceCheckLeases(opCtx, time.Now()); err != nil {
 		return err
 	}
-	if _, err := h.db.EnqueueDueIntelligenceChecks(opCtx, time.Now(), 100); err != nil {
+	hold := func(id int64, model string) (time.Time, bool) {
+		return h.intelligenceQuotaHold(h.store.FindByID(id), model)
+	}
+	if _, err := h.db.EnqueueDueIntelligenceChecks(opCtx, time.Now(), 100, hold); err != nil {
 		return err
 	}
 	for i := 0; i < 100 && ctx.Err() == nil; i++ {
@@ -58,7 +61,7 @@ func (h *Handler) intelligenceTick(ctx context.Context) error {
 			return err
 		}
 		owner := hex.EncodeToString(token[:])
-		run, err := h.db.ClaimIntelligenceCheck(opCtx, owner, time.Now(), 30*time.Second)
+		run, err := h.db.ClaimIntelligenceCheck(opCtx, owner, time.Now(), 30*time.Second, true)
 		if err != nil {
 			return err
 		}
@@ -67,33 +70,46 @@ func (h *Handler) intelligenceTick(ctx context.Context) error {
 		}
 		account := h.store.FindByID(run.AccountID)
 		if account != nil && account.AdministrativelyDisabled() {
-			if err := h.db.RequeueIntelligenceCheck(opCtx, run.ID, owner, time.Now().Add(time.Hour)); err != nil {
-				return err
-			}
-			continue
-		}
-		if account != nil && ((run.Source == "automatic" && !account.AutomaticIntelligenceCheckAvailable(time.Now())) || !h.store.TryAcquireIntelligenceCheck(account)) {
 			if err := h.db.RequeueIntelligenceCheck(opCtx, run.ID, owner, time.Now()); err != nil {
 				return err
 			}
 			continue
 		}
+		if account != nil && !h.store.TryAcquireIntelligenceCheck(account) {
+			if err := h.db.RequeueIntelligenceCheck(opCtx, run.ID, owner, time.Now()); err != nil {
+				return err
+			}
+			continue
+		}
+		_, knownQuotaHold := h.intelligenceQuotaHold(account, run.Model)
 		h.intelligenceWG.Add(1)
 		go func(run database.IntelligenceCheckRun) {
 			defer h.intelligenceWG.Done()
 			if account != nil {
 				defer h.store.Release(account)
 			}
-			h.runIntelligenceCheck(ctx, run, account)
+			h.runIntelligenceCheck(ctx, run, account, knownQuotaHold)
 		}(*run)
 	}
 	return nil
 }
-func (h *Handler) runIntelligenceCheck(parent context.Context, run database.IntelligenceCheckRun, account *auth.Account) {
+
+// intelligenceQuotaHold reports whether a detector request to account would
+// only be rejected for rate-limit or quota reasons, and when that should end.
+func (h *Handler) intelligenceQuotaHold(account *auth.Account, model string) (time.Time, bool) {
+	return account.IntelligenceCheckQuotaHold(model, proxy.DispatchPolicyForModel(model), time.Now())
+}
+
+func (h *Handler) runIntelligenceCheck(parent context.Context, run database.IntelligenceCheckRun, account *auth.Account, knownQuotaHold ...bool) {
 	// Recheck immediately before execution: quota/cooldown can change after
 	// the durable claim or before its asynchronous persistence. Requeue rather
 	// than grading this pause as a failed/interrupted quality observation.
-	if run.Source == "automatic" && account != nil && !account.AutomaticIntelligenceCheckAvailable(time.Now()) {
+	wasAvailable := account == nil || account.AutomaticIntelligenceCheckAvailable(time.Now())
+	_, wasHeld := h.intelligenceQuotaHold(account, run.Model)
+	// Only holds observed at scheduler handoff may complete neutrally. A new
+	// runtime cooldown after claim must release the lease for later execution.
+	heldAtHandoff := len(knownQuotaHold) > 0 && knownQuotaHold[0]
+	if run.Source == "automatic" && !wasAvailable && !(heldAtHandoff && wasHeld) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := h.db.RequeueIntelligenceCheck(ctx, run.ID, run.LeaseOwner, time.Now()); err != nil {
@@ -102,6 +118,16 @@ func (h *Handler) runIntelligenceCheck(parent context.Context, run database.Inte
 		return
 	}
 	ctx, cancel := context.WithTimeout(parent, time.Duration(run.Settings.TimeoutSeconds)*time.Second)
+	if run.Source == "automatic" && wasAvailable && account != nil && !account.AutomaticIntelligenceCheckAvailable(time.Now()) {
+		cancel()
+		requeueCtx, requeueCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer requeueCancel()
+		if err := h.db.RequeueIntelligenceCheck(requeueCtx, run.ID, run.LeaseOwner, time.Now()); err != nil {
+			log.Printf("intelligence preparation requeue failed: %v", err)
+		}
+		return
+	}
+
 	if run.Source == "automatic" {
 		ctx = proxy.WithAutomaticIntelligenceCheck(ctx)
 	}
@@ -112,8 +138,23 @@ func (h *Handler) runIntelligenceCheck(parent context.Context, run database.Inte
 			result.Interrupted = true
 		}
 	}
+	// A rate-limited or exhausted account says nothing about model quality, so
+	// neither outcome below is graded. An automatic check that was queued before
+	// the limit was known is not sent; an explicit manual check still is.
+	if result.Error == "" && run.Source == "automatic" {
+		if _, held := h.intelligenceQuotaHold(account, run.Model); held {
+			result.Error = "账号限流或额度耗尽，已跳过本次自动检测"
+			result.Interrupted = true
+		}
+	}
 	if result.Error == "" {
 		result = h.executeIntelligenceCheck(ctx, account, run.Model, run.ReasoningEffort, run.Question.Prompt)
+		if result.Error != "" && !result.Interrupted && !result.CredentialRejected {
+			if _, held := h.intelligenceQuotaHold(account, run.Model); held {
+				result.Error = "账号限流或额度耗尽，本次检测不计入结果：" + result.Error
+				result.Interrupted = true
+			}
+		}
 	}
 	cancel()
 	if result.Deferred {
@@ -124,7 +165,7 @@ func (h *Handler) runIntelligenceCheck(parent context.Context, run database.Inte
 		}
 		return
 	}
-	observation := ic.Observation{Interrupted: result.Interrupted, Output: result.Output, Error: result.Error, Complete: result.Complete, DurationMS: result.DurationMS, InputTokens: int64(result.InputTokens), OutputTokens: int64(result.OutputTokens), ReasoningTokens: int64(result.ReasoningTokens), ResponseModel: result.ResponseModel, EffectiveContext: result.EffectiveContext}
+	observation := ic.Observation{CredentialRejected: result.CredentialRejected, Interrupted: result.Interrupted, Output: result.Output, Error: result.Error, Complete: result.Complete, DurationMS: result.DurationMS, InputTokens: int64(result.InputTokens), OutputTokens: int64(result.OutputTokens), ReasoningTokens: int64(result.ReasoningTokens), ResponseModel: result.ResponseModel, EffectiveContext: result.EffectiveContext}
 	if parent.Err() != nil {
 		observation.Interrupted = true
 		observation.Error = "服务关闭，检测已中断"

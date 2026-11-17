@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -117,7 +118,20 @@ func TestSingleMachineHTTPAndWebsocketShareIdentityHeaders(t *testing.T) {
 	}
 	resp.Body.Close()
 
-	wsHeaders := NewExecutor().prepareWebsocketHeaders(context.Background(), "fixture-token", account, account.AccountID, "conversation-a", "fixture-key", nil, http.Header{}, body, "")
+	// Compare the complete native paths: API-key scoping happens before the
+	// low-level WS handshake helper receives its prepared headers and body.
+	var wsHeaders http.Header
+	previousExecute := proxy.WebsocketExecuteFunc
+	t.Cleanup(func() { proxy.WebsocketExecuteFunc = previousExecute })
+	proxy.WebsocketExecuteFunc = func(ctx context.Context, a *auth.Account, b []byte, session, upstreamProxy, key string, device *proxy.DeviceProfileConfig, headers http.Header, pool string) (*http.Response, error) {
+		wsHeaders = NewExecutor().prepareWebsocketHeaders(ctx, "fixture-token", a, a.AccountID, session, key, device, headers, b, "")
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{}`))}, nil
+	}
+	wsResponse, err := proxy.ExecuteRequest(context.Background(), account, body, "", "", "fixture-key", nil, http.Header{}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wsResponse.Body.Close()
 	for _, name := range []string{"User-Agent", "Originator", "Version", "Session-Id", "Thread-Id"} {
 		if httpHeaders.Get(name) == "" || httpHeaders.Get(name) != wsHeaders.Get(name) {
 			t.Fatalf("%s http=%q ws=%q", name, httpHeaders.Get(name), wsHeaders.Get(name))

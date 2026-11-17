@@ -1,8 +1,10 @@
 package proxy
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -64,7 +66,7 @@ func codexTerminalAllowed(kind CodexClientKind, osName, terminal string) bool {
 		case CodexClientKindDesktop:
 			return terminal == "codex desktop"
 		default:
-			return terminal == "windowsterminal" || terminal == "unknown" || terminal == "dumb" || strings.HasPrefix(terminal, "vscode/")
+			return terminal == "windowsterminal" || terminal == "xterm-256color" || terminal == "dumb" || strings.HasPrefix(terminal, "vscode/")
 		}
 	case strings.Contains(osName, "mac"):
 		return !windowsTerminal && !linuxDesktop
@@ -113,33 +115,27 @@ func codexPersonaVersionPairs(spec *codexUAKindSpec, platform codexUAPlatform, v
 	if spec == nil {
 		return nil
 	}
-	if spec.AppFollowsCLI || len(spec.VersionPairs) == 0 {
-		cli, app := resolveCodexCurrentVersions(spec, codexVersionSelection{OSName: platform.OSName, VersionFloor: versionFloor})
-		if cli == "" {
+	if spec.AppFollowsCLI {
+		cli, app, err := resolveCodexCurrentVersions(spec, codexVersionSelection{OSName: platform.OSName, Arch: platform.Arch, VersionFloor: versionFloor})
+		if err != nil {
 			return nil
 		}
 		return []codexUAVersionPair{{CLIVersion: cli, AppVersion: app}}
 	}
-	var pairs []codexUAVersionPair
-	for _, pair := range spec.VersionPairs {
-		if versionFloor != "" && !codexVersionAtLeast(pair.CLIVersion, versionFloor) {
-			continue
-		}
-		cli, app := resolveCodexCurrentVersions(spec, codexVersionSelection{
-			OSName: platform.OSName, Fallback: pair, VersionFloor: versionFloor,
-		})
-		if cli == "" {
-			continue
-		}
-		pairs = append(pairs, codexUAVersionPair{CLIVersion: cli, AppVersion: firstNonEmptyString(app, pair.AppVersion)})
+	pairs := make([]codexUAVersionPair, 0)
+	for _, pair := range codexClientVersionTarget(string(spec.Kind), codexTargetPlatform(platform.OSName, platform.Arch)).Pairs {
+		pairs = append(pairs, codexUAVersionPair{CLIVersion: pair.CLIVersion, AppVersion: pair.AppVersion})
 	}
 	if len(pairs) == 0 {
-		cli, app := resolveCodexCurrentVersions(spec, codexVersionSelection{OSName: platform.OSName, VersionFloor: versionFloor})
-		if cli != "" {
-			pairs = append(pairs, codexUAVersionPair{CLIVersion: cli, AppVersion: app})
+		pairs = append(pairs, spec.VersionPairs...)
+	}
+	out := pairs[:0]
+	for _, pair := range pairs {
+		if codexVersionAtLeast(pair.CLIVersion, versionFloor) {
+			out = append(out, pair)
 		}
 	}
-	return pairs
+	return out
 }
 
 func codexPersonaAppNames(spec *codexUAKindSpec) []string {
@@ -171,13 +167,24 @@ func codexLegalPersonaTuples(cfg CodexUserAgentConfig, versionFloor string) []co
 			continue
 		}
 		for _, platform := range codexPersonaPlatforms(spec) {
+			pairs := codexPersonaVersionPairs(spec, platform, versionFloor)
+			if cfg.ClientVersion != "" || cfg.AppVersion != "" {
+				cli, app, err := resolveCodexCurrentVersions(spec, codexVersionSelection{OSName: platform.OSName, Arch: platform.Arch, CLIOverride: cfg.ClientVersion, AppOverride: cfg.AppVersion, VersionFloor: versionFloor})
+				if err != nil {
+					continue
+				}
+				pairs = []codexUAVersionPair{{CLIVersion: cli, AppVersion: app}}
+			}
 			for _, terminal := range codexPersonaTerminals(spec) {
 				if !codexTerminalAllowed(spec.Kind, platform.OSName, terminal) {
 					continue
 				}
 				for _, appName := range codexPersonaAppNames(spec) {
-					for _, pair := range codexPersonaVersionPairs(spec, platform, versionFloor) {
-						appVersion := pair.AppVersion
+					for _, pair := range pairs {
+						if cfg.ClientVersion != "" {
+							pair.CLIVersion = cfg.ClientVersion
+						}
+						appVersion := firstNonEmptyString(cfg.AppVersion, pair.AppVersion)
 						if spec.AppFollowsCLI {
 							appName = spec.ClientName
 							appVersion = pair.CLIVersion
@@ -203,7 +210,7 @@ func codexPersonaMixKey(cfg CodexUserAgentConfig, versionFloor string) string {
 	for _, item := range mix {
 		parts = append(parts, fmt.Sprintf("%s=%d", item.Value, item.Weight))
 	}
-	parts = append(parts, "floor="+strings.TrimSpace(versionFloor))
+	parts = append(parts, "floor="+strings.TrimSpace(versionFloor), "cli="+cfg.ClientVersion, "app="+cfg.AppVersion)
 	return strings.Join(parts, ",")
 }
 
@@ -214,14 +221,15 @@ func codexPersonaStorePath() string {
 		}
 		return value
 	}
-	if dir := strings.TrimSpace(os.Getenv("DATA_DIR")); dir != "" {
-		return filepath.Join(dir, "codex-persona-slots.json")
-	}
-	return ""
+	return filepath.Join(codexPersistentStateDir(), "codex-persona-slots.json")
 }
 
 func codexPersonaCatalogFingerprint(tuples []codexPersonaTuple) string {
-	return fmt.Sprintf("%d:%s", len(tuples), deriveStableCodexUUID(fmt.Sprintf("codex-persona-catalog:%d:%s", len(tuples), firstPersonaUA(tuples))))
+	var content strings.Builder
+	for _, tuple := range tuples {
+		fmt.Fprintf(&content, "%s|%s|%s\n", tuple.Kind, tuple.UserAgent, tuple.Version)
+	}
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(content.String())))
 }
 
 func firstPersonaUA(tuples []codexPersonaTuple) string {
@@ -243,10 +251,17 @@ func (s *codexPersonaSlotState) loadLocked(catalog string) {
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil || len(raw) == 0 {
+		if err != nil && !os.IsNotExist(err) {
+			log.Printf("Codex persona store read failed: %v", err)
+		}
 		return
 	}
 	var file codexPersonaStoreFile
-	if json.Unmarshal(raw, &file) != nil || file.Mixes == nil {
+	if err := json.Unmarshal(raw, &file); err != nil {
+		log.Printf("Codex persona store decode failed: %v", err)
+		return
+	}
+	if file.Mixes == nil {
 		return
 	}
 	// 目录指纹变了也保留已记下的 UA。槽位下标随目录失效，机器身份不失效。
@@ -269,14 +284,18 @@ func (s *codexPersonaSlotState) saveLocked(catalog string) {
 	if err != nil {
 		return
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		log.Printf("Codex persona store mkdir failed: %v", err)
 		return
 	}
 	tmp := path + ".tmp"
-	if os.WriteFile(tmp, payload, 0o600) != nil {
+	if err := os.WriteFile(tmp, payload, 0o600); err != nil {
+		log.Printf("Codex persona store write failed: %v", err)
 		return
 	}
-	_ = os.Rename(tmp, path)
+	if err := os.Rename(tmp, path); err != nil {
+		log.Printf("Codex persona store rename failed: %v", err)
+	}
 }
 
 // codexPersonaKeptFields 是换目录时必须保住的机器身份。版本可以抬升，
@@ -386,11 +405,22 @@ func assignCodexPersonaSlot(mixKey, catalog string, accountID int64, n int, tupl
 		slots = &codexPersonaMixSlots{ByAccount: map[int64]int{}}
 		codexPersonaSlots.byMix[mixKey] = slots
 	}
-	if idx, ok := slots.ByAccount[accountID]; ok && idx >= 0 && idx < n {
+	if ua, _, repaired := repairEstablishedCodexPersona(accountID, tuples); repaired {
+		for idx, tuple := range tuples {
+			if tuple.UserAgent == ua {
+				if personaSlotTaken(slots, accountID, n, idx, tuples) {
+					return 0, false
+				}
+				codexPersonaRemember(slots, accountID, idx, ua, catalog)
+				return idx, true
+			}
+		}
+	}
+	if idx, ok := slots.ByAccount[accountID]; ok && idx >= 0 && idx < n && (slots.ByUA[accountID] == "" || slots.ByUA[accountID] == tuples[idx].UserAgent) && !codexPersonaReservedForOther(accountID, tuples[idx].UserAgent, tuples) && !personaSlotTaken(slots, accountID, n, idx, tuples) {
 		if idx < len(tuples) {
 			// 终端从 unknown 收成应用名时，旧下标仍指向旧元组。先按记住的 UA
 			// 换到同一台机器的新终端，避免只改终端却把整台机器重新抽签。
-			if remembered := codexPersonaPreferredTuple(slots.ByUA[accountID], tuples, n); remembered >= 0 && remembered != idx && !personaSlotTaken(slots, accountID, n, remembered) {
+			if remembered := codexPersonaPreferredTuple(slots.ByUA[accountID], tuples, n); remembered >= 0 && remembered != idx && !personaSlotTaken(slots, accountID, n, remembered, tuples) {
 				codexPersonaRemember(slots, accountID, remembered, tuples[remembered].UserAgent, catalog)
 				return remembered, true
 			}
@@ -402,10 +432,16 @@ func assignCodexPersonaSlot(mixKey, catalog string, accountID int64, n int, tupl
 	// 被重抽成另一套系统。找不到才占用一个新槽位。
 	if previous := slots.ByUA[accountID]; previous != "" {
 		for i, tuple := range tuples {
+			if i < n && tuple.UserAgent == previous && !personaSlotTaken(slots, accountID, n, i, tuples) && !codexPersonaReservedForOther(accountID, tuple.UserAgent, tuples) {
+				codexPersonaRemember(slots, accountID, i, tuple.UserAgent, catalog)
+				return i, true
+			}
+		}
+		for i, tuple := range tuples {
 			if i >= n || !codexPersonaSameMachine(previous, tuple.UserAgent) {
 				continue
 			}
-			if personaSlotTaken(slots, accountID, n, i) {
+			if personaSlotTaken(slots, accountID, n, i, tuples) || codexPersonaReservedForOther(accountID, tuple.UserAgent, tuples) {
 				continue
 			}
 			codexPersonaRemember(slots, accountID, i, tuple.UserAgent, catalog)
@@ -413,16 +449,15 @@ func assignCodexPersonaSlot(mixKey, catalog string, accountID int64, n int, tupl
 		}
 	}
 	used := map[int]struct{}{}
-	for id, idx := range slots.ByAccount {
-		if id == accountID || idx < 0 || idx >= n {
-			continue
+	for idx := range tuples {
+		if idx < n && personaSlotTaken(slots, accountID, n, idx, tuples) {
+			used[idx] = struct{}{}
 		}
-		used[idx] = struct{}{}
 	}
 	start := int(codexUAHash(fmt.Sprintf("persona-slot:%s:%d", mixKey, accountID)) % uint32(n))
 	for step := 0; step < n; step++ {
 		idx := (start + step) % n
-		if _, taken := used[idx]; taken {
+		if _, taken := used[idx]; taken || codexPersonaReservedForOther(accountID, tuples[idx].UserAgent, tuples) {
 			continue
 		}
 		userAgent := ""
@@ -489,10 +524,34 @@ func repairEstablishedCodexPersona(accountID int64, tuples []codexPersonaTuple) 
 	return "", "", false
 }
 
-func personaSlotTaken(slots *codexPersonaMixSlots, accountID int64, n, idx int) bool {
+func personaSlotTaken(slots *codexPersonaMixSlots, accountID int64, n, idx int, tuples []codexPersonaTuple) bool {
 	for id, taken := range slots.ByAccount {
-		if id != accountID && taken == idx && taken >= 0 && taken < n {
+		if id == accountID {
+			continue
+		}
+		if ua := slots.ByUA[id]; ua != "" {
+			if idx < len(tuples) && tuples[idx].UserAgent == ua {
+				return true
+			}
+		} else if taken == idx && taken >= 0 && taken < n {
 			return true
+		}
+	}
+	// Persisted UAs survive catalog changes even when their indices are invalidated.
+	for id, ua := range slots.ByUA {
+		if id != accountID && idx < len(tuples) && tuples[idx].UserAgent == ua {
+			return true
+		}
+	}
+	return false
+}
+
+func codexPersonaReservedForOther(accountID int64, userAgent string, tuples []codexPersonaTuple) bool {
+	for id := range establishedCodexPersonaRepairs {
+		if id != accountID {
+			if ua, _, ok := repairEstablishedCodexPersona(id, tuples); ok && ua == userAgent {
+				return true
+			}
 		}
 	}
 	return false

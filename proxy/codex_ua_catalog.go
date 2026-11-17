@@ -366,6 +366,60 @@ func codexPoolPersona(cfg CodexUserAgentConfig, accountID int64, versionFloor st
 	if err != nil {
 		return "", "", false, err
 	}
+	if accountID > 0 {
+		tupleConfig := cfg
+		if reported, known := codexReportedClientKind(accountID); known {
+			tupleConfig.PoolMix = map[string]int{string(reported): 100}
+		}
+		tuples := codexLegalPersonaTuples(tupleConfig, versionFloor)
+		if ua, version, repaired := repairEstablishedCodexPersona(accountID, tuples); repaired && cfg.ClientVersion == "" && cfg.AppVersion == "" && codexVersionAtLeast(version, versionFloor) {
+			kind := string(spec.Kind)
+			for _, tuple := range tuples {
+				if tuple.UserAgent == ua {
+					kind = tuple.Kind
+					break
+				}
+			}
+			if fields, found := establishedCodexPersonaRepairs[accountID]; found {
+				for _, entry := range codexUACatalog {
+					if entry.ClientName == fields.Kind {
+						kind = string(entry.Kind)
+						break
+					}
+				}
+			}
+			repairTuples := codexPersonaTuplesOfKind(tuples, kind)
+			found := false
+			for _, tuple := range repairTuples {
+				if tuple.UserAgent == ua {
+					found = true
+				}
+			}
+			if !found {
+				repairTuples = append(repairTuples, codexPersonaTuple{Kind: kind, UserAgent: ua, Version: version})
+			}
+			idx, assigned := assignCodexPersonaSlot(codexPersonaMixKey(cfg, versionFloor)+"|kind="+kind, codexPersonaCatalogFingerprint(repairTuples), accountID, len(repairTuples), repairTuples)
+			if assigned {
+				return repairTuples[idx].UserAgent, repairTuples[idx].Version, true, nil
+			}
+		}
+		order := codexPersonaKindOrder(mix, accountID)
+		if reported, ok := codexReportedClientKind(accountID); ok {
+			order = []string{string(reported)}
+		}
+		catalog := codexPersonaCatalogFingerprint(tuples)
+		for _, kind := range order {
+			subset := codexPersonaTuplesOfKind(tuples, kind)
+			if len(subset) == 0 {
+				continue
+			}
+			idx, assigned := assignCodexPersonaSlot(codexPersonaMixKey(cfg, versionFloor)+"|kind="+kind, catalog, accountID, len(subset), subset)
+			if assigned {
+				return subset[idx].UserAgent, subset[idx].Version, true, nil
+			}
+		}
+		return "", "", false, codexClientVersionUnavailable("pool", "persona slots", versionFloor)
+	}
 	return formatCodexUserAgentWithApp(spec.ClientName, cliVersion, platform.OSName, platform.OSVersion, platform.Arch, terminal, appName, appVersion), cliVersion, true, nil
 }
 
@@ -387,4 +441,52 @@ func codexPoolTerminal(spec *codexUAKindSpec, seed string) string {
 		return spec.DefaultTerminal
 	}
 	return defaultCodexUserAgentTerminal
+}
+
+// codexPersonaKindOrder 把配比命中的形态放在前面，其余形态按配比顺序接在后面。
+func codexPersonaKindOrder(mix []codexUAWeighted, accountID int64) []string {
+	if len(mix) == 0 {
+		return nil
+	}
+	total := 0
+	for _, item := range mix {
+		if item.Weight > 0 {
+			total += item.Weight
+		}
+	}
+	preferred := ""
+	if total > 0 {
+		r := int(codexUAHash(fmt.Sprintf("persona-kind:%d", accountID)) % uint32(total))
+		for _, item := range mix {
+			if item.Weight <= 0 {
+				continue
+			}
+			if r < item.Weight {
+				preferred = item.Value
+				break
+			}
+			r -= item.Weight
+		}
+	}
+	order := make([]string, 0, len(mix))
+	if preferred != "" {
+		order = append(order, preferred)
+	}
+	for _, item := range mix {
+		if item.Weight <= 0 || item.Value == preferred {
+			continue
+		}
+		order = append(order, item.Value)
+	}
+	return order
+}
+
+func codexPersonaTuplesOfKind(tuples []codexPersonaTuple, kind string) []codexPersonaTuple {
+	out := make([]codexPersonaTuple, 0)
+	for _, tuple := range tuples {
+		if tuple.Kind == kind {
+			out = append(out, tuple)
+		}
+	}
+	return out
 }

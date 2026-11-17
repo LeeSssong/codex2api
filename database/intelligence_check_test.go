@@ -333,6 +333,8 @@ func TestIntelligenceCheckSchedulerMetadataManualOverride(t *testing.T) {
 		t.Fatal("manual scheduler groups edit released owned pause")
 	}
 }
+
+// TestIntelligenceCheckDueFiltersBarsAndDisabledPause verifies due selection and disabled-account presentation.
 func TestIntelligenceCheckDueFiltersBarsAndDisabledPause(t *testing.T) {
 	db := intelligenceDB(t)
 	ctx := context.Background()
@@ -343,8 +345,9 @@ func TestIntelligenceCheckDueFiltersBarsAndDisabledPause(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	if _, e = db.EnqueueIntelligenceChecks(ctx, []int64{grok}, now); !errors.Is(e, ErrIntelligenceCheckUnsupportedAccount) {
-		t.Fatal(e)
+	var grokEnabled bool
+	if e = db.conn.QueryRowContext(ctx, "SELECT enabled FROM intelligence_check_accounts WHERE account_id=$1", grok).Scan(&grokEnabled); e != nil || grokEnabled {
+		t.Fatalf("Grok should remain opted out by default: %v %v", grokEnabled, e)
 	}
 	if n, e := db.EnqueueDueIntelligenceChecks(ctx, now, 5); e != nil || n != 0 {
 		t.Fatal(n, e)
@@ -389,6 +392,7 @@ func TestIntelligenceCheckDueFiltersBarsAndDisabledPause(t *testing.T) {
 	}
 }
 
+// TestIntelligenceCheckPostgres runs detector lifecycle regressions against isolated PostgreSQL schemas.
 func TestIntelligenceCheckPostgres(t *testing.T) {
 	if os.Getenv("CODEX2API_TEST_POSTGRES_DSN") == "" {
 		t.Skip("requires isolated CODEX2API_TEST_POSTGRES_DSN")

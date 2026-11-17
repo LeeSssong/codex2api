@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -94,11 +95,20 @@ func RefreshAccessTokenForClient(ctx context.Context, refreshToken, proxyURL, cl
 	if clientID != ClientID && clientID != ExcelClientID {
 		return nil, nil, errors.New("unsupported OpenAI OAuth client")
 	}
-	data := url.Values{
-		"grant_type":    {"refresh_token"},
-		"client_id":     {clientID},
-		"refresh_token": {refreshToken},
-		"scope":         {RefreshScopes},
+	data, err := json.Marshal(map[string]string{
+		"grant_type":     "refresh_token",
+		"client_id":      clientID,
+		"refresh_token":  refreshToken,
+		"refresh_reason": codexOAuthRefreshReason(ctx),
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("编码刷新请求失败: %w", err)
+	}
+
+	contentType := "application/json"
+	if clientID == ExcelClientID {
+		data = []byte(url.Values{"grant_type": {"refresh_token"}, "client_id": {clientID}, "refresh_token": {refreshToken}, "scope": {RefreshScopes}}.Encode())
+		contentType = "application/x-www-form-urlencoded"
 	}
 
 	// Resin 反代模式：改写 URL
@@ -117,12 +127,13 @@ func RefreshAccessTokenForClient(ctx context.Context, refreshToken, proxyURL, cl
 		targetURL = ResinRequestDecorator(TokenURL, accountID)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, strings.NewReader(data.Encode()))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(data))
 	if err != nil {
 		return nil, nil, fmt.Errorf("创建请求失败: %w", err)
 	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Content-Type", contentType)
 	req.Header.Set("Accept", "application/json")
+	applyCodexOAuthIdentity(req)
 
 	// Resin 反代：注入账号身份头
 	if useResin {
@@ -134,7 +145,7 @@ func RefreshAccessTokenForClient(ctx context.Context, refreshToken, proxyURL, cl
 	if useResin {
 		client = &http.Client{Timeout: 30 * time.Second}
 	} else {
-		client = buildHTTPClient(proxyURL)
+		client = buildUTLSHTTPClient(proxyURL)
 	}
 	if CodexHTTPClientDecorator != nil {
 		if id, parseErr := strconv.ParseInt(accountID, 10, 64); parseErr == nil && id > 0 {

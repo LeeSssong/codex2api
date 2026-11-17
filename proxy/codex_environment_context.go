@@ -145,7 +145,10 @@ func injectCodexSingleMachineEnvironmentContext(body []byte, account *auth.Accou
 	if loc == nil || len(body) == 0 || bodyHasEnvironmentContext(body) {
 		return body
 	}
-	ua, _ := generatedCodexClientHeaders(account, CurrentRuntimeSettings())
+	ua, _, err := generatedCodexClientHeadersChecked(account, CurrentRuntimeSettings())
+	if err != nil {
+		return body
+	}
 	if !codexOriginatorWantsEnvironmentContext(CodexOriginatorForGeneratedUserAgent(ua)) {
 		return body
 	}

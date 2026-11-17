@@ -27,6 +27,9 @@ func TestExchangeOAuthCodeSeedsAccessTokenFromExchangeResponse(t *testing.T) {
 	handler := &Handler{db: db, store: store}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if "codex-cli/0.91.0" == r.Header.Get("User-Agent") {
+			t.Error("token exchange still sends the obsolete hard-coded User-Agent")
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{
 			"access_token": "access-from-exchange",
@@ -671,15 +674,21 @@ func TestUpdateOAuthAccountCodeUpdatesExistingAccountInPlace(t *testing.T) {
 
 	// The explicit account proxy now carries the exchange itself. Stub that
 	// client's transport instead of using Resin to bypass the selected proxy.
-	exchangeClient := auth.BuildHTTPClient("http://new-proxy.example")
-	oldTransport := exchangeClient.Transport
+	exchangeClient := &http.Client{}
+	previousBuilder := oauthCodeExchangeHTTPClient
+	oauthCodeExchangeHTTPClient = func(selectedProxy string) *http.Client {
+		if selectedProxy != "http://new-proxy.example" {
+			t.Errorf("selected OAuth proxy = %q", selectedProxy)
+		}
+		return exchangeClient
+	}
 	exchangeClient.Transport = accountIPv6RoundTrip(func(req *http.Request) (*http.Response, error) {
 		if req.URL.String() != oauthTokenURL || req.Header.Get("X-Resin-Account") != "" {
 			t.Errorf("exchange ignored selected account proxy: %s", req.URL)
 		}
 		return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(`{"access_token":"access-from-exchange","refresh_token":"refresh-from-exchange","id_token":"id-from-exchange","expires_in":3600}`))}, nil
 	})
-	t.Cleanup(func() { exchangeClient.Transport = oldTransport })
+	t.Cleanup(func() { oauthCodeExchangeHTTPClient = previousBuilder })
 
 	id := insertOAuthEditTestAccount(t, db, "oauth-existing", "old-refresh", "http://old-proxy.example")
 	if err := store.LoadAccountByID(context.Background(), id); err != nil {

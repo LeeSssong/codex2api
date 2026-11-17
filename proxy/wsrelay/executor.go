@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -483,6 +482,9 @@ func (e *Executor) prepareWebsocketHeadersChecked(ctx context.Context, accessTok
 	// legacy 档下该函数恢复旧的 Session_id + 清 Conversation_id 行为。
 	proxy.ApplyCodexSessionHeaders(headers, account, sessionID, downstreamHeaders, true)
 	proxy.ApplyAccountCustomHeaders(headers, account)
+	// The executor's final decision owns managed/configured state and observed
+	// thread replay. Apply after echo guarding and custom headers on every dial.
+	proxy.ApplyCodexTurnStateInjectionHeader(ctx, headers)
 	if err := proxy.ApplyCodexAttestation(ctx, proxy.CodexAttestationInput{Headers: headers, Account: account}); err != nil {
 		return nil, err
 	}

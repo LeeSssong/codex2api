@@ -29,7 +29,7 @@ func TestIntelligenceCheckClaimRefreshesQueuedAndBusySnapshots(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	if e = db.SetAccountEnabled(ctx, id, false); e != nil {
+	if e = db.SetAccountEnabled(ctx, id, true); e != nil {
 		t.Fatal(e)
 	}
 	r, e := db.ClaimIntelligenceCheck(ctx, "first", now.Add(time.Second), time.Second)
@@ -48,7 +48,7 @@ func TestIntelligenceCheckClaimRefreshesQueuedAndBusySnapshots(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	if e = db.SetAccountEnabled(ctx, id, false); e != nil {
+	if e = db.SetAccountEnabled(ctx, id, true); e != nil {
 		t.Fatal(e)
 	}
 	second, e := db.ClaimIntelligenceCheck(ctx, "second", now.Add(10*time.Second), time.Second)
@@ -238,6 +238,13 @@ func TestIntelligenceCheckBarsAllowManualAfterDisablingAutomatic(t *testing.T) {
 			}
 			setEnabled(false)
 			ids, err := db.EnqueueIntelligenceChecks(ctx, []int64{id}, now)
+			if disable == "dispatch" {
+				if err == nil || len(ids) != 0 {
+					t.Fatalf("disabled account accepted manual check: %v %v", ids, err)
+				}
+				setEnabled(true)
+				ids, err = db.EnqueueIntelligenceChecks(ctx, []int64{id}, now)
+			}
 			if err != nil || len(ids) != 1 || ids[0] != queuedID {
 				t.Fatalf("manual promotion: %v %v", ids, err)
 			}

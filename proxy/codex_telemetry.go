@@ -293,7 +293,11 @@ func snapshotCodexTelemetryClient(input codexTelemetryRequest) (codexTelemetryCl
 		return codexTelemetryClient{}, false
 	}
 	client.userAgent, client.version = identity.UserAgent, identity.Version
+	singleMachine := input.account.EffectiveCodexFingerprintMode() == auth.CodexFingerprintModeSingleMachineMultiWindow
 	client.originator = codexTelemetryOriginator(client.userAgent, input.headers)
+	if identity.Generated || singleMachine {
+		client.originator = CodexOriginatorForGeneratedUserAgent(client.userAgent)
+	}
 	userAgentOverridden, originatorOverridden := false, false
 	for name, value := range input.account.GetCustomHeaders() {
 		switch strings.ToLower(strings.TrimSpace(name)) {

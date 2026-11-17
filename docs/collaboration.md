@@ -97,3 +97,10 @@
 - User authorized the identity fixes and direct downtime deployment while Codex2API was not serving external traffic. Target netcup `159.195.12.230`, Codex2API only.
 - Deployed source `d12e0775399d2d0616767e8ba4b76472e3abf2a5`, tree `2fdb9122bab0ab975d07f6d7e2aee1b62a9761ec`, image/config `sha256:181bcd4b1177cf3c3376e29c2e680ad20edf1d04bd079376af7ba786b84da75a`, binary `163ab461c4a75c8546313799c0cefef17bc5c9e2f835aba764bf4cd1a8a74409`. Maintenance 16.200 s. All seven active accounts stayed disabled. Intelligence revision 17 stayed enabled.
 - Release/recovery: `docs/releases/2026-11-02-client-identity.md`. Artifacts `/opt/codex2api/releases/client-identity-quiet-20261102-d12e0775/`; backup `/opt/codex2api/backups/client-identity-quiet-20261102-d12e0775/`. Do not restore the stopped dump over newer writes or redeploy this candidate. The shared dirty checkout remains preserved.
+
+
+## 2026-11-18 upstream/local integration ownership
+
+- Owner: current Codex chat; base origin `da1962c1`, worktree `/Users/gongtengxinwen/.codex/worktrees/upstream-release-20261117/codex2api`, branch `codex/upstream-release-20261117`. Scope: all 52 preserved local paths plus upstream merge reconciliation and release records.
+- User authorized all local changes to be committed/pushed with upstream and accepted Codex2API downtime deployment on netcup. Original snapshot `289ea37c` remains on `codex/preserved-shared-20261117`. No unknown worktree is removed.
+- Integration/recovery record: `docs/releases/2026-11-18-upstream-local-integration.md`; runtime receipts and source record determine actual deployment outcome. Main must remain clean and match the authoritative remote and built source after publication.

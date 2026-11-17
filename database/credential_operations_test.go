@@ -69,8 +69,8 @@ func TestCredentialOperationsInitialImportPersistsAndEnrolls(t *testing.T) {
 		t.Fatalf("config = %#v %v", stored, err)
 	}
 	monitors, err := db.ListCredentialOpsMonitors(ctx)
-	if err != nil || len(monitors) != 1 || !monitors[0].Enabled {
-		t.Fatalf("monitor = %#v %v", monitors, err)
+	if err != nil || len(monitors) != 0 {
+		t.Fatalf("disabled account exposed an automatic monitor = %#v %v", monitors, err)
 	}
 	if duplicate := queue(); duplicate != id {
 		t.Fatalf("duplicate import created account %d, want %d", duplicate, id)
