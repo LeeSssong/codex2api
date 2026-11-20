@@ -411,6 +411,7 @@ func main() {
 	egressipv6.Install(ipv6Egress)
 	fixedEgressManager := fixedegress.NewManager(db, nil)
 	fixedegress.Install(fixedEgressManager)
+	auth.SetFixedEgressEnrollment(fixedegress.HasEnrolled)
 	auth.CodexHTTPClientDecorator = func(id int64, client *http.Client, forceUTLS bool) *http.Client {
 		client = proxy.WrapOAuthIPv6Client(id, client, forceUTLS)
 		return proxy.WrapOAuthFixedClient(id, client, forceUTLS)
@@ -422,6 +423,10 @@ func main() {
 
 	auth.CodexOAuthIdentityHeaders = proxy.CodexOAuthIdentityHeaders
 	store := auth.NewStore(db, tc, settings)
+	auth.SetDedicatedEgressGate(func(id int64) bool {
+		return store.FindByID(id).WorkstationRequiresDedicatedEgress()
+	})
+	auth.SetWorkstationHolder(store.HoldWorkstation)
 	auth.AccountProxyUnavailable = func(_ int64, route string) bool { return store.ManagedProxyUnavailable(route) }
 	auth.AccountOAuthEgress = func(ctx context.Context, id int64) (string, bool, error) {
 		a := store.FindByID(id)

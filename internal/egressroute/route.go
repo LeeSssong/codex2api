@@ -94,10 +94,17 @@ func CanFallback(err error) bool {
 type fallbackTransport struct {
 	primary, direct http.RoundTripper
 	route           Observation
+	// refuseDirect 为真时，绑定出口失败就返回错误，不再改走宿主机直连。
+	refuseDirect bool
 }
 
 func Fallback(primary, direct http.RoundTripper, route Observation) http.RoundTripper {
-	return &fallbackTransport{primary, direct, route}
+	return &fallbackTransport{primary, direct, route, false}
+}
+
+// FallbackOrHold 与 Fallback 相同，但 refuseDirect 为真时不拨宿主机直连。
+func FallbackOrHold(primary, direct http.RoundTripper, route Observation, refuseDirect bool) http.RoundTripper {
+	return &fallbackTransport{primary, direct, route, refuseDirect}
 }
 func (t *fallbackTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	Record(req.Context(), t.route)
@@ -108,6 +115,17 @@ func (t *fallbackTransport) RoundTrip(req *http.Request) (*http.Response, error)
 	proxyAuth := resp != nil && resp.StatusCode == http.StatusProxyAuthRequired && req.Context().Err() == nil && !sent.Load()
 	if !proxyAuth && (err == nil || req.Context().Err() != nil || sent.Load() || !CanFallback(err)) {
 		return resp, err
+	}
+	if t.refuseDirect {
+		if resp != nil && resp.Body != nil {
+			resp.Body.Close()
+		}
+		Record(req.Context(), Observation{Kind: t.route.Kind, Source: t.route.Source, ProxyHost: t.route.ProxyHost, FallbackReason: "dedicated_egress_unavailable"})
+		reason := err
+		if reason == nil {
+			reason = Unavailable(errors.New("dedicated egress unavailable"))
+		}
+		return nil, reason
 	}
 	next := req.Clone(req.Context())
 	if req.Body != nil && req.Body != http.NoBody {

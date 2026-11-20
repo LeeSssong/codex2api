@@ -44,6 +44,7 @@ func TestAccountProxyPriorityAndDirectFallback(t *testing.T) {
 	}
 	dead := "http://" + listener.Addr().String()
 	listener.Close()
+	a.CodexFingerprintMode = auth.CodexFingerprintModeOff
 	a.ProxyURL = dead
 	ctx := egressroute.WithAudit(context.Background())
 	req, _ := http.NewRequestWithContext(ctx, "GET", target.URL, nil)

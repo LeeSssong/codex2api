@@ -3095,11 +3095,12 @@ func continuousRetryPolicySelectQuery(forUpdate bool) string {
 	return query
 }
 
-// NormalizeCodexFingerprintDefaultMode 把新账号默认指纹收敛档位归一到已知
-// 取值之一；空值和非法值回落 off（与 auth.NormalizeCodexFingerprintMode 语义一致，
-// database 包不能反向依赖 auth，故此处独立实现）。
+// NormalizeCodexFingerprintDefaultMode 把新账号默认指纹收敛档位归一到已知取值。
+// 显式 off 保持透传。空值和非法值使用工作站档（单机多窗口），database 包不能反向依赖 auth。
 func NormalizeCodexFingerprintDefaultMode(mode string) string {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "off":
+		return "off"
 	case "single_machine_multi_window":
 		return "single_machine_multi_window"
 	case "device":
@@ -3109,7 +3110,7 @@ func NormalizeCodexFingerprintDefaultMode(mode string) string {
 	case "full":
 		return "full"
 	default:
-		return "off"
+		return "single_machine_multi_window"
 	}
 }
 

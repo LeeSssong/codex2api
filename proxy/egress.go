@@ -85,6 +85,9 @@ func ResolveCodexEgress(account *auth.Account, targetURL, proxyURL string) Codex
 		}
 	}
 	proxyURL = strings.TrimSpace(proxyURL)
+	if account.WorkstationRequiresDedicatedEgress() && !resinCarriesEgress(account) {
+		return CodexEgress{Err: errors.New("workstation egress is not bound"), Kind: CodexEgressDirect, URL: targetURL, account: account}
+	}
 	if resinCarriesEgress(account) {
 		return CodexEgress{
 			Kind:     CodexEgressResin,
@@ -156,6 +159,9 @@ func ResolveCodexWebsocketEgress(account *auth.Account, wsURL, proxyURL string) 
 		return CodexEgress{Kind: CodexEgressDirect, URL: wsURL, account: account}
 	}
 	proxyURL = strings.TrimSpace(proxyURL)
+	if account.WorkstationRequiresDedicatedEgress() && !resinCarriesEgress(account) {
+		return CodexEgress{Err: errors.New("workstation egress is not bound"), Kind: CodexEgressDirect, URL: wsURL, account: account}
+	}
 	if resinCarriesEgress(account) {
 		return CodexEgress{
 			Kind:     CodexEgressResin,
@@ -275,6 +281,9 @@ func ResolveCodexRequestEgress(ctx context.Context, account *auth.Account, targe
 			egress.client = getRequestClient(ctx, account, boundProxy)
 		}
 		return egress
+	}
+	if account.WorkstationRequiresDedicatedEgress() && !IsStateDirectRoute(proxyURL) && !resinCarriesEgress(account) {
+		return CodexEgress{Err: errors.New("workstation egress is not bound"), Kind: CodexEgressDirect, URL: targetURL, account: account}
 	}
 	if account != nil && !account.IsRelayStyle() && !IsStateDirectRoute(proxyURL) {
 		if route, enrolled, err := resolveFixedRoute(ctx, account); enrolled {

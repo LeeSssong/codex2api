@@ -169,5 +169,15 @@ func applyCodexMaintenanceHeaders(req *http.Request, account *auth.Account) erro
 		return err
 	}
 	identity.Apply(req.Header)
-	return nil
+	return EnforceWorkstationRequest(account, CodexEgress{Kind: CodexEgressKind(maintenanceEgressKind(account)), DialProxyURL: account.GetProxyURL()}, req.Header, nil)
+}
+
+func maintenanceEgressKind(account *auth.Account) string {
+	if account.GetProxyURL() != "" {
+		return string(CodexEgressProxy)
+	}
+	if _, ipv6 := account.IPv6EgressSelection(); ipv6 {
+		return "local_ipv6"
+	}
+	return string(CodexEgressDirect)
 }
