@@ -14,7 +14,7 @@ COPY requirements.txt /build/requirements.txt
 RUN python -m pip install --no-cache-dir --only-binary=:all: -r /build/requirements.txt
 COPY . /build/tools/
 WORKDIR /build/tools
-RUN EXCEL_TEST_TOSUB2_ROOT=/build/tosub2 python -m unittest discover -p 'test*.py' && node --test test_openai_totp_journal.mjs test_openai_excel_password_flow.mjs && python package.py /out
+RUN EXCEL_TEST_TOSUB2_ROOT=/build/tosub2 python -m unittest discover -p 'test*.py' && node --test test_openai_totp_journal.mjs test_openai_excel_password_flow.mjs test_openai_siwc_password_flow.mjs && python package.py /out
 FROM scratch AS artifact
 COPY --from=build /out/ /
 FROM python:3.12.12-slim-bookworm AS worker

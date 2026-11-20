@@ -1,0 +1,11 @@
+# SIWC authorization and inference
+
+An existing OpenAI OAuth account can bind an independent SIWC grant in the account editor. Create the native account with the existing authorization-link or password/2FA import flow first. Native credentials remain available for quota and compact operations. Binding does not select the inference protocol automatically.
+
+SIWC supports browser authorization and the saved password/2FA worker. Browser authorization requires the browser to use the account's fixed egress; the browser's network settings cannot be imposed by an authorization link. The worker uses one authenticated loopback tunnel for login and callback/token exchange. The selected upstream dialer is frozen for the session, with no direct fallback. An egress or account identity change requires a new authorization session.
+
+Grants are encrypted in credential_operations_profile_grants, separate from native tokens. PKCE, nonce, callback state, issued client ID and verified ID-token identity are checked. Refresh is serialized and fenced by grant generation; uncertain refresh results require reauthorization. Revocation invalidates the local grant and does not silently switch back to Codex. There is no downstream API-key exclusivity binding.
+
+Selected SIWC inference uses the official HTTP Responses endpoint and explicit conversation history. Unsupported hosted tools and previous_response_id are rejected instead of silently changing inference protocol. Native quota authorization failures do not disable the independent SIWC authorization. A saved grant is not evidence of subscription eligibility or successful inference.
+
+The credential runtime can be built normally or derived with tools/credential-runtime/derive_bundle.py from a fully checksummed immutable dependency bundle. Derived manifests retain dependency provenance, record the parent manifest and application revision, and hash the replaced application-owned scripts. Deployment validates the candidate bundle and promotes its read-only mount and manifest checksum through the existing locked maintenance controller. Rollback retains the old bundle and Compose configuration.

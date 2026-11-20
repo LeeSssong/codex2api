@@ -1,3 +1,4 @@
+import hashlib
 import copy
 import importlib.util
 import json
@@ -67,6 +68,24 @@ class GuardTests(unittest.TestCase):
         result['services']['codex2api']['image'] = 'old'
         self.assertEqual(result, snapshot)
         self.assertEqual(original, snapshot)
+
+    def test_candidate_runtime_is_verified_and_preserves_original(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            names = ('python', 'worker.py', 'engines.py', 'openai_siwc_oauth_adapter.py', 'openai_siwc_password_flow.mjs')
+            for name in names:
+                (root / name).write_bytes(b'test')
+            raw = json.dumps({'files': {name: hashlib.sha256(b'test').hexdigest() for name in names}}).encode()
+            (root / 'manifest.json').write_bytes(raw)
+            original = {'services': {'codex2api': {'image': 'old', 'environment': {'CODEX2API_CREDENTIAL_OPS_RUNTIME_DIR': '/runtime'}, 'volumes': [{'type': 'bind', 'source': '/old', 'target': '/runtime', 'read_only': True}]}}}
+            snapshot = copy.deepcopy(original)
+            manifest = {'digest': 'new', 'credential_runtime': {'path': tmp, 'manifest_sha256': hashlib.sha256(raw).hexdigest()}}
+            result = release.with_candidate(original, manifest)
+            self.assertEqual(result['services']['codex2api']['volumes'][0]['source'], tmp)
+            self.assertEqual(original, snapshot)
+            (root / 'worker.py').write_bytes(b'changed')
+            with self.assertRaisesRegex(ValueError, 'checksum'):
+                release.with_candidate(original, manifest)
 
     def test_lock_contention_fails_without_waiting(self):
         with tempfile.TemporaryDirectory() as tmp:

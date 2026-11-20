@@ -316,6 +316,28 @@ func TestCodexRefreshExpiredTokenIsPermanent(t *testing.T) {
 	}
 }
 
+func TestSIWCSelectionSurvivesNativeRefreshRejection(t *testing.T) {
+	store, db, id, _ := codexRefreshFixture(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"code":"refresh_token_expired"}}`))
+	})
+	account := store.FindByID(id)
+	account.SetSIWCEnabled(true)
+	if account.NeedsRefresh() {
+		t.Fatal("SIWC inference depends on native refresh")
+	}
+	if err := store.RefreshSingle(context.Background(), id); err == nil {
+		t.Fatal("native rejection was hidden")
+	}
+	if account.RuntimeStatus() == "unauthorized" || account.Status == StatusError || !account.UsesSIWC() {
+		t.Fatal("native failure disabled SIWC")
+	}
+	row, err := db.GetAccountByID(context.Background(), id)
+	if err != nil || row.GetCredential("codex_refresh_error") == "" {
+		t.Fatal("native failure was not retained", err)
+	}
+}
+
 func TestCodexRefreshBackgroundEligibility(t *testing.T) {
 	store := NewStore(nil, nil, &database.SystemSettings{})
 	defer store.Stop()

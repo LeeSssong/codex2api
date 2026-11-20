@@ -183,6 +183,7 @@ type Account struct {
 	DBID                 int64 // 数据库 ID
 	RefreshToken         string
 	OAuthClientID        string
+	SIWCEnabled          bool
 	SessionToken         string
 	AccessToken          string
 	ExpiresAt            time.Time
@@ -2208,6 +2209,9 @@ func (a *Account) usageExhaustedLocked() bool {
 func (a *Account) NeedsRefresh() bool {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
+	if a.SIWCEnabled {
+		return false
+	}
 	return time.Until(a.ExpiresAt) < 5*time.Minute
 }
 
@@ -6317,6 +6321,7 @@ func (s *Store) buildAccountFromRow(ctx context.Context, row *database.AccountRo
 		CredentialFamilyID:           row.CredentialFamilyID,
 		RefreshToken:                 rt,
 		OAuthClientID:                row.GetCredential("client_id"),
+		SIWCEnabled:                  row.GetCredentialBool("siwc_enabled"),
 		SessionToken:                 st,
 		ProxyURL:                     strings.TrimSpace(row.ProxyURL),
 		IPv6EgressEnabled:            row.GetCredentialBool(IPv6EgressCredentialKey),

@@ -115,6 +115,9 @@ func (h *Handler) queueCredentialLogin(c *gin.Context, id int64) {
 		return
 	}
 	var generation int64
+	if cfg.OAuthProfile == "siwc" {
+		cfg.Engine, cfg.ProxySource = "local_worker", "account"
+	}
 	if id > 0 {
 		row, err := h.db.GetAccountByID(c.Request.Context(), id)
 		if err != nil || row == nil {
@@ -237,7 +240,7 @@ func (h *Handler) ClaimCredentialOpsWorker(c *gin.Context) {
 	if cfg.Engine == "inherit" {
 		cfg.Engine = runtime.Engine
 	}
-	if task.OAuthProfile == "excel" || strings.HasPrefix(task.Kind, "totp_") || cfg.CredentialMode == "email_otp_url" {
+	if task.OAuthProfile == "excel" || task.OAuthProfile == "siwc" || strings.HasPrefix(task.Kind, "totp_") || cfg.CredentialMode == "email_otp_url" {
 		cfg.Engine = "local_worker"
 	}
 	if cfg.Engine == "session_studio" && cfg.ProxySource != "direct" {
@@ -278,7 +281,7 @@ func (h *Handler) ClaimCredentialOpsWorker(c *gin.Context) {
 		return
 	}
 	// Bind late, at claim time, so queued tasks cannot retain an obsolete route.
-	if task.AccountID > 0 && h.store != nil {
+	if task.AccountID > 0 && h.store != nil && task.OAuthProfile != "siwc" {
 		a := h.store.FindByID(task.AccountID)
 		if a != nil && (a.GetProxyURL() != "" || proxy.NativeIPv6Account(a) || fixedegress.HasEnrolled(a.ID())) {
 			if cfg.Engine == "session_studio" {
@@ -306,6 +309,16 @@ func (h *Handler) ClaimCredentialOpsWorker(c *gin.Context) {
 		return
 	}
 	login := gin.H{"action": cfg.Action, "candidate_secret": candidate, "email": cfg.LoginEmail, "mode": cfg.CredentialMode, "engine": cfg.Engine, "password": pw, "totp_secret": totp, "otp_url": otp, "proxy_url": proxyURL, "oauth_profile": task.OAuthProfile}
+	if task.OAuthProfile == "siwc" {
+		authorization, err := proxy.BeginSIWCWorkerAuthorization(c.Request.Context(), task.AccountID, database.SIWCWorkerFence{TaskID: task.ID, Owner: req.WorkerID, Attempt: task.Attempt})
+		if err != nil {
+			_ = h.db.FailCredentialOpsTask(c.Request.Context(), task.ID, req.WorkerID, task.Attempt)
+			c.JSON(409, gin.H{"error": "SIWC authorization egress unavailable"})
+			return
+		}
+		credentialMihomoLeases.Store(fmt.Sprintf("%d:%d", task.ID, task.Attempt), func() { proxy.CancelSIWCAuthorization(authorization.SessionID) })
+		login["siwc_auth_url"], login["siwc_session_id"], login["proxy_url"], login["engine"] = authorization.AuthURL, authorization.SessionID, authorization.ProxyURL, "local_worker"
+	}
 	if task.AccountID > 0 {
 		if row, e := h.db.GetAccountByID(c.Request.Context(), task.AccountID); e == nil && row != nil {
 			login["expected_workspace"] = row.GetCredential("workspace_id")
@@ -366,7 +379,7 @@ func (h *Handler) CompleteCredentialOpsWorker(c *gin.Context) {
 	}
 	task, err := h.db.GetCredentialOpsTask(c.Request.Context(), id)
 	if err == nil && task != nil && task.Status == "succeeded" && task.Attempt == req.Attempt {
-		if task.OAuthProfile != "excel" {
+		if task.OAuthProfile != "excel" && task.OAuthProfile != "siwc" {
 			unlock := h.store.LockCredentialOpsRecovery()
 			defer unlock()
 			if recoverErr := h.reconcileCredentialOpsLogin(c.Request.Context(), task.ID, task.AccountID); recoverErr != nil {
@@ -403,6 +416,15 @@ func (h *Handler) CompleteCredentialOpsWorker(c *gin.Context) {
 		return
 	}
 	str := func(k string) string { v, _ := req.Credential[k].(string); return strings.TrimSpace(v) }
+	if task.OAuthProfile == "siwc" {
+		if err := proxy.CompleteSIWCWorkerAuthorization(c.Request.Context(), task.AccountID, str("siwc_session_id"), str("siwc_callback_url"), database.SIWCWorkerFence{TaskID: task.ID, Owner: req.WorkerID, Attempt: req.Attempt}); err != nil {
+			_ = h.db.FailCredentialOpsTask(c.Request.Context(), id, req.WorkerID, req.Attempt)
+			c.JSON(409, gin.H{"error": "SIWC authorization failed; retry browser authorization"})
+			return
+		}
+		c.JSON(200, gin.H{"status": "succeeded", "account_id": task.AccountID})
+		return
+	}
 	email, workspace := openaiidentity.TokenIdentity(str("id_token"), str("access_token"))
 	if task.OAuthProfile == "excel" {
 		expected := ""

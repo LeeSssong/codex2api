@@ -2,6 +2,12 @@
   "repository": "https://github.com/Wei-Shaw/sub2api",
   "commit": "e46b0b00b00b37ab74d95f9d800cc6396d83f672",
   "license": "LGPL-3.0",
+  "siwc_source": {
+    "repository": "https://github.com/LeeSssong/sub2api",
+    "commit": "051a6ddb6fb93032e6b02d9ac6eb37b9042d789a",
+    "openai_siwc_oauth_adapter.py": "278cd9c62a3974b6a5588c16138e4acc207460a80bc51b1af3bdf7ca992d01a5",
+    "openai_siwc_password_flow.mjs": "d85e5081e6cc86cf6ee37188cc5e712af7c42e15d543b24294de3b244463215a"
+  },
   "source_files": {
     "openai_oauth_reauth_worker.py": "387fd4f63086ef7e934fdd4f73a498fc4a6bff71c2402cfc17780828de97de03",
     "openai_totp_rotation.py": "26c45db1404b99d455307ecb775ddc17b7968925d5840ba6539def278c277c43",

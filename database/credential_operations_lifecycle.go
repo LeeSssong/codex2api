@@ -37,6 +37,13 @@ func (db *DB) CreateCredentialOpsAutoTaskWithConfig(ctx context.Context, account
 }
 
 func (db *DB) createCredentialOpsTaskWithConfig(ctx context.Context, accountID, generation int64, cfg CredentialOpsLoginConfigRow, automatic bool, probeLease string) (*CredentialOpsTaskRow, error) {
+	if cfg.OAuthProfile == "siwc" {
+		if accountID <= 0 || cfg.CredentialMode != "password_totp" {
+			return nil, errors.New("SIWC password login requires a saved OpenAI account")
+		}
+		cfg.Engine = "local_worker"
+		cfg.ProxySource = "account"
+	}
 	cfg.Automatic = automatic
 	var task *CredentialOpsTaskRow
 	err := db.withSQLiteWriteLock(ctx, func() error {
@@ -206,7 +213,7 @@ func (db *DB) createCredentialOpsTaskWithConfig(ctx context.Context, accountID, 
 		if cfg.OAuthProfile == "" {
 			cfg.OAuthProfile = "codex"
 		}
-		if cfg.OAuthProfile != "codex" && cfg.OAuthProfile != "excel" {
+		if cfg.OAuthProfile != "codex" && cfg.OAuthProfile != "excel" && cfg.OAuthProfile != "siwc" {
 			return errors.New("invalid OAuth profile")
 		}
 		cfg.AccountID = accountID

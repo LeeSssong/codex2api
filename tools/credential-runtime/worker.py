@@ -24,7 +24,7 @@ import urllib.request
 HEARTBEAT = Path(os.environ.get("CODEX2API_CREDENTIAL_OPS_HEARTBEAT", "/tmp/credential-worker-heartbeat"))
 STOP = False
 VERSION="1.0.0"
-CAPABILITIES=["login_codex_v1","email_otp_v1","excel_oauth_v1","totp_rotation_v1"]
+CAPABILITIES=["login_codex_v1","email_otp_v1","excel_oauth_v1","siwc_oauth_v1","totp_rotation_v1"]
 CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 REDIRECT = "http://localhost:1455/auth/callback"
 
@@ -220,7 +220,8 @@ def process_claim(payload, worker):
                 request(task_path + "/complete", dict(identity, status="failed", stage="failed"))
                 return
             credential = json.loads(result_file.read_text())
-            if not all(isinstance(credential.get(key), str) and credential[key] for key in ("access_token", "refresh_token", "id_token")):
+            required = ("siwc_callback_url", "siwc_session_id") if login.get("oauth_profile") == "siwc" else ("access_token", "refresh_token", "id_token")
+            if not all(isinstance(credential.get(key), str) and credential[key] for key in required):
                 raise RuntimeError("engine returned incomplete credentials")
             for _ in range(3):
                 status, _ = request(task_path + "/complete", dict(identity, status="succeeded", stage="succeeded", credential=credential))

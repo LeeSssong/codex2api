@@ -19,6 +19,21 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+func TestExchangeOAuthCodeRejectsRouteOverrideBeforeClaim(t *testing.T) {
+	for _, route := range []string{`"proxy_url":""`, `"ipv6_egress_enabled":true`, `"proxy_url":"http://other.invalid:80"`} {
+		session := &oauthSession{State: "valid", CreatedAt: time.Now(), Preferences: &importSettings{defaultProxyURL: "http://original.invalid:80", proxySpecified: true}}
+		globalOAuthStore.set("pinned-test", session)
+		t.Cleanup(func() { globalOAuthStore.delete("pinned-test") })
+		recorder := httptest.NewRecorder()
+		ctx, _ := gin.CreateTestContext(recorder)
+		ctx.Request = httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"session_id":"pinned-test","code":"code","state":"valid",`+route+`}`))
+		(&Handler{}).ExchangeOAuthCode(ctx)
+		if recorder.Code != http.StatusBadRequest || !session.CallbackAt.IsZero() {
+			t.Fatalf("route change accepted or session consumed: status=%d", recorder.Code)
+		}
+	}
+}
+
 func TestExchangeOAuthCodeSeedsAccessTokenFromExchangeResponse(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -422,6 +437,23 @@ func TestUpdateOAuthAccountCodeRejectsInvalidID(t *testing.T) {
 
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d: %s", recorder.Code, http.StatusBadRequest, recorder.Body.String())
+	}
+}
+
+func TestUpdateOAuthAccountCodeRejectsChangedAccountEgressBeforeClaim(t *testing.T) {
+	db := newTestAdminDB(t)
+	handler := &Handler{db: db, store: auth.NewStore(db, cache.NewMemory(1), nil)}
+	id := insertOAuthEditTestAccount(t, db, "test", "original", "http://changed.invalid:3128")
+	session := &oauthSession{State: "state", CreatedAt: time.Now(), Preferences: &importSettings{defaultProxyURL: "http://initial.invalid:3128", proxySpecified: true}}
+	globalOAuthStore.set(t.Name(), session)
+	t.Cleanup(func() { globalOAuthStore.delete(t.Name()) })
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Params = gin.Params{{Key: "id", Value: fmt.Sprint(id)}}
+	ctx.Request = newOAuthEditRequest(t.Name(), "code", "state", "")
+	handler.UpdateOAuthAccountCode(ctx)
+	if recorder.Code != http.StatusBadRequest || !session.CallbackAt.IsZero() {
+		t.Fatalf("mismatched route was not rejected before claim: status=%d", recorder.Code)
 	}
 }
 

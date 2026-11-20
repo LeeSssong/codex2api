@@ -396,9 +396,17 @@ func TestAccountIPv6OAuthReauthSwitchRetiresAndPreservesDisabled(t *testing.T) {
 func TestAccountIPv6OAuthReauthOmittedPreservesLegacyPreferences(t *testing.T) {
 	h, store, db := newImportEndToEndHandler(t)
 	store.SetLazyMode(true)
-	// Keep this fixture local: the exchange server below is the intended Resin
-	// test route, and a configured proxy now correctly takes precedence over it.
-	newOAuthExchangeTestServer(t)
+	// A pinned direct session must not fall through to the global Resin route.
+	previousBuilder := oauthCodeExchangeHTTPClient
+	oauthCodeExchangeHTTPClient = func(selectedProxy string) *http.Client {
+		if selectedProxy != "" {
+			t.Errorf("unexpected proxy: %q", selectedProxy)
+		}
+		return &http.Client{Transport: accountIPv6RoundTrip(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(`{"access_token":"new","refresh_token":"new-refresh","expires_in":3600}`))}, nil
+		})}
+	}
+	t.Cleanup(func() { oauthCodeExchangeHTTPClient = previousBuilder })
 	ctx := context.Background()
 	id, err := db.InsertAccountWithCredentials(ctx, "legacy-reauth", map[string]interface{}{"refresh_token": "old", "timezone": "Asia/Tokyo"}, "")
 	if err != nil {
@@ -406,7 +414,7 @@ func TestAccountIPv6OAuthReauthOmittedPreservesLegacyPreferences(t *testing.T) {
 	}
 	db.BatchUpdateAccountMetadata(ctx, []int64{id}, database.BatchAccountMetadataUpdate{Enabled: database.OptionalBool{Set: true, Value: false}})
 	sessionID := "ipv6-reauth-omitted"
-	globalOAuthStore.set(sessionID, &oauthSession{State: "state", CodeVerifier: "verifier", RedirectURI: oauthDefaultRedirectURI, CreatedAt: time.Now(), Preferences: &importSettings{ipv6Enabled: boolPtrIPv6(true)}})
+	globalOAuthStore.set(sessionID, &oauthSession{State: "state", CodeVerifier: "verifier", RedirectURI: oauthDefaultRedirectURI, CreatedAt: time.Now(), Preferences: &importSettings{ipv6Enabled: boolPtrIPv6(false)}})
 	t.Cleanup(func() { globalOAuthStore.delete(sessionID) })
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)

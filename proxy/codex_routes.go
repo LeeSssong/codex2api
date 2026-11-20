@@ -660,6 +660,9 @@ func (a *codexRouteAttemptState) recordFailure(f codexRouteFailure) {
 
 // Keep the native executor entry points explicit; route fallback never recurses.
 func ExecuteRequest(ctx context.Context, account *auth.Account, body []byte, sessionID, proxyURL, apiKey string, device *DeviceProfileConfig, headers http.Header, useWebsocket ...bool) (*http.Response, error) {
+	if account.UsesSIWC() {
+		return executeSIWCRequest(ctx, account, body)
+	}
 	native := func(ctx context.Context, a *auth.Account, b []byte, s, p, k string, d *DeviceProfileConfig, h http.Header) (*http.Response, error) {
 		return executeNativeCodexRequest(ctx, a, b, s, p, k, d, h, useWebsocket...)
 	}

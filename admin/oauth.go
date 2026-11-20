@@ -98,6 +98,12 @@ type oauthExchangeResult struct {
 	Error    string `json:"error,omitempty"`
 }
 
+func (s importSettings) matchesExchangeRoute(req nativeJSONPreferences) bool {
+	pinned := s.applyPreferences(tokenCredentialSeed{}, importToken{})
+	return (req.ProxyURL == nil || strings.TrimSpace(*req.ProxyURL) == s.defaultProxyURL) &&
+		(req.IPv6EgressEnabled == nil || *req.IPv6EgressEnabled == *pinned.newIPv6Enabled)
+}
+
 type oauthSessionStore struct {
 	mu       sync.Mutex
 	sessions map[string]*oauthSession
@@ -299,37 +305,37 @@ func (h *Handler) ExchangeOAuthCode(c *gin.Context) {
 		writeError(c, http.StatusBadRequest, "state 不匹配，请重新发起授权")
 		return
 	}
+	if sess.SelfService {
+		writeError(c, http.StatusBadRequest, "请从原授权入口完成回调")
+		return
+	}
+	preferences := importSettings{defaultProxyURL: sess.ProxyURL, defaultTimezone: stringPtrIPv6Internal("")}
+	if sess.Preferences != nil {
+		preferences = *sess.Preferences
+	}
+	if !preferences.matchesExchangeRoute(req.nativeJSONPreferences) {
+		writeError(c, http.StatusBadRequest, "授权出口与会话不一致，请重新发起授权")
+		return
+	}
+	if req.DefaultTimezone != nil {
+		zone, err := (nativeJSONPreferences{DefaultTimezone: req.DefaultTimezone}).settings()
+		if err != nil {
+			writeError(c, http.StatusBadRequest, err.Error())
+			return
+		}
+		preferences.defaultTimezone = zone.defaultTimezone
+	}
 	if !sess.claimExchange(req.Code, req.State) {
 		writeError(c, http.StatusBadRequest, "该授权会话已处理或正在处理，请重新发起授权")
 		return
 	}
 	defer sess.completeExchange(&oauthExchangeResult{Error: "请重新发起授权"})
 
-	preferences := importSettings{defaultTimezone: stringPtrIPv6Internal("")}
-	if sess.Preferences != nil {
-		preferences = *sess.Preferences
-	}
-	if req.ProxyURL != nil || req.IPv6EgressEnabled != nil || req.DefaultTimezone != nil {
-		var err error
-		preferences, err = req.nativeJSONPreferences.settings()
-		if err != nil {
-			writeError(c, http.StatusBadRequest, err.Error())
-			return
-		}
-		if preferences.defaultTimezone == nil {
-			preferences.defaultTimezone = stringPtrIPv6Internal("")
-		}
-	}
 	proxyURL := preferences.defaultProxyURL
 	exchangeCtx := c.Request.Context()
-	if sess.Preferences != nil || req.ProxyURL != nil || req.IPv6EgressEnabled != nil {
-		pref := preferences.applyPreferences(tokenCredentialSeed{}, importToken{})
-		exchangeCtx = context.WithValue(exchangeCtx, nativeOAuthRouteKey{}, nativeOAuthRoute{enabled: *pref.newIPv6Enabled})
-	} else {
-		proxyURL = sess.ProxyURL
-		if proxyURL == "" && h.store != nil {
-			proxyURL = h.store.GetProxyURL()
-		}
+	if sess.Preferences != nil {
+		pinned := preferences.applyPreferences(tokenCredentialSeed{}, importToken{})
+		exchangeCtx = context.WithValue(exchangeCtx, nativeOAuthRouteKey{}, nativeOAuthRoute{enabled: *pinned.newIPv6Enabled})
 	}
 
 	// Resin 临时身份用于 OAuth 兑换（新账号尚无 DBID）
@@ -667,11 +673,10 @@ func (h *Handler) UpdateOAuthAccountCode(c *gin.Context) {
 		writeError(c, http.StatusBadRequest, "state 不匹配，请重新发起授权")
 		return
 	}
-	if !sess.claimExchange(req.Code, req.State) {
-		writeError(c, http.StatusBadRequest, "该授权会话已处理或正在处理，请重新发起授权")
+	if sess.SelfService || (sess.Preferences != nil && !sess.Preferences.matchesExchangeRoute(req.nativeJSONPreferences)) {
+		writeError(c, http.StatusBadRequest, "授权入口或出口与会话不一致，请重新发起授权")
 		return
 	}
-	defer sess.completeExchange(&oauthExchangeResult{Error: "请重新发起授权"})
 
 	// Omitted reauthorization preferences preserve the durable account route;
 	// session defaults must never silently change an existing account.
@@ -701,9 +706,23 @@ func (h *Handler) UpdateOAuthAccountCode(c *gin.Context) {
 	}
 
 	exchangeProxyURL := proxyURL
-	if selectionUpdate == nil && row.GetCredentialOptionalBool(auth.IPv6EgressCredentialKey) == nil && exchangeProxyURL == "" && h.store != nil {
+	if sess.Preferences != nil {
+		route, selected := exchangeCtx.Value(nativeOAuthRouteKey{}).(nativeOAuthRoute)
+		if !sess.Preferences.matchesExchangeRoute(nativeJSONPreferences{ProxyURL: &exchangeProxyURL, IPv6EgressEnabled: &route.enabled}) {
+			writeError(c, http.StatusBadRequest, "账号当前出口与授权会话不一致，请重新发起授权")
+			return
+		}
+		if !selected {
+			exchangeCtx = context.WithValue(exchangeCtx, nativeOAuthRouteKey{}, nativeOAuthRoute{accountID: id})
+		}
+	} else if selectionUpdate == nil && row.GetCredentialOptionalBool(auth.IPv6EgressCredentialKey) == nil && exchangeProxyURL == "" && h.store != nil {
 		exchangeProxyURL = h.store.GetProxyURL()
 	}
+	if !sess.claimExchange(req.Code, req.State) {
+		writeError(c, http.StatusBadRequest, "该授权会话已处理或正在处理，请重新发起授权")
+		return
+	}
+	defer sess.completeExchange(&oauthExchangeResult{Error: "请重新发起授权"})
 	resinAccountID := fmt.Sprintf("%d", id)
 	tokenResp, accountInfo, err := doOAuthCodeExchange(exchangeCtx, req.Code, sess.CodeVerifier, sess.RedirectURI, exchangeProxyURL, resinAccountID)
 	if err != nil {
@@ -906,8 +925,6 @@ func (h *Handler) OAuthCallback(c *gin.Context) {
 	if sess.Preferences != nil {
 		pref := sess.Preferences.applyPreferences(tokenCredentialSeed{}, importToken{})
 		exchangeCtx = context.WithValue(exchangeCtx, nativeOAuthRouteKey{}, nativeOAuthRoute{enabled: *pref.newIPv6Enabled})
-	} else if proxyURL == "" && h.store != nil {
-		proxyURL = h.store.GetProxyURL()
 	}
 
 	resinTempID := "oauth-" + sessionID

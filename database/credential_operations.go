@@ -124,6 +124,9 @@ func (db *DB) ClaimCredentialOpsTaskWithCapabilities(ctx context.Context, owner 
 			if cap == "excel_oauth_v1" {
 				allowed += " OR (kind='login' AND oauth_profile='excel')"
 			}
+			if cap == "siwc_oauth_v1" {
+				allowed += " OR (kind='login' AND oauth_profile='siwc')"
+			}
 			if cap == "totp_rotation_v1" {
 				allowed += " OR kind LIKE 'totp_%'"
 			}

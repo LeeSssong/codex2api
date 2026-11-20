@@ -1467,6 +1467,11 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 
 	// OAuth 授权流程
 	api.POST("/oauth/generate-auth-url", h.GenerateOAuthURL)
+	api.GET("/accounts/:id/siwc", h.GetSIWCState)
+	api.POST("/accounts/:id/siwc/authorize", h.BeginSIWC)
+	api.POST("/accounts/:id/siwc/callback", h.CompleteSIWC)
+	api.PUT("/accounts/:id/siwc/protocol", h.SelectSIWC)
+	api.DELETE("/accounts/:id/siwc", h.RevokeSIWC)
 	api.POST("/oauth/exchange-code", h.ExchangeOAuthCode)
 	api.GET("/oauth/poll-callback", h.PollOAuthCallback)
 

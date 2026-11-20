@@ -26,7 +26,7 @@ shutil.copytree("/build/turb/core",out/"turb/core")
 shutil.copytree("/build/turb/config",out/"turb/config")
 shutil.copytree("/build/turb/sentinel",out/"turb/sentinel")
 shutil.copy2("/build/turb/LICENSE",out/"turb/LICENSE")
-for name in ("openai_totp_rotation.py", "openai_totp_journal.mjs", "openai_excel_oauth_adapter.py", "openai_excel_password_flow.mjs"):
+for name in ("openai_totp_rotation.py", "openai_totp_journal.mjs", "openai_excel_oauth_adapter.py", "openai_excel_password_flow.mjs", "openai_siwc_oauth_adapter.py", "openai_siwc_password_flow.mjs"):
     shutil.copy2(Path("/build/tools") / name, out / name)
 for name in ("SOURCE-LICENSE", "SOURCE-MANIFEST.json", "dependencies.json"):
     shutil.copy2(Path("/build/tools") / name, out / name)

@@ -14,6 +14,7 @@ import { api, getAdminKey, resetAdminAuthState } from "../api";
 import type { ProxyRow } from "../api";
 import { ProxyField, type LocalIPv6Field } from "../components/ProxyField";
 import { accountEgressPatch, importEgressFields, importTimezoneFields, selectAccountEgress } from "../lib/accountIPv6";
+import SIWCAccountPanel from "../components/SIWCAccountPanel";
 import { canManuallySelectIPv6 } from "../lib/accountIPv6Manual";
 import ImportTimezoneControl from "../components/ImportTimezoneControl";
 import AccountProxyBadge from "../components/AccountProxyBadge";
@@ -10135,6 +10136,7 @@ export default function Accounts() {
                   </div>
                 ) : editTab === "account" && isOAuthAccount(editingAccount) ? (
                   <div className="space-y-4">
+                    {isCodexOfficialAccount(editingAccount) && <SIWCAccountPanel key={editingAccount.id} accountId={editingAccount.id} />}
                     <div className="rounded-xl border border-border/80 bg-muted/30 p-4.5 text-sm text-muted-foreground">
                       <p className="font-semibold text-foreground mb-1">
                         {t("accounts.oauthEditIntroTitle")}

@@ -2,7 +2,7 @@ import { request } from "../api";
 
 export type CredentialMode = "password_totp" | "email_otp_url";
 export type CredentialEngine = "inherit" | "local_worker" | "session_studio";
-export type CredentialProfile = "codex" | "excel";
+export type CredentialProfile = "codex" | "excel" | "siwc";
 export interface CredentialConfig {
   account_id: number;
   email: string;

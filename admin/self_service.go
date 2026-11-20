@@ -149,6 +149,7 @@ func (h *Handler) GenerateAccountPortalAuthURL(c *gin.Context) {
 		State:        state,
 		CodeVerifier: codeVerifier,
 		RedirectURI:  oauthDefaultRedirectURI,
+		ProxyURL:     h.store.GetProxyURL(),
 		ContactEmail: email,
 		SelfService:  true,
 		CreatedAt:    time.Now(),
@@ -196,9 +197,6 @@ func (h *Handler) SubmitAccountPortalCode(c *gin.Context) {
 	defer sess.completeExchange(&oauthExchangeResult{Error: "请重新发起授权"})
 
 	proxyURL := strings.TrimSpace(sess.ProxyURL)
-	if proxyURL == "" {
-		proxyURL = h.store.GetProxyURL()
-	}
 
 	tokenResp, accountInfo, err := doOAuthCodeExchange(c.Request.Context(), req.Code, sess.CodeVerifier, sess.RedirectURI, proxyURL, "oauth-"+req.SessionID)
 	if err != nil {

@@ -98,7 +98,7 @@ func (s *Store) refreshCodexAccount(ctx context.Context, acc *Account, force boo
 		var err error
 		attempt, err = s.db.BeginCodexRefresh(ctx, dbID, generation, rt)
 		if err != nil {
-			if errors.Is(err, database.ErrCodexRefreshUncertain) {
+			if errors.Is(err, database.ErrCodexRefreshUncertain) && !acc.UsesSIWC() {
 				s.MarkError(acc, err.Error())
 			}
 			return err
@@ -147,7 +147,7 @@ func (s *Store) refreshCodexAccount(ctx context.Context, acc *Account, force boo
 			}
 			cancel()
 		}
-		if uncertain {
+		if uncertain && !acc.UsesSIWC() {
 			s.MarkError(acc, message)
 		} else if IsPermanentRefreshFailure(err) {
 			// Another credential replacement may have won while OAuth was in flight.
@@ -155,7 +155,9 @@ func (s *Store) refreshCodexAccount(ctx context.Context, acc *Account, force boo
 			if reloadErr == nil && changed && usable {
 				return s.publishCodexRefresh(ctx, acc)
 			}
-			s.markPermanentRefreshFailure(acc, errors.New(message))
+			if !acc.UsesSIWC() {
+				s.markPermanentRefreshFailure(acc, errors.New(message))
+			}
 		}
 		return errors.New(message)
 	}
@@ -194,7 +196,9 @@ func (s *Store) refreshCodexAccount(ctx context.Context, acc *Account, force boo
 		}
 		if err != nil {
 			message := "新 Token 保存失败，已停止重复消费旧 RT；请重新授权导入凭据"
-			s.MarkError(acc, message)
+			if !acc.UsesSIWC() {
+				s.MarkError(acc, message)
+			}
 			return fmt.Errorf("%s: %w", message, err)
 		}
 	} else if s.db != nil {

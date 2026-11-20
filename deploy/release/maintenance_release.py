@@ -87,6 +87,38 @@ def with_image(config, image):
     return result
 
 
+def with_candidate(config, manifest):
+    result = with_image(config, manifest['digest'])
+    runtime = manifest.get('credential_runtime')
+    if runtime is None:
+        return result
+    root = pathlib.Path(runtime['path'])
+    if not root.is_absolute() or root.is_symlink() or not root.is_dir():
+        raise ValueError('invalid credential runtime directory')
+    raw = (root / 'manifest.json').read_bytes()
+    if hashlib.sha256(raw).hexdigest() != runtime['manifest_sha256']:
+        raise ValueError('credential runtime manifest checksum mismatch')
+    files = json.loads(raw)['files']
+    if not all(name in files for name in ('python', 'worker.py', 'engines.py', 'openai_siwc_oauth_adapter.py', 'openai_siwc_password_flow.mjs')):
+        raise ValueError('credential runtime manifest incomplete')
+    for name, digest in files.items():
+        path = root / name
+        if pathlib.Path(name).is_absolute() or '..' in pathlib.Path(name).parts or path.is_symlink() or not path.resolve().is_relative_to(root.resolve()):
+            raise ValueError('unsafe credential runtime file')
+        if hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+            raise ValueError('credential runtime file checksum mismatch')
+    service = result['services'][APP]
+    target = service['environment']['CODEX2API_CREDENTIAL_OPS_RUNTIME_DIR']
+    mounts = [item for item in service['volumes'] if item['target'] == target]
+    if len(mounts) != 1 or mounts[0].get('type') != 'bind' or not mounts[0].get('read_only'):
+        raise ValueError('expected read-only credential runtime mount')
+    if pathlib.Path(mounts[0]['source']).resolve() == root.resolve():
+        raise ValueError('candidate runtime must preserve deployed bundle')
+    mounts[0]['source'] = str(root)
+    service['environment']['CODEX2API_CREDENTIAL_OPS_MANIFEST_SHA256'] = runtime['manifest_sha256']
+    return result
+
+
 def verify_service(container, service):
     env = dict(x.split('=', 1) for x in container['Config']['Env'])
     for key in env:
@@ -315,6 +347,8 @@ class MaintenanceRelease:
         record = {field: self.manifest[field] for field in fields}
         record['release_id'] = self.args.release_id
         record['source_manifest_path'] = SOURCE_RELEASE
+        if 'credential_runtime' in self.manifest:
+            record['credential_runtime'] = self.manifest['credential_runtime']
         if 'legacy_preservation_note' in self.manifest:
             record['legacy_preservation_note'] = self.manifest['legacy_preservation_note']
         self.published_source_bytes = (json.dumps(record, indent=2, sort_keys=True) + chr(10)).encode()
@@ -471,6 +505,7 @@ class MaintenanceRelease:
         self.config = json.loads(self.dc('config', '--format', 'json'))
         service = self.config['services'][APP]
         verify_service(self.old, service)
+        with_candidate(self.config, self.manifest)
         if self.env.get('DATABASE_NAME') != self.args.expected_database_name or self.env.get('DATABASE_USER') != self.args.expected_database_user:
             raise ValueError('application database target differs from explicit expected target')
         identity = self.sql('BEGIN READ ONLY; SELECT current_database(),current_user; COMMIT;')
@@ -666,6 +701,7 @@ class MaintenanceRelease:
     def deploy(self):
         self.preflight(); self.prepare_rollback(); self.rehearse()
         self.check_identity(); self.check_source_unchanged(); self.verify_protected()
+        with_candidate(self.config, self.manifest)
         try:
             self.network_gate(True)
             self.load_caddy(maintenance_config(self.caddy())); self.maintenance = True
@@ -676,7 +712,7 @@ class MaintenanceRelease:
             self.dump(self.directory / 'stopped.dump')
             self.retained_before = self.retained()
             private_write(self.directory / 'retained.before.json', json.dumps(self.retained_before))
-            atomic_write(self.compose, json.dumps(with_image(self.config, self.manifest['digest'])).encode())
+            atomic_write(self.compose, json.dumps(with_candidate(self.config, self.manifest)).encode())
             self.dc('config', '--quiet'); self.migrated = True
             self.dc('run', '--rm', '--name', self.migration_name, '--no-deps', '-e', 'CODEX_MIGRATE_ONLY=1', APP, timeout=600)
             self.verify_retained(self.retained_before)

@@ -112,3 +112,9 @@
 - Owner: current Codex chat; base origin `da1962c1`, worktree `/Users/gongtengxinwen/.codex/worktrees/upstream-release-20261117/codex2api`, branch `codex/upstream-release-20261117`. Scope: all 52 preserved local paths plus upstream merge reconciliation and release records.
 - User authorized all local changes to be committed/pushed with upstream and accepted Codex2API downtime deployment on netcup. Original snapshot `289ea37c` remains on `codex/preserved-shared-20261117`. No unknown worktree is removed.
 - Integration/recovery record: `docs/releases/2026-11-18-upstream-local-integration.md`; runtime receipts and source record determine actual deployment outcome. Main must remain clean and match the authoritative remote and built source after publication.
+
+## 2026-11-21 SIWC lifecycle implementation
+
+- Owner: current Codex chat; exclusive worktree `/Users/gongtengxinwen/.codex/worktrees/siwc-route-isolation/codex2api`; branch `codex/siwc-route-isolation`; base `511645b784db5abe8dad11cfd867ae7d7cc175c3`.
+- Scope: independent SIWC grants, authorization and refresh, password/2FA runtime, selected inference, account panel, fixed login egress, maintenance runtime promotion and their tests. User authorizes integration and deployment on netcup. Shared preserved checkout is untouched.
+- Current running source remains `9b8488f4`; candidate validation is ongoing. See `docs/siwc.md` for supported behavior and browser egress requirements. This entry is not a deployment receipt.

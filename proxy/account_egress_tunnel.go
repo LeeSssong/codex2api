@@ -12,56 +12,74 @@ import (
 	"time"
 )
 
-// StartAccountEgressTunnel adapts account proxy/IPv6 to a credential worker's
-// HTTP CONNECT input. Only connection establishment can fall back to host direct;
-// OAuth bytes pass once through the tunnel and can never be replayed here.
 func StartAccountEgressTunnel(account *auth.Account) (string, func(), error) {
-	return egressroute.StartTunnel(func(ctx context.Context, target string) (net.Conn, error) {
-		bound := account.GetProxyURL()
-		var selected xproxy.Dialer
-		var release func()
-		var err error
-		if bound != "" {
-			if auth.AccountProxyUnavailable != nil && auth.AccountProxyUnavailable(account.ID(), bound) {
-				err = fmt.Errorf("bound proxy disabled")
-			} else {
-				selected, err = buildProxyDialer(bound)
-			}
-		} else if NativeIPv6Account(account) {
-			if m := egressipv6.Current(); m != nil {
-				var route egressipv6.Route
-				route, release, err = m.AcquireAccount(ctx, account.ID())
-				if err == nil {
-					selected, err = egressipv6.NewDialer(route.Binding.IP)
-				}
-			} else {
-				err = fmt.Errorf("IPv6 unavailable")
-			}
-		} else if route, enrolled, e := resolveFixedRoute(ctx, account); enrolled {
-			err = e
-			if e == nil {
-				selected, err = buildProxyDialer(route.Binding.ProxyURL)
-			}
+	if account == nil {
+		return "", nil, fmt.Errorf("account is required")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	bound := account.GetProxyURL()
+	ipv6 := NativeIPv6Account(account)
+	var selected xproxy.Dialer
+	var release func()
+	var err error
+	if bound != "" {
+		if auth.AccountProxyUnavailable != nil && auth.AccountProxyUnavailable(account.ID(), bound) {
+			return "", nil, fmt.Errorf("bound proxy disabled")
 		}
-		if err == nil && selected != nil {
-			conn, e := dialSelected(ctx, selected, target)
-			if e == nil {
-				if release != nil {
-					return &accountTunnelConn{Conn: conn, release: release}, nil
-				}
-				return conn, nil
-			}
-			err = e
+		selected, err = buildProxyDialer(bound)
+	} else if ipv6 {
+		manager := egressipv6.Current()
+		if manager == nil {
+			return "", nil, fmt.Errorf("IPv6 unavailable")
 		}
+		var route egressipv6.Route
+		route, release, err = manager.AcquireAccount(ctx, account.ID())
+		if err == nil {
+			selected, err = egressipv6.NewDialer(route.Binding.IP)
+		}
+	} else if route, enrolled, routeErr := resolveFixedRoute(ctx, account); enrolled {
+		err = routeErr
+		if err == nil {
+			selected, err = buildProxyDialer(route.Binding.ProxyURL)
+		}
+	} else if account.WorkstationRequiresDedicatedEgress() {
+		err = fmt.Errorf("workstation requires dedicated egress")
+	} else {
+		selected = &net.Dialer{Timeout: 10 * time.Second}
+	}
+	if err != nil || selected == nil {
 		if release != nil {
 			release()
 		}
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
+		return "", nil, fmt.Errorf("account authorization egress unavailable")
+	}
+	tunnel, closeTunnel, err := egressroute.StartTunnel(func(ctx context.Context, target string) (net.Conn, error) {
+		if account.GetProxyURL() != bound || NativeIPv6Account(account) != ipv6 {
+			return nil, fmt.Errorf("account authorization route changed")
 		}
-		// Dial only: no account request has been sent, so direct is safe.
-		return (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, "tcp", target)
+		if bound != "" && auth.AccountProxyUnavailable != nil && auth.AccountProxyUnavailable(account.ID(), bound) {
+			return nil, fmt.Errorf("bound proxy disabled")
+		}
+		return dialSelected(ctx, selected, target)
 	})
+	if err != nil {
+		if release != nil {
+			release()
+		}
+		return "", nil, err
+	}
+	var once sync.Once
+	closeAll := func() {
+		once.Do(func() {
+			closeTunnel()
+			if release != nil {
+				release()
+			}
+		})
+	}
+	timer := time.AfterFunc(30*time.Minute, closeAll)
+	return tunnel, func() { timer.Stop(); closeAll() }, nil
 }
 func dialSelected(ctx context.Context, d xproxy.Dialer, target string) (net.Conn, error) {
 	if d, ok := d.(xproxy.ContextDialer); ok {
@@ -89,11 +107,3 @@ func dialSelected(ctx context.Context, d xproxy.Dialer, target string) (net.Conn
 		return nil, ctx.Err()
 	}
 }
-
-type accountTunnelConn struct {
-	net.Conn
-	release func()
-	once    sync.Once
-}
-
-func (c *accountTunnelConn) Close() error { e := c.Conn.Close(); c.once.Do(c.release); return e }

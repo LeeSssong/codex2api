@@ -102,6 +102,18 @@ func (h *Handler) ProbeUsageSnapshot(ctx context.Context, account *auth.Account)
 	// Responses 权威模式例外：若一直只做 wham，已进入冷却的账号永远没有机会用
 	// Responses 200 自证恢复，整个池可能长期只剩本地 503。
 	limited := account.InLimitedState()
+	if account.UsesSIWC() {
+		account.Mu().RLock()
+		nativeExpired := time.Until(account.ExpiresAt) < time.Minute
+		account.Mu().RUnlock()
+		if nativeExpired {
+			if err := h.store.RefreshSingle(ctx, account.ID()); err != nil {
+				return errors.New("native quota authorization refresh failed")
+			}
+		}
+		// Native quota failures cannot adjudicate the independent SIWC grant.
+		return h.probeUsageViaWham(ctx, account, limited)
+	}
 	responsesFallback := h.store.UsageProbeResponsesFallbackEnabled()
 	lazyMode := h.store.GetLazyMode()
 	authoritativeRecovery := limited && account.IgnoresUsageLimitStatus() && responsesFallback
@@ -392,6 +404,9 @@ func (h *Handler) probeUsageViaWham(ctx context.Context, account *auth.Account, 
 		// QueryWhamUsage 在非 200 时不会读 body；这里读取一小段用于账号错误详情。
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 		_ = resp.Body.Close()
+		if account.UsesSIWC() && (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusPaymentRequired) {
+			return fmt.Errorf("native quota authorization unavailable (HTTP %d)", resp.StatusCode)
+		}
 		switch resp.StatusCode {
 		case http.StatusUnauthorized:
 			if isDefinitiveRevokedTokenError(body) {

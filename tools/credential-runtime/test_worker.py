@@ -20,6 +20,8 @@ class WorkerTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         worker.STOP = False
         self.environment = patch.dict(os.environ, {
+            "HTTP_PROXY": "http://ambient.invalid:3128", "https_proxy": "http://ambient.invalid:3128",
+            "ALL_PROXY": "socks5://ambient.invalid:1080", "no_proxy": "*",
             "TOSUB2_ROOT": str(self.root), "NODE_EXECUTABLE": str(self.root / "node"),
             "CODEX2API_CREDENTIAL_OPS_WORKER_TOKEN": "w" * 32,
             "CODEX2API_CREDENTIAL_OPS_KEY": "must-not-reach-engine",
@@ -29,10 +31,11 @@ class WorkerTests(unittest.TestCase):
         self.root.joinpath("src").mkdir()
         self.root.joinpath("src/protocol-login.mjs").write_text("// test protocol")
         node = self.root / "node"
-        node.write_text("#!" + sys.executable + "\n" + """
+        node.write_text("#!" + (os.environ.get("TOSUB2_PYTHON") or sys.executable) + "\n" + """
 import json, os, pathlib, sys
 assert 'CODEX2API_CREDENTIAL_OPS_WORKER_TOKEN' not in os.environ
 assert 'CODEX2API_CREDENTIAL_OPS_KEY' not in os.environ
+assert not any(key.lower() in {'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy'} for key in os.environ)
 assert os.environ['CHATGPT_LOGIN_PASSWORD'] == 'test-password'
 assert os.environ['CHATGPT_TOTP_SECRET'] == 'JBSWY3DPEHPK3PXP'
 assert '--output-mode' in sys.argv and sys.argv[sys.argv.index('--output-mode')+1] == 'sub2api'
@@ -56,6 +59,32 @@ pathlib.Path(sys.argv[sys.argv.index('--sub2api-out')+1]).write_text(json.dumps(
         self.assertEqual(completion['credential']['refresh_token'], 'test-rt')
         self.assertTrue(self.root.joinpath('heartbeat').is_file())
 
+    def test_siwc_callback_result_reaches_server_without_native_tokens(self):
+        calls = []
+        class Finished:
+            returncode = 0
+            stdin = io.BytesIO()
+            stdout = io.BytesIO()
+            def poll(self): return 0
+        def launch(args, **kwargs):
+            Path(args[-1], 'result.json').write_text(json.dumps({
+                'siwc_session_id': 'session',
+                'siwc_callback_url': 'http://127.0.0.1:1455/auth/callback?code=synthetic&state=synthetic',
+            }))
+            return Finished()
+        def api(path, body):
+            calls.append((path, body))
+            return (200 if path.endswith('/complete') else 204), {}
+        payload = self.payload()
+        payload['login']['oauth_profile'] = 'siwc'
+        with patch.object(worker, 'request', side_effect=api), patch.object(worker.subprocess, 'Popen', side_effect=launch), patch.object(worker, 'terminate_process'):
+            worker.process_claim(payload, 'worker-test')
+        completed = [body for path, body in calls if path.endswith('/complete')]
+        self.assertEqual(len(completed), 1)
+        self.assertEqual(completed[0]['status'], 'succeeded')
+        self.assertEqual(completed[0]['credential']['siwc_session_id'], 'session')
+        self.assertNotIn('access_token', completed[0]['credential'])
+
     def test_stale_initial_claim_never_runs_engine(self):
         with patch.object(worker, 'request', return_value=(409, {})), patch.object(subprocess, 'Popen') as process:
             worker.process_claim(self.payload(), 'worker-test')
@@ -68,7 +97,7 @@ pathlib.Path(sys.argv[sys.argv.index('--sub2api-out')+1]).write_text(json.dumps(
             request.assert_not_called()
 
     def test_cancelled_renewal_kills_process_group_and_has_no_callback(self):
-        self.root.joinpath('node').write_text('#!' + sys.executable + '\nimport time\ntime.sleep(300)\n')
+        self.root.joinpath('node').write_text('#!' + (os.environ.get('TOSUB2_PYTHON') or sys.executable) + '\nimport time\ntime.sleep(300)\n')
         self.root.joinpath('node').chmod(0o700)
         calls = []
         def api(path, body):
