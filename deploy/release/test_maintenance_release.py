@@ -27,7 +27,7 @@ class GuardTests(unittest.TestCase):
 
     def test_verified_codex_legacy_alias_is_same_route(self):
         c = {'apps': {'http': {'servers': {'https': {'routes': [
-            {'match': [{'host': ['codex.xingqiaolab.top', '64-83-10-67.nip.io']}], 'handle': []}]}}}}}
+            {'match': [{'host': ['codex.xingqiaolab.top', 'codex.xingqiaolab.com', '64-83-10-67.nip.io']}], 'handle': []}]}}}}}
         self.assertIs(release.codex_route(c), c['apps']['http']['servers']['https']['routes'][0])
 
     def container(self):
