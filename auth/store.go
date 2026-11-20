@@ -633,6 +633,9 @@ func (a *Account) hasDispatchCredentialLocked() bool {
 	if a == nil {
 		return false
 	}
+	if a.SIWCEnabled {
+		return true
+	}
 	if a.isOpenAIResponsesAPILocked() {
 		return true
 	}
@@ -6308,7 +6311,7 @@ func (s *Store) buildAccountFromRow(ctx context.Context, row *database.AccountRo
 	isAgentIdentityAccount := strings.EqualFold(strings.TrimSpace(row.GetCredential("auth_mode")), CodexAuthModeAgentIdentity) &&
 		strings.TrimSpace(row.GetCredential("agent_runtime_id")) != "" &&
 		strings.TrimSpace(row.GetCredential("agent_private_key")) != ""
-	if rt == "" && st == "" && at == "" && !isOpenAIResponsesAccount && !isGrokAccount && !isAntigravityAccount && !isKiroAccount && !isAgentIdentityAccount {
+	if rt == "" && st == "" && at == "" && !isOpenAIResponsesAccount && !isGrokAccount && !isAntigravityAccount && !isKiroAccount && !isAgentIdentityAccount && !row.GetCredentialBool("siwc_account") {
 		log.Printf("[账号 %d] 缺少 refresh_token、session_token 和 access_token，跳过", row.ID)
 		return nil
 	}
@@ -6322,6 +6325,7 @@ func (s *Store) buildAccountFromRow(ctx context.Context, row *database.AccountRo
 		RefreshToken:                 rt,
 		OAuthClientID:                row.GetCredential("client_id"),
 		SIWCEnabled:                  row.GetCredentialBool("siwc_enabled"),
+		Email:                        row.GetCredential("email"),
 		SessionToken:                 st,
 		ProxyURL:                     strings.TrimSpace(row.ProxyURL),
 		IPv6EgressEnabled:            row.GetCredentialBool(IPv6EgressCredentialKey),

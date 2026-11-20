@@ -118,3 +118,5 @@
 - Owner: current Codex chat; exclusive worktree `/Users/gongtengxinwen/.codex/worktrees/siwc-route-isolation/codex2api`; branch `codex/siwc-route-isolation`; base `511645b784db5abe8dad11cfd867ae7d7cc175c3`.
 - Scope: independent SIWC grants, authorization and refresh, password/2FA runtime, selected inference, account panel, fixed login egress, maintenance runtime promotion and their tests. User authorizes integration and deployment on netcup. Shared preserved checkout is untouched.
 - Current running source remains `9b8488f4`; candidate validation is ongoing. See `docs/siwc.md` for supported behavior and browser egress requirements. This entry is not a deployment receipt.
+
+- First SIWC release `af50e9c7` deployed through the shared lock. Old `.top` DNS failed after internal checks; locked recovery retained current DB and passed full external checks through the existing `.com` vhost. Runtime manifest `a728f5ec...`, worker SIWC capability verified. A follow-up adds standalone SIWC account creation and corrects public-host preflight; first candidate is historical after that release.

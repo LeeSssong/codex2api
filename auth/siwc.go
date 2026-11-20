@@ -14,3 +14,11 @@ func (a *Account) SetSIWCEnabled(enabled bool) {
 	a.SIWCEnabled = enabled
 	a.mu.Unlock()
 }
+
+// ApplySIWCSelection updates the scheduler projection after a durable selection.
+func (s *Store) ApplySIWCSelection(id int64, enabled bool) {
+	if account := s.FindByID(id); account != nil {
+		account.SetSIWCEnabled(enabled)
+		s.fastSchedulerUpdate(account)
+	}
+}

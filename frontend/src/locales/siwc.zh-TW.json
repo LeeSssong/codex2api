@@ -24,5 +24,13 @@
   "confirm": "確認撤銷",
   "cancel": "取消",
   "saved": "SIWC 授權已儲存，可以選擇 SIWC 通道。",
-  "unverified": "已綁定不代表訂閱資格或實際推理已經驗證。"
+  "unverified": "已綁定不代表訂閱資格或實際推理已經驗證。",
+  "create": "建立 SIWC 帳號",
+  "standalone": "可直接授權 SIWC，無需先完成 Codex 登入。額度查詢等原生功能需要另行補充 Codex 授權。瀏覽器授權可不填密碼。",
+  "enableAfterAuthorization": "完成授權並選擇 SIWC 通道後，在帳號清單啟用此帳號。",
+  "email": "登入信箱",
+  "passwordOptional": "密碼（2FA 登入時填寫）",
+  "totpOptional": "TOTP 金鑰（啟用 2FA 時填寫）",
+  "egress": "固定登入出口",
+  "direct": "伺服器直連"
 }

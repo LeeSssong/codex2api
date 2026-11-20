@@ -24,5 +24,13 @@
   "confirm": "Confirm revocation",
   "cancel": "Cancel",
   "saved": "SIWC authorization saved. Select SIWC when ready.",
-  "unverified": "Bound status does not prove plan eligibility or a successful inference request."
+  "unverified": "Bound status does not prove plan eligibility or a successful inference request.",
+  "create": "Create SIWC account",
+  "standalone": "Authorize SIWC directly. Add a native Codex grant later for quota and native operations. Browser authorization does not require a saved password.",
+  "enableAfterAuthorization": "After authorizing and selecting SIWC, enable this account in the account list.",
+  "email": "Login email",
+  "passwordOptional": "Password (for password/2FA login)",
+  "totpOptional": "TOTP secret (if 2FA is enabled)",
+  "egress": "Fixed login egress",
+  "direct": "Server direct connection"
 }

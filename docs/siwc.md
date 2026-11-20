@@ -1,6 +1,6 @@
 # SIWC authorization and inference
 
-An existing OpenAI OAuth account can bind an independent SIWC grant in the account editor. Create the native account with the existing authorization-link or password/2FA import flow first. Native credentials remain available for quota and compact operations. Binding does not select the inference protocol automatically.
+Create an SIWC account directly from the Add Account dialog, using an email and a fixed egress, with optional saved password/TOTP credentials. The pending account starts disabled. Complete browser or worker authorization, select SIWC, then enable the account in the account list. Existing OpenAI OAuth accounts can also bind an independent SIWC grant. Native credentials are optional for SIWC inference but required for quota and compact operations. Binding does not select the inference protocol automatically.
 
 SIWC supports browser authorization and the saved password/2FA worker. Browser authorization requires the browser to use the account's fixed egress; the browser's network settings cannot be imposed by an authorization link. The worker uses one authenticated loopback tunnel for login and callback/token exchange. The selected upstream dialer is frozen for the session, with no direct fallback. An egress or account identity change requires a new authorization session.
 

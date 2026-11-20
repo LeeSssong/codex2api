@@ -2,7 +2,9 @@ package admin
 
 import (
 	"net/http"
+	"net/mail"
 	"strconv"
+	"strings"
 
 	"github.com/codex2api/credentialops/siwc"
 	"github.com/codex2api/database"
@@ -115,9 +117,7 @@ func (h *Handler) SelectSIWC(c *gin.Context) {
 		writeError(c, 503, "cannot save protocol selection")
 		return
 	}
-	if account := h.store.FindByID(row.ID); account != nil {
-		account.SetSIWCEnabled(*input.Enabled)
-	}
+	h.store.ApplySIWCSelection(row.ID, *input.Enabled)
 	h.GetSIWCState(c)
 }
 
@@ -139,4 +139,65 @@ func (h *Handler) RevokeSIWC(c *gin.Context) {
 		}
 	}
 	h.GetSIWCState(c)
+}
+
+// CreateSIWCAccount creates an inactive identity anchor; only a verified grant
+// can be selected, and no native token is invented or copied from SIWC.
+func (h *Handler) CreateSIWCAccount(c *gin.Context) {
+	var input struct {
+		Email      string `json:"email"`
+		Name       string `json:"name"`
+		ProxyID    int64  `json:"proxy_id"`
+		Password   string `json:"password"`
+		TOTPSecret string `json:"totp_secret"`
+	}
+	if c.ShouldBindJSON(&input) != nil {
+		writeError(c, 400, "invalid SIWC account")
+		return
+	}
+	input.Email = strings.ToLower(strings.TrimSpace(input.Email))
+	address, err := mail.ParseAddress(input.Email)
+	if err != nil || address.Address != input.Email || len(input.Name) > 200 {
+		writeError(c, 400, "valid email and name required")
+		return
+	}
+	if input.Password != "" {
+		if _, err := h.prepareCredentialConfig(c, 0, credentialOpsConfigRequest{Email: input.Email, Mode: "password_totp", Engine: "local_worker", ProxySource: "direct", Password: input.Password, TOTPSecret: input.TOTPSecret}); err != nil {
+			writeError(c, 400, "invalid login credentials or encryption unavailable")
+			return
+		}
+	}
+	proxyURL := ""
+	if input.ProxyID > 0 {
+		selected, err := h.db.GetProxy(c.Request.Context(), input.ProxyID)
+		if err != nil || selected == nil || !selected.Enabled {
+			writeError(c, 400, "selected proxy unavailable")
+			return
+		}
+		proxyURL = selected.URL
+	}
+	name := strings.TrimSpace(input.Name)
+	if name == "" {
+		name = input.Email
+	}
+	id, err := h.db.InsertPendingAccountWithCredentials(c.Request.Context(), name, map[string]any{"email": input.Email, "siwc_account": true, "ipv6_egress_enabled": false}, proxyURL, "SIWC authorization pending", nil)
+	if err != nil {
+		writeError(c, 503, "cannot create SIWC account")
+		return
+	}
+	if input.Password != "" {
+		cfg, err := h.prepareCredentialConfig(c, id, credentialOpsConfigRequest{Email: input.Email, Mode: "password_totp", Engine: "local_worker", ProxySource: "account", Password: input.Password, TOTPSecret: input.TOTPSecret})
+		if err == nil {
+			err = h.db.UpsertCredentialOpsLoginConfig(c.Request.Context(), cfg)
+		}
+		if err != nil {
+			c.JSON(409, gin.H{"id": id, "error": "account created; save login credentials before 2FA authorization"})
+			return
+		}
+	}
+	if err := h.store.LoadAccountByID(c.Request.Context(), id); err != nil {
+		writeError(c, 503, "cannot load SIWC account")
+		return
+	}
+	c.JSON(201, gin.H{"id": id})
 }

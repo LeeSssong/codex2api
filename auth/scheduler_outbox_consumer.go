@@ -487,6 +487,7 @@ func (s *Store) applyPersistentAccountSnapshot(dst, src *Account, enabled bool) 
 	dst.RefreshToken = src.RefreshToken
 	dst.UpstreamRequestIDHeader = src.UpstreamRequestIDHeader
 	dst.SessionToken = src.SessionToken
+	dst.SIWCEnabled = src.SIWCEnabled
 	dst.AccessToken = src.AccessToken
 	dst.ExpiresAt = src.ExpiresAt
 	dst.AccountID = src.AccountID

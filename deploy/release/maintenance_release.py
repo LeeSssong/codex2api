@@ -24,7 +24,7 @@ import urllib.request
 APP = 'codex2api'
 PG = 'codex2api-postgres'
 CADDY = 'sub2api-caddy-1'
-HOST = 'codex.xingqiaolab.top'
+HOST = 'codex.xingqiaolab.com'
 EXE = '/usr/local/bin/codex2api'
 SOURCE_RELEASE = '/opt/codex2api/source-release.json'
 
@@ -246,8 +246,8 @@ def codex_route(config):
     for server in config.get('apps', {}).get('http', {}).get('servers', {}).values():
         for route in server.get('routes', []):
             hosts = [h for match in route.get('match', []) for h in match.get('host', [])]
-            if HOST in hosts:
-                if not set(hosts).issubset({HOST, 'codex.xingqiaolab.com', '64-83-10-67.nip.io'}):
+            if set(hosts).intersection({HOST, 'codex.xingqiaolab.top'}):
+                if not set(hosts).issubset({HOST, 'codex.xingqiaolab.top', '64-83-10-67.nip.io'}):
                     raise ValueError('Codex route shares another hostname')
                 routes.append(route)
     if len(routes) != 1:
@@ -349,6 +349,10 @@ class MaintenanceRelease:
         record['source_manifest_path'] = SOURCE_RELEASE
         if 'credential_runtime' in self.manifest:
             record['credential_runtime'] = self.manifest['credential_runtime']
+        elif self.source_before is not None:
+            previous_runtime = json.loads(self.source_before).get('credential_runtime')
+            if previous_runtime is not None:
+                record['credential_runtime'] = previous_runtime
         if 'legacy_preservation_note' in self.manifest:
             record['legacy_preservation_note'] = self.manifest['legacy_preservation_note']
         self.published_source_bytes = (json.dumps(record, indent=2, sort_keys=True) + chr(10)).encode()
@@ -522,6 +526,7 @@ class MaintenanceRelease:
         self.subnet = subnets[0]; self.gated = False
         self.run(['iptables', '-S', 'DOCKER-USER'])
         self.json_request('/health')
+        self.json_request('/health', public=True)
         self.worker_required = bool(self.env.get('CODEX2API_CREDENTIAL_OPS_RUNTIME_DIR'))
         self.verify_worker_enabled_configuration()
         self.directory.mkdir(mode=0o700, parents=True, exist_ok=False)

@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"encoding/json"
 	"github.com/codex2api/credentialops/siwc"
 	"github.com/gin-gonic/gin"
 	"net/http"
@@ -61,5 +62,31 @@ func TestSIWCSelectionAndRevocationLeaveNativeGrantIntact(t *testing.T) {
 	after, err := db.GetAccountByID(ctx, id)
 	if err != nil || after.GetCredential("refresh_token") != "native-keep" {
 		t.Fatal("native grant changed", err)
+	}
+}
+
+func TestSIWCStandaloneAccountStartsDisabledWithoutNativeCredentials(t *testing.T) {
+	h, store, db := newImportEndToEndHandler(t)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/accounts/siwc", strings.NewReader(`{"email":"standalone@example.com"}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+	h.CreateSIWCAccount(c)
+	if rec.Code != 201 {
+		t.Fatal(rec.Code, rec.Body.String())
+	}
+	var result struct {
+		ID int64 `json:"id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	row, err := db.GetAccountByID(context.Background(), result.ID)
+	if err != nil || row.Enabled || row.GetCredential("refresh_token") != "" || !row.GetCredentialBool("siwc_account") {
+		t.Fatal("invalid standalone account", err)
+	}
+	account := store.FindByID(result.ID)
+	if account == nil || account.UsesSIWC() || account.IsAvailable() {
+		t.Fatal("pending account was unavailable or dispatchable")
 	}
 }

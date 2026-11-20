@@ -24,5 +24,13 @@
   "confirm": "确认撤销",
   "cancel": "取消",
   "saved": "SIWC 授权已保存，可以选择 SIWC 通道。",
-  "unverified": "已绑定不代表订阅资格或真实推理已经验证。"
+  "unverified": "已绑定不代表订阅资格或真实推理已经验证。",
+  "create": "创建 SIWC 账号",
+  "standalone": "可以直接授权 SIWC，无需先完成 Codex 登录。额度查询等原生功能需要后续补充 Codex 授权。浏览器授权可不填写密码。",
+  "enableAfterAuthorization": "完成授权并选择 SIWC 通道后，在账号列表启用此账号。",
+  "email": "登录邮箱",
+  "passwordOptional": "密码（2FA 登录时填写）",
+  "totpOptional": "TOTP 密钥（启用 2FA 时填写）",
+  "egress": "固定登录出口",
+  "direct": "服务器直连"
 }

@@ -297,6 +297,12 @@ func (h *Handler) withCodexRouteFilter(c *gin.Context, requested, model string, 
 			d.rememberSelectionReasons(account.ID(), []string{"model_or_account_filter"})
 			return false
 		}
+		if account.UsesSIWC() && !strings.HasSuffix(c.Request.URL.Path, "/compact") && (limits.CodexRoutePolicy == "" || limits.CodexRoutePolicy == database.CodexRouteInherit) && (limits.CodexCapabilityFilter == "" || limits.CodexCapabilityFilter == "any") {
+			d.mu.Lock()
+			allowed := d.historyError == nil && d.policyError == nil && d.pinnedPath == ""
+			d.mu.Unlock()
+			return allowed
+		}
 		if account.IsRelayStyle() {
 			if d.relayViolatesModelPolicy(account, c.Request.URL.Path, body) {
 				d.rememberSelectionReasons(account.ID(), []string{"basispoints:relay_forbidden"})

@@ -75,7 +75,7 @@ func beginSIWCAuthorization(ctx context.Context, accountID int64, worker *databa
 	}
 	row, err := service.db.GetAccountByID(ctx, accountID)
 	if err != nil || row == nil || !database.CredentialOperationsEligible(row) || row.GetCredential("email") == "" {
-		return SIWCAuthorizationResult{}, errors.New("a native OAuth account with verified email is required")
+		return SIWCAuthorizationResult{}, errors.New("an OpenAI account with an expected login email is required")
 	}
 	if err := service.store.LoadAccountByID(ctx, accountID); err != nil {
 		return SIWCAuthorizationResult{}, err

@@ -14,6 +14,7 @@ import { api, getAdminKey, resetAdminAuthState } from "../api";
 import type { ProxyRow } from "../api";
 import { ProxyField, type LocalIPv6Field } from "../components/ProxyField";
 import { accountEgressPatch, importEgressFields, importTimezoneFields, selectAccountEgress } from "../lib/accountIPv6";
+import NewSIWCAccount from "../components/NewSIWCAccount";
 import SIWCAccountPanel from "../components/SIWCAccountPanel";
 import { canManuallySelectIPv6 } from "../lib/accountIPv6Manual";
 import ImportTimezoneControl from "../components/ImportTimezoneControl";
@@ -2172,7 +2173,7 @@ export default function Accounts() {
     ids: [],
   });
   const [addMethod, setAddMethod] = useState<
-    "rt" | "st" | "at" | "session" | "openai" | "oauth" | "agentIdentity" | "twofa"
+    "rt" | "st" | "at" | "session" | "openai" | "oauth" | "agentIdentity" | "twofa" | "siwc"
   >("oauth");
   const [agentIdentityJson, setAgentIdentityJson] = useState("");
   const [agentIdentityProxyUrl, setAgentIdentityProxyUrl] = useState("");
@@ -8486,7 +8487,10 @@ export default function Accounts() {
               </button>
             </div>
 
-            {addMethod === "twofa" ? (
+            <Button type="button" variant="outline" onClick={() => setAddMethod("siwc")}>{t("siwc.create")}</Button>
+            {addMethod === "siwc" ? (
+              <NewSIWCAccount onSaved={() => void refreshAccountPage()} />
+            ) : addMethod === "twofa" ? (
               <TwoFAImport onSaved={() => void refreshAccountPage()} />
             ) : addMethod === "rt" ? (
               <div className="space-y-4">

@@ -1467,6 +1467,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 
 	// OAuth 授权流程
 	api.POST("/oauth/generate-auth-url", h.GenerateOAuthURL)
+	api.POST("/accounts/siwc", h.CreateSIWCAccount)
 	api.GET("/accounts/:id/siwc", h.GetSIWCState)
 	api.POST("/accounts/:id/siwc/authorize", h.BeginSIWC)
 	api.POST("/accounts/:id/siwc/callback", h.CompleteSIWC)
