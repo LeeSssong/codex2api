@@ -217,6 +217,31 @@ class GuardTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'configuration'):
             tool.verify_retained(before)
 
+    def test_quota_smoke_allows_an_empty_live_account_set(self):
+        tool = release.MaintenanceRelease.__new__(release.MaintenanceRelease)
+        tool.manifest = {'build_version': 'v', 'binary_sha256': 'abc'}
+        tool.sql = lambda query, database=None: ''
+        seen = []
+        def json_request(path, public=False):
+            seen.append(path)
+            if path == '/health':
+                return {'build_version': 'v', 'status': 'ok'}
+            if path == '/api/admin/accounts/page-stats':
+                return {'items': []}
+            return {}
+        tool.json_request = json_request
+        tool.request = lambda path, public=False: ('text/html', b'<html></html>')
+        tool.binary_hash = lambda: 'abc'
+        tool.worker_required = False
+        tool.retained_before = {}
+        tool.verify_retained = lambda before: None
+        tool.verify_protected = lambda: None
+        tool.smoke()
+        self.assertIn('/api/admin/accounts/page-stats', seen)
+        tool.json_request = lambda path, public=False: {'items': [{'id': 1}]} if path.endswith('page-stats') else {'build_version': 'v'}
+        with self.assertRaisesRegex(RuntimeError, 'quota smoke'):
+            tool.smoke()
+
     def test_quota_smoke_requires_requested_rows_and_both_windows(self):
         valid = {'stats': {'12': {'quota_5h': {'state': 'no_usage'}, 'quota_7d': {'state': 'low_sample', 'used_usd': 2.0}}}}
         release.validate_quota_stats(valid, [12])

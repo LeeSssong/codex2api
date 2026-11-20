@@ -601,9 +601,10 @@ class MaintenanceRelease:
                      '/api/admin/credential-ops/encryption']:
             self.json_request(path, public)
         ids = [int(x) for x in self.sql("SELECT id FROM accounts WHERE status<>'deleted' ORDER BY id LIMIT 3").splitlines()]
-        if not ids:
-            raise RuntimeError('no eligible account IDs available for quota smoke')
-        validate_quota_stats(self.json_request('/api/admin/accounts/page-stats?ids=' + ','.join(str(x) for x in ids), public), ids)
+        if ids:
+            validate_quota_stats(self.json_request('/api/admin/accounts/page-stats?ids=' + ','.join(str(x) for x in ids), public), ids)
+        elif self.json_request('/api/admin/accounts/page-stats', public).get('items'):
+            raise RuntimeError('quota smoke returned accounts while none are eligible')
         for path in ['/admin/accounts', '/admin/intelligence-check', '/admin/credential-ops']:
             if b'<html' not in self.request(path, public)[1].lower():
                 raise RuntimeError('admin UI shell missing')

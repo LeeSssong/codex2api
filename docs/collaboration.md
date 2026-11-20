@@ -99,6 +99,14 @@
 - Release/recovery: `docs/releases/2026-11-02-client-identity.md`. Artifacts `/opt/codex2api/releases/client-identity-quiet-20261102-d12e0775/`; backup `/opt/codex2api/backups/client-identity-quiet-20261102-d12e0775/`. Do not restore the stopped dump over newer writes or redeploy this candidate. The shared dirty checkout remains preserved.
 
 
+## 2026-11-20 account workstation — deployed
+
+- Owner: this chat; worktree `/Users/gongtengxinwen/Documents/codex2api/.worktrees/account-workstation`; branch `grok/account-workstation`.
+- User authorized the four workstation steps and direct downtime deployment while Codex2API was not serving. Target netcup `159.195.12.230`, Codex2API only.
+- Deployed application `9b8488f49ef2cc4d516fe35c861b81c2e4f25ca7`, tree `62d846c174a3e9783465a923d95dff08537e82ef`, binary `96d9244e8cb2fa3e2cf52a526fdd84bf4513adbb63029232a148abd9081f05a2`, image `sha256:c6c46673cfae4e20c2931e7001dee8917a8de5d17dd6002cebc92c51a68e5633`.
+- Maintenance 149.613 seconds. Empty account set kept the candidate running; stopped dump was not restored. Intelligence revision 17, enabled, 1800 seconds, history `[293, 293]`.
+- Record: `docs/releases/2026-11-20-account-workstation.md`.
+
 ## 2026-11-18 upstream/local integration ownership
 
 - Owner: current Codex chat; base origin `da1962c1`, worktree `/Users/gongtengxinwen/.codex/worktrees/upstream-release-20261117/codex2api`, branch `codex/upstream-release-20261117`. Scope: all 52 preserved local paths plus upstream merge reconciliation and release records.

@@ -258,4 +258,14 @@ User authorized implementation and tests but explicitly said **do not deploy yet
 
 Owner: current Codex chat; isolated branch `codex/upstream-release-20261117`. User explicitly authorized pushing integrated main and downtime deployment to netcup `159.195.12.230`, Codex2API only. Upstream `4514623dda4ae025fde5af439345c1c0ba641a7c`; all 52 original local changes archived in `289ea37c70e8c97e5a7349d2b3113658e1a1a34a` and reconciled against current origin and upstream APIs.
 
-Release/integration inventory and recovery contract: `docs/releases/2026-11-18-upstream-local-integration.md`. The clean main commit containing that record is the source candidate. Actual deployed commit/tree/digests and release ID are authoritative at `/opt/codex2api/source-release.json`; actual downtime, stopped backup, rehearsal and final verification are stored in `/opt/codex2api/backups/upstream-local-20261118-<source-prefix>/`. Local protected evidence is `/Users/gongtengxinwen/.config/codex2api/upstream-release-20261117/`. Consult those receipts before any further release or recovery; older statuses above are historical and must not be redeployed. Preserve all seven administrative account-disable switches and intelligence revision17/enabled/1800s/3600s intent.
+Release/integration inventory and recovery contract: `docs/releases/2026-11-18-upstream-local-integration.md`. That release remains the previous baseline. Its receipts stay at `/opt/codex2api/backups/upstream-local-20261118-7280c31c/`.
+
+## 2026-11-20 account workstation — deployed
+
+Owner: this chat. Worktree `/Users/gongtengxinwen/Documents/codex2api/.worktrees/account-workstation`, branch `grok/account-workstation`. User authorized the four workstation steps and a fast Codex2API deploy on netcup `159.195.12.230`.
+
+Running application source is `9b8488f49ef2cc4d516fe35c861b81c2e4f25ca7`, tree `62d846c174a3e9783465a923d95dff08537e82ef`, binary `96d9244e8cb2fa3e2cf52a526fdd84bf4513adbb63029232a148abd9081f05a2`, image `sha256:c6c46673cfae4e20c2931e7001dee8917a8de5d17dd6002cebc92c51a68e5633`. Container `b72cadafbdb3ebe295cdc10b99998c6057ee2baab65af0c9be18445c4614d0e0`. Upstream ancestor `4514623dda4ae025fde5af439345c1c0ba641a7c`. Authoritative record: `/opt/codex2api/source-release.json`.
+
+Maintenance 2026-11-20 23:58:11.386 +08:00 through public health at 2026-11-21 00:00:41 +08:00 (149.613 seconds). The first smoke stopped on an empty non-deleted account set; the stopped dump was not restored. Intelligence stayed revision 17, enabled, interval 1800 seconds, history `[293, 293]`. No account was enabled. Rollback image `sha256:66c6c44bebed74ad4d9423f1f438387d91d042e800bf1922dec49e5f196591e9`.
+
+Details: `docs/releases/2026-11-20-account-workstation.md`. Artifacts `/opt/codex2api/releases/workstation-20261120-9b8488f4/`; backup `/opt/codex2api/backups/workstation-20261120-9b8488f4/`. Do not restore that stopped dump over later writes.
