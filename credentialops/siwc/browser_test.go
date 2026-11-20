@@ -99,3 +99,18 @@ func TestReturningClientConsentCallbacks(t *testing.T) {
 		})
 	}
 }
+
+func TestDynamicRegistrationUsesUUIDURN(t *testing.T) {
+	host := NewHostID()
+	if !strings.HasPrefix(host, "urn:uuid:") || len(host) != 45 {
+		t.Fatalf("invalid host registration: %q", host)
+	}
+	_, location, err := BeginBrowser("dynamic_agent_client", host, "account", "route", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := url.Parse(location)
+	if err != nil || parsed.Query().Get("ext_agent_host_id") != host {
+		t.Fatal("host URN missing from authorization request")
+	}
+}

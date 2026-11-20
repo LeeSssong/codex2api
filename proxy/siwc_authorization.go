@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"sync"
 	"time"
 
@@ -98,7 +99,7 @@ func beginSIWCAuthorization(ctx context.Context, accountID int64, worker *databa
 	if err != nil {
 		return SIWCAuthorizationResult{}, err
 	}
-	clientID, hostID := "dynamic_agent_client", uuid.NewString()
+	clientID, hostID := "dynamic_agent_client", siwc.NewHostID()
 	expected := siwc.Identity{Email: row.GetCredential("email")}
 	var generation int64
 	invalidated := false
@@ -115,6 +116,11 @@ func beginSIWCAuthorization(ctx context.Context, accountID int64, worker *databa
 	if err != nil {
 		return SIWCAuthorizationResult{}, err
 	}
+	parsed, _ := url.Parse(location)
+	query := parsed.Query()
+	query.Set("login_hint", expected.Email)
+	parsed.RawQuery = query.Encode()
+	location = parsed.String()
 	id := uuid.NewString()
 	entry := &siwcAuthorization{accountID: accountID, generation: row.CredentialGeneration, grantGeneration: generation, route: route, hostID: hostID, expected: expected, workspace: row.GetCredential("workspace_id"), invalidated: invalidated, session: session, client: auth.BuildUTLSHTTPClient(tunnel), release: release}
 	siwcAuthorizations.Lock()

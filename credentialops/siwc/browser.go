@@ -6,11 +6,14 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"errors"
+	"github.com/google/uuid"
 	"net/url"
 	"strings"
 	"sync"
 	"time"
 )
+
+func NewHostID() string { return "urn:uuid:" + uuid.NewString() }
 
 const redirectURI = "http://127.0.0.1:1455/auth/callback"
 
