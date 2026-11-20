@@ -269,3 +269,12 @@ Running application source is `9b8488f49ef2cc4d516fe35c861b81c2e4f25ca7`, tree `
 Maintenance 2026-11-20 23:58:11.386 +08:00 through public health at 2026-11-21 00:00:41 +08:00 (149.613 seconds). The first smoke stopped on an empty non-deleted account set; the stopped dump was not restored. Intelligence stayed revision 17, enabled, interval 1800 seconds, history `[293, 293]`. No account was enabled. Rollback image `sha256:66c6c44bebed74ad4d9423f1f438387d91d042e800bf1922dec49e5f196591e9`.
 
 Details: `docs/releases/2026-11-20-account-workstation.md`. Artifacts `/opt/codex2api/releases/workstation-20261120-9b8488f4/`; backup `/opt/codex2api/backups/workstation-20261120-9b8488f4/`. Do not restore that stopped dump over later writes.
+
+
+## 2026-11-21 SIWC lifecycle — deployed, real grant blocked upstream
+
+Running application source `077be3decba972f77c4335fe504baa79511d4bd1` at https://codex.xingqiaolab.com; authoritative source receipt and independently checked executable/image agree. SIWC standalone account, browser/2FA authorization, lifecycle, selected inference, native quota/compact routing and fixed session egress are deployed. No downstream-key exclusivity restriction. Runtime/worker and intelligence revision17/enabled/1800 seconds/history293 preserved. Latest downtime19.437s. `af50e9c7` and `f6936c66` are superseded historical releases.
+
+Real password/TOTP/workspace selection succeeded; final SIWC consent returned403 requiring organization administrator app approval and **Use ChatGPT plan = Allowed**. Account86 remains disabled/unbound. Real inference, refresh and this account's native quota are not verified. New consent screen is handed to browser. Browser authorization must use the same egress as the account. No further authorization attempts should be made until the actual upstream permission issue is resolved.
+
+Full release hashes, test results, stopped backup/rehearsal, prior DNS recovery and rollback constraints: `docs/releases/2026-11-21-siwc-lifecycle.md`. Production has accepted new writes; never restore an old dump. Subsequent documentation commits require no application deployment.

@@ -120,3 +120,12 @@
 - Current running source remains `9b8488f4`; candidate validation is ongoing. See `docs/siwc.md` for supported behavior and browser egress requirements. This entry is not a deployment receipt.
 
 - First SIWC release `af50e9c7` deployed through the shared lock. Old `.top` DNS failed after internal checks; locked recovery retained current DB and passed full external checks through the existing `.com` vhost. Runtime manifest `a728f5ec...`, worker SIWC capability verified. A follow-up adds standalone SIWC account creation and corrects public-host preflight; first candidate is historical after that release.
+
+
+## 2026-11-21 SIWC lifecycle — deployed, real grant blocked upstream
+
+Running application source `077be3decba972f77c4335fe504baa79511d4bd1` at https://codex.xingqiaolab.com; authoritative source receipt and independently checked executable/image agree. SIWC standalone account, browser/2FA authorization, lifecycle, selected inference, native quota/compact routing and fixed session egress are deployed. No downstream-key exclusivity restriction. Runtime/worker and intelligence revision17/enabled/1800 seconds/history293 preserved. Latest downtime19.437s. `af50e9c7` and `f6936c66` are superseded historical releases.
+
+Real password/TOTP/workspace selection succeeded; final SIWC consent returned403 requiring organization administrator app approval and **Use ChatGPT plan = Allowed**. Account86 remains disabled/unbound. Real inference, refresh and this account's native quota are not verified. New consent screen is handed to browser. Browser authorization must use the same egress as the account. No further authorization attempts should be made until the actual upstream permission issue is resolved.
+
+Full release hashes, test results, stopped backup/rehearsal, prior DNS recovery and rollback constraints: `docs/releases/2026-11-21-siwc-lifecycle.md`. Production has accepted new writes; never restore an old dump. Subsequent documentation commits require no application deployment.
