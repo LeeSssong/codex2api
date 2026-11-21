@@ -13,11 +13,19 @@ import (
 // Selection is fetched durably so OAuth (which only has an account ID) and stale
 // transports follow the same membership as freshly loaded runtime accounts.
 func (m *Manager) Selection(ctx context.Context, id int64) (configured, enabled bool, proxyURL string, err error) {
+	configured, enabled, proxyURL, _, err = m.RouteSelection(ctx, id)
+	return
+}
+
+func (m *Manager) RouteSelection(ctx context.Context, id int64) (configured, enabled bool, proxyURL, pinnedIP string, err error) {
 	row, err := m.DB.GetAccountByID(ctx, id)
 	if err != nil {
-		return false, false, "", err
+		return false, false, "", "", err
 	}
-	return row.GetCredentialOptionalBool("ipv6_egress_enabled") != nil, row.GetCredentialBool("ipv6_egress_enabled") && row.ProxyURL == "", row.ProxyURL, nil
+	if pinned := row.GetCredential(database.PinnedIPv6CredentialKey); pinned != "" {
+		return true, true, "", pinned, nil
+	}
+	return row.GetCredentialOptionalBool("ipv6_egress_enabled") != nil, row.GetCredentialBool("ipv6_egress_enabled") && row.ProxyURL == "", row.ProxyURL, "", nil
 }
 func (m *Manager) AcquireAccount(ctx context.Context, id int64) (Route, func(), error) {
 	_, enabled, _, err := m.Selection(ctx, id)
@@ -36,6 +44,18 @@ func (m *Manager) AcquireAccount(ctx context.Context, id int64) (Route, func(), 
 	}
 	release, err := m.TrackAccountRoute(ctx, id, route.Binding.IP)
 	return route, release, err
+}
+
+func (m *Manager) ValidatePinnedSource(ip string) error {
+	local, err := m.LocalIPs()
+	if err != nil {
+		return err
+	}
+	values, err := ValidateSources([]string{ip}, local)
+	if err != nil || len(values) != 1 || values[0] != ip {
+		return database.ErrIPv6InvalidSource
+	}
+	return nil
 }
 func (m *Manager) TrackAccountRoute(ctx context.Context, id int64, ip string) (func(), error) {
 	var b [16]byte

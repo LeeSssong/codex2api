@@ -17,7 +17,20 @@ var ErrCredentialOpsStale = errors.New("credential task lease or generation chan
 var ErrCredentialOpsDisabled = errors.New("credential operations is disabled")
 
 func (db *DB) FailCredentialOpsTask(ctx context.Context, id int64, owner string, attempt int) error {
-	res, err := db.conn.ExecContext(ctx, `UPDATE credential_operations_tasks SET status='failed',stage='failed',error_message='login protocol failed',lease_owner='',lease_until=NULL,finished_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=$1 AND lease_owner=$2 AND attempt=$3 AND status='running' AND lease_until>CURRENT_TIMESTAMP`, id, owner, attempt)
+	return db.FailCredentialOpsTaskWithCode(ctx, id, owner, attempt, "")
+}
+
+func (db *DB) FailCredentialOpsTaskWithCode(ctx context.Context, id int64, owner string, attempt int, code string) error {
+	message := "login protocol failed"
+	switch code {
+	case "email_verification_required":
+		message = "Email verification required. Use browser-based OAuth import to complete sign-in."
+	case "security_verification_required":
+		message = "Additional security verification required. Use browser-based OAuth import to complete sign-in."
+	case "strict_ipv6_unavailable":
+		message = "Selected IPv6 is unavailable. No alternate egress was attempted."
+	}
+	res, err := db.conn.ExecContext(ctx, `UPDATE credential_operations_tasks SET status='failed',stage='failed',error_message=$4,lease_owner='',lease_until=NULL,finished_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=$1 AND lease_owner=$2 AND attempt=$3 AND status='running' AND lease_until>CURRENT_TIMESTAMP`, id, owner, attempt, message)
 	if err != nil {
 		return err
 	}
@@ -216,6 +229,14 @@ func (db *DB) createCredentialOpsTaskWithConfig(ctx context.Context, accountID, 
 		if cfg.OAuthProfile != "codex" && cfg.OAuthProfile != "excel" && cfg.OAuthProfile != "siwc" {
 			return errors.New("invalid OAuth profile")
 		}
+		if cfg.PinnedIPv6 != "" && (accountID != 0 || cfg.OAuthProfile != "codex" || cfg.CredentialMode != "password_totp" || cfg.Engine != "local_worker" || cfg.ProxySource != "direct") {
+			return errors.New("strict IPv6 requires a first Codex password/TOTP import with the local worker")
+		}
+		if accountID == 0 {
+			if err = db.checkPinnedIPv6ImportIdentity(ctx, tx, cfg); err != nil {
+				return err
+			}
+		}
 		cfg.AccountID = accountID
 		if err = db.freezeCredentialOpsRouteTx(ctx, tx, &cfg); err != nil {
 			return err
@@ -223,6 +244,11 @@ func (db *DB) createCredentialOpsTaskWithConfig(ctx context.Context, accountID, 
 		task = &CredentialOpsTaskRow{OAuthProfile: cfg.OAuthProfile, Kind: "login", ConfigRevision: cfg.Revision, AccountID: accountID, ExpectedGeneration: generation, Status: "queued", Stage: "queued"}
 		if err = tx.QueryRowContext(ctx, `INSERT INTO credential_operations_tasks(account_id,status,stage,expected_generation,config_revision,oauth_profile,import_key) VALUES($1,'queued','queued',$2,$3,$4,$5) RETURNING id,created_at,updated_at`, accountID, generation, cfg.Revision, cfg.OAuthProfile, cfg.ImportKey).Scan(&task.ID, &task.CreatedAt, &task.UpdatedAt); err != nil {
 			return err
+		}
+		if cfg.PinnedIPv6 != "" {
+			if err = reservePinnedIPv6(ctx, tx, task.ID, cfg.PinnedIPv6); err != nil {
+				return err
+			}
 		}
 		payload, err := json.Marshal(cfg)
 		if err != nil {
@@ -336,6 +362,17 @@ func (db *DB) CommitCredentialOpsLogin(ctx context.Context, id int64, owner stri
 		if err = db.validateCredentialOpsRouteTx(ctx, tx, cfg); err != nil {
 			return err
 		}
+		if cfg.PinnedIPv6 != "" {
+			if !firstImport {
+				return ErrCredentialOpsStale
+			}
+			if err = lockIPv6Pool(ctx, tx); err != nil {
+				return err
+			}
+			if err = checkPinnedIPv6Reservation(ctx, tx, id, cfg.PinnedIPv6); err != nil {
+				return err
+			}
+		}
 		email, _ := credentials["email"].(string)
 		workspace, _ := credentials["workspace_id"].(string)
 		if email == "" || workspace == "" || !strings.EqualFold(email, cfg.LoginEmail) {
@@ -372,6 +409,9 @@ func (db *DB) CommitCredentialOpsLogin(ctx context.Context, id int64, owner stri
 			}
 		}
 		if accountID > 0 {
+			if cfg.PinnedIPv6 != "" {
+				return errors.New("strict IPv6 import cannot replace an existing account")
+			}
 			var pending int
 			if err = tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM credential_operations_totp_recoveries WHERE account_id=$1 AND state NOT IN ('adopted','old_verified')", accountID).Scan(&pending); err != nil {
 				return err
@@ -471,6 +511,10 @@ func (db *DB) CommitCredentialOpsLogin(ctx context.Context, id int64, owner stri
 			if proxyURL != "" {
 				insertCredentials["ipv6_egress_enabled"] = false
 			}
+			if cfg.PinnedIPv6 != "" {
+				insertCredentials["ipv6_egress_enabled"] = true
+				insertCredentials[PinnedIPv6CredentialKey] = cfg.PinnedIPv6
+			}
 			encoded, e := json.Marshal(encryptSensitiveCredentials(insertCredentials))
 			if e != nil {
 				return e
@@ -478,8 +522,14 @@ func (db *DB) CommitCredentialOpsLogin(ctx context.Context, id int64, owner stri
 			if err = tx.QueryRowContext(ctx, "INSERT INTO accounts(name,credentials,proxy_url,credential_family_id) VALUES($1,$2,$3,$4) RETURNING id", name, encoded, proxyURL, family).Scan(&accountID); err != nil {
 				return err
 			}
+			if cfg.PinnedIPv6 != "" {
+				if _, err = tx.ExecContext(ctx, `INSERT INTO ipv6_egress_bindings(account_id,ip,changed_at,reason) VALUES($1,$2,$3,$4)`, accountID, cfg.PinnedIPv6, time.Now().Unix(), pinnedIPv6Reason); err != nil {
+					return err
+				}
+			}
 		}
 		cfg.AccountID = accountID
+		cfg.PinnedIPv6 = ""
 		if firstImport {
 			cfg.Revision = 0
 			if err = db.upsertCredentialOpsConfigTx(ctx, tx, cfg); err != nil {

@@ -56,6 +56,10 @@ class WorkerError(RuntimeError):
     pass
 
 
+class CodexLoginChallenge(WorkerError):
+    pass
+
+
 class ProtocolHTTPError(WorkerError):
     def __init__(self, stage: str, status_code: int, url: str):
         self.status_code = status_code
@@ -962,6 +966,12 @@ def process_password_claim(api: Any, claim: dict[str, Any]) -> None:
             # cannot select a path or persist raw external-runner output.
             api.private_protocol_diagnostics(result.stdout, result.stderr)
         if result.returncode != 0:
+            if oauth_profile == "codex":
+                private_output = result.stdout + "\n" + result.stderr
+                if "[3/5] Email OTP page reached." in private_output:
+                    raise CodexLoginChallenge("email_verification_required")
+                if any(marker in private_output for marker in ("PROXY_RISK_CONTROL:", "[security-check-required]", "[profile-security-check-required]")):
+                    raise CodexLoginChallenge("security_verification_required")
             if oauth_profile == "siwc":
                 raise WorkerError("SIWC password authorization requires browser interaction or failed verification")
             # The external runner may echo unlabeled secrets that regexes cannot redact.

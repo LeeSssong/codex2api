@@ -249,5 +249,9 @@ func (h *Handler) ReleaseCredentialOpsWorker(c *gin.Context) {
 	if release, ok := credentialMihomoLeases.LoadAndDelete(fmt.Sprintf("%d:%d", id, in.Attempt)); ok {
 		release.(func())()
 	}
+	if e := h.db.ReleasePinnedIPv6Import(c.Request.Context(), id, in.Attempt); e != nil {
+		c.Status(409)
+		return
+	}
 	c.Status(204)
 }

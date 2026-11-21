@@ -42,6 +42,15 @@ func wrapScopedIPv6Client(account *auth.Account, base *http.Client, replay bool,
 	if mode == "" {
 		mode = codexTransportModeFromEnv()
 	}
+	if account.PinnedIPv6IP() != "" {
+		manager := egressipv6.Current()
+		if manager == nil {
+			return &http.Client{Transport: errorTransport{egressroute.Unavailable(database.ErrIPv6Unavailable)}}
+		}
+		return egressipv6.WrapAccountClient(manager, account.ID(), base, func(ip string) http.RoundTripper {
+			return sourceIPv6Transport(account.ID(), ip, mode, scope)
+		}, false)
+	}
 	if account.GetProxyURL() != "" {
 		return accountProxyClient(account, mode == codexTransportModeUTLSChrome)
 	}
@@ -127,20 +136,27 @@ type oauthIPv6Transport struct {
 
 func (t oauthIPv6Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	m := egressipv6.Current()
-	if bound, ok := auth.AccountBoundEgress(req.Context()); ok && bound != "" {
-		a := &auth.Account{DBID: t.id, ProxyURL: bound}
-		return accountProxyClient(a, t.forceUTLS).Transport.RoundTrip(req)
-	}
 	if m == nil {
+		if bound, ok := auth.AccountBoundEgress(req.Context()); ok && bound != "" {
+			return accountProxyClient(&auth.Account{DBID: t.id, ProxyURL: bound}, t.forceUTLS).Transport.RoundTrip(req)
+		}
 		return t.base.Transport.RoundTrip(req)
 	}
-	configured, enabled, proxyURL, err := m.Selection(req.Context(), t.id)
+	configured, enabled, proxyURL, pinned, err := m.RouteSelection(req.Context(), t.id)
 	if err != nil {
 		return nil, egressroute.Unavailable(err)
 	}
 	mode, scope := codexTransportModeStandard, "oauth-refresh"
 	if t.forceUTLS {
 		mode, scope = codexTransportModeUTLSChrome, "oauth-session"
+	}
+	if pinned != "" {
+		return egressipv6.WrapAccountClient(m, t.id, t.base, func(ip string) http.RoundTripper {
+			return sourceIPv6Transport(t.id, ip, mode, scope)
+		}, false).Transport.RoundTrip(req)
+	}
+	if bound, ok := auth.AccountBoundEgress(req.Context()); ok && bound != "" {
+		return accountProxyClient(&auth.Account{DBID: t.id, ProxyURL: bound}, t.forceUTLS).Transport.RoundTrip(req)
 	}
 	client := t.base
 	if proxyURL != "" {

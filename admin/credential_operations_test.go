@@ -58,6 +58,49 @@ func TestCredentialOperationsEncryptionImportAndRedaction(t *testing.T) {
 	}
 }
 
+func TestCredentialOperationsWorkerCompletionStoresOnlyKnownFailureCodes(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	t.Setenv("CODEX2API_CREDENTIAL_OPS_KEY", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")
+	db, err := database.New("sqlite", filepath.Join(t.TempDir(), "ops.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	if err := db.EnsureCredentialOperationsSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	handler := &Handler{db: db}
+	router := gin.New()
+	router.POST("/login/:job_id/complete", handler.CompleteCredentialOpsWorker)
+	for _, scenario := range []struct{ code, prefix string }{
+		{"email_verification_required", "Email verification required."},
+		{"security_verification_required", "Additional security verification required."},
+		{"unknown error containing synthetic-private-output", "login protocol failed"},
+		{"", "login protocol failed"},
+	} {
+		if _, err := db.CreateCredentialOpsTaskWithConfig(ctx, 0, 0, database.CredentialOpsLoginConfigRow{
+			LoginEmail: "test@example.com", CredentialMode: "password_totp", Engine: "local_worker", ProxySource: "direct", PasswordCiphertext: "sealed",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		claim, err := db.ClaimCredentialOpsTask(ctx, "test-worker", time.Minute)
+		if err != nil || claim == nil {
+			t.Fatalf("claim = %v, %v", claim, err)
+		}
+		body := fmt.Sprintf(`{"worker_id":"test-worker","attempt":%d,"status":"failed","error_code":%q}`, claim.Attempt, scenario.code)
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, httptest.NewRequest("POST", fmt.Sprintf("/login/%d/complete", claim.ID), strings.NewReader(body)))
+		if response.Code != 204 {
+			t.Fatal(response.Code, response.Body.String())
+		}
+		stored, err := db.GetCredentialOpsTask(ctx, claim.ID)
+		if err != nil || stored.Status != "failed" || !strings.HasPrefix(stored.Error, scenario.prefix) || strings.Contains(stored.Error, "synthetic-private-output") {
+			t.Fatalf("stored = %#v, %v", stored, err)
+		}
+	}
+}
+
 func TestCredentialOperationsRetryRefreshesFirstImportGlobalEgress(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db, e := database.New("sqlite", filepath.Join(t.TempDir(), "retry-egress.db"))

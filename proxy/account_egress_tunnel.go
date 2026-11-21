@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/codex2api/auth"
+	"github.com/codex2api/database"
 	"github.com/codex2api/egressipv6"
 	"github.com/codex2api/internal/egressroute"
 	xproxy "golang.org/x/net/proxy"
@@ -11,6 +12,37 @@ import (
 	"sync"
 	"time"
 )
+
+func StartPinnedIPv6ImportTunnel(ctx context.Context, taskID int64, ip string) (string, func(), error) {
+	manager := egressipv6.Current()
+	if manager == nil {
+		return "", nil, database.ErrIPv6Unavailable
+	}
+	check := func(ctx context.Context) error {
+		if err := manager.DB.CheckPinnedIPv6Reservation(ctx, taskID, ip); err != nil {
+			return err
+		}
+		return manager.ValidatePinnedSource(ip)
+	}
+	if err := check(ctx); err != nil {
+		return "", nil, err
+	}
+	dialer, err := egressipv6.NewDialer(ip)
+	if err != nil {
+		return "", nil, err
+	}
+	tunnel, closeTunnel, err := egressroute.StartTunnel(func(ctx context.Context, target string) (net.Conn, error) {
+		if err := check(ctx); err != nil {
+			return nil, err
+		}
+		return dialer.DialContext(ctx, "tcp6", target)
+	})
+	if err != nil {
+		return "", nil, err
+	}
+	timer := time.AfterFunc(26*time.Minute, closeTunnel)
+	return tunnel, func() { timer.Stop(); closeTunnel() }, nil
+}
 
 func StartAccountEgressTunnel(account *auth.Account) (string, func(), error) {
 	if account == nil {

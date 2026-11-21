@@ -22,6 +22,7 @@ export interface CredentialConfigInput {
   mode?: CredentialMode;
   engine?: CredentialEngine;
   proxy_source?: string;
+  pinned_ipv6?: string;
   proxy_id?: number | null;
   password?: string;
   totp_secret?: string;

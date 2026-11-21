@@ -11,8 +11,96 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 )
+
+func TestPinnedIPv6RefreshInferenceAndWebsocketFailClosed(t *testing.T) {
+	t.Setenv("CODEX2API_CREDENTIAL_OPS_KEY", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")
+	ctx := context.Background()
+	db, err := database.New("sqlite", filepath.Join(t.TempDir(), "pinned.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	selected, alternate := "2001:db8::7", "2001:db8::8"
+	config, err := db.IPv6EgressConfig(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.Enabled = true
+	config.SourceIPs = []string{selected, alternate}
+	if err = db.SaveIPv6EgressConfig(ctx, config); err != nil {
+		t.Fatal(err)
+	}
+	input := database.CredentialOpsLoginConfigRow{LoginEmail: "pinned@example.test", CredentialMode: "password_totp", Engine: "local_worker", ProxySource: "direct", PasswordCiphertext: "sealed", PinnedIPv6: selected}
+	task, err := db.CreateCredentialOpsTaskWithConfig(ctx, 0, 0, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim, err := db.ClaimCredentialOpsTask(ctx, "test-worker", time.Minute)
+	if err != nil || claim == nil || claim.ID != task.ID {
+		t.Fatalf("claim = %v, %v", claim, err)
+	}
+	id, err := db.CommitCredentialOpsLogin(ctx, task.ID, "test-worker", claim.Attempt, map[string]any{"email": input.LoginEmail, "workspace_id": "test-workspace", "access_token": "test-access", "refresh_token": "test-refresh"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := auth.NewStore(db, nil, &database.SystemSettings{MaxConcurrency: 1})
+	defer store.Stop()
+	if err = store.LoadAccountByID(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	account := store.FindByID(id)
+	manager := egressipv6.New(db)
+	local := []string{selected, alternate}
+	manager.LocalIPs = func() ([]string, error) { return local, nil }
+	previous := egressipv6.Current()
+	egressipv6.Install(manager)
+	defer egressipv6.Install(previous)
+	var directCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { directCalls.Add(1) }))
+	defer server.Close()
+	base := server.Client()
+	refresh := WrapOAuthIPv6Client(id, base, false)
+	inference := wrapScopedIPv6Client(account, base, true, codexTransportModeStandard, "strict-inference-test")
+	for _, scope := range []string{"oauth-refresh", "strict-inference-test"} {
+		key := fmt.Sprintf("ipv6|%d|%s|%s|%s", id, selected, codexTransportModeStandard, scope)
+		entry := &poolEntry{client: &http.Client{Transport: ipv6TestRoundTrip(func(*http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: 200, Header: http.Header{}, Body: http.NoBody}, nil
+		})}}
+		entry.touch()
+		clientPool.Store(key, entry)
+		defer clientPool.Delete(key)
+	}
+	ctx = auth.WithAccountBoundEgress(ctx, server.URL)
+	for _, client := range []*http.Client{refresh, inference} {
+		request, _ := http.NewRequestWithContext(ctx, "POST", server.URL, nil)
+		response, err := client.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response.Body.Close()
+	}
+	if route := ResolveCodexRequestEgress(ctx, account, "wss://example.test", server.URL, true); route.Err != nil || IPv6RouteIP(route.DialProxyURL) != selected {
+		t.Fatalf("websocket chose unexpected route: %+v", route)
+	}
+	local = []string{alternate}
+	for _, client := range []*http.Client{refresh, inference} {
+		request, _ := http.NewRequestWithContext(ctx, "POST", server.URL, nil)
+		if response, err := client.Do(request); err == nil {
+			response.Body.Close()
+			t.Fatal("request did not fail on source removal")
+		}
+	}
+	if route := ResolveCodexRequestEgress(ctx, account, "wss://example.test", server.URL, true); route.Err == nil {
+		t.Fatalf("websocket did not stop on source removal: %+v", route)
+	}
+	if directCalls.Load() != 0 {
+		t.Fatal("an alternate or direct route received traffic")
+	}
+}
 
 func TestNativeIPv6RequiresAccountMembership(t *testing.T) {
 	if NativeIPv6Account(&auth.Account{DBID: 1}) {

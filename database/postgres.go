@@ -7730,6 +7730,11 @@ func (db *DB) UpdateAccountSchedulerMetadata(ctx context.Context, id int64, scor
 			}
 			return err
 		}
+		if credentialString(currentRaw, PinnedIPv6CredentialKey) != "" {
+			if (proxyURL.Set && strings.TrimSpace(proxyURL.Value) != "") || credentialUpdates["ipv6_egress_enabled"] == false {
+				return ErrIPv6SelectionConflict
+			}
+		}
 
 		sets := make([]string, 0, 6)
 		args := make([]interface{}, 0, 8)

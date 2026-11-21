@@ -35,7 +35,8 @@ func (db *DB) TrackIPv6EgressLease(ctx context.Context, leaseID string, accountI
 			return err
 		}
 		row := AccountRow{Credentials: decodeCredentials(raw)}
-		if !row.GetCredentialBool("ipv6_egress_enabled") || proxy != "" {
+		pinned := row.GetCredential(PinnedIPv6CredentialKey)
+		if pinned == "" && (!row.GetCredentialBool("ipv6_egress_enabled") || proxy != "") {
 			return ErrIPv6NotEnrolled
 		}
 		var currentIP, reason string
@@ -49,19 +50,25 @@ func (db *DB) TrackIPv6EgressLease(ctx context.Context, leaseID string, accountI
 		if !c.Enabled || ip != currentIP || reason == "retired" {
 			return ErrIPv6Unavailable
 		}
+		if pinned != "" && (ip != pinned || reason != pinnedIPv6Reason || (len(c.SourceIPs) > 0 && !slices.Contains(c.SourceIPs, ip))) {
+			return ErrIPv6Unavailable
+		}
 		_, err = tx.ExecContext(ctx, `INSERT INTO ipv6_egress_leases(id,account_id,ip) VALUES($1,$2,$3)`, leaseID, accountID, ip)
 		return err
 	})
 }
 func (db *DB) RetireIPv6Egress(ctx context.Context, accountID, now int64) error {
 	return db.ipv6LeaseTx(ctx, func(tx *sql.Tx) error {
-		var ip string
-		err := tx.QueryRowContext(ctx, `SELECT ip FROM ipv6_egress_bindings WHERE account_id=$1`, accountID).Scan(&ip)
+		var ip, reason string
+		err := tx.QueryRowContext(ctx, `SELECT ip,reason FROM ipv6_egress_bindings WHERE account_id=$1`, accountID).Scan(&ip, &reason)
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil
 		}
 		if err != nil {
 			return err
+		}
+		if reason == pinnedIPv6Reason {
+			return ErrIPv6SelectionConflict
 		}
 		if _, err = tx.ExecContext(ctx, `UPDATE ipv6_egress_bindings SET reason='retired' WHERE account_id=$1`, accountID); err != nil {
 			return err

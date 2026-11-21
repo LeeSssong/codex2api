@@ -8435,6 +8435,15 @@
     },
     "tokenUsage": "Input / Output Tokens"
   },
+  "strictIPv6": {
+    "singleOnly": "IPv6 locking is available for single-account imports only.",
+    "option": "Lock to a local IPv6 address",
+    "address": "Locked address",
+    "choose": "Select an available IPv6 address",
+    "loading": "Checking the IPv6 address pool…",
+    "unavailable": "No local IPv6 addresses are available. Check the pool settings.",
+    "hint": "The first sign-in, token exchange, refresh, and inference all use this address. Requests fail if it is unavailable, without rotation or direct fallback."
+  },
   "ipv6Egress": {
     "title": "Local IPv6 egress pool",
     "description": "Used only by native Codex accounts that select Local IPV6 in their proxy settings. Other accounts keep their own egress choices. Enabling the pool does not enroll existing accounts.",

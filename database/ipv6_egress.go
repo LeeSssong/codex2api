@@ -100,13 +100,15 @@ func (db *DB) ClaimIPv6Egress(ctx context.Context, accountID int64, localIPs []s
 	if _, err = tx.ExecContext(ctx, `UPDATE ipv6_egress_config SET revision=revision WHERE id=1`); err != nil {
 		return b, c, err
 	}
+	var pinned string
 	if len(member) > 0 && member[0] {
 		var raw, proxy string
 		if err = tx.QueryRowContext(ctx, `SELECT credentials,COALESCE(proxy_url,'') FROM accounts WHERE id=$1`, accountID).Scan(&raw, &proxy); err != nil {
 			return b, c, err
 		}
 		row := AccountRow{Credentials: decodeCredentials(raw)}
-		if !row.GetCredentialBool("ipv6_egress_enabled") || proxy != "" {
+		pinned = row.GetCredential(PinnedIPv6CredentialKey)
+		if pinned == "" && (!row.GetCredentialBool("ipv6_egress_enabled") || proxy != "") {
 			return b, c, ErrIPv6NotEnrolled
 		}
 	}
@@ -120,6 +122,12 @@ func (db *DB) ClaimIPv6Egress(ctx context.Context, accountID int64, localIPs []s
 	}
 	if b.Reason == "retired" {
 		return b, c, ErrIPv6Unavailable
+	}
+	if pinned != "" || b.Reason == pinnedIPv6Reason {
+		if b.IP == "" || (pinned != "" && pinned != b.IP) || b.Reason != pinnedIPv6Reason || expectedIP != "" || !slices.Contains(localIPs, b.IP) || (len(c.SourceIPs) != 0 && !slices.Contains(c.SourceIPs, b.IP)) {
+			return b, c, ErrIPv6Unavailable
+		}
+		return b, c, tx.Commit()
 	}
 	candidates := make([]string, 0, len(localIPs))
 	for _, ip := range localIPs {

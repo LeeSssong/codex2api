@@ -1,4 +1,13 @@
 {
+  "strictIPv6": {
+    "singleOnly": "鎖定 IPv6 僅支援單一帳號匯入。",
+    "option": "鎖定本機 IPv6",
+    "address": "鎖定地址",
+    "choose": "選擇可用的 IPv6 地址",
+    "loading": "正在檢查 IPv6 位址集區…",
+    "unavailable": "沒有可用的本機 IPv6 地址。請檢查位址集區設定。",
+    "hint": "首次登入、交換權杖、更新和推論均使用此地址。地址不可用時請求失敗，不會換址或回退直連。"
+  },
   "ipv6Egress": {
     "title": "本机 IPv6 出口池",
     "description": "仅用于在账号代理选择中主动选择「本机 IPV6」的原生 Codex 账号。其他账号保留各自的出口选择；启用池不会自动修改已有账号。",

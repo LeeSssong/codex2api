@@ -495,6 +495,7 @@ func (s *Store) applyPersistentAccountSnapshot(dst, src *Account, enabled bool) 
 	dst.PlanType = src.PlanType
 	dst.AntigravityPlanKey = src.AntigravityPlanKey
 	dst.ProxyURL = src.ProxyURL
+	dst.pinnedIPv6IP = src.pinnedIPv6IP
 	dst.CustomHeaders = cloneStringMap(src.CustomHeaders)
 	dst.UpstreamType = src.UpstreamType
 	dst.BaseURL = src.BaseURL

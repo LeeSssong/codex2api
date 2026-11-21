@@ -10626,7 +10626,13 @@ export default function Accounts() {
 
                         {/* 代理服务器 */}
                         <div className="rounded-xl border border-border/70 bg-card p-4.5 shadow-2xs hover:border-border/90 transition-colors md:col-span-2">
-                          {renderProxyInput({
+                          {editingAccount.ipv6_egress_pinned ? (
+                            <div className="space-y-2 text-sm">
+                              <p className="font-medium">{t("strictIPv6.address")}</p>
+                              <p className="break-all font-mono">{editingAccount.ipv6_egress_ip}</p>
+                              <p className="text-xs text-muted-foreground">{t("strictIPv6.hint")}</p>
+                            </div>
+                          ) : renderProxyInput({
                             value: editProxyUrl,
                             onChange: setEditProxyUrl,
                             localIPv6: isCodexOfficialAccount(editingAccount) ? {

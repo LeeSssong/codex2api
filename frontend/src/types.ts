@@ -464,6 +464,7 @@ export interface AccountQuotaWindow {
 export interface AccountRow {
   ipv6_egress_enabled?: boolean
   ipv6_egress_ip?: string
+  ipv6_egress_pinned?: boolean
   quota_5h?: AccountQuotaWindow
   quota_7d?: AccountQuotaWindow
   /** Frontend loading state for the independent page-stats request. */

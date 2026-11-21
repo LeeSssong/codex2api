@@ -129,3 +129,8 @@ Running application source `077be3decba972f77c4335fe504baa79511d4bd1` at https:/
 Real password/TOTP/workspace selection succeeded; final SIWC consent returned403 requiring organization administrator app approval and **Use ChatGPT plan = Allowed**. Account86 remains disabled/unbound. Real inference, refresh and this account's native quota are not verified. New consent screen is handed to browser. Browser authorization must use the same egress as the account. No further authorization attempts should be made until the actual upstream permission issue is resolved.
 
 Full release hashes, test results, stopped backup/rehearsal, prior DNS recovery and rollback constraints: `docs/releases/2026-11-21-siwc-lifecycle.md`. Production has accepted new writes; never restore an old dump. Subsequent documentation commits require no application deployment.
+
+## 2026-11-21 strict IPv6 2FA import
+
+- Owner: current Codex chat; base `83ebdc70334ee2ea953cf5251d4446471e97b453`; exclusive worktree `/Users/gongtengxinwen/.codex/worktrees/strict-ipv6-import-20261121/codex2api`, branch `codex/strict-ipv6-import-20261121`.
+- Scope: first-import reservation and atomic promotion, HTTP/WebSocket/refresh route pinning, account controls, and safe 2FA failure diagnostics from the separate diagnostic candidate. Do not deploy that candidate independently. Preserve existing automatic IPv6 accounts and other services.

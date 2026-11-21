@@ -250,6 +250,12 @@ func MaskResinBaseURL(raw string) string {
 
 // ResolveCodexRequestEgress picks the websocket or HTTP egress for one request.
 func ResolveCodexRequestEgress(ctx context.Context, account *auth.Account, targetURL, proxyURL string, websocket bool) CodexEgress {
+	if account.PinnedIPv6IP() != "" {
+		if websocket {
+			return resolveIPv6Websocket(ctx, account, CodexEgress{Kind: "local_ipv6", URL: targetURL, account: account})
+		}
+		return ResolveCodexEgress(account, targetURL, "")
+	}
 	if bound := account.GetProxyURL(); bound != "" {
 		return CodexEgress{Kind: CodexEgressProxy, URL: targetURL, ProxyURL: bound, DialProxyURL: bound, account: account, client: accountProxyClient(account, false)}
 	}

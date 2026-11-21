@@ -14,6 +14,9 @@ import (
 // proxy may actually dial through Resin or inherited dialer configuration.
 // The route snapshot also prevents an empty override re-reading account state.
 func requestProxyKey(ctx context.Context, account *auth.Account, override string) string {
+	if pinned := account.PinnedIPv6IP(); pinned != "" {
+		return "local-ipv6://" + pinned
+	}
 	if direct, _ := ctx.Value(directFallbackKey{}).(bool); direct {
 		return "\x00fallback-direct"
 	}

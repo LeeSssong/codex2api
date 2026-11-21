@@ -9,6 +9,7 @@ import (
 	"github.com/codex2api/auth"
 	"github.com/codex2api/credentialops"
 	"github.com/codex2api/database"
+	"github.com/codex2api/egressipv6"
 	"github.com/codex2api/fixedegress"
 	"github.com/codex2api/internal/openaiidentity"
 	"github.com/codex2api/proxy"
@@ -21,6 +22,7 @@ import (
 )
 
 type credentialOpsConfigRequest struct {
+	PinnedIPv6    string  `json:"pinned_ipv6"`
 	ImportKey     string  `json:"import_key"`
 	ProxyID       int64   `json:"proxy_id"`
 	Revision      int64   `json:"revision"`
@@ -48,6 +50,18 @@ func configView(cfg *database.CredentialOpsLoginConfigRow) gin.H {
 	return gin.H{"proxy_id": cfg.ProxyID, "revision": cfg.Revision, "account_id": cfg.AccountID, "email": cfg.LoginEmail, "mode": cfg.CredentialMode, "engine": cfg.Engine, "proxy_source": cfg.ProxySource, "password_configured": cfg.PasswordCiphertext != "", "totp_configured": cfg.TOTPCiphertext != "", "otp_url_configured": cfg.OTPURLCiphertext != "", "updated_at": cfg.UpdatedAt}
 }
 func (h *Handler) prepareCredentialConfig(c *gin.Context, id int64, in credentialOpsConfigRequest) (database.CredentialOpsLoginConfigRow, error) {
+	if in.PinnedIPv6 != "" {
+		if id != 0 || (in.OAuthProfile != "" && in.OAuthProfile != "codex") || in.Mode != "password_totp" || in.ProxySource != "direct" || in.ProxyID != 0 || in.Engine != "local_worker" {
+			return database.CredentialOpsLoginConfigRow{}, errors.New("strict IPv6 requires a first Codex password/TOTP import with the local worker")
+		}
+		manager := egressipv6.Current()
+		if manager == nil {
+			return database.CredentialOpsLoginConfigRow{}, database.ErrIPv6Unavailable
+		}
+		if err := manager.ValidatePinnedSource(in.PinnedIPv6); err != nil {
+			return database.CredentialOpsLoginConfigRow{}, err
+		}
+	}
 	old := credentialops.LoginConfig{}
 	var revision int64
 	if id > 0 {
@@ -88,7 +102,7 @@ func (h *Handler) prepareCredentialConfig(c *gin.Context, id int64, in credentia
 	if len(in.Name) > 200 {
 		err = errors.New("account name exceeds 200 characters")
 	}
-	return database.CredentialOpsLoginConfigRow{ImportKey: in.ImportKey, ProxyID: cfg.ProxyID, Revision: revision, GroupIDs: in.GroupIDs, OAuthProfile: in.OAuthProfile, AccountID: id, Name: strings.TrimSpace(in.Name), LoginEmail: cfg.Email, CredentialMode: cfg.Mode, Engine: cfg.Engine, ProxySource: cfg.ProxySource, PasswordCiphertext: cfg.PasswordCiphertext, TOTPCiphertext: cfg.TOTPCiphertext, OTPURLCiphertext: cfg.OTPURLCiphertext}, err
+	return database.CredentialOpsLoginConfigRow{PinnedIPv6: in.PinnedIPv6, ImportKey: in.ImportKey, ProxyID: cfg.ProxyID, Revision: revision, GroupIDs: in.GroupIDs, OAuthProfile: in.OAuthProfile, AccountID: id, Name: strings.TrimSpace(in.Name), LoginEmail: cfg.Email, CredentialMode: cfg.Mode, Engine: cfg.Engine, ProxySource: cfg.ProxySource, PasswordCiphertext: cfg.PasswordCiphertext, TOTPCiphertext: cfg.TOTPCiphertext, OTPURLCiphertext: cfg.OTPURLCiphertext}, err
 }
 func (h *Handler) StartCredentialOpsImport(c *gin.Context) { h.queueCredentialLogin(c, 0) }
 func (h *Handler) StartCredentialOpsLogin(c *gin.Context) {
@@ -240,6 +254,32 @@ func (h *Handler) ClaimCredentialOpsWorker(c *gin.Context) {
 	if cfg.Engine == "inherit" {
 		cfg.Engine = runtime.Engine
 	}
+	var pinnedAccountIP string
+	if task.AccountID > 0 {
+		row, loadErr := h.db.GetAccountByID(c.Request.Context(), task.AccountID)
+		if loadErr != nil || row == nil {
+			_ = h.db.FailCredentialOpsTask(c.Request.Context(), task.ID, req.WorkerID, task.Attempt)
+			c.Status(409)
+			return
+		}
+		pinnedAccountIP = row.GetCredential(database.PinnedIPv6CredentialKey)
+		if pinnedAccountIP != "" {
+			if cfg.CredentialMode != "password_totp" {
+				_ = h.db.FailCredentialOpsTask(c.Request.Context(), task.ID, req.WorkerID, task.Attempt)
+				c.JSON(409, gin.H{"error": "strict IPv6 accounts require local password/TOTP login"})
+				return
+			}
+			cfg.Engine = "local_worker"
+			cfg.ProxySource = "account"
+		}
+	}
+	if cfg.PinnedIPv6 != "" {
+		defer func() {
+			if c.Writer.Status() != 200 {
+				_ = h.db.ReleasePinnedIPv6Import(c.Request.Context(), task.ID, task.Attempt)
+			}
+		}()
+	}
 	if task.OAuthProfile == "excel" || task.OAuthProfile == "siwc" || strings.HasPrefix(task.Kind, "totp_") || cfg.CredentialMode == "email_otp_url" {
 		cfg.Engine = "local_worker"
 	}
@@ -280,7 +320,22 @@ func (h *Handler) ClaimCredentialOpsWorker(c *gin.Context) {
 		c.JSON(409, gin.H{"error": "configured egress unavailable"})
 		return
 	}
+	if cfg.PinnedIPv6 != "" {
+		var closeTunnel func()
+		proxyURL, closeTunnel, e = proxy.StartPinnedIPv6ImportTunnel(c.Request.Context(), task.ID, cfg.PinnedIPv6)
+		if e != nil {
+			_ = h.db.FailCredentialOpsTaskWithCode(c.Request.Context(), task.ID, req.WorkerID, task.Attempt, "strict_ipv6_unavailable")
+			c.JSON(409, gin.H{"error": "selected IPv6 is unavailable"})
+			return
+		}
+		credentialMihomoLeases.Store(fmt.Sprintf("%d:%d", task.ID, task.Attempt), closeTunnel)
+	}
 	// Bind late, at claim time, so queued tasks cannot retain an obsolete route.
+	if pinnedAccountIP != "" && task.OAuthProfile != "siwc" && (h.store == nil || h.store.FindByID(task.AccountID).PinnedIPv6IP() != pinnedAccountIP) {
+		_ = h.db.FailCredentialOpsTask(c.Request.Context(), task.ID, req.WorkerID, task.Attempt)
+		c.JSON(409, gin.H{"error": "strict IPv6 account route unavailable"})
+		return
+	}
 	if task.AccountID > 0 && h.store != nil && task.OAuthProfile != "siwc" {
 		a := h.store.FindByID(task.AccountID)
 		if a != nil && (a.GetProxyURL() != "" || proxy.NativeIPv6Account(a) || fixedegress.HasEnrolled(a.ID())) {
@@ -347,6 +402,7 @@ type credentialWorkerRequest struct {
 	Attempt    int            `json:"attempt"`
 	Status     string         `json:"status"`
 	Stage      string         `json:"stage"`
+	ErrorCode  string         `json:"error_code"`
 	Credential map[string]any `json:"credential"`
 }
 
@@ -399,7 +455,10 @@ func (h *Handler) CompleteCredentialOpsWorker(c *gin.Context) {
 		return
 	}
 	if req.Status == "failed" {
-		if h.db.FailCredentialOpsTask(c.Request.Context(), id, req.WorkerID, req.Attempt) != nil {
+		if task.OAuthProfile != "codex" {
+			req.ErrorCode = ""
+		}
+		if h.db.FailCredentialOpsTaskWithCode(c.Request.Context(), id, req.WorkerID, req.Attempt, req.ErrorCode) != nil {
 			c.Status(409)
 			return
 		}

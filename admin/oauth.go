@@ -683,7 +683,14 @@ func (h *Handler) UpdateOAuthAccountCode(c *gin.Context) {
 	proxyURL := row.ProxyURL
 	exchangeCtx := c.Request.Context()
 	var selectionUpdate *bool
-	if req.ProxyURL != nil || req.IPv6EgressEnabled != nil {
+	if row.GetCredential(database.PinnedIPv6CredentialKey) != "" {
+		if (req.ProxyURL != nil && strings.TrimSpace(*req.ProxyURL) != "") || (req.IPv6EgressEnabled != nil && !*req.IPv6EgressEnabled) {
+			writeError(c, http.StatusConflict, "Strict IPv6 cannot be changed during reauthorization")
+			return
+		}
+		proxyURL = ""
+		exchangeCtx = context.WithValue(exchangeCtx, nativeOAuthRouteKey{}, nativeOAuthRoute{accountID: id, enabled: true})
+	} else if req.ProxyURL != nil || req.IPv6EgressEnabled != nil {
 		preferences, err := req.nativeJSONPreferences.settings()
 		if err != nil {
 			writeError(c, http.StatusBadRequest, err.Error())

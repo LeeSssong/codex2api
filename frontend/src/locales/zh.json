@@ -8432,6 +8432,15 @@
     },
     "tokenUsage": "输入 / 输出 Token"
   },
+  "strictIPv6": {
+    "singleOnly": "锁定 IPv6 仅支持单账号导入。",
+    "option": "锁定本机 IPv6",
+    "address": "锁定地址",
+    "choose": "选择可用的 IPv6 地址",
+    "loading": "正在检查 IPv6 地址池…",
+    "unavailable": "没有可用的本机 IPv6 地址。请检查地址池设置。",
+    "hint": "首次登录、换令牌、刷新和推理均使用此地址。地址不可用时请求失败，不会换址或回退直连。"
+  },
   "ipv6Egress": {
     "title": "本机 IPv6 出口池",
     "description": "仅用于在账号代理选择中主动选择「本机 IPV6」的原生 Codex 账号。其他账号保留各自的出口选择；启用池不会自动修改已有账号。",

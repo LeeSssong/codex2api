@@ -293,6 +293,7 @@ func (h *Handler) buildAccountResponse(
 		ProxyURL:                     row.ProxyURL,
 		IPv6EgressEnabled:            row.GetCredentialBool(auth.IPv6EgressCredentialKey),
 		IPv6EgressIP:                 h.accountIPv6IP(row),
+		IPv6EgressPinned:             row.GetCredential(database.PinnedIPv6CredentialKey) != "",
 		Enabled:                      row.Enabled,
 		Locked:                       row.Locked,
 		AllowedAPIKeyIDs:             allowedAPIKeyIDs,

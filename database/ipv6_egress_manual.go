@@ -35,7 +35,7 @@ func (db *DB) AssignIPv6Egress(ctx context.Context, accountID int64, localIPs []
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
-		if b.Reason == "retired" || b.IP != expectedIP {
+		if b.Reason == pinnedIPv6Reason || row.GetCredential(PinnedIPv6CredentialKey) != "" || b.Reason == "retired" || b.IP != expectedIP {
 			return ErrIPv6SelectionConflict
 		}
 		if !slices.Contains(localIPs, ip) || (len(cfg.SourceIPs) > 0 && !slices.Contains(cfg.SourceIPs, ip)) {

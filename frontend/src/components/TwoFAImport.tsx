@@ -19,6 +19,8 @@ import CredentialEncryptionSetup from "./CredentialEncryptionSetup";
 import AccountGroupMultiSelect from "./AccountGroupMultiSelect";
 import { api } from "../api";
 import type { AccountGroup } from "../types";
+import { ipv6ManualBlockReason, ipv6ManualOptions } from "../lib/accountIPv6Manual";
+import { getErrorMessage } from "../utils/error";
 import {
   credentialAPI,
   credentialRequest,
@@ -53,6 +55,10 @@ export default function TwoFAImport({ onSaved }: { onSaved?: () => void }) {
     [],
   );
   const [proxy, setProxy] = useState("direct");
+  const [pinnedIP, setPinnedIP] = useState("");
+  const [availableIPs, setAvailableIPs] = useState<string[]>([]);
+  const [ipv6PoolStatus, setIPv6PoolStatus] = useState<"loading" | "ready" | "unavailable">("loading");
+  const strictIPv6 = !remote && proxy === "strict_ipv6";
   const [rows, setRows] = useState<ImportRow[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -64,6 +70,26 @@ export default function TwoFAImport({ onSaved }: { onSaved?: () => void }) {
   const saved = useRef(onSaved);
   saved.current = onSaved;
   const readyChanged = useCallback((value: boolean) => setReady(value), []);
+  useEffect(() => {
+    if (!strictIPv6) return;
+    const controller = new AbortController();
+    setIPv6PoolStatus("loading");
+    void api.getIPv6Egress(controller.signal).then((data) => {
+      if (controller.signal.aborted) return;
+      if (ipv6ManualBlockReason(data)) {
+        setAvailableIPs([]);
+        setIPv6PoolStatus("unavailable");
+        return;
+      }
+      const options = ipv6ManualOptions(data, 0, "").filter((entry) => entry.status === "available").map((entry) => entry.ip);
+      setAvailableIPs(options);
+      setPinnedIP((selected) => options.includes(selected) ? selected : "");
+      setIPv6PoolStatus("ready");
+    }).catch(() => {
+      if (!controller.signal.aborted) setIPv6PoolStatus("unavailable");
+    });
+    return () => controller.abort();
+  }, [strictIPv6]);
   useEffect(() => {
     mounted.current = true;
     void credentialAPI
@@ -154,6 +180,7 @@ export default function TwoFAImport({ onSaved }: { onSaved?: () => void }) {
   };
   async function queue() {
     setError("");
+    if (strictIPv6 && (inputMode !== "single" || ipv6PoolStatus !== "ready" || !availableIPs.includes(pinnedIP))) return;
     if (!pending.current.length) {
       try {
         pending.current = parseCredentialImport(
@@ -187,8 +214,9 @@ export default function TwoFAImport({ onSaved }: { onSaved?: () => void }) {
           ...entry,
           import_key: importKeys.current[i],
           mode: "password_totp",
-          engine: "inherit",
-          proxy_source: remote
+          engine: strictIPv6 ? "local_worker" : "inherit",
+          pinned_ipv6: strictIPv6 ? pinnedIP : undefined,
+          proxy_source: remote || strictIPv6
             ? "direct"
             : proxy === "direct" || proxy === "mihomo"
               ? proxy
@@ -199,8 +227,8 @@ export default function TwoFAImport({ onSaved }: { onSaved?: () => void }) {
         entry.password = "";
         entry.totp_secret = "";
         update(i, { job, error: undefined });
-      } catch {
-        update(i, { error: t("credentialOps.queueFailed") });
+      } catch (cause) {
+        update(i, { error: strictIPv6 ? getErrorMessage(cause, t("credentialOps.queueFailed")) : t("credentialOps.queueFailed") });
       }
     }
     if (pending.current.every((entry) => !entry.password)) pending.current = [];
@@ -239,6 +267,8 @@ export default function TwoFAImport({ onSaved }: { onSaved?: () => void }) {
     setEmail("");
     setPassword("");
     setTotp("");
+    setProxy("direct");
+    setPinnedIP("");
     setError("");
   }
   const active = rows.some(
@@ -340,6 +370,7 @@ export default function TwoFAImport({ onSaved }: { onSaved?: () => void }) {
                       ]
                     : []),
                   { value: "direct", label: t("credentialOps.direct") },
+                  ...(!remote ? [{ value: "strict_ipv6", label: t("strictIPv6.option") }] : []),
                   { value: "mihomo", label: t("credentialOps.nodePool") },
                   ...proxies.map((p) => ({
                     value: String(p.id),
@@ -348,6 +379,17 @@ export default function TwoFAImport({ onSaved }: { onSaved?: () => void }) {
                 ]}
               />
             </label>
+            {strictIPv6 && (
+              <div className="space-y-1.5 text-sm sm:col-span-2">
+                <label htmlFor="first-login-ipv6">{t("strictIPv6.address")}</label>
+                <Select id="first-login-ipv6" className="font-mono" value={pinnedIP} onValueChange={setPinnedIP}
+                  placeholder={t("strictIPv6.choose")} disabled={inputMode !== "single" || ipv6PoolStatus !== "ready" || availableIPs.length === 0}
+                  options={availableIPs.map((ip) => ({ value: ip, label: ip }))} />
+                <p className="text-xs text-muted-foreground" role="status">
+                  {t(inputMode !== "single" ? "strictIPv6.singleOnly" : ipv6PoolStatus === "loading" ? "strictIPv6.loading" : availableIPs.length && ipv6PoolStatus === "ready" ? "strictIPv6.hint" : "strictIPv6.unavailable")}
+                </p>
+              </div>
+            )}
             <div className="space-y-1.5 text-sm">
               <span>{t("credentialOps.groups")}</span>
               <AccountGroupMultiSelect
@@ -387,9 +429,9 @@ export default function TwoFAImport({ onSaved }: { onSaved?: () => void }) {
                     : t("credentialOps.pending")}
                   {row.job && ` · #${row.job.ID}`}
                 </p>
-                {row.error && (
+                {(row.error || row.job?.Error) && (
                   <p role="alert" className="mt-1 text-xs text-destructive">
-                    {row.error}
+                    {row.error || row.job?.Error}
                   </p>
                 )}
               </div>
@@ -428,7 +470,7 @@ export default function TwoFAImport({ onSaved }: { onSaved?: () => void }) {
       <div className="flex flex-wrap items-center gap-2">
         {rows.length === 0 ? (
           <Button
-            disabled={busy || !ready || !engineReady}
+            disabled={busy || !ready || !engineReady || (strictIPv6 && (inputMode !== "single" || ipv6PoolStatus !== "ready" || !availableIPs.includes(pinnedIP)))}
             onClick={() => void queue()}
           >
             {busy ? (

@@ -34,6 +34,14 @@ func (m *Manager) createConnection(ctx context.Context, input connectionDialRequ
 			input.capacity.release()
 		}
 	}()
+	if pinned := input.account.PinnedIPv6IP(); pinned != "" {
+		if input.proxyOverride != "local-ipv6://"+pinned {
+			return nil, fmt.Errorf("strict IPv6 route required")
+		}
+		if _, direct := ctx.Value(directFallbackKey{}).(bool); direct {
+			return nil, fmt.Errorf("strict IPv6 does not allow direct fallback")
+		}
+	}
 	if _, done := ctx.Value(directFallbackKey{}).(bool); !done {
 		var observation egressroute.Observation
 		if p := input.account.GetProxyURL(); p != "" {
@@ -60,7 +68,7 @@ func (m *Manager) createConnection(ctx context.Context, input connectionDialRequ
 				wc.egress = observation
 				return wc, nil
 			}
-			if ctx.Err() != nil || !egressroute.CanFallback(err) {
+			if ctx.Err() != nil || input.account.PinnedIPv6IP() != "" || !egressroute.CanFallback(err) {
 				return nil, err
 			}
 			eg := context.WithValue(ctx, directFallbackKey{}, true)
@@ -90,6 +98,9 @@ func (m *Manager) createBoundConnection(ctx context.Context, input connectionDia
 	}
 	if bound, ok := proxy.AccountBoundEgress(ctx); !direct && input.account.GetProxyURL() == "" && ok && !(proxy.NativeIPv6Account(input.account) && bound == "") {
 		route = bound
+	}
+	if pinned := input.account.PinnedIPv6IP(); pinned != "" {
+		route = "local-ipv6://" + pinned
 	}
 	if !direct && proxy.IsIPv6Route(route) {
 		manager := egressipv6.Current()
@@ -175,6 +186,16 @@ func (m *Manager) createBoundConnection(ctx context.Context, input connectionDia
 
 func (m *Manager) connectionDialer(ctx context.Context, input connectionDialRequest) (*websocket.Dialer, error) {
 	dialer := *m.dialer
+	if pinned := input.account.PinnedIPv6IP(); pinned != "" {
+		source, err := egressipv6.NewDialer(pinned)
+		if err != nil {
+			return nil, err
+		}
+		dialer.Proxy = nil
+		dialer.NetDialContext = source.DialContext
+		dialer.NetDialTLSContext = nil
+		return &dialer, nil
+	}
 	if direct, _ := ctx.Value(directFallbackKey{}).(bool); direct {
 		source := &net.Dialer{}
 		dialer.Proxy = nil

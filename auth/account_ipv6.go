@@ -10,6 +10,9 @@ func (a *Account) IPv6EgressSelection() (configured, enabled bool) {
 	}
 	a.mu.RLock()
 	defer a.mu.RUnlock()
+	if a.pinnedIPv6IP != "" {
+		return true, true
+	}
 	if a.isRelayStyleLocked() {
 		return false, false
 	}
@@ -21,7 +24,16 @@ func (a *Account) HostIPv4Egress() bool {
 	}
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	return !a.isRelayStyleLocked() && a.ProxyURL == "" && !a.IPv6EgressEnabled
+	return a.pinnedIPv6IP == "" && !a.isRelayStyleLocked() && a.ProxyURL == "" && !a.IPv6EgressEnabled
+}
+
+func (a *Account) PinnedIPv6IP() string {
+	if a == nil {
+		return ""
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.pinnedIPv6IP
 }
 func (s *Store) ApplyAccountIPv6Selection(id int64, enabled bool) {
 	if a := s.FindByID(id); a != nil {

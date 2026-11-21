@@ -34,12 +34,15 @@ func (e *Executor) ExecuteRequestViaWebsocket(ctx context.Context, account *auth
 		return e.executeRequestViaWebsocket(ctx, account, body, sessionID, proxyOverride, apiKey, deviceCfg, headers, poolRouteKey)
 	}
 	if m == nil {
+		if account.PinnedIPv6IP() != "" {
+			return nil, errors.New("strict IPv6 egress unavailable")
+		}
 		eg := context.WithValue(ctx, directFallbackKey{}, true)
 		egres := egressroute.Observation{Kind: "direct", Source: "account", FallbackFrom: "local_ipv6", FallbackReason: "bound_egress_unavailable"}
 		egressroute.Record(ctx, egres)
 		return e.executeRequestViaWebsocket(eg, account, body, sessionID, "", apiKey, deviceCfg, headers, poolRouteKey)
 	}
-	if boundProxy, bound := proxy.AccountBoundEgress(ctx); bound && boundProxy != "" {
+	if boundProxy, bound := proxy.AccountBoundEgress(ctx); bound && boundProxy != "" && account.PinnedIPv6IP() == "" {
 		return nil, errors.New("account-bound route conflicts with local IPv6 membership")
 	}
 	route, release, err := m.AcquireAccount(ctx, account.ID())
@@ -47,7 +50,7 @@ func (e *Executor) ExecuteRequestViaWebsocket(ctx context.Context, account *auth
 		release()
 	}
 	if err != nil {
-		if ctx.Err() != nil {
+		if ctx.Err() != nil || account.PinnedIPv6IP() != "" {
 			return nil, err
 		}
 		eg := context.WithValue(ctx, directFallbackKey{}, true)

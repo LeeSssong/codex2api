@@ -82,6 +82,9 @@ const workstationSchema = 1
 // WorkstationRequiresDedicatedEgress 报告这个官方 Codex 账号是否必须自带出口。
 // 中转、Claude、Grok 不走这条门。显式 off 是透传档，保留原出口策略。
 func (a *Account) WorkstationRequiresDedicatedEgress() bool {
+	if a.PinnedIPv6IP() != "" {
+		return true
+	}
 	if a == nil || a.IsRelayStyle() {
 		return false
 	}

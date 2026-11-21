@@ -59,6 +59,25 @@ pathlib.Path(sys.argv[sys.argv.index('--sub2api-out')+1]).write_text(json.dumps(
         self.assertEqual(completion['credential']['refresh_token'], 'test-rt')
         self.assertTrue(self.root.joinpath('heartbeat').is_file())
 
+    def test_codex_challenge_reports_only_allowlisted_reason(self):
+        markers = (
+            ("[3/5] Email OTP page reached. Enter code", "email_verification_required"),
+            ("PROXY_RISK_CONTROL: upstream security check", "security_verification_required"),
+            ("unknown response", None),
+        )
+        for marker, expected_code in markers:
+            with self.subTest(marker=marker):
+                output = f"{marker}\nrunner error containing synthetic-private-output"
+                node = self.root / "node"
+                node.write_text(f"#!{sys.executable}\nimport sys\nprint({output!r}, file=sys.stderr)\nsys.exit(1)\n")
+                with patch.object(worker, "request", return_value=(204, {})) as request, patch.object(worker, "HEARTBEAT", self.root / "heartbeat"):
+                    worker.process_claim(self.payload(), "worker-test")
+                completion, = [call.args[1] for call in request.call_args_list if call.args[0].endswith("/complete")]
+                expected = {"worker_id": "worker-test", "attempt": 2, "status": "failed", "stage": "failed"}
+                if expected_code:
+                    expected["error_code"] = expected_code
+                self.assertEqual(completion, expected)
+
     def test_siwc_callback_result_reaches_server_without_native_tokens(self):
         calls = []
         class Finished:

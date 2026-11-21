@@ -32,6 +32,9 @@ func requestProxyURL(ctx context.Context, fallback string) string {
 }
 
 func getRequestClient(ctx context.Context, account *auth.Account, fallback string) *http.Client {
+	if account.PinnedIPv6IP() != "" {
+		return getPooledClient(account, "")
+	}
 	if account.GetProxyURL() != "" || NativeIPv6Account(account) {
 		return getPooledClient(account, fallback)
 	}

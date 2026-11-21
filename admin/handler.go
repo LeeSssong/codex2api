@@ -1770,6 +1770,7 @@ func isDashboardRateLimitedAccount(status string, cooldownReason string) bool {
 type accountResponse struct {
 	IPv6EgressEnabled       bool                     `json:"ipv6_egress_enabled"`
 	IPv6EgressIP            string                   `json:"ipv6_egress_ip"`
+	IPv6EgressPinned        bool                     `json:"ipv6_egress_pinned,omitempty"`
 	CodexPaths              []auth.CodexPathSnapshot `json:"codex_paths,omitempty"`
 	StateModels             []accountStateModel      `json:"state_models,omitempty"`
 	CodexLastRefreshAt      string                   `json:"codex_last_refresh_at,omitempty"`
@@ -2963,6 +2964,10 @@ func (h *Handler) UpdateAccountScheduler(c *gin.Context) {
 	}
 
 	if err := h.db.UpdateAccountSchedulerMetadata(ctx, id, update.ScoreBiasOverride, update.BaseConcurrencyOverride, update.SkipWarmTier, update.AllowedAPIKeyIDs, database.OptionalStringSlice{Set: update.Tags.Set, Values: update.Tags.Values}, update.GroupIDs, update.ProxyURL, update.CredentialUpdates); err != nil {
+		if errors.Is(err, database.ErrIPv6SelectionConflict) {
+			writeError(c, http.StatusConflict, "此账号已锁定本机 IPv6，不能切换出口")
+			return
+		}
 		if errors.Is(err, sql.ErrNoRows) {
 			writeError(c, http.StatusNotFound, "账号不存在")
 			return

@@ -40,6 +40,7 @@ func (db *DB) EnsureCredentialOperationsSchema(ctx context.Context) error {
 }
 
 type CredentialOpsLoginConfigRow struct {
+	PinnedIPv6                                           string `json:",omitempty"`
 	RetrySourceID                                        int64
 	ImportKey                                            string
 	ResolvedProxyURL                                     string `json:"-"`
@@ -108,6 +109,14 @@ func (db *DB) ClaimCredentialOpsTaskWithCapabilities(ctx context.Context, owner 
 		modeExpr := "json_extract(config_json,'$.CredentialMode')"
 		if !db.isSQLite() {
 			modeExpr = "config_json::jsonb->>'CredentialMode'"
+		}
+		pinnedExpr := "json_extract(config_json,'$.PinnedIPv6')"
+		if !db.isSQLite() {
+			pinnedExpr = "config_json::jsonb->>'PinnedIPv6'"
+		}
+		pinnedImports := "id IN (SELECT task_id FROM credential_operations_task_inputs WHERE COALESCE(" + pinnedExpr + ",'')<>'')"
+		if _, err = tx.ExecContext(ctx, `UPDATE credential_operations_tasks SET status='failed',stage='failed',error_message='strict IPv6 worker lease expired',lease_owner='',lease_until=NULL,finished_at=CURRENT_TIMESTAMP WHERE status='running' AND lease_until<CURRENT_TIMESTAMP AND `+pinnedImports); err != nil {
+			return err
 		}
 		passwordMode := "id IN(SELECT task_id FROM credential_operations_task_inputs WHERE " + modeExpr + "='password_totp')"
 		emailMode := "id IN(SELECT task_id FROM credential_operations_task_inputs WHERE " + modeExpr + "='email_otp_url')"
@@ -224,6 +233,9 @@ func (db *DB) CancelCredentialOpsTask(ctx context.Context, id int64) error {
 		}
 		defer tx.Rollback()
 		if _, e = tx.ExecContext(ctx, "UPDATE credential_operations_tasks SET status='cancelled',stage='cancelled',lease_owner='',lease_until=NULL,finished_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=$1 AND status IN ('queued','running')", id); e != nil {
+			return e
+		}
+		if _, e = tx.ExecContext(ctx, `DELETE FROM ipv6_egress_leases WHERE id=$1 AND EXISTS (SELECT 1 FROM credential_operations_tasks WHERE id=$2 AND status='cancelled' AND attempt=0)`, pinnedIPv6LeaseID(id), id); e != nil {
 			return e
 		}
 		if _, e = tx.ExecContext(ctx, "UPDATE credential_operations_totp_recoveries SET state='uncertain',updated_at=CURRENT_TIMESTAMP WHERE task_id=$1 AND state NOT IN ('adopted','old_verified')", id); e != nil {

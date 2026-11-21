@@ -32,4 +32,6 @@ login/:id/renew accepts worker_id,attempt,stage; lease/config/account/route gene
 
 These tests use synthetic accounts and fault injection. They do not prove live upstream first login, re-login, rotation or Excel authorization; those require isolated test accounts and configured egress. No production or real source account mutations are part of this build.
 
+Native Codex password/TOTP imports stop if the provider requires interactive email or security verification. The worker reports only a known failure code and never sends raw login-runner output. Complete the requested verification in a browser rather than retrying the same unattended import.
+
 Mihomo node listeners bind to 127.0.0.1 on the application host. A standalone Worker using that pool must share the application network namespace (Docker network_mode: service:codex2api) and use the localhost internal API. A Worker on a separate host/network cannot consume these loopback listeners. Managed runtime children already share the application host. A managed or standalone worker never reads another application's account data.

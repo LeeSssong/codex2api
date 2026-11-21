@@ -27,6 +27,7 @@ VERSION="1.0.0"
 CAPABILITIES=["login_codex_v1","email_otp_v1","excel_oauth_v1","siwc_oauth_v1","totp_rotation_v1"]
 CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 REDIRECT = "http://localhost:1455/auth/callback"
+CODEX_LOGIN_CHALLENGES = {"email_verification_required", "security_verification_required"}
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, *_args, **_kwargs):
@@ -142,7 +143,13 @@ def run_engine(directory):
         api.directory.joinpath("totp-finished").write_text("finished")
         return
     protocol = engines.load_protocol(Path(os.environ.get("TURB_ROOT", "/opt/turb"))) if login["mode"] == "email_otp_url" else None
-    engines.process_claim(api, protocol, claim)
+    try:
+        engines.process_claim(api, protocol, claim)
+    except engines.CodexLoginChallenge as challenge:
+        reason = str(challenge)
+        if reason not in CODEX_LOGIN_CHALLENGES:
+            raise
+        api.directory.joinpath("failure-code").write_text(reason, encoding="ascii")
 
 def terminate_process(process):
     if process.poll() is not None:
@@ -160,6 +167,7 @@ def process_claim(payload, worker):
     task_path = "/login/%s" % task["ID"]
     status, _ = request(task_path + "/renew", dict(identity, stage="starting"))
     if status != 204:
+        request(task_path + "/release", identity)
         return
     with tempfile.TemporaryDirectory(prefix="codex2api-login-") as directory:
         # Protocol engines cannot inherit the application key or worker token.
@@ -217,7 +225,14 @@ def process_claim(payload, worker):
             if task.get("Kind","").startswith("totp_") and Path(directory,"totp-finished").exists():return
             result_file = Path(directory) / "result.json"
             if process.returncode or not result_file.is_file():
-                request(task_path + "/complete", dict(identity, status="failed", stage="failed"))
+                failure = dict(identity, status="failed", stage="failed")
+                code_file = Path(directory) / "failure-code"
+                if not process.returncode and not result_file.is_file() and code_file.is_file():
+                    with code_file.open("rb") as stream:
+                        reason = stream.read(64).decode("ascii", errors="replace")
+                    if reason in CODEX_LOGIN_CHALLENGES:
+                        failure["error_code"] = reason
+                request(task_path + "/complete", failure)
                 return
             credential = json.loads(result_file.read_text())
             required = ("siwc_callback_url", "siwc_session_id") if login.get("oauth_profile") == "siwc" else ("access_token", "refresh_token", "id_token")
@@ -250,6 +265,7 @@ def safe_process_claim(payload,worker):
         body={"worker_id":worker,"attempt":task.get("Attempt",0)}
         if kind.startswith("totp_"):request(path+"totp-finish",dict(body,success=False))
         else:request(path+"complete",dict(body,status="failed",stage="failed"))
+        request(path+"release",body)
 
 def stop(_signal, _frame):
     global STOP

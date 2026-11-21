@@ -44,6 +44,14 @@ last rotation reason. Usage audit labels record the actual IPv6 source, and
 rotation logs contain only account ID, old/new address and a fixed reason label.
 An exhausted or unavailable pool fails closed until an address becomes available.
 
+## Strict IPv6 for a first 2FA import
+
+In **Accounts → Add account → 2FA sign-in → Egress**, select **Lock to a local IPv6 address** and pick an available address. This is a single-account import using the local worker; it is not a Session Studio, batch, or browser-import option. The job reserves the selected address before it enters the worker. The worker sends upstream login and authorization-code exchange through a per-attempt local tunnel that binds only that IPv6 address. After successful credential verification, the reservation becomes a permanent account binding in the same transaction as account creation. A duplicate account is rejected without updating its route or credentials.
+
+The same binding is used for refresh, maintenance, HTTP inference, and WebSocket inference. An unavailable address, closed pool, or disabled route is an error, not permission to use another address, a proxy, or host direct. Regular IPv6 pool members retain their existing rotation policy. The locked address is visible in the account editor and cannot be changed there. An independent sign-in from a user browser is outside the server's egress control; use the local worker when same-source sign-in is required. Email or security verification still has to be completed as required by the provider.
+
+Unclaimed cancellations free the reservation immediately. Claimed tasks retain it until their authorized worker reports that the subprocess has exited; after a crash an unconfirmed reservation remains held. Do not clear one while the original worker or its tunnel might still be live. Releases older than strict IPv6 do not understand this binding: before rolling back to one, stop the writer and independently fence all strict accounts and pending strict import tasks so the old application cannot send or replay their traffic.
+
 Admin API: `GET /api/admin/ipv6-egress`, `PUT /api/admin/ipv6-egress`.
 Configuration writes require the current `revision`; stale writes return 409.
 The enable switch saves only enablement, while address/cooldown/retry drafts use

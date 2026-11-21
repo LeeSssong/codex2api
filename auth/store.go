@@ -191,6 +191,7 @@ type Account struct {
 	Email                string
 	PlanType             string
 	IPv6EgressEnabled    bool
+	pinnedIPv6IP         string
 	IPv6EgressConfigured bool
 	ProxyURL             string
 	CustomHeaders        map[string]string
@@ -800,6 +801,9 @@ func (a *Account) GetProxyURL() string {
 	}
 	a.mu.RLock()
 	defer a.mu.RUnlock()
+	if a.pinnedIPv6IP != "" {
+		return ""
+	}
 	return strings.TrimSpace(a.ProxyURL)
 }
 
@@ -6330,6 +6334,7 @@ func (s *Store) buildAccountFromRow(ctx context.Context, row *database.AccountRo
 		ProxyURL:                     strings.TrimSpace(row.ProxyURL),
 		IPv6EgressEnabled:            row.GetCredentialBool(IPv6EgressCredentialKey),
 		IPv6EgressConfigured:         row.GetCredentialOptionalBool(IPv6EgressCredentialKey) != nil,
+		pinnedIPv6IP:                 row.GetCredential(database.PinnedIPv6CredentialKey),
 		CustomHeaders:                row.GetCredentialStringMap("custom_headers"),
 		UpstreamRequestIDHeader:      row.GetCredential(UpstreamRequestIDHeaderCredentialKey),
 		HealthTier:                   HealthTierWarm,
