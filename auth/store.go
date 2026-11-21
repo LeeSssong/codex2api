@@ -242,10 +242,6 @@ type Account struct {
 	// CodexFingerprintMode 见 codex_fingerprint_mode.go：Codex 官方出站请求的
 	// 设备指纹收敛档位（off / device / session / full），默认 off。
 	CodexFingerprintMode string
-	// Workstation 是 credentials.workstation 的运行时副本，供出站对账读取。
-	Workstation Workstation
-	// WorkstationKnown 表示库里已经有工作站记录。没有记录时不拿空快照拦请求。
-	WorkstationKnown bool
 	// Timezone 是账号绑定的 IANA 时区（credentials.timezone）。Codex 官方出站路径据此
 	// 改写请求体 environment_context 里的时区与日期（见 proxy/codex_environment_context.go）；
 	// 空 = 不绑定、透传下游值。Claude 账号沿用同一凭据键做身份标签。
@@ -5591,9 +5587,6 @@ func (s *Store) resolveProxyForAccountSnapshot(acc *Account) (string, bool) {
 
 	if configured, enabled := acc.IPv6EgressSelection(); configured {
 		if enabled || acc.GetProxyURL() == "" {
-			if acc.WorkstationRequiresDedicatedEgress() && !enabled && acc.GetProxyURL() == "" {
-				return "", false
-			}
 			return "", true
 		}
 	}
@@ -5777,19 +5770,16 @@ func (s *Store) ManagedProxyUnavailable(proxyURL string) bool {
 	return s.managedProxyUnavailable(proxyURL)
 }
 
-// AccountHasUsableEgress reports whether the account has an egress path.
-// A Codex workstation must keep its own proxy, native IPv6, or fixed route.
-// Other accounts keep the previous rule, including host-direct fallback.
+// AccountHasUsableEgress reports whether the account has an egress path. An
+// unavailable binding permits host-direct fallback in its transport.
 func (s *Store) AccountHasUsableEgress(acc *Account) bool {
-	if acc.WorkstationRequiresDedicatedEgress() {
-		return acc.HasDedicatedEgress() && !s.ManagedProxyUnavailable(acc.GetProxyURL())
-	}
 	_, usable := s.ResolveUsableProxyForAccount(acc)
 	return usable
 }
 
 func (s *Store) accountHasUsableEgress(acc *Account) bool {
-	return s.AccountHasUsableEgress(acc)
+	_, usable := s.ResolveUsableProxyForAccount(acc)
+	return usable
 }
 
 // ResolveUsableProxyForAccount returns the exact proxy decision a caller must
@@ -6206,7 +6196,6 @@ func (s *Store) loadFromDB(ctx context.Context) error {
 	if err := s.LoadAPIKeyAllowedGroups(ctx); err != nil {
 		log.Printf("加载 API Key 分组限制失败: %v", err)
 	}
-	s.ensureWorkstations(ctx)
 	return nil
 }
 
@@ -6348,8 +6337,6 @@ func (s *Store) buildAccountFromRow(ctx context.Context, row *database.AccountRo
 		CodexPassthroughMode:         codexPassthroughMode,
 		ResponsesUpstreamTransport:   responsesUpstreamTransport,
 		CodexFingerprintMode:         codexFingerprintMode,
-		Workstation:                  workstationFromCredential(row.GetCredential(WorkstationCredentialKey)),
-		WorkstationKnown:             strings.TrimSpace(row.GetCredential(WorkstationCredentialKey)) != "",
 		Timezone:                     accountTimezone,
 		CodexTurnState:               strings.TrimSpace(row.GetCredential(CodexTurnStateCredentialKey)),
 		CodexTurnStateModels:         NormalizeCodexTurnStateModels(row.GetCredential(CodexTurnStateModelsCredentialKey)),
@@ -6693,7 +6680,6 @@ func (s *Store) LoadAccountByID(ctx context.Context, dbID int64) error {
 	account.recomputeEffectiveAutoPause(s)
 	account.mu.Unlock()
 	s.AddAccount(account)
-	s.ensureAccountWorkstation(ctx, account)
 	return nil
 }
 

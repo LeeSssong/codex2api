@@ -241,9 +241,9 @@ func TestNewCodexAccountCredentialsStampsDefaultFingerprintMode(t *testing.T) {
 	handler := &Handler{db: db, store: store}
 	seed := tokenCredentialSeed{refreshToken: "rt-stamp"}
 
-	// 系统默认仍是 off 时，新建官方账号使用工作站档，避免继续透传下游设备。
-	if got := handler.newCodexAccountCredentials(seed)[auth.CodexFingerprintModeCredentialKey]; got != auth.CodexFingerprintModeSingleMachineMultiWindow {
-		t.Fatalf("默认工作站档 = %v", got)
+	// 默认 off：不写入键，与升级前行为完全一致。
+	if _, ok := handler.newCodexAccountCredentials(seed)[auth.CodexFingerprintModeCredentialKey]; ok {
+		t.Fatal("默认 off 时不应写入 codex_fingerprint_mode 键")
 	}
 
 	store.SetCodexFingerprintDefaultMode(auth.CodexFingerprintModeSession)

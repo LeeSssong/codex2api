@@ -166,7 +166,7 @@ func (t oauthIPv6Transport) RoundTrip(req *http.Request) (*http.Response, error)
 		primary := egressipv6.WrapAccountClient(m, t.id, t.base, func(ip string) http.RoundTripper { return sourceIPv6Transport(t.id, ip, mode, scope) }, false)
 		direct := hostIPv4Client(t.id, t.base, mode, "oauth-fallback")
 		copy := *primary
-		copy.Transport = egressroute.FallbackOrHold(primary.Transport, direct.Transport, egressroute.Observation{Kind: "local_ipv6", Source: "account"}, workstationHoldsDirect(t.id))
+		copy.Transport = egressroute.Fallback(primary.Transport, direct.Transport, egressroute.Observation{Kind: "local_ipv6", Source: "account"})
 		client = &copy
 	} else if configured && proxyURL == "" {
 		client = hostIPv4Client(t.id, t.base, mode, scope)

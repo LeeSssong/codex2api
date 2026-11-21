@@ -32,7 +32,7 @@ func accountProxyClient(account *auth.Account, forceUTLS bool) *http.Client {
 		primary = NewUTLSTransport(route)
 	}
 	direct := NewUTLSTransport("")
-	entry := &poolEntry{client: &http.Client{Transport: egressroute.FallbackOrHold(primary, direct, egressroute.ProxyObservation(route), account.WorkstationRequiresDedicatedEgress())}}
+	entry := &poolEntry{client: &http.Client{Transport: egressroute.Fallback(primary, direct, egressroute.ProxyObservation(route))}}
 	entry.touch()
 	if v, loaded := clientPool.LoadOrStore(key, entry); loaded {
 		releaseEvictedClient(entry.client)
@@ -47,7 +47,7 @@ func directFallbackClient(account *auth.Account, primary *http.Client, kind stri
 		direct = hostIPv4Client(account.ID(), direct, codexTransportModeUTLSChrome, "fallback")
 	}
 	copy := *primary
-	copy.Transport = egressroute.FallbackOrHold(primary.Transport, direct.Transport, egressroute.Observation{Kind: kind, Source: "account"}, account.WorkstationRequiresDedicatedEgress())
+	copy.Transport = egressroute.Fallback(primary.Transport, direct.Transport, egressroute.Observation{Kind: kind, Source: "account"})
 	copy.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	return &copy
 }

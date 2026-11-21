@@ -323,11 +323,9 @@ func (h *Handler) newCodexAccountCredentials(seed tokenCredentialSeed) map[strin
 	} else if seed.newTimezone != nil {
 		credentials[auth.AccountTimezoneCredentialKey] = *seed.newTimezone
 	}
-	mode := h.defaultCodexFingerprintModeForNewAccount()
-	if mode == auth.CodexFingerprintModeOff {
-		mode = auth.CodexFingerprintModeSingleMachineMultiWindow
+	if mode := h.defaultCodexFingerprintModeForNewAccount(); mode != auth.CodexFingerprintModeOff {
+		credentials[auth.CodexFingerprintModeCredentialKey] = mode
 	}
-	credentials[auth.CodexFingerprintModeCredentialKey] = mode
 	return credentials
 }
 
@@ -336,9 +334,6 @@ func (h *Handler) newCodexAccountCredentials(seed tokenCredentialSeed) map[strin
 func (h *Handler) newCodexAccountFromSeed(id int64, proxyURL string, seed tokenCredentialSeed) *auth.Account {
 	account := accountFromCredentialSeed(id, proxyURL, seed)
 	account.CodexFingerprintMode = h.defaultCodexFingerprintModeForNewAccount()
-	if account.CodexFingerprintMode == auth.CodexFingerprintModeOff {
-		account.CodexFingerprintMode = auth.CodexFingerprintModeSingleMachineMultiWindow
-	}
 	if seed.newIPv6Enabled != nil {
 		account.IPv6EgressConfigured = true
 		account.IPv6EgressEnabled = *seed.newIPv6Enabled

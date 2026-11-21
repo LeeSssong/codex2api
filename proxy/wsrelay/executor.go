@@ -157,9 +157,6 @@ func (e *Executor) executeRequestViaWebsocket(
 	affinityKey := proxy.CodexTurnStateAffinityKeyFromContext(ctx)
 	headers, err := e.prepareWebsocketHeadersChecked(ctx, accessToken, account, accountIDStr, headerSessionID, apiKey, deviceCfg, ginHeaders, wsBody, affinityKey)
 	if err == nil {
-		if holdErr := proxy.EnforceWorkstationRequest(account, egress, headers, wsBody); holdErr != nil {
-			return nil, holdErr
-		}
 		proxy.LogCodexFingerprintDebug(ctx, "ws-handshake", account, egress.DialProxyURL, headers, wsBody)
 	}
 	if err != nil {

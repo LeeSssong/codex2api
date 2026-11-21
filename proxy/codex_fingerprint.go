@@ -254,11 +254,6 @@ func resolveConvergedInstallationID(account *auth.Account, accountID int64) stri
 			}
 		}
 	}
-	if account != nil {
-		if ws, ok := account.StoredWorkstation(); ok && strings.TrimSpace(ws.InstallationID) != "" {
-			return strings.TrimSpace(ws.InstallationID)
-		}
-	}
 	return deriveStableCodexUUID(fmt.Sprintf("codex2api:codex-install-id:v1:%d", accountID))
 }
 

@@ -182,10 +182,6 @@ func TestResolveProxyForAccountUsesDirectWhenManagedPinIsDisabled(t *testing.T) 
 	if !store.AccountHasUsableEgress(pinned) {
 		t.Fatal("direct fallback account blocked")
 	}
-	workstation := &Account{DBID: 3, ProxyURL: disabledURL, CodexFingerprintMode: CodexFingerprintModeSingleMachineMultiWindow}
-	if store.AccountHasUsableEgress(workstation) {
-		t.Fatal("workstation with a disabled binding must not stay schedulable")
-	}
 
 	unbound := &Account{DBID: 2}
 	if got := store.ResolveProxyForAccount(unbound); got != enabledURL {
@@ -218,7 +214,7 @@ func TestNextAllowsPinnedDisabledProxyForDirectFallback(t *testing.T) {
 		proxyPoolSet:     buildProxyPoolSet([]string{enabledURL}),
 		managedProxySet:  buildProxyPoolSet([]string{disabledURL, enabledURL}),
 	}).withMaxConcurrency(2)
-	store.AddAccount(&Account{DBID: 1, AccessToken: "tok-pinned", ProxyURL: disabledURL, CodexFingerprintMode: CodexFingerprintModeOff})
+	store.AddAccount(&Account{DBID: 1, AccessToken: "tok-pinned", ProxyURL: disabledURL})
 
 	selected := store.NextExcludingWithFilter(0, nil, nil)
 	if selected == nil {
@@ -286,17 +282,12 @@ func TestUnusableManagedProxies(t *testing.T) {
 		t.Fatalf("UnusableManagedProxies = %v, want %v", got, want)
 	}
 
-	// A disabled bound route remains schedulable for passthrough accounts.
-	// The resolved transport route must be direct rather than another proxy.
-	// A workstation account stops instead of borrowing the host address.
+	// A disabled bound route remains schedulable, but the resolved transport route
+	// must be direct rather than the disabled URL, global proxy, or another pool member.
 	for _, unusable := range got {
 		account := &Account{DBID: 1, ProxyURL: unusable}
 		if store.ResolveProxyForAccount(account) != "" || !store.AccountHasUsableEgress(account) {
 			t.Fatalf("unavailable binding must remain schedulable for direct fallback: %q", unusable)
-		}
-		workstation := &Account{DBID: 2, ProxyURL: unusable, CodexFingerprintMode: CodexFingerprintModeDevice}
-		if store.AccountHasUsableEgress(workstation) {
-			t.Fatalf("workstation must pause when its binding is unavailable: %q", unusable)
 		}
 	}
 

@@ -13,8 +13,8 @@ func TestResinEgressExemptsCodexAccountsFromPoolFailClosed(t *testing.T) {
 	old := ResinEgressEnabled()
 	t.Cleanup(func() { SetResinEgressEnabled(old) })
 
-	unbound := &Account{DBID: 1, CodexFingerprintMode: CodexFingerprintModeOff}
-	pinned := &Account{DBID: 2, ProxyURL: disabledURL, CodexFingerprintMode: CodexFingerprintModeOff}
+	unbound := &Account{DBID: 1}
+	pinned := &Account{DBID: 2, ProxyURL: disabledURL}
 	relay := &Account{DBID: 3, UpstreamType: UpstreamOpenAIResponses, BaseURL: "https://relay.example", APIKey: "sk-test"}
 
 	SetResinEgressEnabled(false)

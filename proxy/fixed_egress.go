@@ -166,7 +166,7 @@ func wrapFixedClient(id int64, base *http.Client, mode, scope string, replay boo
 	c := *base
 	primary := &fixedEgressTransport{m, id, base, mode, scope, replay}
 	direct := hostIPv4Client(id, base, mode, "fixed-fallback")
-	c.Transport = egressroute.FallbackOrHold(primary, direct.Transport, egressroute.Observation{Kind: "fixed", Source: "account"}, workstationHoldsDirect(id))
+	c.Transport = egressroute.Fallback(primary, direct.Transport, egressroute.Observation{Kind: "fixed", Source: "account"})
 	c.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	return &c
 }

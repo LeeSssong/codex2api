@@ -902,9 +902,6 @@ func executeNativeCodexRequest(ctx context.Context, account *auth.Account, reque
 		}
 
 		egress.ApplyHeaders(req.Header)
-		if err := EnforceWorkstationRequest(account, egress, req.Header, requestBody); err != nil {
-			return nil, ErrUpstream(0, "工作站身份不一致，已停止放量", err)
-		}
 		LogCodexFingerprintDebug(req.Context(), "http", account, egress.DialProxyURL, req.Header, requestBody)
 
 		if err := ConsumeAPIKeyModelRequestQuota(ctx, requestModel); err != nil {
@@ -1335,9 +1332,6 @@ func executeNativeCodexCompactRequest(ctx context.Context, account *auth.Account
 	ApplyCodexRoutingHint(req.Header, account, requestBody)
 
 	egress.ApplyHeaders(req.Header)
-	if err := EnforceWorkstationRequest(account, egress, req.Header, requestBody); err != nil {
-		return nil, ErrUpstream(0, "工作站身份不一致，已停止放量", err)
-	}
 	LogCodexFingerprintDebug(req.Context(), "compact", account, egress.DialProxyURL, req.Header, requestBody)
 
 	if err := ConsumeAPIKeyModelRequestQuota(ctx, gjson.GetBytes(requestBody, "model").String()); err != nil {
