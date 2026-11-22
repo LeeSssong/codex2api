@@ -3,7 +3,7 @@
 Only the codex app is stopped/recreated. PostgreSQL, Redis and Sub stay running.
 An image built from verified/pushed clean main is mandatory. No credentials print.
 """
-import argparse, copy, fcntl, ipaddress, json, os, pathlib, re, shutil, subprocess, time, urllib.request, urllib.error, stat, tempfile, types
+import argparse, copy, fcntl, ipaddress, json, os, pathlib, re, shutil, socket, subprocess, time, urllib.request, urllib.error, stat, tempfile, types
 
 def codex_route(config):
  matches=[]
@@ -159,9 +159,9 @@ class Release:
   os.replace(temp,self.compose)
  def request(self,path,auth=False,public=False,timeout=10):
   if public:
-   # Use the resolvable alias for TLS SNI while selecting the .top Caddy route
-   # through Host. This avoids depending on the .top production resolver.
-   base='https://codex.xingqiaolab.com'; context=None
+   # Connect to the local listener while retaining the public hostname for TLS
+   # SNI and Caddy Host routing. This avoids depending on the .top resolver.
+   base='https://codex.xingqiaolab.top'; context=None
   else:
    base='http://127.0.0.1:'+str(self.port); context=None
   headers={"User-Agent":"Codex2API-ReleaseCheck/1.0"}
@@ -170,8 +170,18 @@ class Release:
    secret=self.env.get('ADMIN_SECRET','')
    if not secret:raise RuntimeError('environment-backed admin credential required for release smoke')
    headers['X-Admin-Key']=secret
-  with urllib.request.urlopen(urllib.request.Request(base+path,headers=headers),timeout=timeout,context=context) as response:
-   payload=response.read();return response.status,dict(response.headers),payload
+  request=urllib.request.Request(base+path,headers=headers)
+  original_getaddrinfo=socket.getaddrinfo if public else None
+  if public:
+   def resolve_local(host,port,family=0,socktype=0,proto=0,flags=0):
+    if host=='codex.xingqiaolab.top':host='127.0.0.1'
+    return original_getaddrinfo(host,port,family,socktype,proto,flags)
+   socket.getaddrinfo=resolve_local
+  try:
+   with urllib.request.urlopen(request,timeout=timeout,context=context) as response:
+    payload=response.read();return response.status,dict(response.headers),payload
+  finally:
+   if public:socket.getaddrinfo=original_getaddrinfo
  def ready(self):
   deadline=time.monotonic()+90
   while time.monotonic()<deadline:
