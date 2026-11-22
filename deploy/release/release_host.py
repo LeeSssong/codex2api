@@ -3,7 +3,7 @@
 Only the codex app is stopped/recreated. PostgreSQL, Redis and Sub stay running.
 An image built from verified/pushed clean main is mandatory. No credentials print.
 """
-import argparse, copy, fcntl, ipaddress, json, os, pathlib, re, shutil, ssl, subprocess, time, urllib.request, urllib.error, stat, tempfile, types
+import argparse, copy, fcntl, ipaddress, json, os, pathlib, re, shutil, subprocess, time, urllib.request, urllib.error, stat, tempfile, types
 
 def codex_route(config):
  matches=[]
@@ -159,9 +159,9 @@ class Release:
   os.replace(temp,self.compose)
  def request(self,path,auth=False,public=False,timeout=10):
   if public:
-   # Verify the public Caddy listener and Host route without depending on the
-   # production resolver. The .top alias can be intentionally DNS-hidden.
-   base='https://127.0.0.1'; context=ssl._create_unverified_context()
+   # Use the resolvable alias for TLS SNI while selecting the .top Caddy route
+   # through Host. This avoids depending on the .top production resolver.
+   base='https://codex.xingqiaolab.com'; context=None
   else:
    base='http://127.0.0.1:'+str(self.port); context=None
   headers={"User-Agent":"Codex2API-ReleaseCheck/1.0"}
