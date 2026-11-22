@@ -58,20 +58,6 @@ func executeSIWCRequest(ctx context.Context, account *auth.Account, body []byte)
 	request.Header.Set("Accept", "text/event-stream")
 	request.Header.Set("User-Agent", "Codex2API")
 	request.Header.Set("X-Client-Request-Id", uuid.NewString())
-	if workstation, ok := account.StoredWorkstation(); ok {
-		if workstation.UserAgent != "" {
-			request.Header.Set("User-Agent", workstation.UserAgent)
-		}
-		if workstation.Originator != "" {
-			request.Header.Set("Originator", workstation.Originator)
-		}
-		if workstation.Version != "" {
-			request.Header.Set("Version", workstation.Version)
-		}
-	}
-	if err := EnforceWorkstationRequest(account, CodexEgress{Kind: CodexEgressProxy, DialProxyURL: account.GetProxyURL()}, request.Header, payload); err != nil {
-		return nil, err
-	}
 	if err := ConsumeAPIKeyModelRequestQuota(ctx, gjson.GetBytes(payload, "model").String()); err != nil {
 		return nil, err
 	}

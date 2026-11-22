@@ -43,7 +43,7 @@ type SIWCAuthorizationResult struct {
 }
 
 func siwcRouteRevision(row *database.AccountRow) string {
-	raw, _ := json.Marshal([]any{row.ProxyURL, row.GetCredentialOptionalBool(auth.IPv6EgressCredentialKey), row.GetCredential(auth.WorkstationCredentialKey), row.GetCredential("email"), row.GetCredential("workspace_id")})
+	raw, _ := json.Marshal([]any{row.ProxyURL, row.GetCredentialOptionalBool(auth.IPv6EgressCredentialKey), row.GetCredential("email"), row.GetCredential("workspace_id")})
 	digest := sha256.Sum256(raw)
 	return hex.EncodeToString(digest[:])
 }

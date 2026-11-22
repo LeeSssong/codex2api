@@ -75,8 +75,6 @@ func StartAccountEgressTunnel(account *auth.Account) (string, func(), error) {
 		if err == nil {
 			selected, err = buildProxyDialer(route.Binding.ProxyURL)
 		}
-	} else if account.WorkstationRequiresDedicatedEgress() {
-		err = fmt.Errorf("workstation requires dedicated egress")
 	} else {
 		selected = &net.Dialer{Timeout: 10 * time.Second}
 	}

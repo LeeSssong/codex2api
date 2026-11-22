@@ -113,7 +113,7 @@ func (db *DB) saveSIWCGrant(ctx context.Context, accountID, accountGeneration, g
 			if current.ProxyURL != fence.identity.ProxyURL {
 				return ErrSIWCGrantChanged
 			}
-			for _, key := range []string{"email", "workspace_id", "account_id", "user_id", "chatgpt_user_id", "ipv6_egress_enabled", "workstation"} {
+			for _, key := range []string{"email", "workspace_id", "account_id", "user_id", "chatgpt_user_id", "ipv6_egress_enabled"} {
 				left, _ := json.Marshal(current.Credentials[key])
 				right, _ := json.Marshal(fence.identity.Credentials[key])
 				if string(left) != string(right) {
