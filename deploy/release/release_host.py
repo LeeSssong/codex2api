@@ -3,7 +3,7 @@
 Only the codex app is stopped/recreated. PostgreSQL, Redis and Sub stay running.
 An image built from verified/pushed clean main is mandatory. No credentials print.
 """
-import argparse, copy, fcntl, ipaddress, json, os, pathlib, re, shutil, subprocess, time, urllib.request, urllib.error, stat, tempfile, types
+import argparse, copy, fcntl, ipaddress, json, os, pathlib, re, shutil, ssl, subprocess, time, urllib.request, urllib.error, stat, tempfile, types
 
 def codex_route(config):
  matches=[]
@@ -158,13 +158,19 @@ class Release:
   if getattr(self,'bps',False):temp.chmod(0o600)
   os.replace(temp,self.compose)
  def request(self,path,auth=False,public=False,timeout=10):
-  base='https://codex.xingqiaolab.top' if public else 'http://127.0.0.1:'+str(self.port)
+  if public:
+   # Verify the public Caddy listener and Host route without depending on the
+   # production resolver. The .top alias can be intentionally DNS-hidden.
+   base='https://127.0.0.1'; context=ssl._create_unverified_context()
+  else:
+   base='http://127.0.0.1:'+str(self.port); context=None
   headers={"User-Agent":"Codex2API-ReleaseCheck/1.0"}
+  if public:headers['Host']='codex.xingqiaolab.top'
   if auth:
    secret=self.env.get('ADMIN_SECRET','')
    if not secret:raise RuntimeError('environment-backed admin credential required for release smoke')
    headers['X-Admin-Key']=secret
-  with urllib.request.urlopen(urllib.request.Request(base+path,headers=headers),timeout=timeout) as response:
+  with urllib.request.urlopen(urllib.request.Request(base+path,headers=headers),timeout=timeout,context=context) as response:
    payload=response.read();return response.status,dict(response.headers),payload
  def ready(self):
   deadline=time.monotonic()+90
